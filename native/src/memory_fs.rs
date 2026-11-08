@@ -2,8 +2,8 @@
 //!
 //! In a browser there is no file system: the page hands the engine the user's files (dropped or chosen), and each is
 //! listed here under a path as a `Source` the browser reads on request, so nothing is copied up front. Files the engine
-//! writes itself (entries extracted from a ZIP) are kept in memory. `vfs` uses this in WebAssembly; on the desktop it
-//! is compiled for its tests only.
+//! writes itself (entries extracted from a ZIP) are kept in memory. `vfs` uses this in WebAssembly; on the desktop the
+//! library carries it, but only its tests use it.
 
 use std::{
     collections::BTreeMap,

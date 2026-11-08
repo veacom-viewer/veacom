@@ -10,10 +10,14 @@
 //! Blob objects belong to the thread (Worker) that received them, so they are kept per thread and the sources the
 //! engine holds refer to them by number. Work on other threads (the threads build's parallel decoding) reads a file
 //! only once it is held whole in the module's shared memory (`hold`), and the memory is given back after (`release`).
+//!
+//! A file stays listed only while a series reads from it: after each import and each removal, `retain` forgets the
+//! rest (a failed import's files, a ZIP once extracted, a closed series' files), and `drop_heads` the first pieces read
+//! ahead for the import.
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     io,
     path::{Path, PathBuf},
     rc::Rc,
@@ -58,13 +62,13 @@ pub(crate) fn now() -> f64 {
 struct BlobSource {
     id: u32,
     length: u64,
-    /// The file's first piece, when the page has already read it.
-    head: Option<Arc<Vec<u8>>>,
+    /// The file's first piece, when the page has already read it, until the import that wanted it ends.
+    head: Mutex<Option<Arc<Vec<u8>>>>,
     /// The whole file, while a parallel decode needs it on every thread.
     whole: Mutex<Option<Arc<Vec<u8>>>>,
 }
 
-/// Every listed file's source by its path, for `hold` (shared by all threads).
+/// Every listed file's source by its path as the file system keeps it, for `hold` and `retain` (shared by all threads).
 static SOURCES: Mutex<BTreeMap<PathBuf, Arc<BlobSource>>> = Mutex::new(BTreeMap::new());
 
 fn sources() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Arc<BlobSource>>> {
@@ -78,9 +82,47 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) {
     // Kept only when it is exactly the file's first piece.
     let head = head.filter(|head| head.len() as u64 == length.min(piece_size(length))).map(Arc::new);
     BLOBS.with_borrow_mut(|blobs| blobs.insert(id, blob));
-    let source = Arc::new(BlobSource { id, length, head, whole: Mutex::new(None) });
-    sources().insert(PathBuf::from(path), source.clone());
-    memory_fs::add(path, source);
+    let source = Arc::new(BlobSource { id, length, head: Mutex::new(head), whole: Mutex::new(None) });
+    memory_fs::add(path, source.clone());
+    // Under the path the engine's series name it by (`.` and `..` resolved), so `retain` and `hold` find it.
+    let key = memory_fs::canonicalize(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
+    if let Some(replaced) = sources().insert(key, source) {
+        forget(&HashSet::from([replaced.id]));
+    }
+}
+
+/// Forgets the first pieces the page read ahead: the import that parsed its headers from them has ended, and later
+/// reads go through the pieces kept below. Each file's head would otherwise stay for as long as its series is open.
+pub fn drop_heads() {
+    for source in sources().values() {
+        *source.head.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
+/// Forgets every page file a path in `keep` does not name: its listing, its Blob and its pieces. Files the engine wrote
+/// (extracted ZIP entries) are not the page's and stay with their import.
+pub fn retain(keep: &HashSet<PathBuf>) {
+    let gone: Vec<(PathBuf, u32)> = {
+        let mut sources = sources();
+        let gone: Vec<_> = sources.iter().filter(|(path, _)| !keep.contains(*path)).map(|(path, source)| (path.clone(), source.id)).collect();
+        for (path, _) in &gone {
+            sources.remove(path);
+        }
+        gone
+    };
+    for (path, _) in &gone {
+        let _ = memory_fs::remove_file(path);
+    }
+    forget(&gone.into_iter().map(|(_, id)| id).collect());
+}
+
+/// Lets go of these Blobs and their pieces.
+fn forget(ids: &HashSet<u32>) {
+    if ids.is_empty() {
+        return;
+    }
+    BLOBS.with_borrow_mut(|blobs| blobs.retain(|id, _| !ids.contains(id)));
+    PIECES.with_borrow_mut(|pieces| pieces.retain(|(id, _, _)| !ids.contains(id)));
 }
 
 /// Forgets every file, piece and count.
@@ -198,10 +240,11 @@ impl Source for BlobSource {
         if output.len() as u64 >= size {
             return read_blob(self.id, offset, output);
         }
+        let head = self.head.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let mut done = 0;
         while done < output.len() {
             let position = offset + done as u64;
-            if let (0, Some(head)) = (position / size, &self.head) {
+            if let (0, Some(head)) = (position / size, &head) {
                 let start = position as usize;
                 let count = (output.len() - done).min(head.len() - start);
                 output[done..done + count].copy_from_slice(&head[start..start + count]);

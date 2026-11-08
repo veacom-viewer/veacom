@@ -16,6 +16,7 @@ pub mod archive_temp;
 #[cfg(target_arch = "wasm32")]
 #[path = "archive_temp_memory.rs"]
 pub mod archive_temp;
+pub mod catalog;
 #[cfg(windows)]
 mod archive_owner_windows;
 pub mod codec_guard;

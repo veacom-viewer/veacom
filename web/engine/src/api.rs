@@ -168,7 +168,16 @@ pub fn reset() {
 /// Imports files, folders or ZIPs by path and adds their series to the catalog; returns `{series, warnings}`.
 #[wasm_bindgen(js_name = importPaths)]
 pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
-    json(session(|session| session.import(&paths))?)
+    let imported = session(|session| session.import(&paths));
+    release_files();
+    json(imported?)
+}
+
+/// After an import, whatever its outcome, and after a removal: the page's files that no series reads from go (a failed
+/// import's, an archive once extracted, a closed series'), and so do the first pieces read ahead for the import.
+fn release_files() {
+    crate::blob::drop_heads();
+    crate::blob::retain(&SESSION.with_borrow(Session::referenced_paths));
 }
 
 /// Every series in the catalog, as `{series, warnings}`.
@@ -181,6 +190,7 @@ pub fn list_series() -> Result<String, JsError> {
 #[wasm_bindgen(js_name = removeSeries)]
 pub fn remove_series(ids: Vec<String>) -> Result<String, JsError> {
     let (removed, remaining) = SESSION.with_borrow_mut(|session| session.remove(&ids));
+    release_files();
     json(serde_json::json!({ "removed": removed, "remaining": remaining }))
 }
 

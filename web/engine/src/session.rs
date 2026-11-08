@@ -4,17 +4,18 @@
 
 use anyhow::{Context, Result};
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashSet, VecDeque},
     io::Read,
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use veacom_core::{
     archive_temp::ArchiveTempDir,
-    coded, decode,
+    catalog, coded, decode,
     export::{self, ExportOptions, ExportResult},
-    import_budget, ingest,
-    model::{Frame, FrameMetadata, ImportResult, PixelBuffer, SourceSeries},
+    ingest,
+    message::Coded,
+    model::{FrameMetadata, ImportResult, PixelBuffer, SourceSeries},
     progress,
     source_file::SourceFile,
     tags, vfs,
@@ -122,7 +123,8 @@ impl Session {
         ImportResult { series: self.sources.values().map(|source| source.info.clone()).collect(), warnings: Default::default() }
     }
 
-    /// Imports files, folders or ZIPs by path and adds their series to the catalog.
+    /// Imports files, folders or ZIPs by path and adds their series to the catalog, within the limits and with the
+    /// patient check the desktop's session applies (`veacom_core::catalog`).
     pub fn import(&mut self, paths: &[String]) -> Result<ImportResult> {
         anyhow::ensure!(paths.len() <= ingest::MAX_FILES, coded!("import.tooManyPaths", "Select at most 50,000 paths per import"));
         anyhow::ensure!(
@@ -132,45 +134,23 @@ impl Session {
         progress::check()?;
         progress::begin("import", 0);
         self.imports += 1;
-        let imported = {
+        let mut imported = {
             let _finish = FinishProgress;
             ingest::import_session(paths, None, self.imports)?
         };
-        let mut imported = imported;
         for incoming in &mut imported.sources {
             self.revisions += 1;
             Arc::make_mut(incoming).info.catalog_revision = self.revisions;
         }
-        let mut costs = BTreeMap::new();
-        for source in &imported.sources {
-            let metadata = import_budget::serialized_size(&source.info)?;
-            let mut counted = std::collections::HashSet::new();
-            let frame_bytes = source.frames.iter().map(|frame| {
-                let file_bytes = if counted.insert(&frame.source.path) { frame.source.retained_bytes() } else { 0 };
-                std::mem::size_of::<Frame>() + frame.sop_uid.len() + file_bytes
-            }).sum::<usize>();
-            let document_bytes = source.documents.iter().map(|file| std::mem::size_of::<Arc<SourceFile>>() + file.retained_bytes()).sum::<usize>();
-            let bytes = metadata
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(frame_bytes))
-                .and_then(|n| n.checked_add(document_bytes))
-                .context("Catalog size overflow")?;
-            costs.insert(source.info.id.clone(), bytes);
-        }
-        let mut frames = self.sources.values().map(|source| source.frames.len()).sum::<usize>();
-        let mut bytes = self.catalog_bytes.values().sum::<usize>();
-        for incoming in &imported.sources {
-            frames = frames.saturating_sub(self.sources.get(&incoming.info.id).map_or(0, |source| source.frames.len())).saturating_add(incoming.frames.len());
-            bytes = bytes.saturating_sub(*self.catalog_bytes.get(&incoming.info.id).unwrap_or(&0)).saturating_add(costs[&incoming.info.id]);
-        }
-        anyhow::ensure!(
-            frames <= 100_000 && bytes <= 512 * 1024 * 1024,
-            coded!("import.catalogFull", "The session catalog reached its resource limit; restart the viewer before importing more studies")
-        );
-        let result = ImportResult {
+        let costs = catalog::costs(&imported.sources)?;
+        let mut result = ImportResult {
             series: imported.sources.iter().map(|source| source.info.clone()).collect(),
             warnings: imported.warnings.into(),
         };
+        if catalog::patient_conflict(&imported.sources, self.sources.values()) {
+            result.warnings.push(catalog::conflict_note());
+        }
+        anyhow::ensure!(catalog::fits(&self.sources, &self.catalog_bytes, &imported.sources, &costs), Coded(catalog::full_note()));
         self.last_import = imported.sources.iter().map(|source| source.info.id.clone()).collect();
         for source in imported.sources {
             self.cache.remove(&source.info.id);
@@ -179,6 +159,18 @@ impl Session {
         }
         self.archives.extend(imported.archives);
         Ok(result)
+    }
+
+    /// Every file the catalog's series read from, their frames' and their documents': the page's files that must stay.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn referenced_paths(&self) -> HashSet<PathBuf> {
+        self.sources
+            .values()
+            .flat_map(|source| {
+                let frames = source.frames.iter().map(|frame| frame.source.path.clone());
+                frames.chain(source.documents.iter().map(|file| file.path.clone()))
+            })
+            .collect()
     }
 
     /// Takes series off the catalog; once it is empty, the extracted archives go too.

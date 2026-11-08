@@ -4,7 +4,7 @@
 // The engine's modules under the names this transport has always used.
 #[allow(unused_imports)]
 use veacom_core::{
-    archive_temp, codec_guard, coded, color, decode, export, gamma_camera, geometry, import_budget, ingest,
+    archive_temp, catalog, codec_guard, coded, color, decode, export, gamma_camera, geometry, import_budget, ingest,
     input_guard, measure, message, modality_lut, model, note, palette, parallel, pictures, progress, random,
     rle_guard, sampling, tags, test_dir, window, confidentiality, media_directory, patient, source_file,
 };
@@ -464,46 +464,25 @@ fn finish_import(core: &App, imported: anyhow::Result<ingest::Imported>) -> ApiR
             Arc::make_mut(incoming).info.catalog_revision = revision;
         }
     }
-    let costs=imported.sources.iter().map(|source| {
-        let metadata=import_budget::serialized_size(&source.info)?;
-        let mut counted = HashSet::new();
-        let frame_bytes = source.frames.iter().map(|frame| {
-            let file_bytes = if counted.insert(&frame.source.path) { frame.source.retained_bytes() } else { 0 };
-            size_of::<model::Frame>() + frame.sop_uid.len() + file_bytes
-        }).sum::<usize>();
-        let document_bytes = source.documents.iter().map(|f| size_of::<Arc<source_file::SourceFile>>() + f.retained_bytes()).sum::<usize>();
-        let bytes=metadata.checked_mul(2).and_then(|n| n.checked_add(frame_bytes)).and_then(|n| n.checked_add(document_bytes)).ok_or_else(||anyhow::anyhow!("Catalog size overflow"))?;
-        Ok((source.info.id.clone(),bytes))
-    }).collect::<anyhow::Result<BTreeMap<_,_>>>()?;
+    // The catalog's limits and the patient check, as the browser's session applies them (veacom_core::catalog).
+    let costs = catalog::costs(&imported.sources)?;
     let mut result = ImportResult {
         series: imported.sources.iter().map(|s| s.info.clone()).collect(),
         warnings: imported.warnings.into(),
     };
     {
         let mut sources = core.sources.write().unwrap();
-        let incoming_studies: HashSet<_> = imported.sources.iter().map(|s| s.info.study_uid.as_str()).collect();
-        let mut patients = BTreeMap::new();
-        let conflict = imported.sources.iter().chain(sources.values()).any(|s| {
-            incoming_studies.contains(s.info.study_uid.as_str()) && patients.insert(&s.info.study_uid, &s.info.patient_key)
-                .is_some_and(|previous| previous != &s.info.patient_key)
-        });
-        if conflict {
-            result.warnings.push(note!("import.patientConflict", "This study UID has conflicting patient identities. Their images have been kept in separate series."));
+        if catalog::patient_conflict(&imported.sources, sources.values()) {
+            result.warnings.push(catalog::conflict_note());
         }
-        let mut catalog=core.catalog_bytes.lock().unwrap();
-        let mut frames=sources.values().map(|s|s.frames.len() + s.documents.len()).sum::<usize>();
-        let mut bytes=catalog.values().sum::<usize>();
-        for incoming in &imported.sources {
-            frames=frames.saturating_sub(sources.get(&incoming.info.id).map_or(0,|s|s.frames.len() + s.documents.len())).saturating_add(incoming.frames.len() + incoming.documents.len());
-            bytes=bytes.saturating_sub(*catalog.get(&incoming.info.id).unwrap_or(&0)).saturating_add(costs[&incoming.info.id]);
-        }
-        if frames>100_000 || bytes>512*1024*1024 {
-            return Err(ApiError(422,note!("import.catalogFull", "The session catalog reached its resource limit; restart the viewer before importing more studies")));
+        let mut catalog_bytes = core.catalog_bytes.lock().unwrap();
+        if !catalog::fits(&sources, &catalog_bytes, &imported.sources, &costs) {
+            return Err(ApiError(422, catalog::full_note()));
         }
         let mut cache = core.cache.lock().unwrap();
         for s in imported.sources {
             cache.remove(&s.info.id);
-            catalog.insert(s.info.id.clone(),costs[&s.info.id]);
+            catalog_bytes.insert(s.info.id.clone(), costs[&s.info.id]);
             sources.insert(s.info.id.clone(), s);
         }
     }
@@ -1365,6 +1344,24 @@ mod protocol_tests {
         }
         samples.sort();
         assert_eq!(samples, [11,22,33]);
+    }
+
+    #[test]
+    fn a_later_import_of_the_same_study_for_another_patient_warns_too() {
+        use dicom_core::{Tag, VR};
+        let _turn = job_tests_progress();
+        let temp = crate::test_dir::tempdir().unwrap();
+        let mut engine = Engine::start();
+        for (value, name, conflict) in [(11, "SYNTHETIC^A", false), (22, "SYNTHETIC^B", true)] {
+            let path = super::job_tests::slice(temp.path(), &format!("slice{value}.dcm"), value);
+            let mut obj = dicom_object::open_file(&path).unwrap();
+            obj.put_str(Tag(0x0010, 0x0010), VR::PN, name);
+            obj.write_to_file(&path).unwrap();
+            let (status, result) = engine.json(json!({"op":"import", "body":{"paths":[path]}}));
+            assert_eq!(status, 200, "{result}");
+            let warned = result["warningNotes"].as_array().is_some_and(|notes| notes.iter().any(|n| n["code"] == "import.patientConflict"));
+            assert_eq!(warned, conflict, "{name}: {result}");
+        }
     }
 
     #[test]
