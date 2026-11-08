@@ -15,7 +15,7 @@
     "build": "pnpm run setup:runtime && pnpm run build:core && pnpm run build:web",
     "start": "node scripts/setup-runtime.cjs && electron .",
     "test": "node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec \"tests/**/*.test.ts\"",
-    "test:coverage": "node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-include=\"electron/**\" --test-coverage-include-all --test-coverage-lines=75 --test-coverage-branches=76 --test-coverage-functions=71 \"tests/**/*.test.ts\"",
+    "test:coverage": "node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-include=\"electron/**\" --test-coverage-include-all --test-coverage-lines=77 --test-coverage-branches=78 --test-coverage-functions=73 \"tests/**/*.test.ts\"",
     "test:core": "cargo test --locked --manifest-path native/Cargo.toml",
     "package": "pnpm run build && pnpm --dir packaging install --frozen-lockfile && node packaging/node_modules/electron-builder/cli.js --dir",
     "setup:runtime": "node scripts/setup-runtime.cjs"
