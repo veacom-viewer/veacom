@@ -2,10 +2,10 @@
 // panes it makes, how they link and the notice it shows. src/arrangements/index.ts matches and applies them.
 import type { Arrangement } from './index';
 
-/** The standard PET/CT screen, applied when a PET/CT opens: CT · PET (inverted grey, SUV 0–5) · fused · MIP, linked by
- * the crosshair. */
+/** The standard PET/CT screen, opened from the fusion button's menu: CT · PET (inverted grey, SUV 0–5) · fused · MIP,
+ * linked by the crosshair. */
 export const PET_CT: Arrangement = {
-  id: 'pet-ct', when: 'open', name: 'arrangement.petCt',
+  id: 'pet-ct', when: 'screen', name: 'arrangement.petCt',
   roles: {
     pet: { modality: 'PT', prefer: ['corrected', 'slices'] },
     ct: { modality: 'CT', of: 'pet', frame: 'same', prefer: ['corrected', 'sameGrid', 'overlap', 'slices'] },
@@ -21,13 +21,13 @@ export const PET_CT: Arrangement = {
   notice: { key: 'arrangement.petCt.notice' },
 };
 
-/** A PET study opened with an earlier PET of the same patient loaded: this study's PET and the prior's side by side,
+/** A PET study with an earlier PET of the same patient loaded: this study's PET and the prior's side by side,
  * each with its MIP below, as PET is read (inverted grey, SUV 0–10). Response is read on one fixed scale (EANM 2025,
  * section 14), so the four panes keep one SUV window: windowing one windows all. The two studies lie in their own
  * frames of reference, so the reader brings both to one level and links them by hand (the link button's anchors); each
- * study's own panes follow its crosshair. Listed before the PET/CT screen, which a study without a prior opens as. */
+ * study's own panes follow its crosshair. Listed before the PET/CT screen, which a study without a prior gets. */
 export const PET_FOLLOW_UP: Arrangement = {
-  id: 'pet-follow-up', when: 'open', name: 'arrangement.petFollowUp',
+  id: 'pet-follow-up', when: 'screen', name: 'arrangement.petFollowUp',
   roles: {
     pet: { modality: 'PT', prefer: ['corrected', 'slices'] },
     prior: { modality: 'PT', of: 'pet', study: 'prior', prefer: ['corrected', 'slices'] },
@@ -44,10 +44,10 @@ export const PET_FOLLOW_UP: Arrangement = {
   notice: { key: 'arrangement.petFollowUp.notice' },
 };
 
-/** A bone scan's whole body, applied when one opens: the anterior and posterior views side by side, inverted grey, one
- * scale for both, each paging on its own. */
+/** A bone scan's whole body: the anterior and posterior views side by side, inverted grey, one scale for both, each
+ * paging on its own. */
 export const WHOLE_BODY: Arrangement = {
-  id: 'whole-body', when: 'open', name: 'arrangement.wholeBody',
+  id: 'whole-body', when: 'screen', name: 'arrangement.wholeBody',
   roles: { body: { modality: 'NM', imageType: 'WHOLE BODY', views: ['ANT', 'POST'] } },
   grid: [1, 2],
   panes: [
@@ -58,11 +58,11 @@ export const WHOLE_BODY: Arrangement = {
   notice: { key: 'arrangement.wholeBody.notice' },
 };
 
-/** The SPECT/CT screen, applied when a reconstructed SPECT opens with the CT acquired with it: CT · SPECT (inverted grey)
- * · fused · MIP, linked by the crosshair. A SPECT has no SUV here, so every pane keeps its own window. Of a gated SPECT's
+/** The SPECT/CT screen, for a reconstructed SPECT with the CT acquired with it: CT · SPECT (inverted grey) · fused · MIP,
+ * linked by the crosshair. A SPECT has no SUV here, so every pane keeps its own window. Of a gated SPECT's
  * reconstructions it takes the summed one, which holds all the counts, and a gate only when there is no other. */
 export const SPECT_CT: Arrangement = {
-  id: 'spect-ct', when: 'open', name: 'arrangement.spectCt',
+  id: 'spect-ct', when: 'screen', name: 'arrangement.spectCt',
   roles: {
     spect: { modality: 'NM', volume: true, prefer: ['ungated', 'corrected', 'slices'] },
     ct: { modality: 'CT', of: 'spect', frame: 'same', prefer: ['corrected', 'sameGrid', 'overlap', 'slices'] },
@@ -118,6 +118,6 @@ export const FUSION: Arrangement = {
   panes: [{ role: 'ct', show: 'fused', over: 'overlay' }],
 };
 
-/** Tried in this order; the first whose roles are all found applies. A bone scan holding both a whole body and a
- * SPECT/CT opens on the whole body, as it is read first. */
+/** Tried in this order; the first whose roles are all found applies. The nuclear medicine screen of a bone scan holding
+ * both a whole body and a SPECT/CT is the whole body, as it is read first. */
 export const BUILTIN_ARRANGEMENTS: readonly Arrangement[] = [PET_FOLLOW_UP, PET_CT, WHOLE_BODY, SPECT_CT, DWI_ADC, ADC_DWI, SIDE_BY_SIDE, FUSION];

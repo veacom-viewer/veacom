@@ -1,7 +1,8 @@
 // Desktop check of gamma camera (NM) studies on the synthetic studies of tools/fixtures/make-nm-study.mjs: a SPECT/CT
-// opens as CT · SPECT · fused · MIP with no click, its SPECT reconstructed from the NM detector geometry and fused on its
-// own scale, never in SUV; a click on the MIP sends the linked panes to the vertebral lesion; a whole-body scan opens
-// with its anterior and posterior views side by side, each frame named by its view and detector, one scale for both,
+// opens in one pane as any study does; the nuclear medicine screen in the fusion button's menu lays it out as
+// CT · SPECT · fused · MIP, its SPECT reconstructed from the NM detector geometry and fused on its own scale, never in
+// SUV; a click on the MIP sends the linked panes to the vertebral lesion; the screen of a whole-body scan shows
+// its anterior and posterior views side by side, each frame named by its view and detector, one scale for both,
 // each paging on its own; Undo puts the linking back; the projections name their detectors. A gated SPECT in the
 // SPECT/CT study opens as one placed volume per gate, in gate order, each named by its gate and the time it counted; the
 // SPECT/CT screen keeps the summed SPECT; a gate follows the CT's height, shows its MIP and fuses over the CT; the export
@@ -49,13 +50,25 @@ async function main() {
     const notice = () => page.locator('.pane-toast').allTextContents();
     const named = (s, pattern) => s.series.find(item => pattern.test(item.description));
     const location = async index => Number((await cells.nth(index).locator('[data-testid="image-overlay"] .slice-detail').textContent()).match(/Loc: (-?[\d.]+)/)?.[1]);
+    // The nuclear medicine screen of the active pane's study, asked for in the menu beside the fusion button.
+    const openScreen = async () => {
+      await page.getByTestId('tool-fusion-menu').click();
+      await page.locator('[data-action="nm-screen"]').click();
+      await page.locator('[data-action="arrangement-undo"]').waitFor();
+      await settled();
+    };
     await settled();
 
-    // The SPECT/CT: arranged with no click, the reconstructed SPECT (not its projections) fused over the CT.
+    // The SPECT/CT opens in one pane; its screen, asked for, has the reconstructed SPECT (not its projections) fused
+    // over the CT.
     let s = await state();
     const ct = named(s, /· CT$/), spect = named(s, /· SPECT Bq\/ml$/), projections = named(s, /· projections$/);
     assert(ct && spect && projections, 'The SPECT/CT study has its CT, SPECT and projections.');
     assert.deepEqual(spect.dimensions, [64, 64, 48]);
+    assert.deepEqual(s.layout, [1, 1], 'A SPECT/CT opens as any other study.');
+    assert.deepEqual(await notice(), []);
+    await openScreen();
+    s = await state();
     assert.deepEqual(s.layout, [2, 2]);
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, spect.id, ct.id, spect.id]);
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, null, 'mip']);
@@ -74,10 +87,10 @@ async function main() {
     assert.equal((await page.getByTestId('fusion-strip').locator('.strip-label').textContent()).trim(), 'Fusion');
     assert.match(await page.getByTestId('fusion-strip').textContent(), /Scale max/);
     assert.doesNotMatch(await page.getByTestId('fusion-strip').textContent(), /SUV|Scanner look/);
-    const actions = (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action');
-    assert.deepEqual(actions, [], 'Arranging a study records no action.');
+    const actions = (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action').map(event => event.attributes?.['veacom.action']);
+    assert.deepEqual(actions.slice(-2), ['tool-fusion-menu', 'nm-screen']);
     await shot('1-spect-ct');
-    check('A SPECT/CT opens as CT · SPECT · fused · MIP, its SPECT reconstructed and fused on its own scale, never in SUV', { panes: s.panes.length });
+    check('The SPECT/CT screen: CT · SPECT · fused · MIP, its SPECT reconstructed and fused on its own scale, never in SUV', { panes: s.panes.length });
 
     // A click on the vertebral lesion in the MIP (x = 0, z = -130 mm): the axial panes go to it, the MIP keeps its turn.
     const box = await cells.nth(3).locator('canvas[data-renderer]').boundingBox();
@@ -91,10 +104,14 @@ async function main() {
     await shot('2-mip-click');
     check('A click on the SPECT MIP sends the linked panes to the hottest voxel there', { location: await location(1) });
 
-    // The whole body: its two views side by side, named in the corner, inverted grey, not linked.
+    // The whole body opens in the active pane; its screen shows the two views side by side, named in the corner,
+    // inverted grey, not linked.
     await privileged.importPaths(desktop, page, [wholeBody]);
-    await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '1x2', undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => /whole body$/.test(window.__VEACOM_TEST__.state().series.find(item => item.id === document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.seriesId)?.description ?? ''), undefined, { timeout: 120_000 });
     await settled();
+    assert.equal((await state()).layout.join('x'), '2x2', 'Opening the whole body leaves the screen as it is.');
+    await openScreen();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '1x2', undefined, { timeout: 120_000 });
     s = await state();
     const body = named(s, /whole body$/);
     assert.deepEqual(s.panes.map(pane => [pane.seriesId, pane.slice, pane.inverted]), [[body.id, 0, true], [body.id, 1, true]]);
@@ -105,15 +122,14 @@ async function main() {
     assert.match(await overlay(0), /1 \/ 2/);
     assert.doesNotMatch(await overlay(0), /Axial|Coronal|Sagittal/, 'A planar view lies in no plane of the patient.');
     await shot('3-whole-body');
-    check('A whole body opens with ANT and POST side by side, each frame named by its view and detector');
+    check('The whole-body screen shows ANT and POST side by side, each frame named by its view and detector');
 
     // Undo: the screen from before, with the linking it had.
     await page.locator('[data-action="arrangement-undo"]').click();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().linked === true && window.__VEACOM_TEST__.state().layout.join('x') === '2x2', undefined, { timeout: 30_000 });
     check('Undo puts back the screen and the linking the whole body turned off');
-    await privileged.importPaths(desktop, page, [wholeBody]);
+    await openScreen();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '1x2', undefined, { timeout: 120_000 });
-    await settled();
 
     // One scale for both views, and each pane pages on its own.
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ windowCenter: 400, windowWidth: 800 }));
@@ -160,8 +176,9 @@ async function main() {
 
     // On the SPECT/CT screen again: gate 5 in the SPECT pane follows the CT's height; gate 1 in the MIP pane is a MIP.
     await privileged.importPaths(desktop, page, [spectCt]);
-    await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '2x2', undefined, { timeout: 120_000 });
     await settled();
+    await openScreen();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '2x2', undefined, { timeout: 120_000 });
     s = await state();
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, spect.id, ct.id, spect.id], 'The SPECT/CT screen keeps the summed SPECT.');
     const [gateOne, , , , fifth] = gates;

@@ -12,9 +12,11 @@ export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from 
 /** The gamma camera views a pane can open on (CID 26, as NM readers abbreviate them). */
 export const VIEWS = ['ANT', 'POST', 'RAO', 'LAO', 'RPO', 'LPO', 'R LAT', 'L LAT'] as const;
 
-/** When an arrangement is tried: a study opens, one series is picked into a pane, several are picked together, or the
- * fusion button is pressed. */
-export type Trigger = 'open' | 'pick' | 'pick-several' | 'fuse';
+/** When an arrangement is tried: a study opens, the reader asks for a screen (the nuclear medicine screen in the fusion
+ * button's menu), one series is picked into a pane, several are picked together, or the fusion button is pressed. */
+export type Trigger = 'open' | 'screen' | 'pick' | 'pick-several' | 'fuse';
+/** The arrangements a reader can keep: a whole screen, laid out when a study opens or when asked for. */
+const keepable = (arrangement: Arrangement) => arrangement.when === 'open' || arrangement.when === 'screen';
 /** What a pane shows of its series: the series itself, the series with another one fused over it, or a whole-volume MIP. */
 export type PaneShow = 'plain' | 'fused' | 'mip';
 export type Palette = NonNullable<ViewState['palette']>;
@@ -155,8 +157,9 @@ export function paneView(series: Series, spec: PaneSpec, base: ViewState): ViewS
 /** The role a fused pane's overlay comes from, in a plan. */
 export const overlayRole = (plan: Plan) => plan.panes.find(pane => pane.spec.show === 'fused')?.spec.over ?? null;
 
-// A reader's kept arrangements: per built-in `open` arrangement, the panes as they rearranged them, or `off` when they
-// kept the screen VEAcom shows without it.
+// A reader's kept arrangements: per built-in screen, the panes as they rearranged them, or, for one laid out when a
+// study opens, `off` when they kept the screen VEAcom shows without it. A screen opened on request is never `off`: the
+// reader who does not want it does not ask for it.
 export const KEPT_STORAGE = 'veacom:arrangements:v1';
 export type KeptVariant = { grid: [number, number]; panes: PaneSpec[] } | { off: true };
 export type Kept = Record<string, KeptVariant>;
@@ -198,10 +201,10 @@ export function readKept(raw: string | null, builtins: readonly Arrangement[] = 
   if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
   const kept: Kept = {};
   for (const [id, value] of Object.entries(stored as Record<string, unknown>)) {
-    const builtin = builtins.find(item => item.id === id && item.when === 'open');
+    const builtin = builtins.find(item => item.id === id && keepable(item));
     if (!builtin || !value || typeof value !== 'object') continue;
     const variant = value as Record<string, unknown>;
-    if (variant.off === true) { kept[id] = { off: true }; continue; }
+    if (variant.off === true) { if (builtin.when === 'open') kept[id] = { off: true }; continue; }
     const grid = variant.grid;
     if (!Array.isArray(grid) || grid.length !== 2 || !grid.every(n => Number.isInteger(n) && n >= 1 && n <= 5)) continue;
     if (!Array.isArray(variant.panes) || !variant.panes.length || variant.panes.length > grid[0] * grid[1]) continue;
@@ -215,7 +218,7 @@ export function readKept(raw: string | null, builtins: readonly Arrangement[] = 
 export function withKept(kept: Kept, builtins: readonly Arrangement[] = BUILTIN_ARRANGEMENTS): Arrangement[] {
   return builtins.flatMap(arrangement => {
     const variant = kept[arrangement.id];
-    if (!variant || arrangement.when !== 'open') return [arrangement];
+    if (!variant || !keepable(arrangement)) return [arrangement];
     if ('off' in variant) return [];
     return [{ ...arrangement, grid: variant.grid, panes: variant.panes, kept: true }];
   });

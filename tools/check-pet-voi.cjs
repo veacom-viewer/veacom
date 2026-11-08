@@ -6,7 +6,7 @@
 // - the same sphere drawn on the fused CT also gives the PET's values;
 // - at 41% of its SUVmax the lesion gives MTV and TLG, drawn as the voxels it counts, and the lesion table lists it;
 // - in a new session on the same computer, the study's references and lesion table come back;
-// - opened after its prior, the study lays out as the PET follow-up screen; linked by hand, the two page together, and
+// - opened after its prior, the study's nuclear medicine screen is the PET follow-up; linked by hand, the two page together, and
 //   the lesion table gives each value's change against the prior's lesion selected by the reader, live and as kept;
 // - the prior was scanned 72 min after its injection, 12 min more than this study, on another scanner with another
 //   reconstruction (EANM 2025, Supplemental File 3): every change is marked, and the table and the acquisition panel
@@ -72,6 +72,13 @@ async function main() {
   const cells = () => page.locator('[data-testid="viewport-cell"]');
   const canvas = index => cells().nth(index).locator('canvas[data-renderer]');
   const location = async index => Number((await cells().nth(index).locator('[data-testid="image-overlay"] .slice-detail').textContent()).match(/Loc: (-?[\d.]+)/)?.[1]);
+  /** The nuclear medicine screen of the active pane's study, asked for in the menu beside the fusion button. */
+  const openScreen = async () => {
+    await page.getByTestId('tool-fusion-menu').click();
+    await page.locator('[data-action="nm-screen"]').click();
+    await page.locator('[data-action="arrangement-undo"]').waitFor();
+    await settled();
+  };
   /** Makes pane `index` the active one with a click in its top left corner, where no tool does anything. */
   const activate = async index => {
     if (await cells().nth(index).evaluate(cell => cell.classList.contains('is-active'))) return;
@@ -148,9 +155,10 @@ async function main() {
       .some(study => Object.values(study.series).some(series => series.acquisition && !series.lesions)));
     await desktop.close();
     await launch();
+    await openScreen();
     let s = await state();
     const ct = s.series.find(item => item.modality === 'CT'), pet = s.series.find(item => item.modality === 'PT');
-    assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id], 'The follow-up opens as the PET/CT screen.');
+    assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id], 'Without its prior loaded, the study\'s screen is the PET/CT screen.');
 
     // The lung lesion: a sphere dragged 20 mm out from its centre on the PET.
     await activate(1);
@@ -287,6 +295,7 @@ async function main() {
     // A new session on this computer: the references and the lesion table are back, the lesion with its name, threshold
     // and confirmed score.
     await launch();
+    await openScreen();
     await openFindings();
     await activate(1);
     const recover = page.locator('[data-action="sphere-restore-references"]');
@@ -306,10 +315,11 @@ async function main() {
     check('In a new session the study\'s references and lesion table come back');
     await desktop.close();
 
-    // Opened after its prior: the PET follow-up screen, this study's PET and the prior's, each over its MIP.
+    // Opened after its prior, its screen is the PET follow-up: this study's PET and the prior's, each over its MIP.
     await launch(priorStudy);
     await privileged.importPaths(desktop, page, [study]);
     await settled();
+    await openScreen();
     s = await state();
     const now = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === petGrid.dimensions[2]);
     const before = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === priorGrid.dimensions[2]);
@@ -330,7 +340,7 @@ async function main() {
     assert.equal(await location(1) - fromPrior, await location(0) - from, 'Linked by hand, the prior follows slice for slice from where it was.');
     await goTo(0, lesion.center[2]);
     assert.equal(await location(1), priorLesion.center[2]);
-    check('Opened after its prior, the study lays out as the PET follow-up; linked by hand, the two page together');
+    check('Opened after its prior, the study\'s screen is the PET follow-up; linked by hand, the two page together');
 
     // The lesion on the prior, named L1 as it lands, at the same threshold: the table gives each change against it.
     await activate(1);
@@ -495,6 +505,7 @@ async function main() {
 
     // The current study alone, in a new session: the change comes from what was kept for the prior.
     await launch();
+    await openScreen();
     await openFindings();
     await activate(1);
     await page.waitForFunction(() => document.querySelector('[data-lesion-table] [data-lesion-prior]')?.textContent?.includes('kept'));

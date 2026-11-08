@@ -133,7 +133,7 @@ async function main() {
       assert(pet.suvFactor > 0);
       await selected(pet.id, pet.dimensions[2]);
       await selected(ct.id, ct.dimensions[2]);
-      // A PET/CT opens arranged, its fusion already on (docs/arrangements.md): the button would turn it off.
+      // A PET/CT opens as any study does, without fusion (docs/arrangements.md); the button turns it on, unless it is on.
       if (!await page.getByTestId('fusion-series').isVisible()) await page.getByTestId('tool-fusion').click();
       await page.getByTestId('fusion-series').selectOption(pet.id);
       await page.waitForFunction(() => window.__VEACOM_TEST__.state().pendingLoads === 0);

@@ -10,8 +10,8 @@ The image is the work. The chrome around it is dark, quiet and flat, and nothing
 
 ## Principles
 
-1. **The study arranges itself, the reader corrects it, VEAcom remembers.** Layouts come from [arrangements](arrangements.md), not from new buttons or settings screens.
-2. **A specialty is data, not chrome.** A new specialty adds an arrangement, or a better default for a kind of pane. It does not add a toolbar button, a menu, a mode or a module. If it seems to need one, ask the owner first.
+1. **A study opens plainly; its specialty screen is one click away, and VEAcom remembers it.** Layouts come from [arrangements](arrangements.md), not from new buttons or settings screens. A whole screen is laid out only when the reader asks for it; smaller helps, such as a DWI's ADC beside it, follow what the reader picked.
+2. **A specialty is data, not chrome.** A new specialty adds an arrangement, or a better default for a kind of pane. Its screen goes in the menu of the control it belongs to, as the nuclear medicine screen sits beside the fusion button. It does not add a toolbar button, a mode or a module. If it seems to need one, ask the owner first.
 3. **Every automatic action says what it did and can be undone.** Use a notice in the pane with Undo, as arrangements and the DWI/ADC pairing do.
 4. **Every number says what it is.** It carries its unit and says when it is approximate. Never call a value SUV unless it is one, and write "sample max" for an interpolated maximum.
 5. **Fewer controls.** Before adding a control, show that it cannot be a better default, part of an arrangement, or part of an existing control.

@@ -143,10 +143,12 @@ scanning is off on them, and their disks are fast: what a hospital PC feels need
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens as CT · PET · fused · MIP with no click. A note names the screen, and no action is recorded.
+- The study opens in one pane, as any study does, with nothing arranged.
+- The nuclear medicine screen, in the menu beside the fusion button, lays it out as CT · PET · fused · MIP. A note
+  names the screen.
 - A click on the MIP sends the linked panes to a lesion.
-- A pane moved and kept changes how the next PET/CT opens.
-- Undo restores the screen from before, and can be kept too.
+- A pane moved and kept changes how the screen opens next time.
+- Undo restores the screen from before, with what it showed.
 - Forget brings back VEAcom's own screen.
 - A PET opened by hand is inverted grey, with its window in SUV.
 
@@ -174,7 +176,7 @@ The check covers [PET quantification](../docs/pet-quantification.md):
 - At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
 - The references are kept by digest, with no UID, and the actions are recorded by id.
 - In a new session on the same computer the references and the lesion table come back.
-- Opened after its prior, the study lays out as the PET follow-up screen. Linked by hand with the link button, the two
+- Opened after its prior, the study's nuclear medicine screen is the PET follow-up. Linked by hand with the link button, the two
   studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
 - With the current study alone, that change comes from what was kept for the prior.
 
@@ -195,11 +197,11 @@ gated SPECT is numbered before the summed one. The second is a whole-body scan: 
 anterior and posterior views, named by their detectors' View Code Sequence.
 `check-gamma-camera.cjs` covers them:
 
-- The SPECT/CT opens as CT · SPECT · fused · MIP with no click. The SPECT is placed from its detector geometry, fused on
-  its own scale, and nothing on it is called SUV.
+- The SPECT/CT opens in one pane; its nuclear medicine screen is CT · SPECT · fused · MIP. The SPECT is placed from its
+  detector geometry, fused on its own scale, and nothing on it is called SUV.
 - A click on the SPECT MIP sends the linked panes to the vertebral lesion.
-- The whole body opens with ANT and POST side by side. Each pane names its frame's view and detector, both share one
-  window, and each pages on its own. Undo puts the linking back.
+- The whole body's screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share
+  one window, and each pages on its own. Undo puts the linking back.
 - The projections name their detector.
 - The gated SPECT opens as 8 placed series in gate order, each named "Gate n/8 · … s acquired" with its own Time Slot
   Time, placed from the detector geometry and sharing one window. The SPECT/CT screen still takes the summed SPECT. A

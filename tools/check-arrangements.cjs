@@ -1,7 +1,8 @@
 // Desktop check of arrangements (docs/arrangements.md) on the synthetic PET/CT of tools/fixtures/make-petct-study.mjs:
-// the study opens as CT · PET · fused · MIP with no click and a note naming it; a click on the MIP sends the linked panes
-// to the lesion; a pane moved and kept opens the next study so; Undo gives the study's first image and can be kept too;
-// Forget brings VEAcom's own screen back; a PET opened by hand is inverted grey with its window in SUV.
+// the study opens as any other, in one pane; the nuclear medicine screen in the fusion button's menu lays it out as
+// CT · PET · fused · MIP with a note naming it; a click on the MIP sends the linked panes to the lesion; a pane moved
+// and kept makes the next screen open so; Undo puts back the screen from before; Forget brings VEAcom's own screen
+// back; a PET opened by hand is inverted grey with its window in SUV.
 // usage: node tools/check-arrangements.cjs PETCT_STUDY [OUTPUT_DIR]
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
@@ -42,11 +43,33 @@ async function main() {
     const reopen = async () => { await privileged.importPaths(desktop, page, [study]); await settled(); };
     const named = (s, pattern) => s.series.find(item => pattern.test(item.description));
     const location = async index => Number((await cells.nth(index).locator('[data-testid="image-overlay"] .slice-detail').textContent()).match(/Loc: (-?[\d.]+)/)?.[1]);
+    const actionIds = async () => (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action').map(event => event.attributes?.['veacom.action']);
+    // The nuclear medicine screen, asked for in the menu beside the fusion button.
+    const openScreen = async () => {
+      await page.getByTestId('tool-fusion-menu').click();
+      await page.locator('[data-action="nm-screen"]').click();
+      await page.locator('[data-action="arrangement-undo"]').waitFor();
+      await settled();
+    };
     await settled();
 
-    // Opening: the PET/CT screen with no click, the attenuation-corrected PET, and nothing reported as pressed.
+    // Opening: one pane, as any study opens, with nothing arranged and no note.
     let s = await state();
     const ct = named(s, /· CT$/), pet = named(s, /PET AC$/);
+    assert.deepEqual(s.layout, [1, 1], 'A PET/CT opens as any other study.');
+    assert.equal(s.fusionId, null);
+    assert.deepEqual(await notice(), []);
+    await shot('0-opened-plain');
+    check('A PET/CT opens in one pane, as any other study does');
+
+    // The nuclear medicine screen from the fusion button's menu: CT · PET · fused · MIP, with the attenuation-corrected PET.
+    await page.getByTestId('tool-fusion-menu').click();
+    assert.match(await page.locator('[data-action="nm-screen"]').textContent(), /Nuclear medicine screen\s*PET\/CT/);
+    await shot('1-fusion-menu');
+    await page.locator('[data-action="nm-screen"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 4);
+    await settled();
+    s = await state();
     assert.deepEqual(s.layout, [2, 2]);
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id]);
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, null, 'mip']);
@@ -58,10 +81,9 @@ async function main() {
     assert.deepEqual(await notice(), ['PET/CT: CT · PET · fusion · MIPUndo']);
     assert.match(await cells.nth(1).locator('[data-testid="image-overlay"]').textContent(), /SUV 0–5/);
     assert.match(await cells.nth(3).locator('[data-testid="image-overlay"]').textContent(), /MIP · 0°/);
-    const actions = (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action');
-    assert.deepEqual(actions, [], 'Arranging a study records no action.');
-    await shot('1-opened');
-    check('PET/CT opens as CT · PET · fused · MIP, linked, with a note naming it', { panes: s.panes.length });
+    assert.deepEqual((await actionIds()).slice(-2), ['tool-fusion-menu', 'nm-screen']);
+    await shot('2-screen');
+    check('The nuclear medicine screen lays a PET/CT out as CT · PET · fused · MIP, linked, with a note naming it', { panes: s.panes.length });
 
     // A click on the lung nodule in the MIP: the axial panes go to it (-96 mm), the MIP keeps its turn.
     const box = await cells.nth(3).locator('canvas[data-renderer]').boundingBox();
@@ -75,39 +97,38 @@ async function main() {
     await shot('2-mip-click');
     check('A click on the MIP sends the linked panes to the hottest voxel there', { location: await location(0) });
 
-    // The PET pane moved onto the CT pane by its grip: Keep this keeps the order for the next PET/CT.
+    // The PET pane moved onto the CT pane by its grip: Keep this keeps the order for the next PET/CT screen.
     await cells.nth(1).getByTestId('viewport-move').dragTo(cells.nth(0).locator('canvas[data-renderer]'));
     await page.locator('[data-action="arrangement-keep"]').waitFor();
+    assert.match((await notice()).join(' '), /Always open the PET\/CT screen like this\?/);
     await shot('3-keep-offer');
     await page.locator('[data-action="arrangement-keep"]').click();
     const stored = JSON.parse(await page.evaluate(() => localStorage.getItem('veacom:arrangements:v1')));
     assert.deepEqual(stored['pet-ct'].panes.map(pane => [pane.role, pane.show]), [['pet', 'plain'], ['ct', 'plain'], ['ct', 'fused'], ['pet', 'mip']]);
     assert.deepEqual(stored['pet-ct'].panes[0].display.window, { unit: 'SUV', from: 0, to: 5 });
-    await reopen();
-    s = await state();
-    assert.deepEqual(s.panes.map(pane => pane.seriesId), [pet.id, ct.id, ct.id, pet.id]);
-    assert.deepEqual(await notice(), ['Your PET/CT layoutUndo']);
-    await shot('4-kept-reopened');
-    check('A pane moved and kept: the next PET/CT opens so', { stored: stored['pet-ct'].panes.length });
 
-    // Undo puts back the screen from before (one pane here) with the study's first image in it, as without
-    // arrangements; kept, the next PET/CT opens unarranged.
+    // Undo puts back the screen from before: one pane here, with what it showed. Nothing is offered to keep, since the
+    // screen opens only when asked for.
     await page.getByTestId('tool-layout').click();
     await page.locator('[data-action="layout-1x1"]').click();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 1);
     await reopen();
-    assert.equal((await state()).panes.length, 4);
-    await page.locator('[data-action="arrangement-undo"]').click();
-    await page.waitForFunction(id => { const s = window.__VEACOM_TEST__.state(); return s.panes.length === 1 && s.panes[0].seriesId === id; }, ct.id);
-    assert.deepEqual(await notice(), ['PET/CT layout undoneKeep this']);
-    await shot('5-undone');
-    await page.locator('[data-action="arrangement-keep-plain"]').click();
-    assert.deepEqual(JSON.parse(await page.evaluate(() => localStorage.getItem('veacom:arrangements:v1')))['pet-ct'], { off: true });
-    await reopen();
     s = await state();
-    assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id], 'Kept without the arrangement, the study opens unarranged.');
-    assert.equal(await page.locator('[data-action="arrangement-undo"]').count(), 0);
-    check('Undo gives the screen from before with the study\'s first image, and keeping that opens PET/CT studies unarranged');
+    assert.equal(s.panes.length, 1, 'Opened again, the study stays in one pane.');
+    const shownBefore = s.panes[0].seriesId;
+    await openScreen();
+    s = await state();
+    assert.deepEqual(s.panes.map(pane => pane.seriesId), [pet.id, ct.id, ct.id, pet.id], 'The kept screen opens as kept.');
+    assert.deepEqual(await notice(), ['Your PET/CT layoutUndo']);
+    await shot('4-kept-screen');
+    check('A pane moved and kept: the next nuclear medicine screen opens so', { stored: stored['pet-ct'].panes.length });
+    await page.locator('[data-action="arrangement-undo"]').click();
+    await page.waitForFunction(id => { const s = window.__VEACOM_TEST__.state(); return s.panes.length === 1 && s.panes[0].seriesId === id; }, shownBefore);
+    assert.deepEqual(await notice(), ['PET/CT layout undone']);
+    assert.equal(await page.locator('[data-action="arrangement-keep-plain"]').count(), 0);
+    assert.equal(JSON.parse(await page.evaluate(() => localStorage.getItem('veacom:arrangements:v1')))['pet-ct'].panes.length, 4, 'Undo keeps the kept screen.');
+    await shot('5-undone');
+    check('Undo puts back the screen from before, with what it showed');
 
     // A PET opened by hand: inverted grey, its window in SUV.
     await page.locator(`[data-testid="series-${pet.id}"]`).click();
@@ -126,7 +147,7 @@ async function main() {
     await shot('7-workspace-kept');
     await page.locator('[data-action="arrangement-forget"]').click();
     assert.equal(await page.evaluate(() => localStorage.getItem('veacom:arrangements:v1')), '{}');
-    await reopen();
+    await openScreen();
     s = await state();
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id]);
     check('Forget brings VEAcom\'s own PET/CT screen back');

@@ -86,7 +86,7 @@ type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showRef
   /** Single-character shortcuts (W, S, L, 0, M, +, −…) can be turned off (WCAG 2.1.4). */ singleKeys: boolean;
   /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
 const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
-type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | null;
+type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | 'fusion' | null;
 type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'workspace' | 'units' | 'mouse';
 const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'workspace', 'units', 'mouse'];
 const SECTION_STORAGE = 'veacom:inspector-sections';
@@ -1436,8 +1436,8 @@ export default function App() {
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
-  // Arrangements (src/arrangements, docs/arrangements.md): a study that opens lays itself out, the reader corrects it,
-  // VEAcom remembers. Applying one records no usage action: nothing was pressed.
+  // Arrangements (src/arrangements, docs/arrangements.md): a study opens plainly, its screen is asked for, the reader
+  // corrects it, VEAcom remembers. Applying one records no usage action of its own: what the reader pressed is recorded.
   const arrangementName = (plan: Plan) => plan.arrangement.name ? t(plan.arrangement.name) : '';
   /** The panes on screen as an arrangement sees them: each one's series, view, and the PET fused over it. */
   const shownPanes = () => slotsRef.current.map(slot => {
@@ -1451,7 +1451,7 @@ export default function App() {
     const current = arranged.current, ids = slotsRef.current.map(slot => slot.id);
     return Boolean(current && ids.length === current.slotIds.length && ids.every(id => current.slotIds.includes(id)));
   };
-  /** Keeps the arranged screen as the reader rearranged it: the next study it matches opens so. */
+  /** Keeps the arranged screen as the reader rearranged it: the next time it is laid out, it opens so. */
   const keepArrangement = (slotId: string) => {
     const current = arranged.current;
     const variant = current && stillArranged() ? deriveKept(current.plan, shownPanes(), layoutRef.current) : null;
@@ -1467,9 +1467,9 @@ export default function App() {
       keepAction: 'keep', onKeep: () => { setPaneToast(null); keepArrangement(slotId); } });
   };
   /** Lays a study out as `plan` says: its panes, links and fusion, with a note in the first pane naming it and Undo. Undo
-   * puts back what was on screen with `first` in the active pane (what VEAcom shows without arrangements), and offers to
-   * keep that instead. */
-  const applyArrangement = (plan: Plan, first: Series) => {
+   * puts back what was on screen. For a study that opened so, it puts `first` in the active pane (what VEAcom shows
+   * without arrangements) and offers to keep that instead; a screen the reader asked for is simply taken back. */
+  const applyArrangement = (plan: Plan, first?: Series) => {
     const before = { slots: slotsRef.current, layout: layoutRef.current, activeId: activeIdRef.current, hidden: hiddenSlots.current, maximized: maximizedRef.current,
       linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current };
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
@@ -1509,6 +1509,11 @@ export default function App() {
       setCrosshair(before.crosshair); setCrosshairSeriesId(before.crosshairSeriesId);
       for (const id of new Set(before.slots.map(slot => slot.seriesId))) {
         const item = seriesRef.current.find(value => value.id === id); loadPaneImage(item);
+      }
+      if (!first || plan.arrangement.when !== 'open') {
+        const shown = before.slots.find(slot => slot.id === before.activeId)?.seriesId;
+        if (shown) setPaneToast({ slotId: before.activeId, seriesId: shown, text: t('arrangement.undone', { name }) });
+        return;
       }
       assignSeries(before.activeId, first);
       setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.undone', { name }), sticky: true, keepAction: 'keep-plain', onKeep: () => {
@@ -2041,6 +2046,11 @@ export default function App() {
   const showPlane = (plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
   const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length : !petSeries.length);
+  const fusionWhy = mrActive ? (mrBeside.length ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
+  // The nuclear medicine screen of the active pane's study (PET follow-up, PET/CT, whole body or SPECT/CT, as kept),
+  // offered beside the fusion button. A study opens as any other does; the reader who reads it so asks for the screen.
+  const nmScreen = activeSeries ? match(KEPT_ARRANGEMENTS(kept), 'screen', { series: series.filter(item => item.studyUid === activeSeries.studyUid), session: series }) : null;
+  const openNmScreen = () => { if (nmScreen) applyArrangement(nmScreen); };
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
@@ -2121,7 +2131,12 @@ export default function App() {
         <MenuDivider />
         <MenuItem action="toolbar-window-palette-orientation" icon={<SlidersHorizontal size={16} />} onClick={() => act(() => openPanelSection('window'))}>{t('toolbar.windowPaletteOrientation')}</MenuItem>
       </Menu>}</div> },
-    ...(petSeries.length || mrFusable ? [    { id: 'fusion', group: 'window', priority: 3, node: <ToolButton icon={<Glyph name="fusion" />} label={t(mrActive || !petSeries.some(item => item.modality === 'PT') ? 'toolbar.fusionPlain' : 'toolbar.fusion')} testId="tool-fusion" disabled={fusionDisabled} why={mrActive && !mrBeside.length ? t('fusion.whyMrPane') : undefined} active={showFusion} onClick={() => showFusion ? stopFusion() : startFusion()} /> }] : []),
+    ...(petSeries.length || mrFusable || nmScreen ? [    { id: 'fusion', group: 'window', priority: 3, node: <div className="menu-anchor" data-menu><div className="split">
+      <ToolButton icon={<Glyph name="fusion" />} label={t(mrActive || !petSeries.some(item => item.modality === 'PT') ? 'toolbar.fusionPlain' : 'toolbar.fusion')} testId="tool-fusion" disabled={fusionDisabled} why={fusionWhy} active={showFusion} onClick={() => showFusion ? stopFusion() : startFusion()} />
+      {nmScreen && <MenuChevron label={t('toolbar.fusionMenu')} expanded={menu === 'fusion'} testId="tool-fusion-menu" onClick={() => toggleMenu('fusion')} />}
+    </div>{menu === 'fusion' && nmScreen && <Menu label={t('toolbar.fusionMenu')} onClose={closeMenu}>
+      <MenuItem action="nm-screen" meta={arrangementName(nmScreen)} onClick={() => act(openNmScreen)}>{t('toolbar.nmScreen')}</MenuItem>
+    </Menu>}</div> }] : []),
     { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu><div className="split">
       <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('help.mpr')}`} hint={isMpr ? t('toolbar.restorePrevious') : undefined} shortcut={singleKey('M')} testId="tool-mpr" active={isMpr} disabled={!canReconstruct && !isMpr} why={mprWhy} onClick={mpr} />
       <MenuChevron label={t('toolbar.mprPlanes')} expanded={menu === 'mpr'} testId="tool-mpr-menu" disabled={noImage} onClick={() => toggleMenu('mpr')} />
