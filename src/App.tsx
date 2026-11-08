@@ -8,7 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { bridgeCan, importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
@@ -18,7 +18,7 @@ import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -56,8 +56,8 @@ import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
 import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
-import { deriveKept, findRole, KEPT_STORAGE, match, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION } from './arrangements/builtin';
+import { deriveKept, findRole, KEPT_STORAGE, match, matchOnOpen, paneView, sharesSuvScale, readKept, type Kept, type KeptVariant, type Plan } from './arrangements';
+import { BUILTIN_ARRANGEMENTS, FUSION, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
 import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
@@ -214,7 +214,11 @@ function defaultView(series: Series): ViewState {
     windowWidth: Math.max(1, frame?.windowWidth ?? series.windowWidth), ...petLook(series) };
 }
 /** The arrangements VEAcom applies, with the reader's kept ones in place of its own. */
-const KEPT_ARRANGEMENTS = (kept: Kept) => withKept(kept, BUILTIN_ARRANGEMENTS);
+const PET_LAYOUTS = [
+  [PET_CT, 'layout-pet-fused', 'arrangement.petCt.fused'],
+  [PET_CT_READING, 'layout-pet-reading', 'arrangement.petCt.reading'],
+  [PET_FOLLOW_UP, 'layout-pet-follow-up', 'arrangement.petFollowUp'],
+] as const;
 function readKeptArrangements(): Kept {
   try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
 }
@@ -838,7 +842,7 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
-    void loadPreviewVolume(item).then(async volume => {
+    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
       if (complete || !mounted.current || !isCurrent() || fullyLoaded.current.has(item.id)) return;
       await prepareSourceProgram(volume);
       if (!complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id)) storeVolume(volume);
@@ -855,20 +859,16 @@ export default function App() {
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
   useEffect(() => {
-    if (loadingIds.size) return;
+    if (importing || loadingIds.size) return;
     let stopped = false, cursor = 0;
-    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && (!hasThumbnail(item.id) || !volumesRef.current.has(item.id))).slice(0, 40);
+    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
-      // The card shows the middle frame. An opened pane can use the first frame while the volume loads.
-      if (!hasThumbnail(item.id)) {
-        const middle = await loadSourceFrame(item, thumbnailFrame(item));
-        if (!current()) return;
-        keepThumbnail(middle);
-      }
-      if (!current() || volumesRef.current.has(item.id)) return;
-      const volume = await loadPreviewVolume(item);
-      if (current() && !pending.current.has(item.id) && !fullyLoaded.current.has(item.id)) {
-        const next = new Map(volumesRef.current); next.set(item.id, volume); publishLoadedVolumes(next);
+      const volume = fullyLoaded.current.has(item.id) ? volumesRef.current.get(item.id) : undefined;
+      const middle = volume ?? await frameCache.get(item, thumbnailFrame(item));
+      if (!current()) return;
+      keepThumbnail(middle);
+      if (!volumesRef.current.has(item.id) && !pending.current.has(item.id)) {
+        const next = new Map(volumesRef.current); next.set(item.id, middle); publishLoadedVolumes(next);
       }
     }
     const preload = async () => {
@@ -883,7 +883,7 @@ export default function App() {
     };
     void preload(); void preload();
     return () => { stopped = true; };
-  }, [series, loadingIds.size]);
+  }, [series, importing, loadingIds.size, frameCache]);
 
   useEffect(() => {
     // While a study is read, frames come only for the series it has already published (see importStudies).
@@ -1479,8 +1479,9 @@ export default function App() {
   /** Lays a study out as `plan` says: its panes, links and fusion, with a note in the first pane naming it and Undo. Undo
    * puts back what was on screen with `first` in the active pane (what VEAcom shows without arrangements), and offers to
    * keep that instead. */
-  const applyArrangement = (plan: Plan, first: Series) => {
+  const applyArrangement = (plan: Plan, first?: Series) => {
     const before = { slots: slotsRef.current, layout: layoutRef.current, activeId: activeIdRef.current, hidden: hiddenSlots.current, maximized: maximizedRef.current,
+      mpr: beforeMpr.current, isMpr, arranged: arranged.current,
       linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current };
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
@@ -1507,10 +1508,12 @@ export default function App() {
     if (linked !== settingsRef.current.linked) setSettings(state => ({ ...state, linked }));
     const fusedAt = plan.panes.findIndex(pane => pane.spec.show === 'fused'), over = fusedAt >= 0 ? plan.roles[plan.panes[fusedAt].spec.over ?? ''] : undefined;
     if (over) { setShowFusion(true); fusePet(over, plan.panes[fusedAt].series, panes[fusedAt].id, true); }
+    else stopFusion();
     arranged.current = { plan, slotIds: panes.map(slot => slot.id) };
     const name = arrangementName(plan), notice = plan.arrangement.notice;
     const undo = () => {
-      arranged.current = null; fusionRequest.current++;
+      arranged.current = first ? null : before.arranged; fusionRequest.current++;
+      beforeMpr.current = before.mpr; setIsMpr(before.isMpr);
       hiddenSlots.current = before.hidden; setMaximized(before.maximized);
       setSlots(before.slots); setLayout(before.layout); activateSlot(before.activeId);
       setSettings(state => state.linked === before.linked ? state : { ...state, linked: before.linked });
@@ -1520,7 +1523,12 @@ export default function App() {
       for (const id of new Set(before.slots.map(slot => slot.seriesId))) {
         const item = seriesRef.current.find(value => value.id === id); loadPaneImage(item);
       }
-      assignSeries(before.activeId, first);
+      if (!first) {
+        const shown = before.slots.find(slot => slot.id === before.activeId)?.seriesId;
+        if (shown) setPaneToast({ slotId: before.activeId, seriesId: shown, text: t('arrangement.undone', { name }) });
+        return;
+      }
+      if (before.slots.find(slot => slot.id === before.activeId)?.seriesId !== first.id) assignSeries(before.activeId, first);
       setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.undone', { name }), sticky: true, keepAction: 'keep-plain', onKeep: () => {
         saveKept({ ...keptRef.current, [plan.arrangement.id]: { off: true } });
         setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.keptPlain', { name }) });
@@ -1533,7 +1541,7 @@ export default function App() {
   const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study) => {
     arranged.current = null;
     // The session's other studies are where a prior study's role is found (the PET follow-up screen).
-    const plan = match(KEPT_ARRANGEMENTS(keptRef.current), 'open', { series: study, session });
+    const plan = matchOnOpen(keptRef.current, { series: study, session });
     // Without an arrangement, a series already shown (opened while the study was still read) stays as it is.
     if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(activeIdRef.current, first);
   };
@@ -1745,9 +1753,11 @@ export default function App() {
     if (!activeVolume || framePending || activeVolume.series.components === 3) return;
     const request = ++windowRequest.current, { view, id } = activeSlot;
     const current = () => mounted.current && request === windowRequest.current && slotsRef.current.find(slot => slot.id === id)?.view === view
-      && displayVolumesRef.current.get(activeVolume.series.id)?.series.sourceRevision === activeVolume.series.sourceRevision;
+      && displayVolumesRef.current.get(activeVolume.series.id)?.data === activeVolume.data;
     try {
-      const range = activeVolume.series.sourceRevision ? await measureWindow(activeVolume.series, view, automatic)
+      const reconstruction = !usesSourceFrames(activeVolume.series, view) && !isProjection(activeVolume.series, view) && !view.slab;
+      const range = reconstruction ? await reconstructedWindow(activeVolume, view, automatic, current)
+        : activeVolume.series.sourceRevision ? await measureWindow(activeVolume.series, view, automatic)
         : (automatic ? autoWindow : fullRangeWindow)(activeVolume, usesSourceFrames(activeVolume.series, view) ? view.slice : undefined);
       if (!range || !current()) return;
       if (automatic) autoWindows.current.set(id, `${Math.round(range.windowWidth)}/${Math.round(range.windowCenter)}`);
@@ -2065,6 +2075,8 @@ export default function App() {
     <MenuItem action="toolbar-flip-vertical" kind="checkbox" icon={<FlipVertical2 size={16} />} checked={activeSlot.view.flipY} onClick={() => act(() => updateView(activeSlot.id, { flipY: !activeSlot.view.flipY }))}>{t('toolbar.flipVertical')}</MenuItem>
     <MenuDivider />
     <MenuItem action="toolbar-reset-orientation" icon={<RotateCcw size={16} />} onClick={() => act(() => updateView(activeSlot.id, { rotation: 0, flipX: false, flipY: false }))}>{t('toolbar.resetOrientation')}</MenuItem></>;
+  const layoutStudyKey = menu === 'layout' && activeSeries ? studyKey(activeSeries) : null;
+  const layoutStudy = layoutStudyKey === null ? null : { series: series.filter(item => studyKey(item) === layoutStudyKey), session: series };
   const toolbarStart: ToolbarItem[] = [
     { id: 'open', group: 'file', node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<FolderOpen size={18} />} label={t('toolbar.open')} shortcut={`${mod}+O`} testId="tool-open" popup="menu" indicator expanded={menu === 'import'} onClick={() => toggleMenu('import')} />
@@ -2107,6 +2119,12 @@ export default function App() {
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
         <LayoutPicker layout={layout} label={t('toolbar.layoutPreview')} choiceLabel={(rows, columns) => t('toolbar.layoutChoice', { rows, columns })} onChoose={chooseLayout} />
+        {activeSeries && layoutStudy && PET_LAYOUTS.map(([rule, action, key]) => {
+          const plan = match([rule], 'open', layoutStudy);
+          if (!plan) return null;
+          return <button className="secondary-button compact" type="button" data-action={action} key={action}
+            onClick={() => applyArrangement(plan)}>{t(key)}</button>;
+        })}
       </Popover>}</div> },
     { id: 'measure', group: 'measure', node: <div className="menu-anchor" data-menu><div className="split">
         <ToolButton icon={measureIcon(lastMeasure, 18, true)} label={t('toolbar.measurement', { tool: toolLabel(lastMeasure) })} shortcut={singleKey(TOOL_KEYS[lastMeasure])} testId="tool-measure" disabled={noStudy} active={MEASURE_TOOLS.includes(tool)} onClick={() => toggleMeasure(MEASURE_TOOLS.includes(tool) ? tool : lastMeasure)} />

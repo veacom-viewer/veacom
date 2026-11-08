@@ -71,8 +71,8 @@ pub fn references(index: &Path, root: &Path) -> Result<BTreeMap<PathBuf, Referen
     let index = root
         .path
         .join(index.file_name().context("Missing DICOMDIR name")?);
-    let (source, _) = SourceFile::dicom_handle(&index, open_referenced(&root, &index)?)?;
-    let obj = dicom_object::OpenFileOptions::new().from_reader(source.open()?)?;
+    let (_, _, header) = SourceFile::dicom_handle(&index, open_referenced(&root, &index)?)?;
+    let obj = dicom_object::OpenFileOptions::new().from_reader(header)?;
     ensure!(
         obj.meta().media_storage_sop_class_uid()
             == dicom_dictionary_std::uids::MEDIA_STORAGE_DIRECTORY_STORAGE,

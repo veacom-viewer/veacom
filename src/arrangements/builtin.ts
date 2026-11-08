@@ -2,9 +2,8 @@
 // panes it makes, how they link and the notice it shows. src/arrangements/index.ts matches and applies them.
 import type { Arrangement } from './index';
 
-/** The standard PET/CT screen, applied when a PET/CT opens: CT · PET (inverted grey, SUV 0–5) · fused · MIP, linked by
- * the crosshair. */
-export const PET_CT: Arrangement = {
+/** Four views for reporting, available in the layout picker. Both layouts use the same kept preferences. */
+export const PET_CT_READING: Arrangement = {
   id: 'pet-ct', when: 'open', name: 'arrangement.petCt',
   roles: {
     pet: { modality: 'PT', prefer: ['corrected', 'slices'] },
@@ -21,11 +20,18 @@ export const PET_CT: Arrangement = {
   notice: { key: 'arrangement.petCt.notice' },
 };
 
+export const PET_CT: Arrangement = {
+  ...PET_CT_READING,
+  grid: [1, 1],
+  panes: [{ role: 'ct', plane: 'axial', show: 'fused', over: 'pet' }],
+  notice: { key: 'arrangement.petCt.fused' },
+};
+
 /** A PET study opened with an earlier PET of the same patient loaded: this study's PET and the prior's side by side,
  * each with its MIP below, as PET is read (inverted grey, SUV 0–10). Response is read on one fixed scale (EANM 2025,
  * section 14), so the four panes keep one SUV window: windowing one windows all. The two studies lie in their own
  * frames of reference, so the reader brings both to one level and links them by hand (the link button's anchors); each
- * study's own panes follow its crosshair. Listed before the PET/CT screen, which a study without a prior opens as. */
+ * study's own panes follow its crosshair. Available in Layout, or on open when the reader has kept it. */
 export const PET_FOLLOW_UP: Arrangement = {
   id: 'pet-follow-up', when: 'open', name: 'arrangement.petFollowUp',
   roles: {

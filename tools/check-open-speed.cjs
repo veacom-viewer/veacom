@@ -24,14 +24,15 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { prepareCounter, readCounts } = require('./lib/io-count.cjs');
 const { EngineProcess } = require('../electron/engine-process.cjs');
 const { createRandom, median, quantile, compareRounds, checkBudgets, budgetsFrom } = require('./lib/open-speed.cjs');
 
 const BUDGET_FILE = path.join(__dirname, 'open-budgets.json');
 const PHASES = ['listing', 'firstFrame', 'volume'];
 const REPORTED = [...PHASES, 'open'];
-const GATED = new Set(['listing', 'volume', 'open']); // a first frame takes a few milliseconds: reported, too short to gate
-const NAMES = { listing: 'listing', firstFrame: 'first frame', volume: 'full volume', open: 'whole open' };
+const GATED = new Set(['listing', 'volume', 'open', 'deferredVolume']);
+const NAMES = { listing: 'listing', firstFrame: 'first frame', volume: 'full volume', open: 'whole open', deferredVolume: 'volume with cache flushed after listing' };
 
 const args = Object.fromEntries(process.argv.slice(2).map(argument => {
   const match = /^--([^=]+)(?:=(.*))?$/s.exec(argument);
@@ -68,33 +69,23 @@ function folderBytes(folder) {
 const engineTemp = path.join(output, 'engine-temp');
 const engineEnv = process.platform === 'win32' ? { TEMP: engineTemp, TMP: engineTemp } : { TMPDIR: engineTemp };
 
-function prepareCounter() {
-  if (process.platform !== 'linux' && process.platform !== 'darwin') return { reason: 'work counts need Linux or macOS' };
-  const library = path.join(output, process.platform === 'darwin' ? 'io-count.dylib' : 'io-count.so');
-  const source = path.join(__dirname, 'lib/io-count.c');
-  try {
-    execFileSync('cc', process.platform === 'darwin' ? ['-O2', '-dynamiclib', '-o', library, source] : ['-O2', '-shared', '-fPIC', '-o', library, source, '-ldl'], { stdio: 'pipe' });
-  } catch (error) {
-    return { required: true, reason: `the read counter did not compile: ${String(error.stderr || error.message).trim().split('\n')[0]}` };
+/** Select the budget from the fixture's filesystem before measuring either engine. */
+function generatedFixtureBudget(study) {
+  if (process.platform === 'darwin') {
+    if (fs.statSync(study).dev === fs.statSync(engineTemp).dev) {
+      try {
+        execFileSync('df', ['-t', 'apfs', study], { stdio: 'ignore' });
+        return 'ct-1000-apfs';
+      } catch { /* A different filesystem uses block verification. */ }
+    }
+    return 'ct-1000-mac';
   }
-  return { library, variable: process.platform === 'darwin' ? 'DYLD_INSERT_LIBRARIES' : 'LD_PRELOAD' };
-}
-
-async function readCounts(pid, file, after) {
-  process.kill(pid, 'SIGUSR1');
-  for (let waited = 0; waited < 3000; waited += 10) {
-    await sleep(10);
-    let record;
-    try { record = fs.readFileSync(file); } catch { continue; }
-    if (record.length < 32) continue;
-    const [sequence, opened, calls, bytes] = [0, 8, 16, 24].map(offset => Number(record.readBigUInt64LE(offset)));
-    if (sequence > after) return { sequence, opened, calls, bytes };
-  }
-  throw new Error('The read counter did not answer: the engine may not have loaded tools/lib/io-count.c');
+  if (process.platform === 'linux' && [0xef53, 0x9123683e, 0x58465342].includes(fs.statfsSync(study).type)) return 'ct-1000-local';
+  return 'ct-1000';
 }
 
 let opens = 0;
-async function openOnce(build, study, counter) {
+async function openOnce(build, study, counter, flushBeforeVolume) {
   const env = { ...process.env, ...engineEnv };
   const countFile = counter && path.join(output, `io-count-${process.pid}-${++opens}.bin`);
   if (counter) Object.assign(env, { [counter.variable]: counter.library, IOCOUNT_ROOTS: counter.roots.join(':'), IOCOUNT_FILE: countFile });
@@ -128,6 +119,10 @@ async function openOnce(build, study, counter) {
     if (!series) throw new Error('The study listed no image series');
     await (await call('frame', { id: series.id, index: 0 })).arrayBuffer();
     await done('firstFrame');
+    if (flushBeforeVolume) {
+      await flush(flushBeforeVolume, study);
+      at = performance.now();
+    }
     const volume = await (await call('volume', { id: series.id })).arrayBuffer();
     await done('volume');
     phases.open = phases.listing + phases.firstFrame + phases.volume;
@@ -184,7 +179,7 @@ function markdown(report) {
       const verdict = row.verdict === 'slower' && row.gated ? '**slower**' : row.verdict === 'slower' ? 'slower (not gated)' : row.verdict;
       lines.push(`| ${row.cache} | ${NAMES[row.phase]} | ${ms(row.base)} | ${ms(row.head)} | ${percent(row.change)} (${percent(row.low)} to ${percent(row.high)}) | ${verdict} |`);
     }
-    lines.push('', `Slower or faster means the whole interval lies beyond ±${(100 * threshold).toFixed(0)}% and the medians differ by at least ${minMs} ms. Slower listing, full volume or whole open fails.`, '');
+    lines.push('', `Slower or faster means the whole interval lies beyond ±${(100 * threshold).toFixed(0)}% and the medians differ by at least ${minMs} ms. Listing, whole open and full-volume decode are gated. On Linux and macOS the cold-volume gate uses a separate trial that flushes both file caches after listing; the ordinary cold volume phase is reported separately.`, '');
   } else if (report.timings) {
     lines.push(`${labels.head}: ${report.rounds.warm} warm and ${report.rounds.cold} cold opens.${report.coldNote ? ` ${report.coldNote}` : ''}`, '');
     lines.push('| cache | step | median | 10th–90th percentile |', '|---|---|---|---|');
@@ -212,12 +207,14 @@ function markdown(report) {
   let study = args.study && path.resolve(args.study), fixture = args.fixture || null, generated = false;
   if (!study) {
     study = path.join(output, 'ct-1000');
-    fixture = 'ct-1000';
     if (!fs.existsSync(path.join(study, 'manifest.json'))) {
       fs.rmSync(study, { recursive: true, force: true });
       execFileSync(process.execPath, [path.join(__dirname, 'fixtures/make-smoke-study.mjs'), study, '--pipe-volume'], { stdio: 'inherit' });
       generated = true;
+      // Time a settled study. Files still in their writer's clock tick take the block-verification path.
+      await sleep(3100);
     }
+    fixture ??= generatedFixtureBudget(study);
   }
   try {
     await measure(study, fixture);
@@ -240,7 +237,7 @@ async function measure(study, fixture) {
   };
 
   // Work, counted once per engine.
-  const counter = prepareCounter();
+  const counter = prepareCounter(output);
   if (counter.library) {
     counter.roots = [fs.realpathSync(study), fs.realpathSync(engineTemp)];
     report.work = {};
@@ -275,6 +272,8 @@ async function measure(study, fixture) {
   // Time.
   if (rounds || coldRounds) {
     const method = coldRounds ? coldMethod() : null;
+    const isolateColdVolume = method === 'linux' || method === 'macos';
+    const reportedPhases = cache => cache === 'cold' && isolateColdVolume ? [...REPORTED, 'deferredVolume'] : REPORTED;
     report.rounds.cold = method ? coldRounds : 0;
     if (coldRounds && !method) report.coldNote = 'No cold rounds: the file cache cannot be flushed here without a password (or, on Windows, without --vhdx).';
     const order = () => { // a fresh random order of the engines for every round
@@ -289,6 +288,10 @@ async function measure(study, fixture) {
         for (const build of order()) {
           if (cold) await flush(method, study);
           const run = await openOnce(build, study);
+          if (cold && isolateColdVolume) {
+            const isolated = await openOnce(build, study, undefined, method);
+            run.phases.deferredVolume = isolated.phases.volume;
+          }
           report.runs.push({ cache, round, build, startMs: run.startMs, phases: run.phases });
         }
         console.log(`${cache} round ${round + 1}/${total}`);
@@ -298,14 +301,14 @@ async function measure(study, fixture) {
       report.comparisons = [];
       for (const [cache, total] of blocks) {
         if (!total) continue;
-        for (const phase of REPORTED) {
+        for (const phase of reportedPhases(cache)) {
           const paired = [];
           for (let round = 0; round < total; round++) {
             const of = build => report.runs.find(run => run.cache === cache && run.round === round && run.build === build)?.phases[phase];
             paired.push({ base: of('base'), head: of('head') });
           }
           const result = compareRounds(paired, { threshold, minMs, seed: seed + REPORTED.indexOf(phase) });
-          const gated = GATED.has(phase);
+          const gated = GATED.has(phase) && !(cache === 'cold' && isolateColdVolume && phase === 'volume');
           report.comparisons.push({ cache, phase, gated, ...result });
           if (gated && result.verdict === 'slower') report.failures.push(`${cache} ${NAMES[phase]} ${percent(result.change)} slower (${percent(result.low)} to ${percent(result.high)})`);
         }
@@ -314,7 +317,7 @@ async function measure(study, fixture) {
       report.timings = [];
       for (const [cache, total] of blocks) {
         if (!total) continue;
-        for (const phase of REPORTED) {
+        for (const phase of reportedPhases(cache)) {
           const values = report.runs.filter(run => run.cache === cache).map(run => run.phases[phase]);
           report.timings.push({ cache, phase, median: median(values), p10: quantile(values, 0.1), p90: quantile(values, 0.9) });
         }

@@ -660,6 +660,8 @@ export const tr: Record<keyof typeof en, string> = {
   'pair.placed': '{kind} bu pencereye eklendi',
   'pair.undo': 'Geri al',
   'arrangement.petCt': 'PET/BT',
+  'arrangement.petCt.fused': 'PET/BT füzyonu (1 × 1)',
+  'arrangement.petCt.reading': 'PET/BT raporlama (2 × 2)',
   'arrangement.petCt.notice': 'PET/BT: BT · PET · füzyon · MIP',
   'arrangement.petFollowUp': 'PET takip',
   'arrangement.petFollowUp.separate': 'PET takibinde ölçekler ayrı. Ortak ölçek için her iki PET’te de SUVbw kalibrasyonu gerekir.',

@@ -9,6 +9,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -35,6 +36,7 @@ async function main() {
     await page.waitForTimeout(600);
     const shot = name => page.screenshot({ path: path.join(output, `${name}.png`) });
     const cells = page.locator('[data-testid="viewport-cell"]');
+    await choosePetLayout(page);
     const s = await page.evaluate(() => window.__VEACOM_TEST__.state());
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, null, 'mip'], 'The PET/CT screen: CT · PET · fused · MIP.');
 

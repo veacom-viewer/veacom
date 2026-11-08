@@ -11,21 +11,16 @@ The study arranges itself, the reader corrects it, VEAcom remembers. An arrangem
     "pet": { "modality": "PT", "prefer": ["corrected", "slices"] },
     "ct": { "modality": "CT", "of": "pet", "frame": "same", "prefer": ["corrected", "sameGrid", "overlap", "slices"] }
   },
-  "grid": [2, 2],
+  "grid": [1, 1],
   "panes": [
-    { "role": "ct", "plane": "axial", "show": "plain" },
-    { "role": "pet", "plane": "axial", "show": "plain",
-      "display": { "palette": "gray", "invert": true, "window": { "unit": "SUV", "from": 0, "to": 5 } } },
-    { "role": "ct", "plane": "axial", "show": "fused", "over": "pet" },
-    { "role": "pet", "plane": "coronal", "show": "mip",
-      "display": { "palette": "gray", "invert": true, "window": { "unit": "SUV", "from": 0, "to": 5 } } }
+    { "role": "ct", "plane": "axial", "show": "fused", "over": "pet" }
   ],
   "link": "crosshair",
-  "notice": "arrangement.petCt.notice"
+  "notice": { "key": "arrangement.petCt.fused" }
 }
 ```
 
-The built-in arrangements live in `src/arrangements/builtin.ts` as plain literals. The engine in `src/arrangements/` matches them, turns a match into panes, and validates what it reads back.
+PET/CT opens in one axial pane with PET uptake over the matching CT. The Layout menu offers a four-pane reading view with CT, PET, fusion and MIP. It also offers PET follow-up when a suitable prior is loaded. A layout the reader previously kept still takes precedence. The built-in arrangements live in `src/arrangements/builtin.ts`.
 
 ## Vocabulary
 
@@ -48,12 +43,12 @@ A required role that finds no series means no match. An anchor takes the best se
 
 | Trigger | Arrangement | Behaviour kept from today |
 |---|---|---|
-| A study opens (`importStudies`) | `pet-follow-up`, `pet-ct`, `whole-body`, `spect-ct`, in that order | PET follow-up requires an earlier PET with matching patient identity and tracer. PET and CT series can arrive separately. A mixed bone study opens on the whole body before SPECT/CT. If no arrangement matches, the first image opens in the active pane. [PET quantification](pet-quantification.md) |
+| A study opens (`importStudies`) | Kept PET follow-up, `pet-ct`, `whole-body`, `spect-ct`, in that order | PET follow-up requires an earlier PET with matching patient identity and tracer. PET and CT series can arrive separately. A mixed bone study opens on the whole body before SPECT/CT. If no arrangement matches, the first image opens in the active pane. [PET quantification](pet-quantification.md) |
 | One series picked into a pane (`selectSeries`, `dropSeries`) | `dwi-adc`, `adc-dwi` | Only with exactly two panes and no three-plane MPR. The partner goes into the other pane, linking turns on, and the pane says "ADC added to this pane" with Undo. |
 | Several series picked together (`openSideBySide`) | `side-by-side` | `grid` by count: 2 → 1×2, 3 → 1×3, 4 → 2×2, 5–6 → 2×3. The first picked goes first, at most six, with no notice. |
 | The fusion button (`startFusion`, `fuseInActive`) | `fusion` | Its `overlay` role (a PET or a reconstructed SPECT) and `ct` role replace `bestPartner`'s callback and scoring. They give the same ranking, and `tests/fusion.test.ts` stays as it is. For a CT, `ungated` picks a summed SPECT over its gates; a gate shown in the pane is fused itself. |
 
-An arrangement is applied without a click and records no usage action. The pane notice names it, for example "PET/CT: CT · PET · fusion · MIP", and offers **Undo**. The notice stays until the reader's next action, because a whole screen arranged must not vanish before it is seen. Undo restores everything the arrangement changed: panes, layout, active pane, linking, fusion and crosshair. It puts the study's first image in the active pane, as VEAcom does without arrangements.
+An automatic arrangement records no usage action. The pane notice names it, such as “PET/CT fusion (1 × 1)”, and offers **Undo** until the reader's next action. Undo restores the previous panes, layout, active pane, linking, fusion and crosshair and opens the study's first image in the active pane.
 
 ## Keep this
 
@@ -144,7 +139,7 @@ Both panes show the one series, each on its own frame. Panes showing one PET or 
 - PET look on every PET pane, not only arranged ones. The nuclear medicine review asks for inverted grey PET by default and one scale across panes.
 - A MIP click picks the hottest voxel near the ray, as PET workstations do, with 4 mm of tolerance for a click slightly off a small lesion.
 - The fused pane takes the scanner's look, as the fusion button does, so one fusion never looks two ways.
-- The screen is 2×2 axial, as briefed. The review's three-plane hanging is one Keep away: change a pane's plane and keep it.
+- Routine PET/CT uses one fused axial pane. For reporting, choose the four-pane reading view in Layout. To keep a custom view, change a pane’s plane and choose Keep.
 
 - SPECT/CT is the PET/CT screen with the SPECT's own window, as a PET without SUV has. Inverted grey matches the PET panes and a bone scan's planar views.
 - Log or square-root display for bone scans is not offered. It does not fit the window and palette primitives: the VOI function comes from the file, not from the reader, and the palettes are fixed colour scales in the shader. A curve would need a renderer change. Saturation is the window's upper end.

@@ -86,7 +86,7 @@ pub fn export_series(files: &[PathBuf], opts: &ExportOptions) -> Result<ExportRe
 }
 
 fn index_test_files(files: &[PathBuf]) -> Result<Vec<Arc<SourceFile>>> {
-    files.iter().map(|p| SourceFile::dicom(p).map(|(source, _)| source)).collect()
+    files.iter().map(|p| SourceFile::dicom(p).map(|(source, _, _)| source)).collect()
 }
 
 /// Writes each export to a new directory without replacing existing files.

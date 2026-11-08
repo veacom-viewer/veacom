@@ -73,14 +73,18 @@ export function worldToIndex(series: Series, world: Vec3): Vec3 {
 export function sampleVolume(volume: Volume, world: Vec3, interpolate = false): number | null {
   if (volume.series.components === 3) return null;
   const geometry = volume.sourceFrameIndex === undefined ? volume.series : sourceFrameSeries(volume.series, volume.sourceFrameIndex);
-  const p = worldToIndex(geometry, world), d = geometry.dimensions;
-  if (p.some((n, i) => n < -0.500001 || n > d[i] - 0.499999)) return null;
-  const at = (x: number, y: number, z: number) => volume.data[(clamp(z, 0, d[2] - 1) * d[1] + clamp(y, 0, d[1] - 1)) * d[0] + clamp(x, 0, d[0] - 1)];
-  const nearest = at(Math.round(p[0]), Math.round(p[1]), Math.round(p[2]));
-  const padding = (value: number, z: number) => isPaddingValue(volume.series, value, volume.sourceFrameIndex ?? clamp(z, 0, d[2] - 1));
-  if (padding(nearest, Math.round(p[2]))) return NaN;
-  if (!interpolate) return nearest;
+  return sampleAtIndex(volume, worldToIndex(geometry, world), geometry.dimensions, interpolate);
+}
+
+function sampleAtIndex(volume: Volume, p: Vec3, d: Vec3, interpolate: boolean): number | null {
+  if (p.some((n, i) => !Number.isFinite(n) || n < -0.500001 || n > d[i] - 0.499999)) return null;
+  const x = clamp(Math.round(p[0]), 0, d[0] - 1), y = clamp(Math.round(p[1]), 0, d[1] - 1), z = clamp(Math.round(p[2]), 0, d[2] - 1);
+  const nearest = volume.data[(z * d[1] + y) * d[0] + x];
+  if (isPaddingValue(volume.series, nearest, volume.sourceFrameIndex ?? z)) return NaN;
+  if (!interpolate || (Math.abs(p[0] - x) < 1e-7 && Math.abs(p[1] - y) < 1e-7 && Math.abs(p[2] - z) < 1e-7)) return nearest;
   if (!Number.isFinite(nearest)) return NaN;
+  const at = (x: number, y: number, z: number) => volume.data[(clamp(z, 0, d[2] - 1) * d[1] + clamp(y, 0, d[1] - 1)) * d[0] + clamp(x, 0, d[0] - 1)];
+  const padding = (value: number, z: number) => isPaddingValue(volume.series, value, volume.sourceFrameIndex ?? clamp(z, 0, d[2] - 1));
   const a = p.map(Math.floor), t = p.map((n, i) => n - a[i]);
   let result = 0, totalWeight = 0;
   for (let z = 0; z < 2; z++) for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) {
@@ -298,6 +302,45 @@ export function windowPlane(series: Series, view: ViewState): WindowPlane {
   return { origin, right, down, columns, rows };
 }
 
+function percentileWindow(sorted: Float64Array) {
+  if (!sorted.length) return null;
+  const percentile = (fraction: number) => {
+    const index = (sorted.length - 1) * fraction, lower = Math.floor(index), part = index - lower;
+    return sorted[lower] * (1 - part) + sorted[Math.ceil(index)] * part;
+  };
+  const low = percentile(0.01), high = percentile(0.99);
+  return { windowCenter: low * 0.5 + high * 0.5, windowWidth: Math.max(1, high - low) };
+}
+
+/** Sample the displayed MPR plane from the volume that supplied its pixels. */
+export async function reconstructedWindow(volume: Volume, view: ViewState, automatic: boolean, current: () => boolean) {
+  const series = volume.series;
+  const plane = windowPlane(series, view), length = plane.columns * plane.rows;
+  if (series.components === 3 || volume.sourceFrameIndex !== undefined || !Number.isSafeInteger(length) || length < 1 || length > 16_000_000) return null;
+  const inverse = worldToIndexMatrix(series), origin = worldToIndex(series, plane.origin);
+  const right = multiply(inverse, plane.right), down = multiply(inverse, plane.down);
+  const count = automatic ? Math.min(65_536, length) : length;
+  const samples = automatic ? new Float64Array(count) : undefined;
+  let valid = 0, low = Infinity, high = -Infinity, started = performance.now();
+  for (let i = 0; i < count; i++) {
+    const index = count === length ? i : Math.floor(i * (length - 1) / (count - 1));
+    const x = index % plane.columns, y = Math.floor(index / plane.columns);
+    const point: Vec3 = [origin[0] + x * right[0] + y * down[0], origin[1] + x * right[1] + y * down[1], origin[2] + x * right[2] + y * down[2]];
+    const value = sampleAtIndex(volume, point, series.dimensions, true);
+    if (value !== null && Number.isFinite(value)) {
+      if (samples) samples[valid++] = value;
+      else { low = Math.min(low, value); high = Math.max(high, value); }
+    }
+    if (i % 8192 === 8191 && performance.now() - started > 8) {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      if (!current()) return null;
+      started = performance.now();
+    }
+  }
+  if (samples) return percentileWindow(samples.subarray(0, valid).sort());
+  return low <= high ? { windowCenter: low * 0.5 + high * 0.5, windowWidth: Math.max(1, high - low) } : null;
+}
+
 /** A bounded, deterministic 1st–99th percentile window, excluding DICOM padding. */
 export function autoWindow(volume: Volume, sourceFrame?: number): { windowCenter: number; windowWidth: number } | null {
   if (volume.series.components === 3 || volume.data.length === 0) return null;
@@ -317,14 +360,7 @@ export function autoWindow(volume: Volume, sourceFrame?: number): { windowCenter
     const frame = volume.sourceFrameIndex ?? Math.floor(index / frameLength);
     if (Number.isFinite(value) && !isPaddingValue(volume.series, value, frame)) samples[finiteCount++] = value;
   }
-  if (!finiteCount) return null;
-  const sorted = samples.subarray(0, finiteCount).sort();
-  const percentile = (fraction: number) => {
-    const index = (finiteCount - 1) * fraction, lower = Math.floor(index), upper = Math.ceil(index);
-    return sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
-  };
-  const low = percentile(0.01), high = percentile(0.99);
-  return { windowCenter: (low + high) / 2, windowWidth: Math.max(1, high - low) };
+  return percentileWindow(samples.subarray(0, finiteCount).sort());
 }
 
 /** The slice's whole value range, its padding left out (key 1, VEAcom 1.x's full range); a reconstruction

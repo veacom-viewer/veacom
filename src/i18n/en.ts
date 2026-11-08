@@ -657,6 +657,8 @@ export const en = {
   'pair.placed': '{kind} added to this pane',
   'pair.undo': 'Undo',
   'arrangement.petCt': 'PET/CT',
+  'arrangement.petCt.fused': 'PET/CT fusion (1 × 1)',
+  'arrangement.petCt.reading': 'PET/CT reading (2 × 2)',
   'arrangement.petCt.notice': 'PET/CT: CT · PET · fusion · MIP',
   'arrangement.petFollowUp': 'PET follow-up',
   'arrangement.petFollowUp.separate': 'PET follow-up uses separate scales. Both PETs need SUVbw calibration for a shared scale.',

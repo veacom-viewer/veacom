@@ -5,7 +5,7 @@ import type { MessageKey } from '../i18n';
 import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry';
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
-import { BUILTIN_ARRANGEMENTS } from './builtin';
+import { BUILTIN_ARRANGEMENTS, PET_FOLLOW_UP } from './builtin';
 
 export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from './roles';
 
@@ -219,6 +219,11 @@ export function withKept(kept: Kept, builtins: readonly Arrangement[] = BUILTIN_
     if ('off' in variant) return [];
     return [{ ...arrangement, grid: variant.grid, panes: variant.panes, kept: true }];
   });
+}
+
+export function matchOnOpen(kept: Kept, context: MatchContext): Plan | null {
+  const automatic = withKept(kept).filter(rule => rule.id !== PET_FOLLOW_UP.id || rule.kept);
+  return match(automatic, 'open', context);
 }
 
 /** What a pane on screen shows, for keeping: its series and view, and the series fused over it, if any. */

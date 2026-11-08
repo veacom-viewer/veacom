@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
-import { deriveKept, match, paneView, sharesSuvScale, readKept, withKept, type Plan } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, PET_CT, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
+import { deriveKept, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Plan } from '../src/arrangements';
+import { BUILTIN_ARRANGEMENTS, FUSION, PET_CT, PET_CT_READING, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
 import { findRole, ROLE_RANKS } from '../src/arrangements/roles';
 import { isProjection, PROJECTION_STEPS } from '../src/imaging/geometry';
 import { windowGrey } from '../src/imaging/viewState';
@@ -34,19 +34,20 @@ describe('arrangements as data', () => {
         if (pane.over) assert.ok(pane.over in arrangement.roles, `${arrangement.id}: ${pane.over}`);
       }
     }
-    assert.equal(PET_CT.panes.length, 4);
+    assert.equal(PET_CT.panes.length, 1);
+    assert.equal(PET_CT_READING.panes.length, 4);
   });
 });
 
 describe('the PET/CT screen', () => {
   const nac = pet('nac', { description: 'PET NAC' }), ac = pet('ac');
-  it('matches a PET/CT: CT · PET · fused · MIP, with the attenuation-corrected PET and the CT drawn with it', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, nac, ac] })!;
+  it('opens the attenuation-corrected PET over its CT in one pane', () => {
+    const plan = matchOnOpen({}, { series: [ct, nac, ac] })!;
     assert.equal(plan.arrangement.id, 'pet-ct');
     assert.equal(plan.roles.pet.id, 'ac');
     assert.equal(plan.roles.ct.id, 'ct');
-    assert.deepEqual(plan.grid, [2, 2]);
-    assert.deepEqual(plan.panes.map(pane => [pane.series.id, pane.spec.show ?? 'plain']), [['ct', 'plain'], ['ac', 'plain'], ['ct', 'fused'], ['ac', 'mip']]);
+    assert.deepEqual(plan.grid, [1, 1]);
+    assert.deepEqual(plan.panes.map(pane => [pane.series.id, pane.spec.show, pane.spec.over]), [['ct', 'fused', 'pet']]);
     assert.equal(plan.arrangement.link, 'crosshair');
   });
   it('needs a PET and a CT in one frame of reference', () => {
@@ -61,7 +62,7 @@ describe('the PET/CT screen', () => {
     assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [diagnostic, ct, ac] })!.roles.ct.id, 'ct');
   });
   it('builds each pane: the MIP as a whole-volume projection, the PET inverted grey at SUV 0–5', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, ac] })!;
+    const plan = match([PET_CT_READING], 'open', { series: [ct, ac] })!;
     const [ctPane, petPane, , mipPane] = plan.panes.map(pane => paneView(pane.series, pane.spec, view()));
     assertFields(ctPane, { mode: 'source', plane: 'axial', inverted: false, windowMode: 'dicom' });
     assertFields(petPane, { mode: 'source', inverted: true, windowMode: 'manual' });
@@ -72,14 +73,14 @@ describe('the PET/CT screen', () => {
   });
   it('keeps a PET without SUV in its own window, never in SUV', () => {
     const uncalibrated = pet('raw', { suvFactor: null });
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, uncalibrated] })!;
+    const plan = match([PET_CT_READING], 'open', { series: [ct, uncalibrated] })!;
     const petPane = paneView(plan.panes[1].series, plan.panes[1].spec, view({ windowCenter: 1000, windowWidth: 2000 }));
     assertFields(petPane, { inverted: true, windowMode: 'dicom', windowCenter: 1000, windowWidth: 2000 });
   });
 });
 
 describe('Keep this', () => {
-  const ac = pet('ac'), plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, ac] })!;
+  const ac = pet('ac'), plan = match([PET_CT_READING], 'open', { series: [ct, ac] })!;
   const shown = (plan: Plan) => plan.panes.map(pane => ({ seriesId: pane.series.id, view: paneView(pane.series, pane.spec, view()), fusedWith: pane.spec.show === 'fused' ? ac.id : null }));
   it('keeps the panes as moved, with each one\'s role, plane, kind and look, and opens the next study so', () => {
     const panes = shown(plan);
@@ -194,8 +195,9 @@ describe('the PET follow-up screen', () => {
     assert.equal(match([PET_FOLLOW_UP], 'open', { series: [anonymous], session: [{ ...october, patientId: '', patientName: '' }] }), null);
   });
   it('gives way to the PET/CT screen without a prior PET of the same patient, earlier and loaded', () => {
-    const arranged = (session?: Series[]) => match(BUILTIN_ARRANGEMENTS, 'open', { series: current, session })!.arrangement.id;
+    const arranged = (session?: Series[]) => matchOnOpen({}, { series: current, session })!.arrangement.id;
     assert.equal(arranged(), 'pet-ct');
+    assert.equal(arranged([...current, prior('earlier')]), 'pet-ct');
     assert.equal(arranged([...current, prior('stranger', { patientId: 'Q' })]), 'pet-ct');
     assert.equal(arranged([...current, prior('later', { studyDate: '20010101' })]), 'pet-ct');
     assert.equal(arranged([...current, prior('ct-only', { modality: 'CT', valueUnit: 'HU' })]), 'pet-ct');

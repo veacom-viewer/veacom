@@ -1526,7 +1526,7 @@ fn read_frames_budget(
         budget.reserve_index(1, 4096 + ordinary[0].2.source.retained_bytes())?;
         return Ok(IndexedFile::Images(ordinary));
     }
-    let (source, input) = match reference {
+    let (source, input, header) = match reference {
         Some(reference) => SourceFile::dicom_handle(path, crate::media_directory::open_referenced(&reference.root, path)?)?,
         None => SourceFile::dicom(path)?,
     };
@@ -1534,7 +1534,7 @@ fn read_frames_budget(
     budget.reserve_header(input.frames, input.metadata_bytes)?;
     let obj = OpenFileOptions::new()
         .read_until(Tag(0x7fe0, 0x0008))
-        .from_reader(source.open()?)?;
+        .from_reader(header)?;
     if let Some(reference) = reference {
         ensure!(text(&obj, Tag(0x0008, 0x0016)) == reference.class
             && text(&obj, Tag(0x0008, 0x0018)) == reference.instance,

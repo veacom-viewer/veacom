@@ -106,7 +106,7 @@ app.whenReady().then(async () => {
   stopPictures = servePictures({ engine, decode: pictureDecoder.decode });
   const testHooks = process.env.VEACOM_TEST_MODE === '1' ? require('./imaging-test-hooks.cjs').createImagingTestHooks() : undefined;
   imaging = new ImagingBroker({ engine, devOrigin: devUrl ? new URL(devUrl).origin : undefined,
-    beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport });
+    beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport, preparePictures: pictureDecoder.prepare });
   // A study named on the command line starts importing while the window loads.
   const studyArgument = process.argv.indexOf('--study');
   const startupStudy = studyArgument >= 0 && process.argv[studyArgument + 1] ? [path.resolve(process.argv[studyArgument + 1])] : [];
@@ -203,8 +203,13 @@ app.whenReady().then(async () => {
   });
   handle('files:open', async kind => {
     if (!['files', 'folder', 'archive'].includes(kind)) throw new Error('Invalid import type.');
-    const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
-    return selected.canceled ? [] : imaging.authorizeImportPaths(selected.filePaths);
+    const finish = kind === 'files' ? pictureDecoder.prepareFileDialog() : undefined;
+    let paths = [];
+    try {
+      const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
+      if (!selected.canceled) paths = selected.filePaths;
+      return paths.length ? imaging.authorizeImportPaths(paths) : [];
+    } finally { finish?.(paths); }
   });
   // The import window, in a view of its own (import-view.cjs): this page only opens it, right after the user's own
   // click or key press, and receives import capabilities for what the user opened there.
