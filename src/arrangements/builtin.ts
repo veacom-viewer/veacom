@@ -31,7 +31,7 @@ export const PET_CT: Arrangement = {
  * each with its MIP below, as PET is read (inverted grey, SUV 0–10). Response is read on one fixed scale (EANM 2025,
  * section 14), so the four panes keep one SUV window: windowing one windows all. The two studies lie in their own
  * frames of reference, so the reader brings both to one level and links them by hand (the link button's anchors); each
- * study's own panes follow its crosshair. Listed before the PET/CT screen, which a study without a prior opens as. */
+ * study's own panes follow its crosshair. Available in Layout, or on open when the reader has kept it. */
 export const PET_FOLLOW_UP: Arrangement = {
   id: 'pet-follow-up', when: 'open', name: 'arrangement.petFollowUp',
   roles: {

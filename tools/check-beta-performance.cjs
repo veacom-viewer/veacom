@@ -27,7 +27,7 @@ function generate() {
   const generateStudy = (script, folder, ...args) => execFileSync(process.execPath,
     [path.join(fixtures, script), path.join(studies, folder), ...args], { stdio: 'inherit' });
   generateStudy('make-smoke-study.mjs', 'ct-1000', '--pipe-volume');
-  generateStudy('make-smoke-study.mjs', 'video');
+  generateStudy('make-smoke-study.mjs', 'video', '--video-ct');
   fs.mkdirSync(path.join(studies, 'mr'));
   for (let n = 1; n <= 8; n++) generateStudy('make-smoke-study.mjs', 'mr/' + n, '--modality', 'MR', '--series-index=' + n);
   generateStudy('make-petct-study.mjs', 'pet');
@@ -143,11 +143,20 @@ async function run(build, study, counter) {
         if (!response.ok()) errors.push('Pixel response '+response.status());
       }
     });
-    await page.evaluate(() => {
+    await page.evaluate(study => {
       window.__firstDraw = null;
       document.addEventListener('veacom:frame', () => { window.__firstDraw ??= performance.now(); }, { once: true });
+      if (study === 'pet') document.addEventListener('veacom:frame', event => {
+        if (window.__fusedDraw) return;
+        const cell = event.target.closest('[data-testid="viewport-cell"]');
+        const s = window.__VEACOM_TEST__.state();
+        if (s.series.some(item => item.id === event.detail.seriesId && item.modality === 'CT')
+            && cell?.querySelector('[data-testid="image-overlay"]')?.textContent.includes('SUV 0–')) {
+          window.__fusedDraw = performance.now();
+        }
+      });
       window.__openStarted = performance.now();
-    });
+    }, study);
     const caps = await authorizeImportPaths(desktop, [path.join(studies, study)]);
     await page.evaluate(c => window.__VEACOM_TEST__.importPaths(c), caps);
     await page.waitForFunction(() => window.__firstDraw && window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 120_000 });
@@ -175,8 +184,9 @@ async function run(build, study, counter) {
     } else if (study === 'pet') {
       await page.waitForFunction(() => {
         const s = window.__VEACOM_TEST__.state();
-        return s.fusionId && s.pendingLoads === 0 && [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(c => c.dataset.volumeComplete === 'true');
+        return window.__fusedDraw && s.fusionId && s.pendingLoads === 0 && [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(c => c.dataset.volumeComplete === 'true');
       });
+      row.fusionMs = await page.evaluate(() => window.__fusedDraw - window.__openStarted);
       const state = await page.evaluate(() => {
         const s = window.__VEACOM_TEST__.state();
         const overlay = s.series.find(x => x.id === s.fusionId);
@@ -236,7 +246,7 @@ async function main() {
     const rows = report.samples.filter(row => row.study === study);
     if (!rows.length) continue;
     const metrics = study === 'ct-1000' ? ['firstMs','mprMs'] : study === 'video' ? ['exportMs','videoBytes']
-      : study === 'pet' ? ['firstMs','rendererRssMiB'] : ['firstMs'];
+      : study === 'pet' ? ['firstMs','fusionMs','rendererRssMiB'] : ['firstMs'];
     for (const metric of metrics) {
       const paired = rows.map(row => ({ base: row.base[metric], head: row.head[metric] }));
       const comparison = compareRounds(paired, { threshold: .15, minMs: metric === 'videoBytes' ? 1 : 20, seed: 4109 });

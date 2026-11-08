@@ -1,4 +1,6 @@
 use anyhow::{Result, ensure};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod stamp;
 use sha2::{Digest, Sha256};
 use std::{
     fs::{File, OpenOptions},
@@ -42,13 +44,14 @@ pub(crate) fn open_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// Hash the selected file once. Later readers verify each block before handing its bytes to a
-/// parser, decoder or exporter, including when a writer changes the file during a read.
+/// Stable local files are checked on the open descriptor as they are read. Other sources use a digest per block.
 #[derive(Debug)]
 pub struct SourceFile {
     pub path: PathBuf,
     pub len: u64,
     hashes: Vec<[u8; 32]>,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    stamp: Option<stamp::Stamp>,
 }
 
 impl SourceFile {
@@ -68,6 +71,12 @@ impl SourceFile {
             metadata.is_file() && len <= crate::input_guard::MAX_FILE_SIZE,
             "Invalid or excessive source file"
         );
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        let stamp = stamp::Stamp::capture(file, &metadata);
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if stamp.as_ref().is_some_and(stamp::Stamp::settled) {
+            return Ok((Arc::new(Self { path: path.to_owned(), len, hashes: Vec::new(), stamp }), Arc::default()));
+        }
         let mut remaining = len;
         let mut buffer = Vec::new();
         let mut hashes = Vec::with_capacity(len.div_ceil(BLOCK as u64) as usize);
@@ -95,6 +104,8 @@ impl SourceFile {
             path: path.to_owned(),
             len,
             hashes,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            stamp,
         }), Arc::new(prefix)))
     }
 
@@ -114,6 +125,10 @@ impl SourceFile {
     }
 
     pub fn same_contents(&self, other: &Self) -> bool {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.len != 0 && (self.hashes.is_empty() || other.hashes.is_empty()) {
+            return self.stamp.is_some() && self.stamp == other.stamp;
+        }
         self.len == other.len && (std::ptr::eq(self, other) || self.hashes == other.hashes)
     }
 
@@ -124,6 +139,8 @@ impl SourceFile {
     pub fn open(self: &Arc<Self>) -> Result<SourceReader> {
         let file = open_file(&self.path)?;
         ensure!(file.metadata()?.len() == self.len, changed());
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.hashes.is_empty() && let Some(stamp) = &self.stamp { stamp.verify(&file)?; }
         Ok(self.reader(file, Arc::default()))
     }
 
@@ -152,6 +169,13 @@ impl Read for SourceReader {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
         if dst.is_empty() || self.pos >= self.source.len {
             return Ok(0);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.source.hashes.is_empty() && let Some(stamp) = &self.source.stamp {
+            let length = dst.len().min((self.source.len - self.pos) as usize);
+            let read = stamp.read(&self.file, &mut dst[..length], self.pos)?;
+            self.pos += read as u64;
+            return Ok(read);
         }
         if self.pos < self.prefix.len() as u64 {
             let bytes = &self.prefix[self.pos as usize..];
@@ -204,6 +228,36 @@ impl Seek for SourceReader {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn settled_local_source_checks_identity_and_rejects_changes_during_a_read() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = temp.path().join("settled.bin");
+        std::fs::write(&path, vec![7; BLOCK + 8]).unwrap();
+        let fresh = SourceFile::index(&path).unwrap();
+        if fresh.stamp.is_none() { return; } // This filesystem uses the hash-based reader.
+        assert!(!fresh.hashes.is_empty());
+        std::thread::sleep(std::time::Duration::from_millis(3100));
+        let settled = SourceFile::index(&path).unwrap();
+        assert!(settled.hashes.is_empty());
+        assert!(settled.same_contents(&fresh));
+        let mut reader = settled.open().unwrap();
+        let mut byte = [0];
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [7]);
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        let mtime = writer.metadata().unwrap().modified().unwrap();
+        writer.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
+        writer.write_all(&[9]).unwrap();
+        writer.set_modified(mtime).unwrap();
+        reader.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
+        assert_eq!(reader.read_exact(&mut byte).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(byte, [7]);
+        std::fs::rename(&path, temp.path().join("original")).unwrap();
+        std::fs::write(&path, vec![7; BLOCK + 8]).unwrap();
+        assert!(settled.open().is_err());
+    }
 
     #[test]
     fn import_uses_the_hashed_prefix_and_checks_bytes_outside_it() {

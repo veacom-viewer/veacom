@@ -137,13 +137,25 @@ so main's speed is followed as a ratio to that fixed build. These runners have n
 scanning is off on them, and their disks are fast: what a hospital PC feels needs a PC like it. The app's own steps
 (start-up, drawing, texture upload) are not measured here yet.
 
+## Beta performance comparison
+
+`Beta performance comparison` builds the beta 2 tag and the candidate in separate directories on the same GitHub Linux or macOS runner. The engine check uses ten warm and five cache-flushed pairs. The desktop check drops one warm-up pair, then alternates launch order for seven pairs. Every desktop trial has a fresh Electron process and profile. Reports include the raw samples and a paired bootstrap 95% interval for the median change.
+
+With both engines and web apps built and Electron installed, run:
+
+```sh
+BASE_APP=/path/to/beta2 HEAD_APP=/path/to/candidate node tools/check-beta-performance.cjs /tmp/beta-desktop 7
+```
+
+The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares a decoded frame with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
+
 ## Arrangements
 
 `check-arrangements.cjs` opens the synthetic PET/CT from `fixtures/make-petct-study.mjs`. It has a CT, an
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens as CT · PET · fused · MIP with no click. A note names the screen, and no action is recorded.
+- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout.
 - A click on the MIP sends the linked panes to a lesion.
 - A pane moved and kept changes how the next PET/CT opens.
 - Undo restores the screen from before, and can be kept too.
@@ -174,7 +186,7 @@ The check covers [PET quantification](../docs/pet-quantification.md):
 - At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
 - The references are kept by digest, with no UID, and the actions are recorded by id.
 - In a new session on the same computer the references and the lesion table come back.
-- Opened after its prior, the study lays out as the PET follow-up screen. Linked by hand with the link button, the two
+- After opening the current study, selecting PET follow-up in Layout and linking the two studies, the two
   studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
 - With the current study alone, that change comes from what was kept for the prior.
 

@@ -188,11 +188,13 @@ function markdown(report) {
   let study = args.study && path.resolve(args.study), fixture = args.fixture || null, generated = false;
   if (!study) {
     study = path.join(output, 'ct-1000');
-    fixture = 'ct-1000';
+    fixture ??= 'ct-1000';
     if (!fs.existsSync(path.join(study, 'manifest.json'))) {
       fs.rmSync(study, { recursive: true, force: true });
       execFileSync(process.execPath, [path.join(__dirname, 'fixtures/make-smoke-study.mjs'), study, '--pipe-volume'], { stdio: 'inherit' });
       generated = true;
+      // Time a settled study. Files still in their writer's clock tick take the block-verification path.
+      await sleep(3100);
     }
   }
   try {

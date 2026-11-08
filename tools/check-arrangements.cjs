@@ -1,5 +1,5 @@
 // Desktop check of arrangements (docs/arrangements.md) on the synthetic PET/CT of tools/fixtures/make-petct-study.mjs:
-// the study opens as CT · PET · fused · MIP with no click and a note naming it; a click on the MIP sends the linked panes
+// the study opens in one fused pane with no click. In the four-pane reading view a click on the MIP sends the linked panes
 // to the lesion; a pane moved and kept opens the next study so; Undo gives the study's first image and can be kept too;
 // Forget brings VEAcom's own screen back; a PET opened by hand is inverted grey with its window in SUV.
 // usage: node tools/check-arrangements.cjs PETCT_STUDY [OUTPUT_DIR]

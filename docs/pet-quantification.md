@@ -88,11 +88,11 @@ The viewer outlines thresholded uptake inside the sphere. When it contains disco
 
 ## PET follow-up screen
 
-`pet-follow-up` in `src/arrangements/builtin.ts` applies when a PET study opens while an earlier PET of the same patient is loaded:
+`pet-follow-up` is available from Layout when an earlier PET of the same patient and tracer is loaded.
 
 - This study's PET and the prior's sit side by side, each over its MIP, inverted grey at SUV 0–10 when both have SUVbw calibration.
 - The four panes keep one SUV scale (`scale: 'shared'`), as EANM 2025 asks for response assessment (section 14): windowing one PET gives the other the same SUV range, converted through each study's own values per SUV, and inverting it inverts both. The notice says so.
-- It is listed before the PET/CT screen, so a study without a loaded prior still opens as PET/CT.
+- Routine PET/CT opens in one fused pane even when a prior is loaded. A follow-up layout the reader explicitly kept opens automatically when it matches.
 - The `prior` role is found among every series in the session (`MatchContext.session`), not only the study that opened.
 
 The two studies lie in their own frames of reference, so their panes do not follow each other's position. The reader brings both to the same level and presses the link button, which anchors them there (`linkHere`). From then on they page together slice for slice from those anchors, scaled by slice spacing. Each study's own panes follow its crosshair as usual. A prior with the same slice count as the current study pages in step from where it is, without anchors, as the viewer does for any such pair.
