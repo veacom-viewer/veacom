@@ -31,20 +31,22 @@ downloads.
 `site/` holds what Cloudflare serves:
 
 - `prepare.mjs` makes `site/public` from the browser build (`dist-web`): `web.html` as the home page and only the
-  files it uses, with the licenses of the fonts and icons.
+  files it uses, with the licenses of the fonts and icons, of the bundled JavaScript packages
+  (`THIRD_PARTY_JAVASCRIPT_LICENSES.md`) and of the engine's Rust crates (`engine/RUST_LICENSES.txt`). Help links
+  to both, and to the source. After changing `engine/Cargo.lock`, regenerate the Rust notices with cargo-about 0.9.3
+  (the command is in `engine/about.toml`).
 - `worker.js` adds the headers to every response (cross-origin isolation for the threads, the content policy, a year's
   caching for the hashed files under `/assets/`, `no-cache` for the rest) and answers only GET and HEAD.
 - `wrangler.jsonc`: the Worker `veacom-viewer` on the custom domain viewer.veacom.app, with no workers.dev address.
 
-```powershell
-. D:\veacom-dev\veacom-viewer-env.ps1
-web\build.ps1
+```sh
+pwsh -NoProfile -File web/build.ps1
 pnpm run build:browser
-node web\site\prepare.mjs
-cd web\site
-D:\veacom-dev\tools\wrangler\node_modules\.bin\wrangler dev --ip 127.0.0.1 --port 8788
-D:\veacom-dev\tools\wrangler\node_modules\.bin\wrangler login
-D:\veacom-dev\tools\wrangler\node_modules\.bin\wrangler deploy
+node web/site/prepare.mjs
+cd web/site
+wrangler dev --ip 127.0.0.1 --port 8788
+wrangler login
+wrangler deploy
 ```
 
 `wrangler dev` runs the site in Cloudflare's runtime on this computer (http://127.0.0.1:8788/); `login` is needed once,
@@ -90,14 +92,19 @@ the local copy or the published site.
 
 ## Build and run
 
-```powershell
-. D:\veacom-dev\veacom-viewer-env.ps1
-rustup target add wasm32-unknown-unknown
-rustup toolchain install nightly-2026-11-01 --component rust-src --target wasm32-unknown-unknown
+```sh
+rustup target add wasm32-unknown-unknown --toolchain 1.99.1
+rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src --target wasm32-unknown-unknown
 cargo install wasm-bindgen-cli --version 0.2.130 --locked
-web\build.ps1
-node web\serve.mjs
+pwsh -NoProfile -File web/build.ps1
+node web/serve.mjs
 ```
+
+`build.ps1` runs with PowerShell 7 on Windows, macOS and Linux. `node web/serve.mjs 5199 dist-web` serves the browser
+build (`pnpm run build:browser`) with the site's headers; add `--no-isolation` to serve it as a host without them would,
+where the page runs the single-thread engine. CI's `browser` job builds both engines and opens a test study that way,
+with and without the headers (`tools/browser-check.mjs`). The test studies for `?test=` are read from the folder
+`VEACOM_TESTDATA` names.
 
 Open http://127.0.0.1:5199/ and drop a folder or ZIP. `?test=petct|bigct|calisma|jtwok|jpegll&rounds=N`
 opens a test study; `&prefetch=1` reads every file's first 64 KiB in parallel before the engine
@@ -107,29 +114,40 @@ holding a series' files, to time the decoding of a series too large to hold.
 
 The tools below run in Electron. A shell started from an Electron application may set
 `ELECTRON_RUN_AS_NODE`, which makes Electron run as plain Node: remove it first
-(`Remove-Item Env:ELECTRON_RUN_AS_NODE`).
+(`Remove-Item Env:ELECTRON_RUN_AS_NODE` in PowerShell, `unset ELECTRON_RUN_AS_NODE` elsewhere).
 
 Timing with files from disk (server running):
 
-```powershell
-D:\veacom-dev\veacom-viewer\node_modules\electron\dist\electron.exe web\tools\measure.cjs 5
+```sh
+pnpm exec electron web/tools/measure.cjs 5
 ```
 
 One thread against a pool of 4 (results in `threads-check.jsonl`, or `THREADS_OUT`):
 
-```powershell
-D:\veacom-dev\veacom-viewer\node_modules\electron\dist\electron.exe web\tools\threads-check.cjs 1,4
+```sh
+pnpm exec electron web/tools/threads-check.cjs 1,4
 ```
 
 Hostile files (any folder of them, plus one good file to open afterwards):
 
-```powershell
-D:\veacom-dev\veacom-viewer\node_modules\electron\dist\electron.exe web\tools\hostile.cjs <folder> <good.dcm>
+```sh
+pnpm exec electron web/tools/hostile.cjs <folder> <good.dcm>
 ```
 
 The same engine code timed natively from disk:
 
-```powershell
-cd web\engine
+```sh
+cd web/engine
 cargo run --release --example bench -- <folder or zip>
 ```
+
+## Full cleanup in the browser
+
+A full cleanup export keeps the pixels, so the reader first confirms that the selected series show no identifying text,
+as on the desktop. The desktop asks in its own window, which the page cannot reach. The browser asks in its own
+`confirm()` dialog, a page of 12 series at a time, so every selected series is shown, and the engine exports only the
+catalog revisions confirmed (`export.pixelReview`).
+
+That dialog is no approval from outside the page: nothing in a page can approve above the page itself. A page changed
+to skip it (from the browser's developer tools, or by an attack) could as well export without any cleanup, which needs
+no review. In the browser the dialog is a check for the reader, not a security boundary.

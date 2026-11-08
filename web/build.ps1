@@ -2,16 +2,17 @@
 #   web/engine/pkg          one thread, with the repository's stable Rust (1.99.1);
 #   web/engine/pkg-threads  decoding on several threads, with a nightly Rust pinned below, whose standard library is
 #                           rebuilt with atomics (-Z build-std). The page uses it when it is cross-origin isolated.
-#   . D:\veacom-dev\veacom-viewer-env.ps1
-#   web\build.ps1
-# Needs: the wasm32-unknown-unknown target for both toolchains, rust-src for the nightly one, and wasm-bindgen-cli
-# 0.2.130 (cargo install wasm-bindgen-cli --version 0.2.130 --locked).
+#   pwsh -NoProfile -File web/build.ps1
+# Runs on Windows, macOS and Linux (CI's browser job too). Needs: the wasm32-unknown-unknown target for both
+# toolchains, rust-src for the nightly one, and wasm-bindgen-cli 0.2.130
+# (cargo install wasm-bindgen-cli --version 0.2.130 --locked).
 # Exit codes are checked below; cargo's progress on stderr is not an error.
 $ErrorActionPreference = 'Continue'
 $web = $PSScriptRoot
-$stable = '1.99.1-x86_64-pc-windows-msvc'
-$nightly = 'nightly-2026-11-01-x86_64-pc-windows-msvc'
-$targets = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $web 'engine\target' }
+# Without a host part, so rustup picks this computer's own build of each toolchain.
+$stable = '1.99.1'
+$nightly = 'nightly-2026-11-01'
+$targets = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { [IO.Path]::Combine($web, 'engine', 'target') }
 
 # The C functions openjp2 calls are linked with --allow-undefined; any left unresolved would become imports.
 $check = "const m=new WebAssembly.Module(require('fs').readFileSync(process.argv[1]));const bad=WebAssembly.Module.imports(m).filter(i=>!i.module.startsWith('./'));if(bad.length){console.error('Unresolved:',bad.map(i=>i.module+'.'+i.name).join(' '));process.exit(1)}"
@@ -23,11 +24,13 @@ function Build-Engine([string]$toolchain, [string]$targetDir, [string]$out, [str
     if ($rustflags) { $env:RUSTFLAGS = $rustflags }
     Push-Location (Join-Path $web 'engine')
     try {
-        & cargo build --release --target wasm32-unknown-unknown @cargoArgs
+        & cargo build --release --locked --target wasm32-unknown-unknown @cargoArgs
         if ($LASTEXITCODE) { throw "cargo build failed ($out)" }
     } finally { Pop-Location; $env:RUSTFLAGS = $saved }
-    $wasm = Join-Path $targetDir 'wasm32-unknown-unknown\release\veacom_web_engine.wasm'
-    $dir = Join-Path $web "engine\$out"
+    # Every path is joined part by part ([IO.Path]::Combine, which Windows PowerShell 5.1 has too): wasm-bindgen and
+    # node receive it as it is, and a backslash is no separator outside Windows.
+    $wasm = [IO.Path]::Combine($targetDir, 'wasm32-unknown-unknown', 'release', 'veacom_web_engine.wasm')
+    $dir = [IO.Path]::Combine($web, 'engine', $out)
     wasm-bindgen --target web --out-dir $dir $wasm
     if ($LASTEXITCODE) { throw "wasm-bindgen failed ($out)" }
     node -e $check (Join-Path $dir 'veacom_web_engine_bg.wasm')

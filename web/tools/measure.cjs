@@ -9,7 +9,9 @@ const { app, BrowserWindow } = require('electron');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const testdata = process.env.VEACOM_TESTDATA ?? 'D:\\veacom-dev\\testdata';
+// The synthetic test studies (see web/README.md).
+const testdata = process.env.VEACOM_TESTDATA;
+if (!testdata) throw new Error('Set VEACOM_TESTDATA to the folder that holds the test studies.');
 const studies = [
   'tcia/FDG-PET-CT-Lesions/PETCT_8fea5f0537',
   'bigct',

@@ -43,6 +43,38 @@ jobs:
       - run: pnpm test
       - run: pnpm run build:web
 
+  # The browser build (web/README.md): both WebAssembly engines, the page type-checked and built against them, and the
+  # site's files opened in Chromium through the site's own Worker, with and without cross-origin isolation.
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Rust toolchains for WebAssembly (web/build.ps1 pins both)
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src --target wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The two engine builds, and wasm-bindgen in ~/.cargo/bin (cached by default).
+          workspaces: |
+            web/engine -> target
+            web/engine -> target-threads
+      - run: cargo +1.99.1 install wasm-bindgen-cli --version 0.2.130 --locked
+      - run: pwsh -NoProfile -File web/build.ps1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run build:browser
+      - run: node web/site/prepare.mjs
+      - run: node web/tools/browser-check.mjs
+
   engine:
     runs-on: ubuntu-24.04
     timeout-minutes: 35

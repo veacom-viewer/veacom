@@ -82,6 +82,13 @@ export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; o
     <details className="help-licence">
       <summary>{t('help.licence')}</summary>
       <p>{t('help.licenceNotice')}</p>
+      {/* The browser build hands its code out from the site, so it says where that code's source and its parts' licences
+          are (GPL 3, section 6); the desktop installer carries them. */}
+      {window.veacom?.web && <p>
+        <a href="https://github.com/veacom-viewer/veacom" target="_blank" rel="noopener noreferrer">{t('help.source')}</a>
+        <br />{t('help.notices')} <a href="THIRD_PARTY_JAVASCRIPT_LICENSES.md" target="_blank" rel="noopener">JavaScript</a>
+        {' · '}<a href="RUST_LICENSES.txt" target="_blank" rel="noopener">Rust</a>
+      </p>}
       <pre lang="en" tabIndex={0} aria-label={t('help.licence')}>{licence}</pre>
     </details>
     <footer>

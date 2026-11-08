@@ -7,7 +7,9 @@ import { reactCompiler } from './vite.config';
 export default defineConfig({
   plugins: [reactCompiler()],
   base: './', server: { host: '127.0.0.1', port: 5174, strictPort: true },
-  build: { outDir: 'dist-web', target: 'es2022', modulePreload: { polyfill: false }, rolldownOptions: { input: { web: 'web.html' } } },
+  // The bundled packages' licences go with the site, as the desktop build's go with the app (Help links to them).
+  build: { outDir: 'dist-web', target: 'es2022', license: { fileName: 'THIRD_PARTY_JAVASCRIPT_LICENSES.md' }, modulePreload: { polyfill: false },
+    rolldownOptions: { input: { web: 'web.html' } } },
   // The engine Worker loads one of two engine builds when it starts: module Workers allow that.
   worker: { format: 'es' },
 });

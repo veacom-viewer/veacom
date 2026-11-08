@@ -9,7 +9,9 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 process.on('unhandledRejection', (error) => { console.error(error); app.exit(1); });
-const testdata = process.env.VEACOM_TESTDATA ?? 'D:\\veacom-dev\\testdata';
+// The synthetic test studies (see web/README.md).
+const testdata = process.env.VEACOM_TESTDATA;
+if (!testdata) throw new Error('Set VEACOM_TESTDATA to the folder that holds the test studies.');
 const studies = ['bigct_j2k', 'bigct_jpegll', 'bigct', 'tcia/FDG-PET-CT-Lesions/PETCT_8fea5f0537'];
 const counts = (process.argv.at(-1).match(/^[\d,]+$/) ? process.argv.at(-1) : '1,4').split(',').map(Number);
 const ROUNDS = 2;
