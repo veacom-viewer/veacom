@@ -41,7 +41,7 @@
     "import.tooManySelected": "Çok fazla dosya seçildi.",
     "import.tooManyFiles": "Seçimde {count} dosyadan fazlası var; daha dar bir klasör seçin.",
     "import.tooManyPaths": "Bir içe aktarmada en çok 50.000 dosya ya da klasör seçilebilir.",
-    "import.tooManyArchives": "Bu oturumda zaten 24 arşiv açıldı; başka arşiv açmadan önce görüntüleyiciyi yeniden başlatın.",
+    "import.tooManyArchives": "Bir oturumda aynı anda en fazla 24 ZIP arşivi açık olabilir.",
     "import.catalogFull": "Bu oturumun çalışma listesi kaynak sınırına ulaştı; başka çalışma açmadan önce görüntüleyiciyi yeniden başlatın.",
     "import.frameLimit": "İçe aktarma 50.000 kesitlik kaynak sınırını aşıyor.",
     "import.retainedLimit": "Saklanan kesit bilgisi 256 MiB içe aktarma sınırını aşıyor.",

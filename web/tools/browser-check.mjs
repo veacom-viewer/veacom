@@ -6,6 +6,7 @@
 // The site's files (web/site/public, from prepare.mjs) go through the site's own Worker (web/site/worker.js), so the
 // page gets the headers and content policy it gets in production; the study is served beside them.
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
+import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -14,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import site from '../site/worker.js';
+import { zipStored } from '../../src/web/zip.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const publicFolder = path.join(repository, 'web/site/public');
@@ -22,8 +24,10 @@ if (!statSync(path.join(publicFolder, 'index.html'), { throwIfNoEntry: false }))
 }
 
 const scratch = mkdtempSync(path.join(tmpdir(), 'veacom-browser-check-'));
-const study = path.join(scratch, 'study');
-execFileSync(process.execPath, [path.join(repository, 'tools/fixtures/make-smoke-study.mjs'), study], { stdio: 'inherit' });
+const study = path.join(scratch, 'study'), mrStudy = path.join(scratch, 'mr.zip');
+const makeStudy = path.join(repository, 'tools/fixtures/make-smoke-study.mjs');
+execFileSync(process.execPath, [makeStudy, study], { stdio: 'inherit' });
+execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR'], { stdio: 'inherit' });
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
 
@@ -79,19 +83,45 @@ async function openStudy() {
   };
 }
 
-async function checkFilePicker(page) {
-  const selecting = page.waitForEvent('filechooser');
-  const importing = page.evaluate(async () => {
+async function importPickedFiles(page, files, kind = 'files') {
+  const selection = page.waitForEvent('filechooser').then(picker => picker.setFiles(files));
+  const [frames] = await Promise.all([page.evaluate(async kind => {
     const bridge = window.veacom;
-    const result = await bridge.importSelected(await bridge.openPaths('files'));
+    const result = await bridge.importSelected(await bridge.openPaths(kind));
+    if (kind === 'folder' && result.source !== 'disk') throw new Error('A folder import must report a disk source');
     return result.series.map(series => series.dimensions[2]);
-  });
-  const picker = await selecting;
-  await picker.setFiles(studyFiles.slice(0, 2).map(name => ({
+  }, kind), selection]);
+  return frames;
+}
+
+async function checkFilePicker(page) {
+  const frames = await importPickedFiles(page, studyFiles.slice(0, 2).map(name => ({
     name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
   })));
-  const frames = await importing;
-  if (frames.length !== 1 || frames[0] !== 2) throw new Error(`Picking two same-named slices returned frame counts ${frames}`);
+  assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
+}
+
+async function checkArchiveLimit(page) {
+  async function zipSlice(file) {
+    const name = path.basename(file);
+    const zip = zipStored([{ name, bytes: readFileSync(file) }]);
+    return { name: name + '.ZIP', mimeType: 'application/zip', buffer: Buffer.from(await zip.arrayBuffer()) };
+  }
+  const ct = await Promise.all(studyFiles.slice(0, 23).map(name => zipSlice(path.join(study, name))));
+  const mrFolder = path.join(mrStudy, 'S01');
+  const mr = await zipSlice(path.join(mrFolder, path.basename(studyFiles[0])));
+  assert.deepEqual(await importPickedFiles(page, ct), [23]);
+  await assert.rejects(importPickedFiles(page, [ct[0], mr]), /24 ZIP/);
+  const retained = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(series => series.dimensions[2]));
+  assert.deepEqual(retained, [23]);
+  assert.deepEqual(await importPickedFiles(page, [mr]), [1]);
+  await assert.rejects(importPickedFiles(page, [ct[0]]), /24 ZIP/);
+
+  // Choose the MR folder through the directory input. Replacing its archived series frees one slot.
+  await page.evaluate(() => { window.showDirectoryPicker = undefined; });
+  assert.deepEqual(await importPickedFiles(page, mrStudy, 'folder'), [slices]);
+  assert.deepEqual(await importPickedFiles(page, [mr]), [1]);
+  assert.deepEqual(await importPickedFiles(page, [path.join(study, studyFiles[0])]), [1]);
 }
 
 async function checkQueuedImports() {
@@ -147,6 +177,7 @@ try {
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       await checkFilePicker(page);
       await page.evaluate(checkQueuedImports);
+      await checkArchiveLimit(page);
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
     } catch (error) {

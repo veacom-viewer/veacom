@@ -2104,6 +2104,11 @@ pub fn import_with(paths: &[String], early: Option<EarlySink>) -> Result<Importe
     import_session(paths, early, 0)
 }
 
+/// A ZIP import extracts a file with a .zip extension.
+pub fn is_zip_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) && fs::is_file(path)
+}
+
 pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64) -> Result<Imported> {
     if paths.is_empty() {
         bail!(coded!("import.chooseFiles", "Choose DICOM files, a folder, or a ZIP archive"));
@@ -2122,10 +2127,7 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
             bail!(coded!("import.pathMissing", "Selected path does not exist: {path}", path = path.display().to_string()));
         }
         let before = files.len();
-        let root = if path
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("zip"))
-        {
+        let root = if is_zip_file(path) {
             let (dir, entries) = plan_zip(path)?;
             files.extend(entries.iter().cloned());
             let root = ImageRoot::new(dir.path(), path.file_stem());

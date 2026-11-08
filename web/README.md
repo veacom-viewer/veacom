@@ -59,7 +59,8 @@ the local copy or the published site.
   reads files through `vfs`: the computer's file system on the desktop, `memory_fs` in WebAssembly,
   where the page's files are byte sources and extracted ZIP entries live in memory. Pixel data and
   volumes are limited to 1 GiB each. All open archives share a 1 GiB extraction budget, with a
-  512 MiB limit per entry. Closing the last series from an archive frees its share of the budget.
+  512 MiB limit per entry. A session can hold 24 extracted ZIPs at once and can still import files and folders at
+  that limit. Closing the last series from an archive frees its slot and its share of the memory budget.
 - `engine/`: the WebAssembly crate. It uses the engine without its server and without the codecs
   written in C (`default-features = false`), and turns on the pure-Rust JPEG 2000 decoder. It is
   built twice: `pkg` on one thread with the repository's stable Rust, and `pkg-threads`, where a

@@ -21,6 +21,8 @@ use veacom_core::{
     tags, vfs,
 };
 
+const MAX_OPEN_ARCHIVES: usize = 24;
+
 /// Decoded volumes kept for repeated requests, least recently used first out.
 struct Cache {
     entries: VecDeque<(String, Arc<PixelBuffer>)>,
@@ -127,9 +129,10 @@ impl Session {
     /// patient check the desktop's session applies (`veacom_core::catalog`).
     pub fn import(&mut self, paths: &[String]) -> Result<ImportResult> {
         anyhow::ensure!(paths.len() <= ingest::MAX_FILES, coded!("import.tooManyPaths", "Select at most 50,000 paths per import"));
+        let incoming_archives = paths.iter().filter(|path| ingest::is_zip_file(Path::new(path))).count();
         anyhow::ensure!(
-            self.archives.len() < 24,
-            coded!("import.tooManyArchives", "This session already holds 24 extracted archives; restart before importing more archives")
+            incoming_archives <= MAX_OPEN_ARCHIVES.saturating_sub(self.archives.len()),
+            coded!("import.tooManyArchives", "A session can hold at most 24 ZIP archives at once.")
         );
         progress::check()?;
         progress::begin("import", 0);

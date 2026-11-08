@@ -440,7 +440,8 @@ export function createWebBridge(): DesktopBridge {
       for (const { path, file } of root.files) files.push({ path: `${parent}/${path}`, file });
     }
     const token = `import:${crypto.randomUUID()}`;
-    selections.set(token, { files, roots, zip: roots.some(root => root.toLowerCase().endsWith('.zip')) });
+    const zip = selected.some(root => root.files[0].path === root.name && root.name.toLowerCase().endsWith('.zip'));
+    selections.set(token, { files, roots, zip });
     return [token];
   }
 
