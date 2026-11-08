@@ -203,8 +203,13 @@ app.whenReady().then(async () => {
   });
   handle('files:open', async kind => {
     if (!['files', 'folder', 'archive'].includes(kind)) throw new Error('Invalid import type.');
-    const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
-    return selected.canceled ? [] : imaging.authorizeImportPaths(selected.filePaths);
+    const finish = kind === 'files' ? pictureDecoder.prepareFileDialog() : undefined;
+    let paths = [];
+    try {
+      const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
+      if (!selected.canceled) paths = selected.filePaths;
+      return paths.length ? imaging.authorizeImportPaths(paths) : [];
+    } finally { finish?.(paths); }
   });
   // The import window, in a view of its own (import-view.cjs): this page only opens it, right after the user's own
   // click or key press, and receives import capabilities for what the user opened there.

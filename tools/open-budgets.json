@@ -4,7 +4,7 @@
     "ct-1000-local": {
       "listing": {
         "filesOpened": 1001,
-        "bytesRead": 33554432
+        "bytesRead": 8192132
       },
       "firstFrame": {
         "filesOpened": 1,

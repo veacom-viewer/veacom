@@ -94,4 +94,3 @@ jobs:
             ${{ runner.temp }}/beta-desktop/desktop.json
             ${{ runner.temp }}/beta-desktop/desktop.md
           retention-days: 30
-

@@ -169,11 +169,26 @@ async function run(build, study, counter) {
       });
       window.__openStarted = performance.now();
     }, study);
-    const caps = await authorizeImportPaths(desktop, [path.join(studies, study)]);
-    await page.evaluate(c => window.__VEACOM_TEST__.importPaths(c), caps);
+    if (study === 'picture-picker') {
+      await desktop.evaluate(({ app, BrowserWindow, dialog }, file) => {
+        dialog.showOpenDialog = async () => {
+          // Give both builds the same time in the picker. Measure from its confirmation.
+          await new Promise(resolve => setTimeout(resolve, 750));
+          const decoders = app.__VEACOM_PRIVILEGED_TEST__.pictureDecoderProcesses().length;
+          await BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(
+            'window.__chooserDecoders = '+decoders+'; window.__openStarted = performance.now()');
+          return { canceled: false, filePaths: [file] };
+        };
+      }, path.join(studies, 'single.png'));
+      await page.getByTestId('welcome-open-files').evaluate(button => button.click());
+    } else {
+      const caps = await authorizeImportPaths(desktop, [path.join(studies, study)]);
+      await page.evaluate(c => window.__VEACOM_TEST__.importPaths(c), caps);
+    }
     await page.waitForFunction(() => window.__firstDraw && window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 120_000 });
     const firstMs = await page.evaluate(() => window.__firstDraw - window.__openStarted);
     const row = { firstMs, requests };
+    if (study === 'picture-picker') row.preparedDecoders = await page.evaluate(() => window.__chooserDecoders);
     if (study === 'ct-1000') {
       await page.waitForTimeout(300);
       let before, pid;
@@ -239,7 +254,7 @@ async function main() {
   save();
   if (report.counts.base.mprReads.files < 1000) report.failures.push('Beta 2 did not exercise the oversized volume');
   if (report.counts.head.mprReads.bytes || report.counts.head.mprReads.files) report.failures.push('MPR reread the study');
-  for (const study of ['ct-1000','mr','pet','single.png','video']) {
+  for (const study of ['ct-1000','mr','pet','single.png','picture-picker','video']) {
     for (let round = -1; round < rounds; round++) {
       const pair = {};
       try {
@@ -254,7 +269,8 @@ async function main() {
       if (study === 'ct-1000') check(pair.head.values.every((value, i) => Math.abs(value - pair.base.values[i]) < 1e-5), 'MPR result changed');
       if (study === 'mr') check(pair.head.requests.volume === 1 && pair.head.requests.frame <= 8, 'Duplicate MR reads');
       if (study === 'pet') check(pair.base.panes === 4 && pair.head.panes === 1, 'Incorrect PET layout');
-      if (study === 'single.png') check(pair.head.requests.volume === 1 && pair.head.requests.frame === 0, 'Duplicate picture reads');
+      if (study === 'single.png' || study === 'picture-picker') check(pair.head.requests.volume === 1 && pair.head.requests.frame === 0, 'Duplicate picture reads');
+      if (study === 'picture-picker') check(pair.base.preparedDecoders === 0 && pair.head.preparedDecoders === 1, 'File chooser did not prepare one decoder');
       if (study === 'video') check(pair.head.psnrDb >= 35, 'CT video quality: '+pair.head.psnrDb+' dB');
     }
     const rows = report.samples.filter(row => row.study === study);
@@ -278,4 +294,3 @@ async function main() {
   assert.deepEqual(report.failures, []);
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
-

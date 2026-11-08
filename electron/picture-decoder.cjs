@@ -70,7 +70,7 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
     if (!renderer.contents.isDestroyed()) renderer.contents.close();
   }
   function start() {
-    const view = open(), contents = view.webContents, renderer = { view, contents, pending: new Map(), ready: false, active: 0 };
+    const view = open(), contents = view.webContents, renderer = { view, contents, pending: new Map(), ready: false, active: 0, used: false };
     contents.ipc.on('picture:decoded', (event, id, answer) => {
       const job = renderer.pending.get(id);
       if (!job || job.bytes !== null || event.senderFrame !== contents.mainFrame) return;
@@ -113,17 +113,30 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
       for (const renderer of [...opened]) if (!renderer.active) retire(renderer, new Error('The picture decoder closed'));
     }, idleMs);
   }
-  function prepare(paths) {
-    if (closed || opened.length || !paths.some(name => /\.(png|jpe?g|bmp)$/i.test(name))) return;
-    try { start(); } catch { return; } // A decode retries and reports any failure to open its sandbox.
+  const hasPicture = paths => paths.some(name => /\.(png|jpe?g|bmp)$/i.test(name));
+  function warm() {
+    if (closed || opened.length) return;
+    let renderer;
+    try { renderer = start(); } catch { return; } // A decode retries and reports any failure to open its sandbox.
     retireWhenIdle();
+    return renderer;
+  }
+  function prepare(paths) {
+    if (hasPicture(paths)) warm();
+  }
+  function prepareFileDialog() {
+    const renderer = warm();
+    if (!renderer) return;
+    return paths => {
+      if (!hasPicture(paths) && !renderer.used && opened.includes(renderer)) retire(renderer, new Error('The file selection closed'));
+    };
   }
   function pump() {
     while (queue.length) {
       const renderer = pick();
       if (!renderer) return;
       const job = queue.shift();
-      renderer.active++;
+      renderer.active++; renderer.used = true;
       run(renderer, job.bytes, job.want).then(job.resolve, job.reject).finally(() => {
         renderer.active--;
         pump();
@@ -148,7 +161,7 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
   }
   /** The decoding renderers' process ids (for the desktop checks). */
   function processIds() { return opened.filter(renderer => !renderer.contents.isDestroyed()).map(renderer => renderer.contents.getOSProcessId()); }
-  return { prepare, decode, close, processIds };
+  return { prepare, prepareFileDialog, decode, close, processIds };
 }
 
 // Return RGBA one pipe chunk at a time. A valid picture can exceed the 16 MiB request limit.

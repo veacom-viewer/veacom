@@ -117,6 +117,24 @@ describe('picture decoder', () => {
     decoder.close();
   });
 
+  it('closes an unused file-dialog sandbox immediately for DICOM or cancellation', async () => {
+    const renderers = fakeRenderers(() => ({ width: 1, height: 1 }));
+    const decoder = createPictureDecoder({ open: renderers.open });
+    try {
+      for (const paths of [[], ['one.dcm']]) {
+        const finish = decoder.prepareFileDialog();
+        assert.equal(decoder.processIds().length, 1);
+        finish(paths);
+        assert.deepEqual(decoder.processIds(), []);
+      }
+      const finish = decoder.prepareFileDialog();
+      finish(['one.PNG']);
+      await decoder.decode(picture, 'size');
+      assert.equal(renderers.opened.length, 3);
+      assert.equal(decoder.processIds().length, 1);
+    } finally { decoder.close(); }
+  });
+
   it('ignores answers from any other frame, and gives up on a renderer that does not answer', async () => {
     const renderers = fakeRenderers(() => ({ width: 1, height: 1 }), { foreign: true });
     const decoder = createPictureDecoder({ open: renderers.open, timeoutMs: 30 });
