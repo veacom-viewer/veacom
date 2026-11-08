@@ -61,7 +61,7 @@ impl SourceFile {
         Ok(Self::index_prefix(path, &mut file, 0)?.0)
     }
 
-    fn index_prefix(path: &Path, file: &mut File, keep: usize) -> Result<(Arc<Self>, Arc<[u8]>)> {
+    fn index_prefix(path: &Path, file: &mut File, keep: usize) -> Result<(Arc<Self>, Arc<Vec<u8>>)> {
         let metadata = file.metadata()?;
         let len = metadata.len();
         ensure!(
@@ -69,16 +69,21 @@ impl SourceFile {
             "Invalid or excessive source file"
         );
         let mut remaining = len;
-        let mut buffer = vec![0; len.min(BLOCK as u64) as usize];
+        let mut buffer = Vec::new();
         let mut hashes = Vec::with_capacity(len.div_ceil(BLOCK as u64) as usize);
-        let mut prefix = Vec::with_capacity(keep.min(len as usize));
+        let mut prefix = vec![0; (keep / BLOCK * BLOCK).min(len as usize)];
         while remaining != 0 {
             crate::progress::check()?;
             let n = remaining.min(BLOCK as u64) as usize;
-            file.read_exact(&mut buffer[..n])?;
-            hashes.push(Sha256::digest(&buffer[..n]).into());
-            let retained = (keep - prefix.len()).min(n);
-            prefix.extend_from_slice(&buffer[..retained]);
+            let offset = (len - remaining) as usize;
+            let block = if let Some(slice) = prefix.get_mut(offset..offset + n) {
+                slice
+            } else {
+                buffer.resize(n, 0);
+                &mut buffer[..]
+            };
+            file.read_exact(block)?;
+            hashes.push(Sha256::digest(block).into());
             remaining -= n as u64;
         }
         let after = file.metadata()?;
@@ -90,7 +95,7 @@ impl SourceFile {
             path: path.to_owned(),
             len,
             hashes,
-        }), prefix.into()))
+        }), Arc::new(prefix)))
     }
 
     pub fn dicom(path: &Path) -> Result<(Arc<Self>, crate::input_guard::InputInfo, SourceReader)> {
@@ -122,7 +127,7 @@ impl SourceFile {
         Ok(self.reader(file, Arc::default()))
     }
 
-    fn reader(self: &Arc<Self>, file: File, prefix: Arc<[u8]>) -> SourceReader {
+    fn reader(self: &Arc<Self>, file: File, prefix: Arc<Vec<u8>>) -> SourceReader {
         SourceReader {
             file,
             prefix,
@@ -136,7 +141,7 @@ impl SourceFile {
 
 pub struct SourceReader {
     file: File,
-    prefix: Arc<[u8]>,
+    prefix: Arc<Vec<u8>>,
     source: Arc<SourceFile>,
     pos: u64,
     loaded: Option<usize>,

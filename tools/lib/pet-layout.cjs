@@ -1,4 +1,4 @@
-async function choosePetLayout(page, action = 'arrangement.petCt.reading') {
+async function choosePetLayout(page, action = 'layout-pet-reading') {
   await page.getByTestId('tool-layout').click();
   await page.locator(`[data-action="${action}"]`).click();
   await page.waitForFunction(() => {

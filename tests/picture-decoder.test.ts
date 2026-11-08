@@ -96,6 +96,21 @@ describe('picture decoder', () => {
     decoder.close();
   });
 
+  it('prepares one sandbox for a selected picture and reuses it for decoding', async () => {
+    const renderers = fakeRenderers(() => ({ width: 1, height: 1 }));
+    const decoder = createPictureDecoder({ open: renderers.open, idleMs: 20 });
+    decoder.prepare(['CT/001.dcm']);
+    assert.equal(renderers.opened.length, 0);
+    decoder.prepare(['image.PNG']);
+    decoder.prepare(['image.jpg']);
+    assert.equal(renderers.opened.length, 1);
+    assert.deepEqual(await decoder.decode(picture, 'size'), { width: 1, height: 1 });
+    assert.equal(renderers.opened.length, 1);
+    await pause(60);
+    assert.deepEqual(decoder.processIds(), []);
+    decoder.close();
+  });
+
   it('ignores answers from any other frame, and gives up on a renderer that does not answer', async () => {
     const renderers = fakeRenderers(() => ({ width: 1, height: 1 }), { foreign: true });
     const decoder = createPictureDecoder({ open: renderers.open, timeoutMs: 30 });

@@ -105,7 +105,10 @@ async function exportMovie(page, folder) {
   let error = 0, samples = 0;
   for (let i = 0; i < pixels.length / 3; i++) {
     if (ref[i * 4] < 8) continue; // Leave black padding out of the quality score.
-    error += (ref[i * 4] - pixels[i * 3]) ** 2; samples++;
+    for (let channel = 0; channel < 3; channel++) {
+      error += (ref[i * 4 + channel] - pixels[i * 3 + channel]) ** 2;
+      samples++;
+    }
   }
   assert(samples > 1000);
   return { exportMs, videoBytes: fs.statSync(movie).size, psnrDb: 10 * Math.log10(255 ** 2 / Math.max(0.0001, error / samples)) };
@@ -130,11 +133,15 @@ async function run(build, study, counter) {
     await ignoreOutsideInput(desktop);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 800));
     await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true' && window.__VEACOM_TEST__);
-    const errors = [], requests = { frame: 0, volume: 0 };
+    const errors = [], requests = { frame: 0, volume: 0 }, pixelPaths = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('response', response => {
       const type = new URL(response.url()).pathname.match(/^\/_imaging\/(frame|volume)\//)?.[1];
-      if (type) { requests[type]++; if (!response.ok()) errors.push('Pixel response '+response.status()); }
+      if (type) {
+        requests[type]++;
+        pixelPaths.push(new URL(response.url()).pathname);
+        if (!response.ok()) errors.push('Pixel response '+response.status());
+      }
     });
     await page.evaluate(() => {
       window.__firstDraw = null;
@@ -164,6 +171,7 @@ async function run(build, study, counter) {
     } else if (study === 'mr') {
       await page.waitForFunction(() => document.querySelectorAll('.series-preview canvas').length === 8);
       await page.waitForLoadState('networkidle');
+      row.pixelPaths = pixelPaths;
     } else if (study === 'pet') {
       await page.waitForFunction(() => {
         const s = window.__VEACOM_TEST__.state();
@@ -175,6 +183,10 @@ async function run(build, study, counter) {
         return { panes: s.panes.length, fused: s.panes.filter(p => !p.unfused && s.series.find(x => x.id === p.seriesId)?.modality === 'CT').length, overlay: overlay?.modality };
       });
       assert.equal(state.fused, 1); assert.equal(state.overlay, 'PT'); Object.assign(row, state);
+      await page.waitForTimeout(1500);
+      const rendererPid = await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getOSProcessId());
+      row.rendererRssMiB = Number(execFileSync('ps', ['-o', 'rss=', '-p', String(rendererPid)], { encoding: 'utf8' }).trim()) / 1024;
+      assert(row.rendererRssMiB > 0);
     } else if (study === 'video') Object.assign(row, await exportMovie(page, folder));
     else {
       const dims = await page.evaluate(() => window.__VEACOM_TEST__.state().dimensions);
@@ -201,23 +213,30 @@ async function main() {
   report.counts = {};
   for (const build of ['base', 'head']) report.counts[build] = await run(build, 'ct-1000', counter);
   save();
-  assert(report.counts.base.mprReads.files >= 1000, 'The beta 2 workload must exercise the oversized volume');
-  assert.deepEqual(report.counts.head.mprReads, { bytes: 0, files: 0 });
+  if (report.counts.base.mprReads.files < 1000) report.failures.push('Beta 2 did not exercise the oversized volume');
+  if (report.counts.head.mprReads.bytes || report.counts.head.mprReads.files) report.failures.push('MPR reread the study');
   for (const study of ['ct-1000','mr','pet','single.png','video']) {
     for (let round = -1; round < rounds; round++) {
       const pair = {};
-      for (const build of round % 2 === 0 ? ['base','head'] : ['head','base']) pair[build] = await run(build, study);
+      try {
+        for (const build of round % 2 === 0 ? ['base','head'] : ['head','base']) pair[build] = await run(build, study);
+      } catch (error) {
+        report.failures.push(study+' round '+(round+1)+': '+error.message); console.error(error); save(); break;
+      }
       if (round < 0) continue;
       report.samples.push({ study, round, ...pair }); save();
       console.log(study, round + 1, JSON.stringify(pair));
-      if (study === 'ct-1000') pair.head.values.forEach((value, i) => assert(Math.abs(value - pair.base.values[i]) < 1e-5, 'MPR result changed'));
-      if (study === 'mr') { assert.equal(pair.head.requests.volume, 1); assert(pair.head.requests.frame <= 8, 'Duplicate MR preview reads'); }
-      if (study === 'pet') { assert.equal(pair.base.panes, 4); assert.equal(pair.head.panes, 1); }
-      if (study === 'single.png') { assert.equal(pair.head.requests.volume, 1); assert.equal(pair.head.requests.frame, 0); }
-      if (study === 'video') { assert(pair.head.psnrDb >= 35, 'CT video quality: '+pair.head.psnrDb+' dB'); }
+      const check = (ok, reason) => { if (!ok) report.failures.push(study+' round '+(round+1)+': '+reason); };
+      if (study === 'ct-1000') check(pair.head.values.every((value, i) => Math.abs(value - pair.base.values[i]) < 1e-5), 'MPR result changed');
+      if (study === 'mr') check(pair.head.requests.volume === 1 && pair.head.requests.frame <= 8, 'Duplicate MR reads');
+      if (study === 'pet') check(pair.base.panes === 4 && pair.head.panes === 1, 'Incorrect PET layout');
+      if (study === 'single.png') check(pair.head.requests.volume === 1 && pair.head.requests.frame === 0, 'Duplicate picture reads');
+      if (study === 'video') check(pair.head.psnrDb >= 35, 'CT video quality: '+pair.head.psnrDb+' dB');
     }
     const rows = report.samples.filter(row => row.study === study);
-    const metrics = study === 'ct-1000' ? ['firstMs','mprMs'] : study === 'video' ? ['exportMs','videoBytes'] : ['firstMs'];
+    if (!rows.length) continue;
+    const metrics = study === 'ct-1000' ? ['firstMs','mprMs'] : study === 'video' ? ['exportMs','videoBytes']
+      : study === 'pet' ? ['firstMs','rendererRssMiB'] : ['firstMs'];
     for (const metric of metrics) {
       const paired = rows.map(row => ({ base: row.base[metric], head: row.head[metric] }));
       const comparison = compareRounds(paired, { threshold: .15, minMs: metric === 'videoBytes' ? 1 : 20, seed: 4109 });

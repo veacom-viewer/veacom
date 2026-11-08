@@ -185,8 +185,8 @@ describe('encoder settings', () => {
   it('asks for an H.264 level that fits the size, rate and bit rate', () => {
     const codec = (width: number, height: number, fps: number) => videoEncoderConfigs(width, height, fps)[0].codec;
     assert.equal(codec(16, 16, 1), 'avc1.64001f');
-    assert.equal(codec(1024, 768, 15), 'avc1.640020');
-    assert.equal(codec(1920, 1080, 15), 'avc1.640029');
+    assert.equal(codec(1024, 768, 15), 'avc1.64001f');
+    assert.equal(codec(1920, 1080, 15), 'avc1.640028');
     assert.equal(codec(4096, 2304, 15), 'avc1.640033');
     assert.equal(codec(8192, 4320, 15), 'avc1.64003c');
   });

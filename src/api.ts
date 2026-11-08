@@ -151,9 +151,6 @@ export async function loadSourceFrame(series: Series, index: number, signal?: Ab
     { ...series, dimensions: [series.dimensions[0], series.dimensions[1], 1] });
   return { ...frame, series: { ...series, pixelType: frame.series.pixelType, components: frame.series.components }, sourceFrameIndex: index };
 }
-export async function loadPreviewVolume(series: Series): Promise<Volume> {
-  return loadSourceFrame(series, 0);
-}
 async function decodePixels(response: Response, series: Series): Promise<Volume> {
   const pixelType = response.headers.get('X-Pixel-Type') ?? 'float32';
   const constructors = { float64: Float64Array, float32: Float32Array, int16: Int16Array, uint16: Uint16Array, uint8: Uint8Array };

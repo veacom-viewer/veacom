@@ -62,10 +62,12 @@ jobs:
           git worktree add --detach "$release" v0.1.0-beta.2
           for root in "$release" "$GITHUB_WORKSPACE"; do
             (cd "$root" && pnpm install --frozen-lockfile && pnpm run build:web)
-            (cd "$root" && CARGO_TARGET_DIR="$RUNNER_TEMP/beta-cargo" cargo build --release --locked --manifest-path native/Cargo.toml)
-            mkdir -p "$root/native/target/release"
-            cp "$RUNNER_TEMP/beta-cargo/release/veacom-core" "$root/native/target/release/veacom-core"
+            (cd "$root" && cargo build --release --locked --manifest-path native/Cargo.toml)
           done
+          if ! git diff --quiet v0.1.0-beta.2 HEAD -- native/src && cmp -s "$release/native/target/release/veacom-core" "$GITHUB_WORKSPACE/native/target/release/veacom-core"; then
+            echo "Changed engine sources produced identical benchmark executables"
+            exit 1
+          fi
           pnpm run setup:runtime
           echo "BASE_APP=$release" >> "$GITHUB_ENV"
           echo "HEAD_APP=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"

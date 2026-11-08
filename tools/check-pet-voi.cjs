@@ -312,7 +312,7 @@ async function main() {
     await launch(priorStudy);
     await privileged.importPaths(desktop, page, [study]);
     await settled();
-    await choosePetLayout(page, 'arrangement.petFollowUp');
+    await choosePetLayout(page, 'layout-pet-follow-up');
     s = await state();
     const now = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === petGrid.dimensions[2]);
     const before = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === priorGrid.dimensions[2]);

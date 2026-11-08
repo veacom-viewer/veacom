@@ -8,7 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
@@ -215,7 +215,9 @@ function defaultView(series: Series): ViewState {
 }
 /** The arrangements VEAcom applies, with the reader's kept ones in place of its own. */
 const PET_LAYOUTS = [
-  [PET_CT, 'arrangement.petCt.fused'], [PET_CT_READING, 'arrangement.petCt.reading'], [PET_FOLLOW_UP, 'arrangement.petFollowUp'],
+  [PET_CT, 'layout-pet-fused', 'arrangement.petCt.fused'],
+  [PET_CT_READING, 'layout-pet-reading', 'arrangement.petCt.reading'],
+  [PET_FOLLOW_UP, 'layout-pet-follow-up', 'arrangement.petFollowUp'],
 ] as const;
 function readKeptArrangements(): Kept {
   try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
@@ -834,7 +836,7 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
-    if (!cached && item.dimensions[2] > 1) void loadPreviewVolume(item).then(async volume => {
+    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
       if (complete || !mounted.current || !isCurrent() || fullyLoaded.current.has(item.id)) return;
       await prepareSourceProgram(volume);
       if (!complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id)) storeVolume(volume);
@@ -851,12 +853,12 @@ export default function App() {
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
   useEffect(() => {
-    if (loadingIds.size) return;
+    if (importing || loadingIds.size) return;
     let stopped = false, cursor = 0;
     const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
       const volume = fullyLoaded.current.has(item.id) ? volumesRef.current.get(item.id) : undefined;
-      const middle = volume ?? await loadSourceFrame(item, thumbnailFrame(item));
+      const middle = volume ?? await frameCache.get(item, thumbnailFrame(item));
       if (!current()) return;
       keepThumbnail(middle);
       if (!volumesRef.current.has(item.id) && !pending.current.has(item.id)) {
@@ -875,7 +877,7 @@ export default function App() {
     };
     void preload(); void preload();
     return () => { stopped = true; };
-  }, [series, loadingIds.size]);
+  }, [series, importing, loadingIds.size, frameCache]);
 
   useEffect(() => {
     // While a study is read, frames come only for the series it has already published (see importStudies).
@@ -2095,11 +2097,11 @@ export default function App() {
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
         <LayoutPicker layout={layout} label={t('toolbar.layoutPreview')} choiceLabel={(rows, columns) => t('toolbar.layoutChoice', { rows, columns })} onChoose={chooseLayout} />
-        {activeSeries && PET_LAYOUTS.map(([rule, key]) => {
+        {activeSeries && PET_LAYOUTS.map(([rule, action, key]) => {
           const study = series.filter(item => studyKey(item) === studyKey(activeSeries));
           const plan = match([rule], 'open', { series: study, session: series });
           if (!plan) return null;
-          return <button className="secondary-button compact" type="button" data-action={key} key={key}
+          return <button className="secondary-button compact" type="button" data-action={action} key={action}
             onClick={() => applyArrangement(plan, activeSeries)}>{t(key)}</button>;
         })}
       </Popover>}</div> },

@@ -115,7 +115,7 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
   }
   function prepare(paths) {
     if (closed || opened.length || !paths.some(name => /\.(png|jpe?g|bmp)$/i.test(name))) return;
-    start();
+    try { start(); } catch { return; } // A decode retries and reports any failure to open its sandbox.
     retireWhenIdle();
   }
   function pump() {

@@ -593,7 +593,7 @@ fn cannot_read(path: &Path, error: anyhow::Error) -> anyhow::Error {
 }
 
 /// A picture's RGB samples, decoded in the desktop app's sandboxed picture decoder (pictures.rs).
-fn ordinary_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<Vec<f64>> {
+fn ordinary_rgb(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<Vec<u8>> {
     let path = &frame.source.path;
     let request = crate::pictures::read(&frame.source, crate::pictures::Want::Pixels, check).map_err(|error| {
         if crate::message::coded(&error).is_some() { error } else { cannot_read(path, error) }
@@ -605,12 +605,13 @@ fn ordinary_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<(
     if source.info.components != 3 {
         bail!("Ordinary images are read as RGB");
     }
-    Ok(picture.rgb.into_iter().map(f64::from).collect())
+    anyhow::ensure!(picture.rgb.len() == frame_samples(source)?, "Decoded pixel count differs from image dimensions");
+    Ok(picture.rgb)
 }
 
 fn one_frame_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<FrameValues> {
     if frame.ordinary_image {
-        return ordinary_values(source, frame, check).map(FrameValues::from);
+        return Ok(FrameValues::from(ordinary_rgb(source, frame, check)?.into_iter().map(f64::from).collect::<Vec<_>>()));
     }
     let file = frame.source.open().map_err(|error| cannot_read(&frame.source.path, error))?;
     let mut object = dicom_object::OpenFileOptions::new().from_reader(file)
@@ -778,6 +779,9 @@ fn decode_volume_compact(source: &SourceSeries) -> Result<PixelBuffer> {
     if source.frames.len() != source.info.dimensions[2] {
         bail!("Frame count differs from series dimensions");
     }
+    if let [frame] = source.frames.as_slice() && frame.ordinary_image {
+        return ordinary_rgb(source, frame, crate::progress::check).map(PixelBuffer::U8);
+    }
     if source.info.pixel_type == "float32"
         && source.info.components == 1
         && source
@@ -818,6 +822,9 @@ pub fn decode_frame(source: &SourceSeries, index: usize) -> Result<PixelBuffer> 
         .frames
         .get(index)
         .context("Frame index is outside this series")?;
+    if frame.ordinary_image {
+        return ordinary_rgb(source, frame, || Ok(())).map(PixelBuffer::U8);
+    }
     let FrameValues {
         values,
         preserve_precision,
