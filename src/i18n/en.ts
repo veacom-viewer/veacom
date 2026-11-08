@@ -204,6 +204,7 @@ export const en = {
   'toolbar.open': 'Open study',
   'toolbar.openWindow': 'Import…',
   'import.title': 'Import',
+  'import.duplicatePaths': 'Two selected files have the same folder path. Open each folder separately.',
   'import.close': 'Close',
   'import.places': 'Places',
   'import.drives': 'Drives',

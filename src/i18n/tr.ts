@@ -207,6 +207,7 @@ export const tr: Record<keyof typeof en, string> = {
   'toolbar.open': 'İçe aktar',
   'toolbar.openWindow': 'İçe aktar…',
   'import.title': 'İçe aktar',
+  'import.duplicatePaths': 'Seçilen iki dosyanın klasör yolu aynı. Klasörleri ayrı ayrı açın.',
   'import.close': 'Kapat',
   'import.places': 'Yerler',
   'import.drives': 'Sürücüler',

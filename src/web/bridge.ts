@@ -24,7 +24,8 @@ interface CallOptions {
   /** Told the request's number as soon as it waits, so it can be cancelled before it starts. */
   onQueued?: (id: number) => void;
 }
-interface Selection { files: { path: string; file: File }[]; roots: string[]; zip: boolean }
+interface SelectedFile { path: string; file: File }
+interface Selection { files: SelectedFile[]; roots: string[]; zip: boolean }
 type Progress = { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean };
 
 const LOCALE_KEY = 'veacom.locale';
@@ -63,7 +64,7 @@ export function watchDrops(): void {
   }, true);
 }
 
-async function walk(entries: FileSystemEntry[]): Promise<{ path: string; file: File }[]> {
+async function walk(root: FileSystemEntry): Promise<SelectedFile[]> {
   const found: { path: string; entry: FileSystemFileEntry }[] = [];
   const visit = async (entry: FileSystemEntry, path: string): Promise<void> => {
     if (entry.isFile) { found.push({ path, entry: entry as FileSystemFileEntry }); return; }
@@ -75,7 +76,7 @@ async function walk(entries: FileSystemEntry[]): Promise<{ path: string; file: F
       await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
     }
   };
-  await Promise.all(entries.map(entry => visit(entry, entry.name)));
+  await visit(root, root.name);
   return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
 }
 
@@ -84,7 +85,7 @@ type FolderHandle = { kind: 'directory'; name: string; values(): AsyncIterable<F
 type FolderPicker = (options: { mode: 'read'; id?: string }) => Promise<FolderHandle>;
 
 /** Every file in a folder chosen with the File System Access API, by its path from the folder. */
-async function readFolder(folder: FolderHandle): Promise<{ path: string; file: File }[]> {
+async function readFolder(folder: FolderHandle): Promise<SelectedFile[]> {
   const found: { path: string; handle: FileHandle }[] = [];
   const visit = async (handle: FolderHandle, path: string): Promise<void> => {
     const folders: Promise<void>[] = [];
@@ -99,12 +100,12 @@ async function readFolder(folder: FolderHandle): Promise<{ path: string; file: F
 }
 
 /** Asks the browser for files: several, a folder (with everything inside it, a disc's too) or a ZIP. */
-function chooseFiles(kind: 'files' | 'folder' | 'archive'): Promise<{ path: string; file: File }[]> {
+function chooseFiles(kind: 'files' | 'folder' | 'archive'): Promise<SelectedFile[][]> {
   // Chrome and Edge ask "Upload N files to this site?" for a folder chosen the classic way, although nothing is
   // uploaded; their folder picker only asks to let the site view the files. Other browsers ask nothing either way.
   const picker = (window as { showDirectoryPicker?: FolderPicker }).showDirectoryPicker;
   if (kind === 'folder' && picker) {
-    return picker.call(window, { mode: 'read', id: 'veacom-open' }).then(readFolder, (error: Error) => {
+    return picker.call(window, { mode: 'read', id: 'veacom-open' }).then(async folder => [await readFolder(folder)], (error: Error) => {
       if (error?.name === 'AbortError') return [];
       throw error;
     });
@@ -115,7 +116,18 @@ function chooseFiles(kind: 'files' | 'folder' | 'archive'): Promise<{ path: stri
     input.multiple = kind !== 'archive';
     if (kind === 'folder') input.webkitdirectory = true;
     if (kind === 'archive') input.accept = '.zip,application/zip';
-    input.addEventListener('change', () => resolve(Array.from(input.files ?? []).map(file => ({ path: file.webkitRelativePath || file.name, file }))), { once: true });
+    input.addEventListener('change', () => {
+      const files = Array.from(input.files ?? [], file => ({ path: file.webkitRelativePath || file.name, file }));
+      if (kind !== 'folder') { resolve(files.map(file => [file])); return; }
+      const folders = new Map<string, SelectedFile[]>();
+      for (const file of files) {
+        const name = file.path.split('/')[0];
+        const folder = folders.get(name);
+        if (folder) folder.push(file);
+        else folders.set(name, [file]);
+      }
+      resolve([...folders.values()]);
+    }, { once: true });
     input.addEventListener('cancel', () => resolve([]), { once: true });
     input.click();
   });
@@ -391,17 +403,22 @@ export function createWebBridge(): DesktopBridge {
     return true;
   }
 
-  function remember(files: { path: string; file: File }[]): string[] {
-    if (!files.length) return [];
-    // Each choice gets a folder of its own, so files of the same name from two choices never meet.
+  function remember(groups: SelectedFile[][]): string[] {
+    const selected = groups.filter(group => group.length).map(files => ({ name: files[0].path.split('/')[0], files }));
+    if (!selected.length) return [];
+    const counts = new Map<string, number>();
+    for (const { name } of selected) counts.set(name, (counts.get(name) ?? 0) + 1);
     const folder = `/in/${++selectionNumber}`;
-    const roots = [...new Set(files.map(({ path }) => path.split('/')[0]))];
+    const files: SelectedFile[] = [], roots: string[] = [];
+    for (const root of selected) {
+      // Keep unambiguous siblings together for DICOMDIR. Each colliding file or folder gets its own parent.
+      const parent = counts.get(root.name) === 1 ? folder : `/in/${++selectionNumber}`;
+      roots.push(`${parent}/${root.name}`);
+      if (new Set(root.files.map(item => item.path)).size !== root.files.length) throw new Error(t('import.duplicatePaths'));
+      for (const { path, file } of root.files) files.push({ path: `${parent}/${path}`, file });
+    }
     const token = `import:${crypto.randomUUID()}`;
-    selections.set(token, {
-      files: files.map(({ path, file }) => ({ path: `${folder}/${path}`, file })),
-      roots: roots.map(root => `${folder}/${root}`),
-      zip: roots.some(root => root.toLowerCase().endsWith('.zip')),
-    });
+    selections.set(token, { files, roots, zip: roots.some(root => root.toLowerCase().endsWith('.zip')) });
     return [token];
   }
 
@@ -432,7 +449,7 @@ export function createWebBridge(): DesktopBridge {
       const drop = dropped;
       dropped = null;
       const same = drop && drop.files.length === files.length && drop.files.every((file, i) => file === files[i]);
-      return remember(same && drop.entries.length ? await walk(drop.entries) : files.map(file => ({ path: file.name, file })));
+      return remember(same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]));
     },
     async importSelected(capabilities) {
       const chosen = capabilities.map(token => selections.get(token));

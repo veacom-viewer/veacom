@@ -79,6 +79,21 @@ async function openStudy() {
   };
 }
 
+async function checkFilePicker(page) {
+  const selecting = page.waitForEvent('filechooser');
+  const importing = page.evaluate(async () => {
+    const bridge = window.veacom;
+    const result = await bridge.importSelected(await bridge.openPaths('files'));
+    return result.series.map(series => series.dimensions[2]);
+  });
+  const picker = await selecting;
+  await picker.setFiles(studyFiles.slice(0, 2).map(name => ({
+    name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
+  })));
+  const frames = await importing;
+  if (frames.length !== 1 || frames[0] !== 2) throw new Error(`Picking two same-named slices returned frame counts ${frames}`);
+}
+
 const browser = await chromium.launch();
 const failures = [];
 try {
@@ -108,6 +123,7 @@ try {
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
+      await checkFilePicker(page);
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
     } catch (error) {
