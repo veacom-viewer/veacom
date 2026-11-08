@@ -1,0 +1,212 @@
+name: Opening speed
+
+# How long the engine takes to open a synthetic 1,000-slice CT (listing, first frame, full volume) and how much work it
+# does for it (tools/check-open-speed.cjs, tools/README.md "Opening speed"). The engine of a pull request is compared
+# with its base's on the same runner, in alternating rounds with the file cache kept and flushed: within one runner
+# two copies of the same engine measured about 1% apart, while runners differ by tens of percent (each job gets
+# whichever CPU is free), so only engines timed in the same job are compared. The work counts are exact on any runner
+# and checked against tools/open-budgets.json. Nightly and by hand, main runs against the first public beta on Linux
+# and Windows, so its speed is followed as a ratio to that fixed build. A pull request with the `windows` label also
+# runs on Windows. macOS runners vary too much (15–30% between identical runs) to time anything.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - 'native/**'
+      - 'rust-toolchain.toml'
+      - 'electron/engine-process.cjs'
+      - 'electron/engine-pipe.cjs'
+      - 'tools/check-open-speed.cjs'
+      - 'tools/lib/open-speed.cjs'
+      - 'tools/lib/io-count.c'
+      - 'tools/open-budgets.json'
+      - 'tools/fixtures/make-smoke-study.mjs'
+      - 'tools/fixtures/dicom-elements.mjs'
+      - '.github/workflows/open-speed.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'native/**'
+      - 'rust-toolchain.toml'
+      - 'electron/engine-process.cjs'
+      - 'electron/engine-pipe.cjs'
+      - 'tools/check-open-speed.cjs'
+      - 'tools/lib/open-speed.cjs'
+      - 'tools/lib/io-count.c'
+      - 'tools/open-budgets.json'
+      - 'tools/fixtures/make-smoke-study.mjs'
+      - 'tools/fixtures/dicom-elements.mjs'
+      - '.github/workflows/open-speed.yml'
+  schedule:
+    - cron: '23 2 * * *'
+  workflow_dispatch:
+    inputs:
+      base:
+        description: Commit, branch or tag to compare main with
+        type: string
+        default: v0.1.0-beta.2
+
+permissions:
+  contents: read
+
+concurrency:
+  group: open-speed-${{ github.event.pull_request.number || github.ref }}-${{ github.event.action || github.event_name }}
+  cancel-in-progress: true
+
+env:
+  REFERENCE: v0.1.0-beta.2 # the first public beta: the fixed build that nightly runs compare main with
+
+jobs:
+  linux:
+    if: github.event.action != 'labeled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native
+      - name: Choose the engine to compare with
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+          REQUESTED: ${{ inputs.base }}
+        run: |
+          set -euo pipefail
+          case "$EVENT" in
+            pull_request) ref=$PR_BASE label=base ;;
+            push) ref=$BEFORE label='main before' ;;
+            workflow_dispatch) ref=${REQUESTED:-$REFERENCE} label=${REQUESTED:-$REFERENCE} ;;
+            *) ref=$REFERENCE label=$REFERENCE ;;
+          esac
+          # A push that created the branch has no commit before it.
+          if ! sha=$(git rev-parse --verify --quiet "$ref^{commit}"); then sha=$(git rev-parse "$REFERENCE^{commit}") label=$REFERENCE; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "label=$label $(git rev-parse --short "$sha")" >> "$GITHUB_OUTPUT"
+      - name: Build both engines
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          set -euo pipefail
+          engines="$RUNNER_TEMP/engines"
+          cargo build --release --locked --manifest-path native/Cargo.toml
+          install -D native/target/release/veacom-core "$engines/head/veacom-core"
+          git worktree add --detach "$RUNNER_TEMP/base-source" "$BASE_SHA"
+          # From the base's own folder, so rustup takes its toolchain; the shared target folder keeps the dependencies.
+          (cd "$RUNNER_TEMP/base-source" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/native/target" cargo build --release --locked --manifest-path native/Cargo.toml)
+          install -D native/target/release/veacom-core "$engines/base/veacom-core"
+          if cmp -s "$engines/head/veacom-core" "$engines/base/veacom-core"; then echo 'The two engines are byte-identical, so this run is an A/A check.'; fi
+      - name: Open the synthetic CT with both engines
+        env:
+          BASE_LABEL: ${{ steps.base.outputs.label }}
+          HEAD_LABEL: ${{ github.event_name == 'pull_request' && 'this pull request' || 'main' }}
+        run: >
+          node tools/check-open-speed.cjs --output="$RUNNER_TEMP/open-speed"
+          --head="$RUNNER_TEMP/engines/head/veacom-core" --base="$RUNNER_TEMP/engines/base/veacom-core"
+          --head-label="$HEAD_LABEL $(git rev-parse --short HEAD)" --base-label="$BASE_LABEL"
+          --rounds=20 --cold-rounds=10 --summary="$GITHUB_STEP_SUMMARY"
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: open-speed-linux-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/open-speed/open-speed.json
+            ${{ runner.temp }}/open-speed/open-speed.md
+          if-no-files-found: warn
+          retention-days: 90
+
+  windows:
+    if: >
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows'))
+    runs-on: windows-2022
+    timeout-minutes: 50
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native
+      - name: Choose the engine to compare with
+        id: base
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          REQUESTED: ${{ inputs.base }}
+        run: |
+          $ref, $label = switch ($env:EVENT) {
+            'pull_request' { $env:PR_BASE, 'base' }
+            'workflow_dispatch' { $requested = if ($env:REQUESTED) { $env:REQUESTED } else { $env:REFERENCE }; $requested, $requested }
+            default { $env:REFERENCE, $env:REFERENCE }
+          }
+          $sha = git rev-parse --verify --quiet "$ref^{commit}"
+          if (!$sha) { $sha = git rev-parse "$($env:REFERENCE)^{commit}"; $label = $env:REFERENCE }
+          "sha=$sha" >> $env:GITHUB_OUTPUT
+          "label=$label $(git rev-parse --short $sha)" >> $env:GITHUB_OUTPUT
+      - name: Build both engines
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          $engines = Join-Path $env:RUNNER_TEMP 'engines'
+          New-Item -ItemType Directory -Force "$engines\head", "$engines\base" | Out-Null
+          cargo build --release --locked --manifest-path native/Cargo.toml
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item native\target\release\veacom-core.exe "$engines\head\"
+          git worktree add --detach "$env:RUNNER_TEMP\base-source" $env:BASE_SHA
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          # From the base's own folder, so rustup takes its toolchain; the shared target folder keeps the dependencies.
+          Push-Location "$env:RUNNER_TEMP\base-source"
+          $env:CARGO_TARGET_DIR = Join-Path $env:GITHUB_WORKSPACE 'native\target'
+          cargo build --release --locked --manifest-path native/Cargo.toml
+          $status = $LASTEXITCODE
+          Pop-Location
+          if ($status) { exit $status }
+          Copy-Item native\target\release\veacom-core.exe "$engines\base\"
+      - name: The synthetic CT on its own virtual disk
+        # Detaching the disk before each cold open drops the cached data of the study's files.
+        run: |
+          $vhd = Join-Path $env:RUNNER_TEMP 'open-speed.vhdx'
+          $script = Join-Path $env:RUNNER_TEMP 'vhd-create.txt'
+          @("create vdisk file=`"$vhd`" maximum=3072 type=expandable", "select vdisk file=`"$vhd`"", 'attach vdisk',
+            'create partition primary', 'format fs=ntfs quick label=OPENSPEED', 'assign letter=V') | Set-Content -Encoding ascii $script
+          diskpart /s $script
+          if ($LASTEXITCODE -or !(Test-Path 'V:\')) { throw 'The virtual disk was not created' }
+          node tools/fixtures/make-smoke-study.mjs 'V:\ct-1000' --pipe-volume
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "VHDX=$vhd" >> $env:GITHUB_ENV
+      - name: Open the synthetic CT with both engines
+        env:
+          BASE_LABEL: ${{ steps.base.outputs.label }}
+          HEAD_LABEL: ${{ github.event_name == 'pull_request' && 'this pull request' || 'main' }}
+        run: >
+          node tools/check-open-speed.cjs "--output=$env:RUNNER_TEMP\open-speed" '--study=V:\ct-1000' --fixture=ct-1000
+          "--head=$env:RUNNER_TEMP\engines\head\veacom-core.exe" "--base=$env:RUNNER_TEMP\engines\base\veacom-core.exe"
+          "--head-label=$env:HEAD_LABEL $(git rev-parse --short HEAD)" "--base-label=$env:BASE_LABEL"
+          --rounds=20 --cold-rounds=10 "--vhdx=$env:VHDX" "--summary=$env:GITHUB_STEP_SUMMARY"
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: open-speed-windows-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/open-speed/open-speed.json
+            ${{ runner.temp }}/open-speed/open-speed.md
+          if-no-files-found: warn
+          retention-days: 90

@@ -28,6 +28,7 @@ series="$study/S01"
 run runtime pnpm run setup:runtime
 run core-build pnpm run build:core
 run core-tests cargo test --release --locked --manifest-path native/Cargo.toml
+run open-work node tools/check-open-speed.cjs --output="$out/open-work"
 run unit pnpm test
 run web-build pnpm run build:web
 run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
