@@ -25,8 +25,8 @@ jobs:
           workspaces: native
       - name: Build the two engines from the same public source
         run: |
-          git worktree add --detach "$RUNNER_TEMP/control" HEAD
-          git worktree add --detach "$RUNNER_TEMP/verified" 4e431bc72ab635c7f98cde6b6c6fdf5701ed0339
+          git worktree add --detach "$RUNNER_TEMP/control" 7524f40449f5660fc6341a0b5d6011a26c36172f
+          git worktree add --detach "$RUNNER_TEMP/verified" 7524f40449f5660fc6341a0b5d6011a26c36172f
           git -C "$RUNNER_TEMP/control" apply "$GITHUB_WORKSPACE/tools/bench-unverified.patch"
           (cd "$RUNNER_TEMP/control" && cargo build --locked --release --manifest-path native/Cargo.toml)
           (cd "$RUNNER_TEMP/verified" && cargo build --locked --release --manifest-path native/Cargo.toml)
