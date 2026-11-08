@@ -76,13 +76,12 @@ jobs:
         id: base
         env:
           EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
           BEFORE: ${{ github.event.before }}
           REQUESTED: ${{ inputs.base }}
         run: |
           set -euo pipefail
           case "$EVENT" in
-            pull_request) ref=$PR_BASE label=base ;;
+            pull_request) ref=HEAD^1 label=base ;; # the merge commit's first parent: the base it was merged onto
             push) ref=$BEFORE label='main before' ;;
             workflow_dispatch) ref=${REQUESTED:-$REFERENCE} label=${REQUESTED:-$REFERENCE} ;;
             *) ref=$REFERENCE label=$REFERENCE ;;
@@ -108,10 +107,11 @@ jobs:
         env:
           BASE_LABEL: ${{ steps.base.outputs.label }}
           HEAD_LABEL: ${{ github.event_name == 'pull_request' && 'this pull request' || 'main' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: >
           node tools/check-open-speed.cjs --output="$RUNNER_TEMP/open-speed"
           --head="$RUNNER_TEMP/engines/head/veacom-core" --base="$RUNNER_TEMP/engines/base/veacom-core"
-          --head-label="$HEAD_LABEL $(git rev-parse --short HEAD)" --base-label="$BASE_LABEL"
+          --head-label="$HEAD_LABEL ${HEAD_SHA::7}" --base-label="$BASE_LABEL"
           --rounds=20 --cold-rounds=10 --summary="$GITHUB_STEP_SUMMARY"
       - name: Keep the evidence
         if: always()
@@ -125,11 +125,9 @@ jobs:
           retention-days: 90
 
   windows:
-    # TEMPORARY: the last condition runs the Windows job on this pull request to test it; revert before merging.
     if: >
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows')) ||
-      github.event_name == 'pull_request'
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows'))
     runs-on: windows-2022
     timeout-minutes: 50
     defaults:
@@ -150,11 +148,10 @@ jobs:
         id: base
         env:
           EVENT: ${{ github.event_name }}
-          PR_BASE: ${{ github.event.pull_request.base.sha }}
           REQUESTED: ${{ inputs.base }}
         run: |
           $ref, $label = switch ($env:EVENT) {
-            'pull_request' { $env:PR_BASE, 'base' }
+            'pull_request' { 'HEAD^1', 'base' } # the merge commit's first parent: the base it was merged onto
             'workflow_dispatch' { $requested = if ($env:REQUESTED) { $env:REQUESTED } else { $env:REFERENCE }; $requested, $requested }
             default { $env:REFERENCE, $env:REFERENCE }
           }
@@ -197,10 +194,11 @@ jobs:
         env:
           BASE_LABEL: ${{ steps.base.outputs.label }}
           HEAD_LABEL: ${{ github.event_name == 'pull_request' && 'this pull request' || 'main' }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: >
           node tools/check-open-speed.cjs "--output=$env:RUNNER_TEMP\open-speed" '--study=V:\ct-1000' --fixture=ct-1000
           "--head=$env:RUNNER_TEMP\engines\head\veacom-core.exe" "--base=$env:RUNNER_TEMP\engines\base\veacom-core.exe"
-          "--head-label=$env:HEAD_LABEL $(git rev-parse --short HEAD)" "--base-label=$env:BASE_LABEL"
+          "--head-label=$env:HEAD_LABEL $($env:HEAD_SHA.Substring(0, 7))" "--base-label=$env:BASE_LABEL"
           --rounds=20 --cold-rounds=10 "--vhdx=$env:VHDX" "--summary=$env:GITHUB_STEP_SUMMARY"
       - name: Keep the evidence
         if: always()

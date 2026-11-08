@@ -75,7 +75,7 @@ function prepareCounter() {
   try {
     execFileSync('cc', process.platform === 'darwin' ? ['-O2', '-dynamiclib', '-o', library, source] : ['-O2', '-shared', '-fPIC', '-o', library, source, '-ldl'], { stdio: 'pipe' });
   } catch (error) {
-    return { reason: `the read counter did not compile: ${String(error.stderr || error.message).trim().split('\n')[0]}` };
+    return { required: true, reason: `the read counter did not compile: ${String(error.stderr || error.message).trim().split('\n')[0]}` };
   }
   return { library, variable: process.platform === 'darwin' ? 'DYLD_INSERT_LIBRARIES' : 'LD_PRELOAD' };
 }
@@ -248,6 +248,10 @@ async function measure(study, fixture) {
       const run = await openOnce(build, study, counter);
       report.work[build] = run.work;
       console.log(`Work, ${labels[build]}: ${PHASES.map(phase => `${NAMES[phase]} ${count(run.work[phase].filesOpened)} files, ${mib(run.work[phase].bytesRead)} MiB`).join('; ')}`);
+      // Listing reads every file at least to its header: nothing counted means the counter missed the engine's reads.
+      if (!run.work.listing.filesOpened || !run.work.listing.bytesRead) {
+        throw new Error(`The read counter saw none of the ${labels[build]} engine's reads: it did not load or did not catch its calls`);
+      }
     }
     if (fixture) {
       const file = JSON.parse(fs.readFileSync(BUDGET_FILE, 'utf8'));
@@ -262,7 +266,11 @@ async function measure(study, fixture) {
         else if (row.status === 'under') console.log(`${NAMES[row.phase]} ${row.key} ${count(row.value)} < budget ${count(row.budget)}: lower the budget (VEACOM_RECORD_BUDGETS=1)`);
       }
     }
-  } else report.workNote = counter.reason;
+  } else {
+    report.workNote = counter.reason;
+    // Where counting is possible, a budget that could not be checked fails rather than passing unseen.
+    if (fixture && counter.required) report.failures.push(`work not counted: ${counter.reason}`);
+  }
 
   // Time.
   if (rounds || coldRounds) {
