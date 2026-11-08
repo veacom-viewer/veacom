@@ -1,0 +1,42 @@
+name: Source verification control
+on:
+  push:
+    branches: [codex/benchmark-source-verification]
+permissions:
+  contents: read
+jobs:
+  compare:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .nvmrc
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: native
+      - name: Build the two engines from the same public source
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/control" HEAD
+          git -C "$RUNNER_TEMP/control" apply "$GITHUB_WORKSPACE/tools/bench-unverified.patch"
+          (cd "$RUNNER_TEMP/control" && cargo build --locked --release --manifest-path native/Cargo.toml)
+          cargo build --locked --release --manifest-path native/Cargo.toml
+      - name: Compare raw and verified source reads using a synthetic 1000-slice CT
+        run: |
+          node tools/check-open-speed.cjs "--output=$RUNNER_TEMP/results" --base-label=unverified-control --head-label=verified-candidate "--base=$RUNNER_TEMP/control/native/target/release/veacom-core" --rounds=12 --cold-rounds=6 --threshold=100 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: verification-cost-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/results/open-speed.json
+            ${{ runner.temp }}/results/open-speed.md
+          retention-days: 30
