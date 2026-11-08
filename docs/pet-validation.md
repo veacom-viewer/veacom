@@ -64,6 +64,8 @@ node tools/pet-validation.cjs ~/pet-validation/studies ~/pet-validation/spheres.
 
 For each study the tool opens the folder in the desktop app with a fresh profile, finds the PET and draws each sphere, one at a time. It assigns the role where available, reads the displayed quantities, and deletes the sphere. When VEAcom stores the placement, the tool checks its centre and radius. It flags an unconfirmed placement in the readings. On macOS and Linux the window ignores the computer's own mouse and keyboard.
 
+If a SUL reading fails, the tool restores SUVbw and removes the failed annotation before drawing the next sphere. If it cannot reset the viewer, it keeps completed readings and marks the remaining spheres in that study as unmeasured.
+
 ### The spheres file
 
 ```json

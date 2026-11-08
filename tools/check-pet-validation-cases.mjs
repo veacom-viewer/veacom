@@ -36,7 +36,9 @@ const cases = [
     [slope(1), slope(0.00035)], [originalDrug, administration('11')]],
     vendor: { suv: { injectionTime: '11:00:00' }, spheres: { L1: { SUL: { max: 7, peak: 7 } } } } },
   { study: 'dated', edits: [[originalDrug, administration('103000', current.date + '104800')], [decay('ADMIN'), decay('START')]],
-    vendor: { suv: { injectionTime: '10:48:00' }, spheres: { L1: { SUVbw: { max: 0 }, maxBqml: 0 } } } },
+    // Both drawings use the same site. The first SUL read fails and its annotation must be gone before L1 is drawn.
+    spheres: [{ ...sphere, name: 'Failed SUL' }, sphere],
+    vendor: { suv: { injectionTime: '10:48:00' }, spheres: { L1: { SUVbw: { max: 0 }, SUL: { max: 8.8 }, maxBqml: 0 } } } },
 ];
 
 const temp = await mkdtemp(path.join(tmpdir(), 'veacom-pet-validation-cases-'));
@@ -59,19 +61,24 @@ try {
   }
   const spheres = path.join(temp, 'spheres.json'), vendor = path.join(temp, 'vendor.json');
   await writeFile(path.join(temp, 'manifest.json'), JSON.stringify({ synthetic: true }));
-  await writeFile(spheres, JSON.stringify({ studies: cases.map(({ study }) => ({ study, spheres: [sphere] })) }));
+  await writeFile(spheres, JSON.stringify({ studies: cases.map(({ study, spheres = [sphere] }) => ({ study, spheres })) }));
   await writeFile(vendor, JSON.stringify({ studies: cases.map(({ study, vendor }) => ({ study, ...vendor })) }));
-  const run = spawnSync(process.execPath, [path.join(import.meta.dirname, 'pet-validation.cjs'), temp, spheres, output, '--vendor', vendor], { stdio: 'inherit' });
+  const failSul = path.join(import.meta.dirname, '../tests/fixtures/fail-first-sul-read.cjs');
+  const run = spawnSync(process.execPath, ['--require', failSul, path.join(import.meta.dirname, 'pet-validation.cjs'), temp, spheres, output, '--vendor', vendor], { stdio: 'inherit' });
   if (run.error) throw run.error;
   assert.equal(run.status, 1, 'The deliberately wrong vendor readings should fail.');
   const report = JSON.parse(await readFile(path.join(output, 'run.json'), 'utf8'));
-  assert.deepEqual(report.comparison, { within: 3, beyond: 3, reported: 1, missing: 0 });
+  assert.deepEqual(report.comparison, { within: 4, beyond: 3, reported: 1, missing: 0 });
+  assert.equal(report.studies.find(study => study.study === 'dated').failedSpheres, 1);
+  const readings = await readFile(path.join(output, 'readings.csv'), 'utf8');
+  assert.match(readings, /^dated,.*,Failed SUL,lesion,.*Synthetic SUL read failure\r?$/m);
   const csv = await readFile(path.join(output, 'comparison.csv'), 'utf8');
   assert.match(csv, /^raw,L1,Bq\/ml,max,20000,1000,1900,0.5,beyond,/m);
   assert.match(csv, /^stored,L1,SUL,max,7,7,0,1,within,"Stored SUVlbm, DICOM SUV Type LBM\."/m);
   assert.match(csv, /^stored,,,injection time,11,11:00:00,,,reported,/m);
   assert.match(csv, /^dated,,,injection time,10:48:00,10:48:00,,,within,/m);
   assert.match(csv, /^dated,L1,SUVbw,max,[\d.]+,0,,1,beyond,/m);
+  assert.match(csv, /^dated,L1,SUL,max,8\.8,8\.8,0,1,within,/m);
 } finally {
   await rm(temp, { recursive: true, force: true });
 }

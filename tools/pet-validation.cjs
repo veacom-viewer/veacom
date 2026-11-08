@@ -183,8 +183,9 @@ async function measureStudy(entry, context) {
       await page.keyboard.press('Shift+F12');
       await page.waitForTimeout(200);
     }
-    if (!await page.getByTestId('inspector-tab-measurements').isVisible()) await page.getByTestId('tool-inspector').click();
-    await page.getByTestId('inspector-tab-measurements').click();
+    const measurementsTab = page.getByTestId('inspector-tab-measurements');
+    if (!await measurementsTab.isVisible()) await page.getByTestId('tool-inspector').click();
+    await measurementsTab.click();
     await page.evaluate(() => window.__VEACOM_TEST__.setTool('sphere'));
     const location = async () => Number((await cells().nth(pane).locator('[data-testid="image-overlay"] .slice-detail').textContent()).match(/Loc: (-?[\d.]+)/)?.[1]);
     const showPetValues = async value => {
@@ -192,9 +193,13 @@ async function measureStudy(entry, context) {
       const toggle = page.locator('#section-units-toggle');
       if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
       await page.locator('select[data-action="pet-values"]').selectOption(value);
-      await page.getByTestId('inspector-tab-measurements').click();
+      await measurementsTab.click();
     };
     const rowIds = () => page.locator('[data-annotation-row]').evaluateAll(rows => rows.map(row => row.getAttribute('data-annotation-row')));
+    const deleteRow = async row => {
+      await row.locator('[data-action="measurement-delete"]').click();
+      await row.waitFor({ state: 'detached' });
+    };
     /** The row's values once measured, as one line (its parts joined by " · ", as the list shows them). */
     const rowValues = async (id, wanted = () => true, tries = 300) => {
       const row = page.locator(`[data-annotation-row="${id}"] .annotation-values`);
@@ -220,6 +225,10 @@ async function measureStudy(entry, context) {
     };
     const calibrated = positiveFactor(pet.suvFactor);
     const sul = calibrated && positiveFactor(pet.sulFactor);
+    const recordFailure = (sphere, message) => {
+      result.spheres.push({ name: sphere.name, role: sphere.role, requested: { center: sphere.center, radius: sphere.radius }, values: {}, error: message });
+      console.log(`  ${sphere.name}: ${message}`);
+    };
 
     for (const sphere of entry.spheres) {
       try {
@@ -295,15 +304,22 @@ async function measureStudy(entry, context) {
           await cells().nth(pane).screenshot({ path: path.join(context.output, 'screenshots', `${fileSafe(entry.study)}-${fileSafe(sphere.name)}.png`) });
         }
         // One sphere at a time: the next is drawn with nothing under the pointer, and each reference is the only one.
-        await row.locator('[data-action="measurement-delete"]').click();
-        await page.waitForFunction(rowId => !document.querySelector(`[data-annotation-row="${rowId}"]`), id);
+        await deleteRow(row);
         result.spheres.push(reading);
         console.log(`  ${sphere.name}: ${Object.entries(reading.values).map(([quantity, value]) => `${quantity} max ${value.max}${value.peak !== undefined ? `, peak ${value.peak}` : ''}${value.mean !== undefined ? `, mean ${value.mean}` : ''}${value.mtv !== undefined ? `, MTV ${value.mtv} mL` : ''}`).join('; ')}`);
       } catch (error) {
-        result.spheres.push({ name: sphere.name, role: sphere.role, requested: { center: sphere.center, radius: sphere.radius }, values: {}, error: String(error.message ?? error) });
-        console.log(`  ${sphere.name}: ${error.message ?? error}`);
-        // Leave nothing half drawn behind for the next sphere.
-        for (const id of await rowIds()) await page.locator(`[data-annotation-row="${id}"] [data-action="measurement-delete"]`).click().catch(() => {});
+        const message = String(error.message ?? error);
+        try {
+          if (sul) await showPetValues('bw');
+          else await measurementsTab.click();
+          for (const id of await rowIds()) await deleteRow(page.locator(`[data-annotation-row="${id}"]`));
+        } catch (cleanupError) {
+          const reason = `Could not reset the viewer after ${sphere.name}: ${cleanupError.message ?? cleanupError}`;
+          recordFailure(sphere, `${message}. ${reason}`);
+          for (const remaining of entry.spheres.slice(result.spheres.length)) recordFailure(remaining, reason);
+          break;
+        }
+        recordFailure(sphere, message);
       }
     }
     return result;
