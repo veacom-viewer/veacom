@@ -1,6 +1,6 @@
 # Desktop imaging boundary
 
-On supported local Linux filesystems, the engine uses file identity and change times for settled files after a short read lease confirms there is no existing writer or writable mapping. It checks the open file before and after every read. On APFS it reads a private copy-on-write clone made at import and also checks the original file's identity. Writes through a mapping can leave timestamps unchanged. The clone keeps those writes out of previously imported images and exports. Its temporary directory uses the same permissions and crash cleanup as archive extraction.
+On supported local Linux filesystems, the engine uses file identity and change times for settled files after a short read lease confirms there is no existing writer or writable mapping. It checks the open file before and after every read. On APFS it reads a private copy-on-write clone made at import and also checks the original file's identity. A DICOM file of at most one 256 KiB digest block is instead hashed in the same read that supplies its cached header, avoiding a clone for each small slice. Writes through a mapping can leave timestamps unchanged. The clone keeps those writes out of previously imported images and exports. Its temporary directory uses the same permissions and crash cleanup as archive extraction.
 
 If a lease or clone is unavailable, the engine hashes the source in blocks. Recently written files, Windows files and other filesystems also use block hashes. Later reads verify those hashes before the engine returns bytes.
 

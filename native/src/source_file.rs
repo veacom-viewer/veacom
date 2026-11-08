@@ -78,7 +78,9 @@ impl SourceFile {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let stamp = stamp::Stamp::capture(file, &metadata);
         #[cfg(target_os = "macos")]
-        let snapshot = stamp.as_ref().filter(|s| s.settled()).and_then(|_| snapshot::Snapshot::create(file).ok());
+        // A single DICOM block can be hashed and kept for header parsing in the same read.
+        let snapshot = stamp.as_ref().filter(|s| (len > BLOCK as u64 || keep < BLOCK) && s.settled())
+            .and_then(|_| snapshot::Snapshot::create(file).ok());
         #[cfg(target_os = "macos")]
         let local_reader = snapshot.as_ref().and_then(|snap| snap.open().ok());
         #[cfg(target_os = "linux")]
@@ -275,6 +277,23 @@ impl Seek for SourceReader {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn small_dicom_slices_reuse_the_verified_header_without_an_apfs_clone() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let path = dir.path().join("slice.dcm");
+        let bytes = vec![7; 32 * 1024];
+        std::fs::write(&path, &bytes).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(3100));
+        let (source, prefix) = SourceFile::index_prefix(&path, &mut open_file(&path).unwrap(), IMPORT_PREFIX).unwrap();
+        assert!(source.snapshot.is_none());
+        assert_eq!(source.hashes.len(), 1);
+        assert_eq!(prefix.as_slice(), bytes.as_slice());
+        let mut reader = source.open().unwrap();
+        std::fs::write(&path, vec![22; bytes.len()]).unwrap();
+        assert!(reader.read_exact(&mut [0; 8]).is_err());
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
