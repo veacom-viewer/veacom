@@ -48,7 +48,8 @@ const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
     const renderer=roles.find(e=>e.attributes['veacom.perf.role']==='renderer' && e.attributes['veacom.perf.signal']==='cpu-ram');
     assert(renderer,'missing controlled renderer CPU and RAM spike: '+JSON.stringify(roles.map(e=>e.attributes)));
     assert(roles.some(e=>e.attributes['veacom.perf.role']==='engine' && e.attributes['veacom.perf.ram_mib']>0),'missing engine sample');
-    const proof={platform:process.platform,version:'0.1.0-beta.1',first:{trace:first.trace,span:first.span},renderer:{trace:renderer.trace,span:renderer.span,...renderer.attributes},roles:roles.map(e=>e.attributes['veacom.perf.role']),medianElectronPollMs:Number(sampleCost.toFixed(3))};
+    const version = await app.evaluate(({ app }) => app.getVersion());
+    const proof={platform:process.platform,version,first:{trace:first.trace,span:first.span},renderer:{trace:renderer.trace,span:renderer.span,...renderer.attributes},roles:roles.map(e=>e.attributes['veacom.perf.role']),medianElectronPollMs:Number(sampleCost.toFixed(3))};
     fs.writeFileSync(result,JSON.stringify(proof,null,2)+'\n');
     console.log('PASS synthetic first image, engine counters and a real renderer CPU/RAM spike.');
   } finally {if(app) await app.close();fs.rmSync(dir,{recursive:true,force:true});}
