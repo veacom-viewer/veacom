@@ -118,7 +118,9 @@ impl SourceFile {
         let snapshot = stamp.as_ref().filter(|s| (len > BLOCK as u64 || keep < BLOCK) && s.settled())
             .and_then(|_| snapshot::Snapshot::create(file).ok());
         #[cfg(target_os = "macos")]
-        let local_reader = snapshot.as_ref().and_then(|snap| snap.open().ok());
+        let opened = snapshot.as_ref().and_then(|snap| snap.open().ok());
+        #[cfg(target_os = "macos")]
+        let local_reader = opened.as_ref();
         #[cfg(target_os = "linux")]
         let local_reader = stamp.as_ref().filter(|s| s.settled() && stamp::no_existing_writer(file)).map(|_| &*file);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -126,7 +128,7 @@ impl SourceFile {
             let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
             let mut offset = 0;
             while offset < prefix.len() {
-                let read = local.read(file, &contents, &mut prefix[offset..], offset as u64)?;
+                let read = local.read(file, contents, &mut prefix[offset..], offset as u64)?;
                 ensure!(read != 0, changed());
                 offset += read;
             }
