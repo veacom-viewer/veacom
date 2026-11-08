@@ -8,6 +8,20 @@ import { iconMarkup, ownScript } from '../src/web/trusted-types';
 import { zipStored } from '../src/web/zip';
 
 const desktop = createRequire(import.meta.url)('../electron/mp4.cjs');
+const { readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
+
+it('bounds the total bytes read ahead and preserves file indices when reads are skipped', async () => {
+  const file = new File([new Uint8Array(64 * 1024)], 'slice.dcm');
+  let largeReads = 0;
+  const large = { size: 17 * 1024 * 1024, slice: () => { largeReads++; return file; } };
+  const heads: (Uint8Array | undefined)[] = await readHeads([{ file: large }, ...Array(300).fill({ file })]);
+  assert.equal(heads.length, 301);
+  assert.equal(heads[0], undefined);
+  assert.equal(largeReads, 0);
+  assert.equal(heads[256]?.length, 64 * 1024);
+  assert.equal(heads[257], undefined);
+  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 16 * 1024 * 1024);
+});
 
 it('writes the same MP4 header as the desktop, in both layouts', () => {
   const config = new Uint8Array([1, 0x64, 0, 0x1f, 0xff, 0xe1, 0, 0]);

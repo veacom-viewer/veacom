@@ -4,6 +4,8 @@
 // Without it: half the cores, at most 4.
 // The site's Trusted Types rule holds in Workers too: the helpers are started from here, and only this site's scripts
 // may be started.
+import { readHeads } from './file-heads.js';
+
 self.trustedTypes?.createPolicy('default', {
   createScriptURL: (url) => {
     if (new URL(url, self.location.href).origin !== self.location.origin) throw new TypeError('Only this site\'s scripts may be started.');
@@ -109,11 +111,7 @@ self.onmessage = async ({ data }) => {
     const t0 = performance.now();
     engine.reset();
     series = [];
-    // Optional: read every file's first 64 KiB at once, asynchronously, so the browser overlaps the reads;
-    // the engine then parses headers from memory instead of waiting on one FileReaderSync call per file.
-    const heads = data.prefetch
-      ? await Promise.all(data.files.map(({ file }) => file.slice(0, 65536).arrayBuffer().then((buffer) => new Uint8Array(buffer))))
-      : [];
+    const heads = data.prefetch ? await readHeads(data.files) : [];
     const prefetched = performance.now() - t0;
     data.files.forEach(({ path, file }, i) => engine.addFile(`/in/${path}`, file, heads[i]));
     const result = JSON.parse(engine.importPaths(data.roots.map((root) => `/in/${root}`)));

@@ -7,6 +7,8 @@
 // computer room, the engine works on at most half its cores and never more than 4; the helpers sleep when there is
 // nothing to decode. Elsewhere, or if the helpers cannot start, the single-thread build runs.
 
+import { readHeads } from '../../web/file-heads.js';
+
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
 type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
 
@@ -73,17 +75,6 @@ let lastError = '';
 const consoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => { lastError = args.map(String).join(' ').slice(0, 4000); consoleError(...args); };
 
-/** Each file's first 64 KiB, read many at a time, so the engine parses headers from memory (see web/RAPOR.md). */
-async function heads(files: { file: File }[]): Promise<(Uint8Array | undefined)[]> {
-  if (files.length > 20_000) return [];
-  const result: (Uint8Array | undefined)[] = [];
-  for (let start = 0; start < files.length; start += 256) {
-    const batch = files.slice(start, start + 256);
-    result.push(...await Promise.all(batch.map(({ file }) => file.slice(0, 65536).arrayBuffer().then(buffer => new Uint8Array(buffer), () => undefined))));
-  }
-  return result;
-}
-
 scope.onmessage = async ({ data }) => {
   let loaded: Awaited<typeof ready>;
   try {
@@ -110,7 +101,7 @@ scope.onmessage = async ({ data }) => {
         break;
       }
       case 'import': {
-        const first = await heads(data.files);
+        const first = await readHeads(data.files);
         data.files.forEach(({ path, file }, i) => engine.addFile(path, file, first[i]));
         value = JSON.parse(engine.importPaths(data.roots));
         break;
