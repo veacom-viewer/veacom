@@ -69,6 +69,21 @@ function folderBytes(folder) {
 const engineTemp = path.join(output, 'engine-temp');
 const engineEnv = process.platform === 'win32' ? { TEMP: engineTemp, TMP: engineTemp } : { TMPDIR: engineTemp };
 
+/** Select the budget from the fixture's filesystem before measuring either engine. */
+function generatedFixtureBudget(study) {
+  if (process.platform === 'darwin') {
+    if (fs.statSync(study).dev === fs.statSync(engineTemp).dev) {
+      try {
+        execFileSync('df', ['-t', 'apfs', study], { stdio: 'ignore' });
+        return 'ct-1000-apfs';
+      } catch { /* A different filesystem uses block verification. */ }
+    }
+    return 'ct-1000-mac';
+  }
+  if (process.platform === 'linux' && [0xef53, 0x9123683e, 0x01021994, 0x58465342].includes(fs.statfsSync(study).type)) return 'ct-1000-local';
+  return 'ct-1000';
+}
+
 let opens = 0;
 async function openOnce(build, study, counter, flushBeforeVolume) {
   const env = { ...process.env, ...engineEnv };
@@ -192,7 +207,6 @@ function markdown(report) {
   let study = args.study && path.resolve(args.study), fixture = args.fixture || null, generated = false;
   if (!study) {
     study = path.join(output, 'ct-1000');
-    fixture ??= process.platform === 'darwin' ? 'ct-1000-mac' : 'ct-1000';
     if (!fs.existsSync(path.join(study, 'manifest.json'))) {
       fs.rmSync(study, { recursive: true, force: true });
       execFileSync(process.execPath, [path.join(__dirname, 'fixtures/make-smoke-study.mjs'), study, '--pipe-volume'], { stdio: 'inherit' });
@@ -200,6 +214,7 @@ function markdown(report) {
       // Time a settled study. Files still in their writer's clock tick take the block-verification path.
       await sleep(3100);
     }
+    fixture ??= generatedFixtureBudget(study);
   }
   try {
     await measure(study, fixture);
