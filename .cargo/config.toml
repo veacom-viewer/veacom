@@ -1,3 +1,7 @@
+[build]
+# Desktop packaging and smoke tests read the engine from native/target/release.
+target-dir = "native/target"
+
 # openjp2 is also built as a cdylib, which cannot link on its own without a C library. Its C calls are
 # provided by src/libc_shim.rs in the final module; web/build.ps1 checks that nothing is left unresolved.
 # SIMD (several values per instruction) for the decoders' and the pixel conversions' loops; every current browser has

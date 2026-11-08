@@ -275,13 +275,13 @@ WebAssembly belleği JPEG 2000'de 219 MB'tan 250 MB'a, bigct'de 419 MB'tan 651 M
 - **Tarayıcı taşıması:** `web/engine` motoru kütüphane olarak kullanıyor. İçinde yalnız Blob okuma (`blob.rs`), Worker'ın çağırdığı işlevler (`api.rs`), openjp2 için C kütüphanesi karşılıkları (`libc_shim.rs`) ve bellek katmanı (`allocator.rs`) kaldı. Kopyalar ve `build.rs` kaldırıldı.
 
 **Masaüstünün değişmediği şöyle doğrulandı:**
-- Masaüstü derlemesi önceki gibi 117 paketi tam aynı özelliklerle kullanıyor (`cargo tree` ile karşılaştırıldı). `native/Cargo.lock` değişmedi.
+- Masaüstü derlemesi önceki gibi 117 paketi tam aynı özelliklerle kullanıyor (`cargo tree` ile karşılaştırıldı). Masaüstü ve tarayıcı motorları artık depo kökündeki `Cargo.lock` dosyasını paylaşıyor.
 - `cargo test --release` geçti: kütüphanede 181, sunucuda 11 test. Testlerin hepsi yerinde; 2'si yeni, 2'si yalnız Unix'te çalışıyor.
 - CI'ın zorunlu clippy denetimi (engelleyen iş yalnız sıralardan) geçti. Yeni dosyalar rustfmt ve clippy uyarısı vermiyor.
 
 **Tarayıcıda da aynı sonuç alındı:** bigct'nin JPEG 2000, JPEG Lossless ve sıkıştırılmamış kopyaları yine aynı özeti verdi, Calisma.zip yine 6 seri açtı. 247 zararlı dosyanın sonuçları da aynı çıktı.
 
-**Yeni bağımlılık adları:** Tarayıcı derlemesinin kilit dosyası dört yeni ad getiriyor; `tools/dependency-names.txt` listesine eklendiler:
+**Yeni bağımlılık adları:** Tarayıcı derlemesi ortak kilit dosyasına dört yeni ad ekliyor; `tools/dependency-names.txt` listesine eklendiler:
 
 | Ad | Yayımlayan | Neden |
 |---|---|---|
@@ -314,7 +314,7 @@ WebAssembly dosyası 3,6 MB (wasm-opt uygulanmadan).
 - Tarayıcı: Electron 45'in Chromium'u. Dosyalar diskten geliyor, yani kullanıcının sürükleyip bıraktığı türden File nesneleri.
 - Tarayıcı süreleri dosyaların Worker'a verildiği andan başlıyor. Her değer 5 turun ortancası; parantez içinde en düşük ve en yüksek tur var.
 - Masaüstü motoru: `D:\veacom-dev\bench\rounds3.jsonl`, `base` motoru, 7 turun ortancası.
-- "Aynı kod, yerel": bu prototipin crate'i Windows için derlenip diskten çalıştırıldı (`cargo run --release --example bench`). Masaüstü ile WebAssembly arasındaki farkın ne kadarının iş parçacığından geldiğini ayırmak için tek çekirdekle de çalıştırıldı.
+- "Aynı kod, yerel": bu prototipin crate'i Windows için derlenip diskten çalıştırıldı. Bugün aynı ölçüm `cargo run --locked --profile browser-release --example bench` ile yapılabilir. Masaüstü ile WebAssembly arasındaki farkın ne kadarının iş parçacığından geldiğini ayırmak için tek çekirdekle de çalıştırıldı.
 
 **Seri listesi ve ilk görüntü** (başlangıçtan itibaren):
 

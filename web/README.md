@@ -33,8 +33,8 @@ downloads.
 - `prepare.mjs` makes `site/public` from the browser build (`dist-web`): `web.html` as the home page and only the
   files it uses, with the licenses of the fonts and icons, of the bundled JavaScript packages
   (`THIRD_PARTY_JAVASCRIPT_LICENSES.md`) and of the engine's Rust crates (`engine/RUST_LICENSES.txt`). Help links
-  to both, and to the source. After changing `engine/Cargo.lock`, regenerate the Rust notices with cargo-about 0.9.3
-  (the command is in `engine/about.toml`).
+  to both, and to the source. When browser dependencies change in the workspace `Cargo.lock`, regenerate the Rust
+  notices with cargo-about 0.9.3 (the command is in `engine/about.toml`).
 - `worker.js` adds the headers to every response (cross-origin isolation for the threads, the content policy, a year's
   caching for the hashed files under `/assets/`, `no-cache` for the rest) and answers only GET and HEAD.
 - `wrangler.jsonc`: the Worker `veacom-viewer` on the custom domain viewer.veacom.app, with no workers.dev address.
@@ -137,7 +137,7 @@ The same engine code timed natively from disk:
 
 ```sh
 cd web/engine
-cargo run --release --example bench -- <folder or zip>
+cargo run --locked --profile browser-release --example bench -- <folder or zip>
 ```
 
 ## Full cleanup in the browser

@@ -94,6 +94,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
+name = "charls"
+version = "0.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "461ee0e8f15d5a4a14c6d79e7cf593a85d28e635e4ce7211c93ac649f03cfb5f"
+dependencies = [
+ "charls-sys",
+]
+
+[[package]]
+name = "charls-sys"
+version = "2.4.6+charls.2.4.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc3ade47233f5da8e23735191366ed0e52a96a4dcb4fb50ecd18faefc87c3185"
+dependencies = [
+ "cmake",
+ "link-cplusplus",
+]
+
+[[package]]
 name = "chrono"
 version = "0.4.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -104,6 +123,15 @@ dependencies = [
  "num-traits",
  "wasm-bindgen",
  "windows-link",
+]
+
+[[package]]
+name = "cmake"
+version = "0.1.58"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
+dependencies = [
+ "cc",
 ]
 
 [[package]]
@@ -243,6 +271,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fccc295971fd942d8b1b3573229ca2d48746afd51df6650acf353313f1626f"
 dependencies = [
  "byteordered",
+ "charls",
  "dicom-core",
  "dicom-encoding",
  "flate2",
@@ -484,6 +513,7 @@ dependencies = [
  "anyhow",
  "log",
  "openjp2",
+ "openjpeg-sys",
  "thiserror",
 ]
 
@@ -509,6 +539,15 @@ name = "libc"
 version = "0.2.191"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+
+[[package]]
+name = "link-cplusplus"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f78c730aaa7d0b9336a299029ea49f9ee53b0ed06e9202e8cb7db9bae7b8c82"
+dependencies = [
+ "cc",
+]
 
 [[package]]
 name = "log"
@@ -570,6 +609,16 @@ dependencies = [
  "log",
  "smallvec",
  "sprintf",
+]
+
+[[package]]
+name = "openjpeg-sys"
+version = "1.0.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "92682cb92e7b01e2c020cf8ec12f3374558924bb24621df1112d8a7c93d419ef"
+dependencies = [
+ "cc",
+ "libc",
 ]
 
 [[package]]

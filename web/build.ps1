@@ -12,6 +12,7 @@ $web = $PSScriptRoot
 # Without a host part, so rustup picks this computer's own build of each toolchain.
 $stable = '1.99.1'
 $nightly = 'nightly-2026-11-01'
+$profileName = 'browser-release'
 $targets = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { [IO.Path]::Combine($web, 'engine', 'target') }
 
 # The C functions openjp2 calls are linked with --allow-undefined; any left unresolved would become imports.
@@ -24,12 +25,12 @@ function Build-Engine([string]$toolchain, [string]$targetDir, [string]$out, [str
     if ($rustflags) { $env:RUSTFLAGS = $rustflags }
     Push-Location (Join-Path $web 'engine')
     try {
-        & cargo build --release --locked --target wasm32-unknown-unknown @cargoArgs
+        & cargo build --profile $profileName --locked --target wasm32-unknown-unknown @cargoArgs
         if ($LASTEXITCODE) { throw "cargo build failed ($out)" }
     } finally { Pop-Location; $env:RUSTFLAGS = $saved }
     # Every path is joined part by part ([IO.Path]::Combine, which Windows PowerShell 5.1 has too): wasm-bindgen and
     # node receive it as it is, and a backslash is no separator outside Windows.
-    $wasm = [IO.Path]::Combine($targetDir, 'wasm32-unknown-unknown', 'release', 'veacom_web_engine.wasm')
+    $wasm = [IO.Path]::Combine($targetDir, 'wasm32-unknown-unknown', $profileName, 'veacom_web_engine.wasm')
     $dir = [IO.Path]::Combine($web, 'engine', $out)
     wasm-bindgen --target web --out-dir $dir $wasm
     if ($LASTEXITCODE) { throw "wasm-bindgen failed ($out)" }
@@ -42,7 +43,7 @@ Build-Engine $stable $targets 'pkg' @() $null
 # Shared memory for the threads, up to the 4 GB a 32-bit module can address. The memory is shared and given to the
 # module from outside (so every helper Worker can be handed the same one), and each thread sets up its own
 # thread-local storage with the __wasm_init_tls/__tls_* exports; this nightly's linker step does not add these by
-# itself. RUSTFLAGS replaces the rustflags of engine/.cargo/config.toml, so its settings (the openjp2 link setting,
+# itself. RUSTFLAGS replaces the rustflags of .cargo/config.toml, so its settings (the openjp2 link setting,
 # SIMD) are repeated here.
 $threadFlags = @(
     '-C target-feature=+atomics,+bulk-memory,+simd128'

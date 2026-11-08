@@ -1,4 +1,4 @@
-# Every package name that may appear in this repository's lockfiles (pnpm-lock.yaml and native/Cargo.lock).
+# Every package name that may appear in the pnpm lockfiles and the workspace Cargo.lock.
 # tools/check-repository.mjs fails when a lockfile gains a name that is not listed here, and when a listed name is in
 # no lockfile any more. Version bumps need no change.
 #

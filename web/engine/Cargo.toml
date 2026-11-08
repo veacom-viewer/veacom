@@ -6,9 +6,6 @@ license = "GPL-3.0-or-later"
 publish = false
 description = "The VEAcom engine in a browser: veacom-core compiled to WebAssembly and called from a Web Worker"
 
-# Not part of any workspace: the engine in native/ stays a separate crate.
-[workspace]
-
 [lib]
 crate-type = ["cdylib", "rlib"]
 
@@ -22,21 +19,17 @@ threads = []
 [dependencies]
 # The engine itself, without the codecs written in C (its desktop transport is a separate binary).
 veacom-core = { path = "../../native", default-features = false }
-anyhow = "1.0"
+anyhow.workspace = true
 # JPEG 2000 through the pure-Rust OpenJPEG port, the one that compiles to WebAssembly. This turns it on in the engine's
 # own dicom-pixeldata (one crate, features unified).
-dicom-pixeldata = { version = "0.10.1", default-features = false, features = ["native", "openjp2"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+dicom-pixeldata = { workspace = true, features = ["openjp2"] }
+serde.workspace = true
+serde_json.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 console_error_panic_hook = "0.1"
 # The engine's random identifiers come from the browser's crypto (also unified with the engine's getrandom).
-getrandom = { version = "0.4", features = ["wasm_js"] }
+getrandom = { workspace = true, features = ["wasm_js"] }
 js-sys = "0.3"
 wasm-bindgen = "=0.2.130"
 web-sys = { version = "0.3", features = ["Blob", "FileReaderSync", "Performance", "WorkerGlobalScope"] }
-
-[profile.release]
-lto = true
-codegen-units = 1
