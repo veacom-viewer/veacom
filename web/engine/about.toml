@@ -1,0 +1,5 @@
+# Licences of the crates used by the browser engine. Run from the repository root:
+#   cargo about generate --locked --manifest-path web/engine/Cargo.toml --config web/engine/about.toml web/engine/licenses.hbs --output-file web/engine/RUST_LICENSES.txt
+accepted = ["Apache-2.0", "MIT", "BSD-2-Clause", "Zlib", "CC0-1.0", "Unicode-3.0", "IJG", "GPL-3.0-or-later"]
+targets = ["wasm32-unknown-unknown"]
+ignore-dev-dependencies = true

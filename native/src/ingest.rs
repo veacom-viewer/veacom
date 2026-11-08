@@ -11,17 +11,19 @@ use anyhow::{Context, Result, bail, ensure};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use dicom_core::{PrimitiveValue, Tag};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
+use crate::vfs::{self as fs, File};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 
 pub const MAX_FILES: usize = 50_000;
-const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_ARCHIVE_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Extracted archive entries are held in memory in WebAssembly, where everything shares 4 GB: 1 GiB in all and
+/// 512 MiB per entry there, so a ZIP bomb stops long before memory runs out.
+const MAX_ARCHIVE_BYTES: u64 = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 8 * 1024 * 1024 * 1024 };
+const MAX_ARCHIVE_FILE_BYTES: u64 = if cfg!(target_arch = "wasm32") { 512 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
 /// The threads that read an import's files (crate::parallel names them dicom-index-1…).
 fn index_readers() -> usize {
     crate::parallel::available(2).min(8)
@@ -1524,7 +1526,7 @@ fn read_frames_budget(
         budget.reserve_index(1, 4096 + ordinary[0].2.source.retained_bytes())?;
         return Ok(IndexedFile::Images(ordinary));
     }
-    let (source, input) = match reference {
+    let (source, input, header) = match reference {
         Some(reference) => SourceFile::dicom_handle(path, crate::media_directory::open_referenced(&reference.root, path)?)?,
         None => SourceFile::dicom(path)?,
     };
@@ -1532,7 +1534,7 @@ fn read_frames_budget(
     budget.reserve_header(input.frames, input.metadata_bytes)?;
     let obj = OpenFileOptions::new()
         .read_until(Tag(0x7fe0, 0x0008))
-        .from_reader(source.open()?)?;
+        .from_reader(header)?;
     if let Some(reference) = reference {
         ensure!(text(&obj, Tag(0x0008, 0x0016)) == reference.class
             && text(&obj, Tag(0x0008, 0x0018)) == reference.instance,
@@ -2079,9 +2081,10 @@ pub fn display_window(values: impl Iterator<Item = f64> + Clone) -> Option<(f64,
     Some(((bottom + top) / 2., (top - bottom).max(1.)))
 }
 
-#[cfg(test)]
+/// `import_session` without early series, at source revision 0: for the tests, the desktop transport's among them
+/// (which build this library without `cfg(test)`).
 pub fn import(paths: &[String]) -> Result<Imported> {
-    import_with(paths, None)
+    import_session(paths, None, 0)
 }
 
 /// Where an import hands over the series it can show before it ends (see `import_with`).
@@ -2101,6 +2104,11 @@ pub fn import_with(paths: &[String], early: Option<EarlySink>) -> Result<Importe
     import_session(paths, early, 0)
 }
 
+/// A ZIP import extracts a file with a .zip extension.
+pub fn is_zip_file(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) && fs::is_file(path)
+}
+
 pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64) -> Result<Imported> {
     if paths.is_empty() {
         bail!(coded!("import.chooseFiles", "Choose DICOM files, a folder, or a ZIP archive"));
@@ -2115,14 +2123,11 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     for raw in paths {
         crate::progress::check()?;
         let path = Path::new(raw);
-        if !path.exists() {
+        if !fs::exists(path) {
             bail!(coded!("import.pathMissing", "Selected path does not exist: {path}", path = path.display().to_string()));
         }
         let before = files.len();
-        let root = if path
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("zip"))
-        {
+        let root = if is_zip_file(path) {
             let (dir, entries) = plan_zip(path)?;
             files.extend(entries.iter().cloned());
             let root = ImageRoot::new(dir.path(), path.file_stem());
@@ -2134,10 +2139,10 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
             .is_some_and(|x| x.eq_ignore_ascii_case("rar"))
         {
             bail!(coded!("rar.unsupported", "RAR archives cannot be opened. Extract the archive, then open the folder."));
-        } else if path.is_file() && path.file_name().is_some_and(|x| x.eq_ignore_ascii_case("DICOMDIR"))
+        } else if fs::is_file(path) && path.file_name().is_some_and(|x| x.eq_ignore_ascii_case("DICOMDIR"))
         {
             let parent = path.parent().context("DICOMDIR has no parent directory")?;
-            let root = parent.canonicalize()?;
+            let root = fs::canonicalize(parent)?;
             for (path, reference) in crate::media_directory::references(path, &root)? {
                 if let Some(previous) = media_files.get(&path) {
                     ensure!(reference.agrees_with(previous), "Conflicting DICOMDIR references to the same file");
@@ -2147,7 +2152,7 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
                 ensure!(files.len() <= MAX_FILES, "Too many referenced DICOM files");
             }
             ImageRoot::new(parent, parent.file_name())
-        } else if path.is_file() {
+        } else if fs::is_file(path) {
             collect_files(path, &mut files)?;
             // A loose file belongs to its folder (collect_files keeps it canonical).
             let folder = files.last().and_then(|file| file.parent()).unwrap_or(Path::new("")).to_owned();
@@ -2199,43 +2204,55 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     for index in (0..files.len()).filter(|index| !archived.contains(index)) {
         let _ = send.send(index);
     }
-    let extracted = std::thread::scope(|scope| -> Result<()> {
-        let (extractions, slot_of, unplanned) = (&extractions, &slot_of, &unplanned);
-        let extraction = scope.spawn(move || -> Result<()> {
-            for (archive, dir, _) in extractions {
-                extract_zip_into(archive, dir, &mut |target| match slot_of.get(target) {
-                    Some(&index) => {
-                        let _ = send.send(index);
-                    }
-                    None if !hidden_entry(dir, target) => unplanned.lock().unwrap().push(target.to_owned()),
-                    None => {}
-                })?;
-            }
-            Ok(())
-        });
-        // Says when the reading is over (or has failed: the sender goes with the thread), so the watch below stops at
-        // once rather than at the end of its next pause, which would hold up the catalogue.
-        let (over, reading_over) = std::sync::mpsc::channel::<()>();
-        let reading = scope.spawn(move || {
-            let _over = over;
-            crate::parallel::for_each("dicom-index", index_readers(), receive.into_iter(), read_slot);
-        });
-        if let Some(sink) = early {
-            let mut watch = EarlyWatch::new(&files);
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = reading_over.recv_timeout(std::time::Duration::from_millis(20)) {
+    let (extractions_ref, slot_of_ref, unplanned_ref) = (&extractions, &slot_of, &unplanned);
+    let extract = move || -> Result<()> {
+        for (archive, dir, _) in extractions_ref {
+            extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| match slot_of_ref.get(target) {
+                Some(&index) => {
+                    let _ = send.send(index);
+                }
+                None if !hidden_entry(dir, target) => unplanned_ref.lock().unwrap().push(target.to_owned()),
+                None => {}
+            })?;
+        }
+        Ok(())
+    };
+    let read_all = move || crate::parallel::for_each("dicom-index", index_readers(), receive.into_iter(), read_slot);
+    // WebAssembly cannot start a thread of its own: there the archives are extracted first and the files read after
+    // (on the threads the page lends, parallel.rs), and no series is published early.
+    let extracted = if cfg!(target_arch = "wasm32") {
+        extract()?;
+        // The sender goes with the extraction, so the reading ends after the last file.
+        drop(extract);
+        read_all();
+        Ok(())
+    } else {
+        std::thread::scope(|scope| -> Result<()> {
+            let extraction = scope.spawn(extract);
+            // Says when the reading is over (or has failed: the sender goes with the thread), so the watch below stops at
+            // once rather than at the end of its next pause, which would hold up the catalogue.
+            let (over, reading_over) = std::sync::mpsc::channel::<()>();
+            let reading = scope.spawn(move || {
+                let _over = over;
+                read_all();
+            });
+            if let Some(sink) = early {
+                let mut watch = EarlyWatch::new(&files);
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = reading_over.recv_timeout(std::time::Duration::from_millis(20)) {
+                    watch.publish(&files, &slots, sink, revision);
+                }
+                // Tests read small studies before the first look: one more, so they see the hand-over too.
+                #[cfg(test)]
                 watch.publish(&files, &slots, sink, revision);
             }
-            // Tests read small studies before the first look: one more, so they see the hand-over too.
-            #[cfg(test)]
-            watch.publish(&files, &slots, sink, revision);
-        }
-        let reading = reading.join();
-        let extracted = extraction.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Archive extraction stopped unexpectedly")));
-        if let Err(panic) = reading {
-            std::panic::resume_unwind(panic);
-        }
-        extracted
-    });
+            let reading = reading.join();
+            let extracted = extraction.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Archive extraction stopped unexpectedly")));
+            if let Err(panic) = reading {
+                std::panic::resume_unwind(panic);
+            }
+            extracted
+        })
+    };
     extracted?;
     crate::progress::check()?;
     let mut read: Vec<(&Path, Result<IndexedFile>)> = files
@@ -2648,8 +2665,8 @@ impl EarlyWatch {
 }
 
 fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    if path.is_file() {
-        files.push(path.canonicalize()?);
+    if fs::is_file(path) {
+        files.push(fs::canonicalize(path)?);
         if files.len() > MAX_FILES {
             bail!(coded!("import.tooManySelected", "Too many selected files"));
         }
@@ -2658,7 +2675,7 @@ fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     // The selected folder itself may be a link; nothing inside it is followed. Hidden entries are
     // skipped and hidden folders never entered. Each folder is listed whole before its first
     // entry is visited, so a deeply nested tree doesn't hold one open handle per level.
-    if !std::fs::metadata(path).map_err(|error| walk_error(path, error))?.is_dir() {
+    if !fs::metadata(path).map_err(|error| walk_error(path, error))?.is_dir() {
         return Ok(());
     }
     let mut pending = vec![list_folder(path)?];
@@ -2685,8 +2702,8 @@ fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn list_folder(path: &Path) -> Result<std::vec::IntoIter<std::fs::DirEntry>> {
-    let entries = std::fs::read_dir(path)
+fn list_folder(path: &Path) -> Result<std::vec::IntoIter<fs::DirEntry>> {
+    let entries = fs::read_dir(path)
         .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
         .map_err(|error| walk_error(path, error))?;
     Ok(entries.into_iter())
@@ -2824,16 +2841,26 @@ fn zip_target(dir: &Path, name: Option<PathBuf>, unix_mode: Option<u32>, is_dir:
     Ok(Some(target))
 }
 
+fn available_archive_bytes() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        MAX_ARCHIVE_BYTES.saturating_sub(crate::memory_fs::memory_bytes())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        MAX_ARCHIVE_BYTES
+    }
+}
+
 /// Extracts every entry of the archive into `dir` (made by plan_zip), handing `extracted` each file's path once it is
 /// written whole. Each entry is checked as it is written: a name that would leave `dir`, a symbolic link, a local
 /// header that disagrees with the central directory, or an entry or the archive over its size limit stops the
 /// extraction with an error.
-fn extract_zip_into(path: &Path, dir: &Path, extracted: &mut dyn FnMut(&Path)) -> Result<()> {
+fn extract_zip_into(path: &Path, dir: &Path, mut remaining: u64, extracted: &mut dyn FnMut(&Path)) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(path)?)?;
     if archive.len() > MAX_FILES {
         bail!(coded!("zip.tooManyEntries", "ZIP contains too many entries"));
     }
-    let mut total = 0u64;
     for index in 0..archive.len() {
         crate::progress::check()?;
         let mut entry = archive.by_index_with_options(
@@ -2843,18 +2870,19 @@ fn extract_zip_into(path: &Path, dir: &Path, extracted: &mut dyn FnMut(&Path)) -
         let Some(target) = zip_target(dir, entry.enclosed_name(), entry.unix_mode(), entry.is_dir(), entry.size())? else {
             continue;
         };
-        fs::create_dir_all(target.parent().context("Invalid ZIP path")?)?;
-        let mut output = File::options().write(true).create_new(true).open(&target)?;
-        let copied = std::io::copy(
-            &mut entry.by_ref().take(MAX_ARCHIVE_FILE_BYTES + 1),
-            &mut output,
-        )?;
-        output.flush()?;
-        drop(output);
-        total = total.checked_add(copied).context("Archive size overflow")?;
-        if copied > MAX_ARCHIVE_FILE_BYTES || total > MAX_ARCHIVE_BYTES {
+        if entry.size() > remaining {
             bail!(coded!("zip.tooLarge", "ZIP expanded data exceeds the import limit"));
         }
+        fs::create_dir_all(target.parent().context("Invalid ZIP path")?)?;
+        let mut output = File::options().write(true).create_new(true).open(&target)?;
+        let limit = remaining.min(MAX_ARCHIVE_FILE_BYTES);
+        let copied = std::io::copy(&mut entry.by_ref().take(limit), &mut output)?;
+        if copied == limit && entry.read(&mut [0])? != 0 {
+            bail!(coded!("zip.tooLarge", "ZIP expanded data exceeds the import limit"));
+        }
+        remaining -= copied;
+        output.flush()?;
+        drop(output);
         extracted(&target);
     }
     Ok(())
@@ -2864,7 +2892,7 @@ fn extract_zip_into(path: &Path, dir: &Path, extracted: &mut dyn FnMut(&Path)) -
 #[cfg(test)]
 fn extract_zip(path: &Path) -> Result<ArchiveTempDir> {
     let (dir, _) = plan_zip(path)?;
-    extract_zip_into(path, dir.path(), &mut |_| {})?;
+    extract_zip_into(path, dir.path(), available_archive_bytes(), &mut |_| {})?;
     Ok(dir)
 }
 
@@ -3501,6 +3529,8 @@ fn merge_pet_acquisition(group: &mut Series, info: &Series) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The tests write real files on the desktop's own file system.
+    use std::fs;
     use dicom_core::{DataElement, VR};
     #[test]
     fn folder_walk_skips_hidden_entries_and_never_follows_links_inside() {
@@ -4563,6 +4593,25 @@ mod tests {
         zip.finish().unwrap();
         assert!(extract_zip(&file).is_err());
         assert!(!temp.path().join("outside").exists());
+    }
+
+    #[test]
+    fn zip_entries_share_the_bytes_left_for_extraction() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let file = temp.path().join("study.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
+        for name in ["first", "second"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(b"1234").unwrap();
+        }
+        drop(zip.finish().unwrap());
+        let (short, _) = plan_zip(&file).unwrap();
+        let error = extract_zip_into(&file, short.path(), 7, &mut |_| {}).unwrap_err();
+        assert_eq!(crate::message::coded(&error).unwrap().code, "zip.tooLarge");
+        assert!(!short.path().join("second").exists());
+        let (exact, _) = plan_zip(&file).unwrap();
+        extract_zip_into(&file, exact.path(), 8, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(exact.path().join("second")).unwrap(), b"1234");
     }
 
     #[test]

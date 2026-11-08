@@ -9,6 +9,7 @@ const FORMAT:&str="veacom-native-extraction-v1";
 #[serde(deny_unknown_fields)]
 struct Owner {format:String,directory:String,nonce:String}
 
+#[derive(Debug)]
 pub struct ArchiveTempDir {directory:Option<PathBuf>,owner_lock:Option<File>}
 impl ArchiveTempDir {
     pub fn path(&self)->&Path {self.directory.as_deref().expect("live extraction directory")}

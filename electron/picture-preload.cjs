@@ -111,12 +111,21 @@ async function headerSize(bytes, blob, probe) {
   } finally { URL.revokeObjectURL(url); }
 }
 
+// Opening a single picture requests its size and then its pixels. Only reuse Chromium's header check for identical bytes.
+let lastHeader;
+function matchesHeader(bytes) {
+  if (!lastHeader || bytes.length !== lastHeader.bytes.length) return false;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] !== lastHeader.bytes[i]) return false;
+  return true;
+}
+
 ipcRenderer.on('picture:decode', async (_event, id, bytes, want) => {
   let bitmap;
   try {
     const blob = new Blob([bytes]);
-    const size = await headerSize(bytes, blob, want === 'probe');
+    const size = want === 'pixels' && matchesHeader(bytes) ? lastHeader.size : await headerSize(bytes, blob, want === 'probe');
     if (want !== 'pixels') {
+      if (want === 'size') lastHeader = bytes.length <= 1024 * 1024 ? { bytes, size } : undefined;
       ipcRenderer.send('picture:decoded', id, size);
       return;
     }

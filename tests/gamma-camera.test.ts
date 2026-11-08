@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 // anterior and posterior views side by side, a SPECT fused as a PET is but never read in SUV, and frames named by
 // their view in the corner.
 import { afterEach, describe, it } from 'node:test';
-import { deriveKept, match, paneView, readKept, withKept, type ShownPane } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, SPECT_CT, WHOLE_BODY } from '../src/arrangements/builtin';
+import { activeStudyContext, deriveKept, match, paneView, readKept, withKept, type ShownPane } from '../src/arrangements';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, SPECT_CT, WHOLE_BODY } from '../src/arrangements/builtin';
 import { findRole } from '../src/arrangements/roles';
 import { fusesAsOverlay, fusesOver, fusionScaleMaxKey, petAutoLevel, petHasSuv, petScale } from '../src/imaging/fusion';
 import { quantityScale } from '../src/imaging/quantity';
@@ -70,6 +70,15 @@ describe('the SPECT/CT screen', () => {
 });
 
 describe('a whole body side by side', () => {
+  it('limits a requested screen to the active patient when another patient has the same study UID', () => {
+    const foreign = { ...wholeBody('a'), patientKey: 'patient-one' };
+    const own = { ...wholeBody('z'), patientKey: 'patient-two' };
+    const active = { ...ct, patientKey: own.patientKey };
+    assert.equal(foreign.studyUid, active.studyUid);
+    assert.equal(match(NUCLEAR_MEDICINE_SCREENS, 'screen', activeStudyContext(active, [foreign, active])), null);
+    const plan = match(NUCLEAR_MEDICINE_SCREENS, 'screen', activeStudyContext(active, [foreign, active, own]));
+    assert.deepEqual(plan?.panes.map(pane => pane.series.id), [own.id, own.id]);
+  });
   it('opens the anterior and posterior views side by side, inverted grey, each paging on its own', () => {
     const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [wholeBody()] })!;
     assert.equal(plan.arrangement.id, 'whole-body');

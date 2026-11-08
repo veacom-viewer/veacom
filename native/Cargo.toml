@@ -4,8 +4,22 @@ version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
+[lib]
+name = "veacom_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "veacom-core"
+path = "src/main.rs"
+
+[features]
+default = ["native-codecs"]
+# The codecs written in C: CharLS for JPEG-LS, OpenJPEG for JPEG 2000. A build without them (WebAssembly, web/engine)
+# chooses its JPEG 2000 decoder itself.
+native-codecs = ["dicom-transfer-syntax-registry/charls", "dicom-pixeldata/openjpeg-sys", "dicom-pixeldata/charls"]
+
 [dependencies]
-anyhow = "1.0"
+anyhow.workspace = true
 chrono = "0.4"
 dicom-core = "0.10.1"
 dicom-dictionary-std = "0.10.1"
@@ -13,12 +27,12 @@ dicom-object = { version = "0.10.1", features = ["deflate"] }
 dicom-parser = "0.10.1"
 dicom-encoding = "0.10.1"
 # Without the default features, which bring rayon for the engine's own threads to do (src/parallel.rs).
-dicom-transfer-syntax-registry = { version = "0.10.1", default-features = false, features = ["charls", "native", "deflate"] }
+dicom-transfer-syntax-registry = { version = "0.10.1", default-features = false, features = ["native", "deflate"] }
 flate2 = "1"
-getrandom = "0.4"
-dicom-pixeldata = { version = "0.10.1", default-features = false, features = ["native", "openjpeg-sys", "charls"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+getrandom.workspace = true
+dicom-pixeldata.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 sha2 = { version = "0.11", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
@@ -27,7 +41,3 @@ libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Console", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem"] }
-
-[profile.release]
-lto = "thin"
-codegen-units = 1

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
-import { deriveKept, match, paneView, sharesSuvScale, readKept, withKept, type Plan } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, PET_CT, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
+import { deriveKept, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Plan } from '../src/arrangements';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
 import { findRole, ROLE_RANKS } from '../src/arrangements/roles';
 import { isProjection, PROJECTION_STEPS } from '../src/imaging/geometry';
 import { windowGrey } from '../src/imaging/viewState';
@@ -34,38 +34,35 @@ describe('arrangements as data', () => {
         if (pane.over) assert.ok(pane.over in arrangement.roles, `${arrangement.id}: ${pane.over}`);
       }
     }
-    assert.equal(PET_CT.panes.length, 4);
+    assert.equal(PET_CT.panes.length, 1);
+    assert.equal(PET_CT_READING.panes.length, 4);
   });
 });
 
 describe('the PET/CT screen', () => {
   const nac = pet('nac', { description: 'PET NAC' }), ac = pet('ac');
-  it('is laid out only when asked for: a PET/CT opens as any other study', () => {
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, nac, ac] }), null);
-    assert.equal(PET_CT.when, 'screen');
-  });
-  it('matches a PET/CT: CT · PET · fused · MIP, with the attenuation-corrected PET and the CT drawn with it', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, nac, ac] })!;
+  it('opens the attenuation-corrected PET over its CT in one pane', () => {
+    const plan = matchOnOpen({}, { series: [ct, nac, ac] })!;
     assert.equal(plan.arrangement.id, 'pet-ct');
     assert.equal(plan.roles.pet.id, 'ac');
     assert.equal(plan.roles.ct.id, 'ct');
-    assert.deepEqual(plan.grid, [2, 2]);
-    assert.deepEqual(plan.panes.map(pane => [pane.series.id, pane.spec.show ?? 'plain']), [['ct', 'plain'], ['ac', 'plain'], ['ct', 'fused'], ['ac', 'mip']]);
+    assert.deepEqual(plan.grid, [1, 1]);
+    assert.deepEqual(plan.panes.map(pane => [pane.series.id, pane.spec.show, pane.spec.over]), [['ct', 'fused', 'pet']]);
     assert.equal(plan.arrangement.link, 'crosshair');
   });
   it('needs a PET and a CT in one frame of reference', () => {
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ac] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, pet('elsewhere', { frameOfReferenceUid: 'other' })] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [series({ id: 'flat', canReconstruct: false }), ac] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, pet('other-study', { studyUid: 'other' })] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ac] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, pet('elsewhere', { frameOfReferenceUid: 'other' })] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [series({ id: 'flat', canReconstruct: false }), ac] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, pet('other-study', { studyUid: 'other' })] }), null);
   });
   it('takes the CT acquired with the PET over a diagnostic CT of another range', () => {
     const diagnostic = series({ id: 'diagnostic', dimensions: [64, 64, 300], spacing: [0.8, 0.8, 1], origin: [-82, -82, 200] });
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [diagnostic, ct, ac] })!.roles.ct.id, 'ct');
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [diagnostic, ct, ac] })!.roles.ct.id, 'ct');
   });
   it('builds each pane: the MIP as a whole-volume projection, the PET inverted grey at SUV 0–5', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, ac] })!;
+    const plan = match([PET_CT_READING], 'screen', { series: [ct, ac] })!;
     const [ctPane, petPane, , mipPane] = plan.panes.map(pane => paneView(pane.series, pane.spec, view()));
     assertFields(ctPane, { mode: 'source', plane: 'axial', inverted: false, windowMode: 'dicom' });
     assertFields(petPane, { mode: 'source', inverted: true, windowMode: 'manual' });
@@ -76,14 +73,14 @@ describe('the PET/CT screen', () => {
   });
   it('keeps a PET without SUV in its own window, never in SUV', () => {
     const uncalibrated = pet('raw', { suvFactor: null });
-    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, uncalibrated] })!;
+    const plan = match([PET_CT_READING], 'screen', { series: [ct, uncalibrated] })!;
     const petPane = paneView(plan.panes[1].series, plan.panes[1].spec, view({ windowCenter: 1000, windowWidth: 2000 }));
     assertFields(petPane, { inverted: true, windowMode: 'dicom', windowCenter: 1000, windowWidth: 2000 });
   });
 });
 
 describe('Keep this', () => {
-  const ac = pet('ac'), plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, ac] })!;
+  const ac = pet('ac'), plan = match([PET_CT_READING], 'screen', { series: [ct, ac] })!;
   const shown = (plan: Plan) => plan.panes.map(pane => ({ seriesId: pane.series.id, view: paneView(pane.series, pane.spec, view()), fusedWith: pane.spec.show === 'fused' ? ac.id : null }));
   it('keeps the panes as moved, with each one\'s role, plane, kind and look, and opens the next study so', () => {
     const panes = shown(plan);
@@ -92,13 +89,15 @@ describe('Keep this', () => {
     assertFields(variant, { grid: [2, 2], panes: [{ role: 'pet', plane: 'axial', show: 'plain', display: { invert: true, window: { unit: 'SUV', from: 0, to: 5 } } },
       { role: 'ct', plane: 'axial', show: 'plain', display: { invert: false } }, { role: 'ct', show: 'fused', over: 'pet' }, { role: 'pet', show: 'mip' }] });
     const kept = readKept(JSON.stringify({ 'pet-ct': variant }));
-    const next = match(withKept(kept), 'screen', { series: [series({ id: 'ct2' }), pet('ac2')] })!;
+    const next = match(withKept(kept), 'open', { series: [series({ id: 'ct2' }), pet('ac2')] })!;
     assert.equal(next.arrangement.kept, true);
     assert.deepEqual(next.panes.map(pane => [pane.series.id, pane.spec.show]), [['ac2', 'plain'], ['ct2', 'plain'], ['ct2', 'fused'], ['ac2', 'mip']]);
   });
-  it('ignores an "off" kept for a screen that now opens only when asked for', () => {
-    assert.deepEqual(readKept('{"pet-ct":{"off":true}}'), {});
-    assert.equal(match(withKept(readKept('{"pet-ct":{"off":true}}')), 'screen', { series: [ct, ac] })?.arrangement.id, 'pet-ct');
+  it('keeps the screen without the arrangement too: a kept "off" opens PET/CT studies unarranged', () => {
+    const kept = readKept('{"pet-ct":{"off":true}}');
+    const context = { series: [ct, ac] };
+    assert.equal(matchOnOpen(kept, context), null);
+    assert.deepEqual(match(withKept(kept, NUCLEAR_MEDICINE_SCREENS), 'screen', context)?.grid, [2, 2]);
   });
   it('drops what it cannot trust when reading', () => {
     assert.deepEqual(readKept('not json'), {});
@@ -139,11 +138,11 @@ describe('the rules arrangements replace keep their behaviour', () => {
   it('fuses anonymous images only within their verified study and frame', () => {
     const patient = { patientId: '', patientName: '', patientKey: 'study-scoped-key' };
     const base = { ...ct, ...patient }, overlay = pet('anonymous-pet', patient);
-    assert.equal(match([PET_CT], 'screen', { series: [base, overlay] })?.roles.pet.id, overlay.id);
+    assert.equal(match([PET_CT], 'open', { series: [base, overlay] })?.roles.pet.id, overlay.id);
     for (const changed of [{ studyUid: 'other' }, { patientKey: 'other' }, { patientKey: undefined }, { frameOfReferenceUid: 'other' }]) {
       assert.equal(findRole(FUSION.roles.overlay, [{ ...overlay, ...changed }], base), null);
     }
-    assert.equal(match([PET_FOLLOW_UP], 'screen', { series: [overlay], session: [{ ...overlay, id: 'prior', studyUid: 'other', studyDate: '19990101' }] }), null);
+    assert.equal(match([PET_FOLLOW_UP], 'open', { series: [overlay], session: [{ ...overlay, id: 'prior', studyUid: 'other', studyDate: '19990101' }] }), null);
   });
 
   it('the fusion button finds its partners from the fusion arrangement\'s roles', () => {
@@ -163,8 +162,10 @@ describe('the rules arrangements replace keep their behaviour', () => {
 describe('the PET follow-up screen', () => {
   const ac = pet('ac'), current = [ct, ac];
   const prior = (id: string, extra: Partial<Series> = {}) => pet(id, { studyUid: 'prior', studyDate: '19991001', frameOfReferenceUid: 'prior-frame', ...extra });
-  it('opens a PET study with its prior side by side, each over its MIP, when the prior is loaded', () => {
-    const before = prior('before'), plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: current, session: [...current, before, prior('before-nac', { description: 'PET NAC' })] })!;
+  it('opens one fused pane with a loaded prior and offers current and prior PETs side by side on request', () => {
+    const before = prior('before'), context = { series: current, session: [...current, before, prior('before-nac', { description: 'PET NAC' })] };
+    assert.deepEqual(matchOnOpen({}, context)?.grid, [1, 1]);
+    const plan = match(NUCLEAR_MEDICINE_SCREENS, 'screen', context)!;
     assert.equal(plan.arrangement.id, 'pet-follow-up');
     assert.equal(plan.roles.pet.id, 'ac');
     assert.equal(plan.roles.prior.id, 'before');
@@ -173,7 +174,7 @@ describe('the PET follow-up screen', () => {
   });
   it('keeps one SUV scale on its PETs, converted through each PET\'s own values per SUV', () => {
     assert.equal(PET_FOLLOW_UP.scale, 'shared');
-    const plan = match([PET_FOLLOW_UP], 'screen', { series: current, session: [prior('before')] })!;
+    const plan = match([PET_FOLLOW_UP], 'open', { series: current, session: [prior('before')] })!;
     assert.equal(sharesSuvScale(plan), true);
     for (const raw of [prior('raw', { suvFactor: null }), prior('lbm', { valueUnit: 'SUVlbm' }), prior('refused', { valueUnit: 'SUVbw', suvFactor: null })]) {
       assert.equal(sharesSuvScale({ ...plan, roles: { ...plan.roles, prior: raw } }), false);
@@ -194,13 +195,14 @@ describe('the PET follow-up screen', () => {
     const october = prior('october', { dimensions: [32, 32, 80] });
     const psma = prior('psma', { studyDate: '19991201', petAcquisition: { tracer: 'Ga-68 PSMA' } });
     const unknown = prior('unknown', { studyDate: '19991205', petAcquisition: undefined });
-    assert.equal(match([PET_FOLLOW_UP], 'screen', { series: current, session: [january, october, psma, unknown] })?.roles.prior.id, 'october');
+    assert.equal(match([PET_FOLLOW_UP], 'open', { series: current, session: [january, october, psma, unknown] })?.roles.prior.id, 'october');
     const anonymous = { ...ac, patientId: '', patientName: '' };
-    assert.equal(match([PET_FOLLOW_UP], 'screen', { series: [anonymous], session: [{ ...october, patientId: '', patientName: '' }] }), null);
+    assert.equal(match([PET_FOLLOW_UP], 'open', { series: [anonymous], session: [{ ...october, patientId: '', patientName: '' }] }), null);
   });
   it('gives way to the PET/CT screen without a prior PET of the same patient, earlier and loaded', () => {
-    const arranged = (session?: Series[]) => match(BUILTIN_ARRANGEMENTS, 'screen', { series: current, session })!.arrangement.id;
+    const arranged = (session?: Series[]) => matchOnOpen({}, { series: current, session })!.arrangement.id;
     assert.equal(arranged(), 'pet-ct');
+    assert.equal(arranged([...current, prior('earlier')]), 'pet-ct');
     assert.equal(arranged([...current, prior('stranger', { patientId: 'Q' })]), 'pet-ct');
     assert.equal(arranged([...current, prior('later', { studyDate: '20010101' })]), 'pet-ct');
     assert.equal(arranged([...current, prior('ct-only', { modality: 'CT', valueUnit: 'HU' })]), 'pet-ct');

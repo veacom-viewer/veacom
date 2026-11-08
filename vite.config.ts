@@ -4,6 +4,24 @@ import { createFilter, defineConfig, type Plugin } from 'vite';
 
 const isRendererSource = createFilter('src/**/*.{js,jsx,ts,tsx}', 'src/import-window/**', { resolve: import.meta.dirname });
 
+/** The React Compiler on the renderer's source (the browser build's too, vite.web.config.ts). The import page is
+ * privileged, so React compilation belongs in the renderer's module transform. */
+export function reactCompiler(): Plugin {
+  return {
+    name: 'veacom-react-compiler',
+    enforce: 'pre',
+    transform: {
+      filter: { id: /\.[jt]sx?$/ },
+      async handler(source, id) {
+        if (!isRendererSource(id)) return;
+        const result = await transform(id, source, { jsx: 'preserve', sourcemap: true, reactCompiler: { target: '19' } });
+        if (result.fatal) this.error(result.errors.map(error => error.codeframe || error.message).join('\n'));
+        return { code: result.code, map: result.map };
+      },
+    },
+  };
+}
+
 // The import window runs where the application page cannot reach it (electron/import-view.cjs). That only holds if
 // no package code reaches its page: the build fails if its chunks hold anything but this repository's own source.
 function importWindowFirstParty(): Plugin {
@@ -34,23 +52,7 @@ function importWindowFirstParty(): Plugin {
 }
 
 export default defineConfig({
-  plugins: [
-    // The import page is privileged, so React compilation belongs in the renderer's module transform.
-    {
-      name: 'veacom-react-compiler',
-      enforce: 'pre',
-      transform: {
-        filter: { id: /\.[jt]sx?$/ },
-        async handler(source, id) {
-          if (!isRendererSource(id)) return;
-          const result = await transform(id, source, { jsx: 'preserve', sourcemap: true, reactCompiler: { target: '19' } });
-          if (result.fatal) this.error(result.errors.map(error => error.codeframe || error.message).join('\n'));
-          return { code: result.code, map: result.map };
-        },
-      },
-    },
-    importWindowFirstParty(),
-  ],
+  plugins: [reactCompiler(), importWindowFirstParty()],
   base: './', server: { host: '127.0.0.1', port: 5173, strictPort: true },
   // Electron's Chromium preloads modules itself: no polyfill code in either page.
   build: {

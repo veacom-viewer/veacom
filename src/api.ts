@@ -1,6 +1,7 @@
-import type { CoreState, DesktopBridge, ImportResult, Series, Volume, PixelArray } from './model';
+import type { BridgeFeature, CoreState, DesktopBridge, ImportResult, Series, Volume, PixelArray } from './model';
 import { t } from './i18n';
 import { coreErrorText } from './i18n/core';
+import { takePixels } from './imaging/pixelHandoff';
 
 let state: CoreState | undefined;
 let stateRequest: Promise<CoreState> | undefined;
@@ -10,6 +11,11 @@ let listening = false;
 const stateListeners = new Set<(state: CoreState) => void>();
 const responseSignals = new WeakMap<Response, AbortSignal>();
 const restartedMessage = () => t('engine.restartedReopen');
+
+/** Whether the bridge can do `feature`; the desktop can do them all, the browser build not all (src/web/bridge.ts). */
+export function bridgeCan(feature: BridgeFeature): boolean {
+  return window.veacom?.features?.[feature] ?? true;
+}
 
 function desktop(): DesktopBridge {
   if (!window.veacom) throw new Error(t('engine.desktopRequired'));
@@ -119,7 +125,14 @@ async function pixelResponse(series: Series, index?: number, externalSignal?: Ab
   signal.throwIfAborted();
   const current = await readyState(series.engineGeneration);
   signal.throwIfAborted();
-  const capability = await abortable(desktop().getPixels({ seriesId: series.id, generation: current.generation, ...(series.catalogRevision === undefined ? {} : { revision: series.catalogRevision }), ...(index === undefined ? {} : { index }) }), signal);
+  const bridge = desktop(), revision = series.catalogRevision === undefined ? {} : { revision: series.catalogRevision };
+  if (bridge.fetchPixels) {
+    const response = await abortable(bridge.fetchPixels({ seriesId: series.id, generation: current.generation, ...revision, ...(index === undefined ? {} : { index }) }, signal), signal);
+    signal.throwIfAborted();
+    responseSignals.set(response, signal);
+    return response;
+  }
+  const capability = await abortable(bridge.getPixels({ seriesId: series.id, generation: current.generation, ...revision, ...(index === undefined ? {} : { index }) }), signal);
   signal.throwIfAborted();
   if (capability.generation !== current.generation) throw new Error(restartedMessage());
   const url = new URL(capability.url);
@@ -150,9 +163,6 @@ export async function loadSourceFrame(series: Series, index: number, signal?: Ab
   const frame = await decodePixels(response,
     { ...series, dimensions: [series.dimensions[0], series.dimensions[1], 1] });
   return { ...frame, series: { ...series, pixelType: frame.series.pixelType, components: frame.series.components }, sourceFrameIndex: index };
-}
-export async function loadPreviewVolume(series: Series): Promise<Volume> {
-  return loadSourceFrame(series, 0);
 }
 async function decodePixels(response: Response, series: Series): Promise<Volume> {
   const pixelType = response.headers.get('X-Pixel-Type') ?? 'float32';
@@ -192,6 +202,12 @@ async function readPixels(response: Response, expected: number): Promise<ArrayBu
     void body?.cancel(error).catch(() => {});
     signal?.throwIfAborted();
     throw error;
+  }
+  const handed = takePixels(response);
+  if (handed) {
+    signal?.throwIfAborted();
+    if (handed.byteLength !== expected) throw incompleteImage(handed.byteLength, expected);
+    return handed;
   }
   if (!body) {
     const bytes = await response.arrayBuffer();

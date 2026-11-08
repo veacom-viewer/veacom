@@ -165,6 +165,7 @@ impl Serialize for Notes {
 }
 
 /// `note!("code", "English text with {name}", name = value, …)`
+#[macro_export]
 macro_rules! note {
     ($code:literal, $template:literal $(, $name:ident = $value:expr)* $(,)?) => {
         $crate::message::Note::new(
@@ -176,9 +177,10 @@ macro_rules! note {
 }
 
 /// A coded error, for `bail!`, `ensure!` and `Err(…)`: takes the same arguments as `note!`.
+#[macro_export]
 macro_rules! coded {
     ($($arguments:tt)*) => {
-        $crate::message::Coded(note!($($arguments)*))
+        $crate::message::Coded($crate::note!($($arguments)*))
     };
 }
 

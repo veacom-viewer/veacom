@@ -5,7 +5,8 @@ import type { MessageKey } from '../i18n';
 import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry';
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
-import { BUILTIN_ARRANGEMENTS } from './builtin';
+import { BUILTIN_ARRANGEMENTS, PET_FOLLOW_UP } from './builtin';
+import { studyKey } from '../domain/patient';
 
 export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from './roles';
 
@@ -214,14 +215,25 @@ export function readKept(raw: string | null, builtins: readonly Arrangement[] = 
   return kept;
 }
 
-/** The built-in arrangements with the reader's kept variants in their place; one kept `off` is left out. */
+/** A saved opt-out controls automatic opening. An explicit request can always open the built-in screen. */
 export function withKept(kept: Kept, builtins: readonly Arrangement[] = BUILTIN_ARRANGEMENTS): Arrangement[] {
   return builtins.flatMap(arrangement => {
     const variant = kept[arrangement.id];
     if (!variant || !keepable(arrangement)) return [arrangement];
-    if ('off' in variant) return [];
+    if ('off' in variant) return arrangement.when === 'screen' ? [arrangement] : [];
     return [{ ...arrangement, grid: variant.grid, panes: variant.panes, kept: true }];
   });
+}
+
+export function matchOnOpen(kept: Kept, context: MatchContext): Plan | null {
+  const automatic = withKept(kept).filter(rule => rule.id !== PET_FOLLOW_UP.id || rule.kept);
+  return match(automatic, 'open', context);
+}
+
+/** Match roles in the active patient’s study. Only an explicitly defined prior role searches the wider session. */
+export function activeStudyContext(active: Series, session: Series[]): MatchContext {
+  const key = studyKey(active);
+  return { series: session.filter(item => studyKey(item) === key), session };
 }
 
 /** What a pane on screen shows, for keeping: its series and view, and the series fused over it, if any. */

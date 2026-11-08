@@ -167,9 +167,9 @@ export async function captureViewportPng(viewport: HTMLElement, options: Pick<Vi
   return blob.arrayBuffer();
 }
 
-// What x264 at CRF 18 spent on a noisy synthetic CT: quality comes first in an exported study. The rate
-// is an upper limit, so smooth images stay much smaller. Frames are key frames every two seconds.
-const BITS_PER_PIXEL = 1.2;
+// Target bits per output pixel per frame. The paired desktop test measures encoded bytes and
+// decodes a CT frame to check it against the uncompressed export.
+const BITS_PER_PIXEL = 0.30;
 const MAX_BITRATE = 240e6;
 const MAX_QUEUED_FRAMES = 2;
 const MAX_QUEUED_WRITES = 8;

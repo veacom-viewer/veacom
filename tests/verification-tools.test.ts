@@ -88,9 +88,9 @@ it('rejects committed editor hooks, unlisted dependency names and crates from ou
   const pnpmLock = (names: string[]) => `lockfileVersion: '9.0'\n\npackages:\n\n${names.map(name => `  '${name}@1.0.0':\n    resolution: {integrity: sha512-x}\n`).join('\n')}\nsnapshots:\n\n${names.map(name => `  '${name}@1.0.0': {}\n`).join('\n')}`;
   const cratesIo = 'registry+https://github.com/rust-lang/crates.io-index';
   git('init', '-q');
-  await mkdir(path.join(dir, 'tools')); await mkdir(path.join(dir, 'native'));
+  await mkdir(path.join(dir, 'tools'));
   await writeFile(path.join(dir, 'pnpm-lock.yaml'), pnpmLock(['left-pad', '@scope/pkg']));
-  await writeFile(path.join(dir, 'native/Cargo.lock'), `version = 4\n\n${crate('app')}\n${crate('serde', cratesIo)}`);
+  await writeFile(path.join(dir, 'Cargo.lock'), `version = 4\n\n${crate('app')}\n${crate('serde', cratesIo)}`);
   await writeFile(path.join(dir, 'tools/dependency-names.txt'), '# names\nnpm left-pad\nnpm @scope/pkg\ncrate serde\n');
   git('add', '.');
   assert.equal(check().status, 0);
@@ -104,11 +104,11 @@ it('rejects committed editor hooks, unlisted dependency names and crates from ou
   assert.equal(result.status, 1); assert.ok(result.stderr.includes('delete their lines')); assert.ok(result.stderr.includes('npm @scope/pkg'));
 
   await writeFile(path.join(dir, 'pnpm-lock.yaml'), pnpmLock(['left-pad', '@scope/pkg']));
-  await writeFile(path.join(dir, 'native/Cargo.lock'), `version = 4\n\n${crate('serde', 'git+https://example.com/serde#abc')}`);
+  await writeFile(path.join(dir, 'Cargo.lock'), `version = 4\n\n${crate('serde', 'git+https://example.com/serde#abc')}`);
   result = check();
   assert.equal(result.status, 1); assert.ok(result.stderr.includes('Crates must come from crates.io'));
 
-  await writeFile(path.join(dir, 'native/Cargo.lock'), `version = 4\n\n${crate('serde', cratesIo)}`);
+  await writeFile(path.join(dir, 'Cargo.lock'), `version = 4\n\n${crate('serde', cratesIo)}`);
   const hooks = ['.claude/settings.json', '.vscode/tasks.json', 'native/.vscode/tasks.json', '.mcp.json'];
   for (const file of hooks) { await mkdir(path.dirname(path.join(dir, file)), { recursive: true }); await writeFile(path.join(dir, file), '{}'); }
   git('add', '-f', '--', ...hooks);

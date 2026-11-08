@@ -3,7 +3,9 @@ use anyhow::{Context, Result, bail};
 use dicom_pixeldata::{DecodedPixelData, PixelDecoder};
 use std::{collections::HashMap, path::Path};
 
-const MAX_VOLUME_BYTES: usize = 2 * 1024 * 1024 * 1024;
+/// In WebAssembly everything shares 4 GB, so a decoded volume may take a quarter of it there.
+const MAX_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
+const VOLUME_LIMIT: &str = if cfg!(target_arch = "wasm32") { "1 GiB" } else { "2 GiB" };
 const MAX_FRAME_SAMPLES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -147,7 +149,7 @@ fn check_object(object: &dicom_object::DefaultDicomObject, full_volume: bool) ->
                 .context("Decoded DICOM dimensions overflow")?;
         }
         if bytes > MAX_VOLUME_BYTES as u64 {
-            bail!("Multiframe DICOM exceeds the 2 GiB decoded source limit");
+            bail!("Multiframe DICOM exceeds the {VOLUME_LIMIT} decoded source limit");
         }
     }
     Ok(())
@@ -593,7 +595,11 @@ fn cannot_read(path: &Path, error: anyhow::Error) -> anyhow::Error {
 }
 
 /// A picture's RGB samples, decoded in the desktop app's sandboxed picture decoder (pictures.rs).
-fn ordinary_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<Vec<f64>> {
+fn ordinary_rgb(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<Vec<u8>> {
+    let expected = frame_samples(source)?;
+    if source.info.components != 3 {
+        bail!("Ordinary images are read as RGB");
+    }
     let path = &frame.source.path;
     let request = crate::pictures::read(&frame.source, crate::pictures::Want::Pixels, check).map_err(|error| {
         if crate::message::coded(&error).is_some() { error } else { cannot_read(path, error) }
@@ -602,15 +608,13 @@ fn ordinary_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<(
     if picture.width as usize != source.info.dimensions[0] || picture.height as usize != source.info.dimensions[1] {
         bail!("Image dimensions changed after import");
     }
-    if source.info.components != 3 {
-        bail!("Ordinary images are read as RGB");
-    }
-    Ok(picture.rgb.into_iter().map(f64::from).collect())
+    anyhow::ensure!(picture.rgb.len() == expected, "Decoded pixel count differs from image dimensions");
+    Ok(picture.rgb)
 }
 
 fn one_frame_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<FrameValues> {
     if frame.ordinary_image {
-        return ordinary_values(source, frame, check).map(FrameValues::from);
+        return Ok(FrameValues::from(ordinary_rgb(source, frame, check)?.into_iter().map(f64::from).collect::<Vec<_>>()));
     }
     let file = frame.source.open().map_err(|error| cannot_read(&frame.source.path, error))?;
     let mut object = dicom_object::OpenFileOptions::new().from_reader(file)
@@ -680,7 +684,7 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         .checked_mul(std::mem::size_of::<T>())
         .is_none_or(|n| n > MAX_VOLUME_BYTES)
     {
-        bail!("Volume exceeds the 2 GiB decoded output limit");
+        bail!("Volume exceeds the {VOLUME_LIMIT} decoded output limit");
     }
     let mut output = Vec::new();
     output
@@ -778,6 +782,9 @@ fn decode_volume_compact(source: &SourceSeries) -> Result<PixelBuffer> {
     if source.frames.len() != source.info.dimensions[2] {
         bail!("Frame count differs from series dimensions");
     }
+    if let [frame] = source.frames.as_slice() && frame.ordinary_image {
+        return ordinary_rgb(source, frame, crate::progress::check).map(PixelBuffer::U8);
+    }
     if source.info.pixel_type == "float32"
         && source.info.components == 1
         && source
@@ -818,6 +825,9 @@ pub fn decode_frame(source: &SourceSeries, index: usize) -> Result<PixelBuffer> 
         .frames
         .get(index)
         .context("Frame index is outside this series")?;
+    if frame.ordinary_image {
+        return ordinary_rgb(source, frame, || Ok(())).map(PixelBuffer::U8);
+    }
     let FrameValues {
         values,
         preserve_precision,
@@ -1492,6 +1502,20 @@ mod tests {
         assert_eq!(pixels.bytes(), [255, 0, 20, 0, 200, 255]);
         assert_eq!(decode_frame(&imported.sources[0], 0).unwrap().bytes(), [255, 0, 20, 0, 200, 255]);
         assert!(!imported.sources[0].info.can_reconstruct);
+    }
+    #[test]
+    fn oversized_single_picture_is_rejected_before_reading_its_source() {
+        use crate::pictures::testing::{self, PNG};
+        testing::serve();
+        let dir = crate::test_dir::tempdir().unwrap();
+        let path = dir.path().join("oversized.png");
+        std::fs::write(&path, testing::picture(PNG, 1, 1, &[1, 2, 3])).unwrap();
+        let mut imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+        let series = std::sync::Arc::get_mut(&mut imported.sources[0]).unwrap();
+        series.info.dimensions = [8192, 8192, 1];
+        std::fs::remove_file(&path).unwrap();
+        let error = decode_volume(series).err().expect("oversized picture should fail");
+        assert_eq!(error.to_string(), "Frame exceeds the supported 64 million sample limit");
     }
     #[test]
     fn ordinary_bmp_opens_like_png() {

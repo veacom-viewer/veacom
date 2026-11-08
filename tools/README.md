@@ -119,8 +119,10 @@ study's size (on 8 Nov 2026, listing the CT opened every file 3 times and read t
 **Time.** With `--base`, the two engines open the study in alternating random order: 20 rounds with the file cache
 kept, then 10 with it flushed before each open (Linux and macOS through `sudo -n`, Windows by detaching the virtual
 disk named with `--vhdx` that holds the study). A step counts as slower only when the 95% interval of the change lies
-above 3% and the medians differ by at least 15 ms; a slower listing, full volume or whole open fails. The first frame
-takes a few milliseconds and is reported, not judged. `--rounds` alone times one engine.
+above 3% and the medians differ by at least 15 ms. Listing, warm full-volume decode and the whole open are gated.
+On Linux and macOS, a second engine lists the same study, then the harness flushes the file cache immediately before
+requesting its volume. This gates cold-volume performance with the same cache state for both builds. The report also
+shows the ordinary volume phase, whose time depends on the data already read while listing. `--rounds` alone times one engine.
 
 Only engines timed in the same run can be compared. On GitHub's runners (8 Nov 2026, the CT above, two copies of one
 engine):
@@ -137,18 +139,30 @@ so main's speed is followed as a ratio to that fixed build. These runners have n
 scanning is off on them, and their disks are fast: what a hospital PC feels needs a PC like it. The app's own steps
 (start-up, drawing, texture upload) are not measured here yet.
 
+## Beta performance comparison
+
+`Beta performance comparison` builds the beta 2 tag and the candidate in separate directories on the same GitHub Linux or macOS runner. The engine check uses ten warm and five cache-flushed pairs. The desktop check drops one warm-up pair, then alternates launch order for seven pairs. Every desktop trial has a fresh Electron process and profile. Reports include the raw samples and a paired bootstrap 95% interval for the median change.
+
+With both engines and web apps built and Electron installed, run:
+
+```sh
+BASE_APP=/path/to/beta2 HEAD_APP=/path/to/candidate node tools/check-beta-performance.cjs /tmp/beta-desktop 7
+```
+
+The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
+
+The PNG is measured twice, once as a direct selection and once through **Open files**. The latter substitutes a native picker response after 750 ms in both builds and times from confirmation. A cancelled picker or a DICOM selection immediately closes its unused decoder.
+
 ## Arrangements
 
 `check-arrangements.cjs` opens the synthetic PET/CT from `fixtures/make-petct-study.mjs`. It has a CT, an
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens in one pane, as any study does, with nothing arranged.
-- The nuclear medicine screen, in the menu beside the fusion button, lays it out as CT · PET · fused · MIP. A note
-  names the screen.
+- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
 - A click on the MIP sends the linked panes to a lesion.
-- A pane moved and kept changes how the screen opens next time.
-- Undo restores the screen from before, with what it showed.
+- A pane moved and kept changes how the next PET/CT opens.
+- Undo restores the screen from before, and can be kept too.
 - Forget brings back VEAcom's own screen.
 - A PET opened by hand is inverted grey, with its window in SUV.
 
@@ -157,6 +171,41 @@ CI's desktop job, the Windows job and `tools/verify.sh` run it.
 ```sh
 node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
+```
+
+## PET validation against the vendor workstation
+
+`pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET
+numbers with the scanner vendor's workstation on real, anonymised studies. Given a folder of studies and a JSON file of
+sphere centres and radii per study, it:
+
+- opens each study in the desktop app with a fresh profile, as `check-pet-voi.cjs` does, and finds its PET;
+- draws each sphere on the PET's axial slices, one at a time, where the file says, and checks it against where VEAcom
+  kept it;
+- gives each its role: liver reference (3 cm across), blood pool reference, or lesion at 41% of its SUVmax for MTV;
+- writes what VEAcom shows in SUVbw and, with height and sex, SUL (`readings.csv`), and the SUV factors with what they
+  come from (`factors.csv`);
+- given the vendor's readings (`--vendor`), writes them side by side (`comparison.csv`). It flags SUVmax beyond 1%,
+  SUVpeak beyond 5%, and any difference in the SUV factor or its parameters, and notes the likely cause;
+- records the commit, the build's fingerprints and the inputs in `run.json`.
+
+Real studies, both JSON files and the output stay outside the repository. The tool checks symlink targets, including
+the parent of a new output directory. Its window ignores the computer's own input on macOS and Linux. It exits
+unsuccessfully when a value is beyond its limit or missing. `make-pet-validation-inputs.mjs` writes both JSON files
+for the synthetic follow-up. CI and `tools/verify.sh` compare all expected readings at display precision, including
+reference means, MTV and TLG. They also exercise raw Bq/ml, stored lean-body-mass SUV and injection times using PET
+series derived from the same fixture. The desktop kit has not run on Windows.
+
+```sh
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/fixtures/make-pet-validation-inputs.mjs /tmp/pet-followup
+node tools/pet-validation.cjs /tmp/pet-followup /tmp/pet-followup/pet-validation-spheres.json test-results/pet-validation --vendor /tmp/pet-followup/pet-validation-expected.json
+```
+
+On real studies, with `--screenshots` for a picture of each sphere (patient details hidden):
+
+```sh
+node tools/pet-validation.cjs ~/pet-validation/studies ~/pet-validation/spheres.json ~/pet-validation/results --vendor ~/pet-validation/vendor.json
 ```
 
 ## PET quantification
@@ -176,7 +225,7 @@ The check covers [PET quantification](../docs/pet-quantification.md):
 - At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
 - The references are kept by digest, with no UID, and the actions are recorded by id.
 - In a new session on the same computer the references and the lesion table come back.
-- Opened after its prior, the study's nuclear medicine screen is the PET follow-up. Linked by hand with the link button, the two
+- After opening the current study, selecting PET follow-up in Layout and linking the two studies, the two
   studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
 - With the current study alone, that change comes from what was kept for the prior.
 
@@ -197,11 +246,11 @@ gated SPECT is numbered before the summed one. The second is a whole-body scan: 
 anterior and posterior views, named by their detectors' View Code Sequence.
 `check-gamma-camera.cjs` covers them:
 
-- The SPECT/CT opens in one pane; its nuclear medicine screen is CT · SPECT · fused · MIP. The SPECT is placed from its
-  detector geometry, fused on its own scale, and nothing on it is called SUV.
+- SPECT/CT opens with the first image. Requesting its nuclear medicine screen shows CT, SPECT, fusion and MIP. The SPECT is placed from its detector geometry, fused on
+  its own scale, and nothing on it is called SUV.
 - A click on the SPECT MIP sends the linked panes to the vertebral lesion.
-- The whole body's screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share
-  one window, and each pages on its own. Undo puts the linking back.
+- The requested whole-body screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share one
+  window, and each pages on its own. Undo puts the linking back.
 - The projections name their detector.
 - The gated SPECT opens as 8 placed series in gate order, each named "Gate n/8 · … s acquired" with its own Time Slot
   Time, placed from the detector geometry and sharing one window. The SPECT/CT screen still takes the summed SPECT. A
