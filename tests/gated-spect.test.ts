@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // the fusion button keep the summed reconstruction while there is one.
 import { afterEach, describe, it } from 'node:test';
 import { match } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, SPECT_CT } from '../src/arrangements/builtin';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, SPECT_CT } from '../src/arrangements/builtin';
 import { findRole, ROLE_RANKS } from '../src/arrangements/roles';
 import { fusesAsOverlay, petScale } from '../src/imaging/fusion';
 import { phaseLabel, topRightLines } from '../src/ui/overlayCorners';
@@ -134,6 +134,8 @@ describe('the SPECT/CT screen', () => {
     // As does a PET with its CT, before a corrected PET with none.
     const pets = [series({ id: 'pet-elsewhere', modality: 'PT', description: 'PET AC', frameOfReferenceUid: 'another frame' }),
       series({ id: 'pet', modality: 'PT', description: 'PET NAC' })];
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, ...pets] })?.roles.pet?.id, 'pet');
+    const context = { series: [ct, ...pets] };
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', context)?.roles.pet?.id, 'pet');
+    assert.equal(match(NUCLEAR_MEDICINE_SCREENS, 'screen', context)?.roles.pet?.id, 'pet');
   });
 });
