@@ -9,9 +9,9 @@ use dicom_parser::{
     stateful::decode::{DynStatefulDecoder, StatefulDecode},
 };
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
+use crate::vfs::File;
 use std::{
     cell::Cell,
-    fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::Path,
     rc::Rc,
@@ -20,7 +20,9 @@ use std::{
 pub(crate) const MAX_META: u64 = 32 * 1024 * 1024;
 const MAX_VALUE: u64 = 1024 * 1024;
 const MAX_FILE_META: u64 = 64 * 1024;
-const MAX_PIXELS: u64 = 2 * 1024 * 1024 * 1024;
+/// In WebAssembly everything shares 4 GB, so one file's pixel data may take a quarter of it there.
+const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
+const PIXEL_LIMIT: &str = if cfg!(target_arch = "wasm32") { "1 GiB" } else { "2 GiB" };
 const MAX_DATA: u64 = MAX_PIXELS + MAX_META;
 pub const MAX_FILE_SIZE: u64 = MAX_DATA + MAX_FILE_META + 132;
 const MAX_ELEMENTS: usize = 200_000;
@@ -406,7 +408,7 @@ impl Dimensions {
         let bytes = bits.div_ceil(8);
         ensure!(
             bytes > 0 && bytes <= MAX_PIXELS,
-            "Decoded pixel data exceeds the 2 GiB input limit"
+            "Decoded pixel data exceeds the {PIXEL_LIMIT} input limit"
         );
         Ok(bytes)
     }

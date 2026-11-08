@@ -2,8 +2,8 @@ use anyhow::{Result, ensure};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod stamp;
 use sha2::{Digest, Sha256};
+use crate::vfs::{File, OpenOptions};
 use std::{
-    fs::{File, OpenOptions},
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,

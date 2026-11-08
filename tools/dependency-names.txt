@@ -1,4 +1,4 @@
-# Every package name that may appear in this repository's lockfiles (pnpm-lock.yaml and native/Cargo.lock).
+# Every package name that may appear in the pnpm lockfiles and the workspace Cargo.lock.
 # tools/check-repository.mjs fails when a lockfile gains a name that is not listed here, and when a listed name is in
 # no lockfile any more. Version bumps need no change.
 #
@@ -21,6 +21,7 @@ crate charls
 crate charls-sys
 crate chrono
 crate cmake
+crate console_error_panic_hook
 crate core-foundation-sys
 crate cpufeatures
 crate crc32fast
@@ -69,6 +70,7 @@ crate miniz_oxide
 crate nix
 crate num-traits
 crate once_cell
+crate openjp2
 crate openjpeg-sys
 crate pin-project-lite
 crate proc-macro2
@@ -87,6 +89,7 @@ crate slab
 crate smallvec
 crate snafu
 crate snafu-derive
+crate sprintf
 crate syn
 crate thiserror
 crate thiserror-impl
@@ -100,6 +103,7 @@ crate wasm-bindgen
 crate wasm-bindgen-macro
 crate wasm-bindgen-macro-support
 crate wasm-bindgen-shared
+crate web-sys
 crate windows-core
 crate windows-implement
 crate windows-interface

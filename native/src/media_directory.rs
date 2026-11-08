@@ -1,19 +1,29 @@
 use crate::{ingest::MAX_FILES, source_file::SourceFile};
 use anyhow::{Context, Result, ensure};
 use dicom_core::Tag;
+use crate::vfs::{File, OpenOptions};
 use std::{
     collections::BTreeMap,
-    fs::{File, OpenOptions},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 pub struct MediaRoot {
     path: PathBuf,
+    #[cfg(not(target_arch = "wasm32"))]
     directory: File,
 }
 
 impl MediaRoot {
+    /// In a browser the files are the ones the page handed over (memory_fs): no links, junctions or devices, so a
+    /// directory is all a media root has to be.
+    #[cfg(target_arch = "wasm32")]
+    fn open(path: &Path) -> Result<Arc<Self>> {
+        ensure!(crate::vfs::metadata(path)?.is_dir(), "DICOMDIR root is not a directory");
+        Ok(Arc::new(Self { path: path.to_owned() }))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     fn open(path: &Path) -> Result<Arc<Self>> {
         let mut options = OpenOptions::new();
         options.read(true);
@@ -131,6 +141,25 @@ pub fn references(index: &Path, root: &Path) -> Result<BTreeMap<PathBuf, Referen
         ensure!(files.len() <= MAX_FILES, "Too many referenced DICOM files");
     }
     Ok(files)
+}
+
+/// In a browser: memory_fs paths are normal (no `..`) and hold no links, so a reference stays in its media root by its
+/// path alone.
+#[cfg(target_arch = "wasm32")]
+pub fn open_referenced(root: &MediaRoot, path: &Path) -> Result<File> {
+    ensure!(
+        path.starts_with(&root.path)
+            && path
+                .components()
+                .all(|part| !matches!(part, std::path::Component::ParentDir | std::path::Component::CurDir)),
+        "DICOMDIR reference escaped the media root"
+    );
+    let file = OpenOptions::new().read(true).open(path)?;
+    ensure!(
+        file.metadata()?.is_file(),
+        "DICOMDIR reference is not a regular file"
+    );
+    Ok(file)
 }
 
 #[cfg(unix)]
