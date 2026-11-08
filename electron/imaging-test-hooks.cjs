@@ -24,9 +24,18 @@ function createImagingTestHooks() {
         let release; const released = new Promise(resolve => { release = resolve; });
         const id = randomUUID(); gates.set(id, { kind, index, released, release, observers: [] }); return id;
       },
+      // A check fails instead of waiting forever for a request that never comes.
       waitForHeldPixelRequest: id => {
         const gate = gates.get(id); if (!gate) throw new Error('Unknown test pixel gate.');
-        return gate.observed ? Promise.resolve(gate.observed) : new Promise(resolve => gate.observers.push(resolve));
+        if (gate.observed) return Promise.resolve(gate.observed);
+        return new Promise((resolve, reject) => {
+          const done = descriptor => { clearTimeout(timer); resolve(descriptor); };
+          const timer = setTimeout(() => {
+            gate.observers = gate.observers.filter(observer => observer !== done);
+            reject(new Error(`No ${gate.kind} request reached the test gate within 60 s.`));
+          }, 60_000);
+          gate.observers.push(done);
+        });
       },
       releasePixelRequests: id => { const gate = gates.get(id); if (gate) { gates.delete(id); gate.release(); } },
     },

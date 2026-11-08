@@ -364,7 +364,14 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       const output = document.createElement('canvas'); output.width = bitmap.width; output.height = bitmap.height;
       const context = output.getContext('2d')!; context.drawImage(bitmap, 0, 0); bitmap.close();
       const resizedPixels = [...context.getImageData(8, 32, 1, 1).data, ...context.getImageData(35, 5, 1, 1).data];
-      return { destination, restoredAfterSuccess, restoredAfterError, failure, cancelled, captured: firstFrames, firstMeta, firstWritten,
+      // A notice appearing during the export shrinks the pane: the video keeps its first frame's size.
+      frames.length = 0;
+      await exportViewportVideo({ ...options, setSlice: (slice: number) => {
+        viewport.style.height = slice === 1 ? '48px' : '64px';
+        setSlice(slice);
+      } });
+      const videoSizes = frames.map(frame => [frame.width, frame.height]);
+      return { destination, restoredAfterSuccess, restoredAfterError, failure, cancelled, captured: firstFrames, firstMeta, firstWritten, videoSizes,
         configured: firstConfigured && { width: firstConfigured.width, height: firstConfigured.height, description: [...new Uint8Array(firstConfigured.description)] },
         progress: progress.slice(0, 4), rangeFrames, dropFailure, cancelledAfterDrop, configFailure, cancelledAfterConfig, fellBack, fallbackStarts, noEncoder, noEncoderTried, cancelledAfterNoEncoder, odd, resizedDimensions: [output.width, output.height], resizedPixels };
     }, javascript);
@@ -399,6 +406,7 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
     assert.equal(result.cancelled, true);
     assert.deepEqual(result.rangeFrames, [[173, 42, 26, 235]]);
     assert.deepEqual(result.resizedDimensions, [128, 64]);
+    assert.deepEqual(result.videoSizes, [[64, 64], [64, 64], [64, 64]]);
     assert.deepEqual(result.resizedPixels, [0, 0, 0, 255, 255, 0, 0, 255]);
   } finally { await browser.close(); }
 });
