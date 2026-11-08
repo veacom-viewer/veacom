@@ -10,6 +10,17 @@ getrandom = "0.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
+# Clippy for both crates. CI runs it with -D warnings (.github/workflows/ci.yml), so each of these fails a pull request.
+[workspace.lints.clippy]
+# The desktop engine answers the app on stdout (native/src/pipe.rs): a stray print would corrupt a reply. Diagnostics go
+# to stderr.
+print_stdout = "warn"
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
+# A silenced lint says why: #[allow(clippy::name, reason = "...")].
+allow_attributes_without_reason = "warn"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

@@ -23,6 +23,9 @@ use veacom_core::{
 
 const MAX_OPEN_ARCHIVES: usize = 24;
 
+/// A file the export wrote, by its path inside the export and its bytes.
+type NamedFile = (String, Vec<u8>);
+
 /// Decoded volumes kept for repeated requests, least recently used first out.
 struct Cache {
     entries: VecDeque<(String, Arc<PixelBuffer>)>,
@@ -38,10 +41,10 @@ impl Cache {
         Some(value)
     }
     fn remove(&mut self, id: &str) {
-        if let Some(at) = self.entries.iter().position(|(key, _)| key == id) {
-            if let Some((_, value)) = self.entries.remove(at) {
-                self.bytes -= value.bytes().len();
-            }
+        if let Some(at) = self.entries.iter().position(|(key, _)| key == id)
+            && let Some((_, value)) = self.entries.remove(at)
+        {
+            self.bytes -= value.bytes().len();
         }
     }
     fn put(&mut self, id: String, value: Arc<PixelBuffer>) {
@@ -169,7 +172,7 @@ impl Session {
     }
 
     /// Drops archive directories as soon as their last series goes. The remaining paths also own the page's Blob files.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code, reason = "only the page calls it"))]
     pub fn prune_archives(&mut self) -> HashSet<PathBuf> {
         let paths: HashSet<_> = self.sources
             .values()
@@ -199,7 +202,7 @@ impl Session {
     }
 
     /// Whether the series' decoded volume is in the cache.
-    #[cfg_attr(not(feature = "threads"), allow(dead_code))]
+    #[cfg_attr(not(feature = "threads"), allow(dead_code, reason = "only the threaded build calls it"))]
     pub fn has_volume(&self, id: &str) -> bool {
         self.cache.entries.iter().any(|(key, _)| key == id)
     }
@@ -257,7 +260,7 @@ impl Session {
         options: serde_json::Value,
         reviewed: &BTreeMap<String, u64>,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
-    ) -> Result<(ExportResult, Vec<(String, Vec<u8>)>)> {
+    ) -> Result<(ExportResult, Vec<NamedFile>)> {
         let mut ids = ids.to_vec();
         ids.sort();
         ids.dedup();
@@ -314,7 +317,7 @@ impl Session {
 }
 
 /// Every file under `root`, by its path below `root`.
-fn read_tree(root: &Path) -> Result<Vec<(String, Vec<u8>)>> {
+fn read_tree(root: &Path) -> Result<Vec<NamedFile>> {
     let mut out = Vec::new();
     let mut pending = vec![root.to_path_buf()];
     while let Some(folder) = pending.pop() {

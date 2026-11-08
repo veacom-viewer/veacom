@@ -7,9 +7,9 @@ import './theme.css';
 import './styles.css';
 
 class ApplicationBoundary extends React.Component<{ children: React.ReactNode }, { error: string | null }> {
-  state = { error: null as string | null };
+  override state = { error: null as string | null };
   static getDerivedStateFromError(error: Error) { return { error: error.message }; }
-  render() {
+  override render() {
     if (this.state.error) return <main className="fatal-error"><h1>{t('fatal.title')}</h1><p>{this.state.error}</p><button onClick={() => location.reload()}>{t('fatal.reopen')}</button></main>;
     return this.props.children;
   }

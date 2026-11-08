@@ -59,7 +59,7 @@ describe('design guidelines', () => {
 
   it('gives every box of warnings or cautions its dismiss button, through WarningBox', () => {
     // The owner asked for a dismiss button at the top of every warning box (November 2026).
-    const boxes = files(root).filter(file => /\.tsx$/.test(file) && !file.endsWith(`${path.sep}WarningBox.tsx`))
+    const boxes = files(root).filter(file => file.endsWith('.tsx') && !file.endsWith(`${path.sep}WarningBox.tsx`))
       .flatMap(file => [...readFileSync(file, 'utf8').matchAll(/className=[{"'`][^>]*\bgeometry-warnings\b/g)].map(() => path.relative(root, file)));
     assert.deepEqual(boxes, []);
     assert.match(readFileSync(path.join(root, 'components/WarningBox.tsx'), 'utf8'), /data-action="warning-dismiss"/);

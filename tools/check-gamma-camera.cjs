@@ -107,7 +107,7 @@ async function main() {
     // The whole body opens in the active pane; its screen shows the two views side by side, named in the corner,
     // inverted grey, not linked.
     await privileged.importPaths(desktop, page, [wholeBody]);
-    await page.waitForFunction(() => /whole body$/.test(window.__VEACOM_TEST__.state().series.find(item => item.id === document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.seriesId)?.description ?? ''), undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => (window.__VEACOM_TEST__.state().series.find(item => item.id === document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.seriesId)?.description ?? '').endsWith('whole body'), undefined, { timeout: 120_000 });
     await settled();
     assert.equal((await state()).layout.join('x'), '2x2', 'Opening the whole body leaves the screen as it is.');
     await openScreen();

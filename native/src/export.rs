@@ -229,7 +229,7 @@ fn write_media(sources: &[Arc<SourceFile>], opts: &ExportOptions, output: &Path,
     warnings.sort_by(|a, b| a.text.cmp(&b.text));
     warnings.dedup();
     Ok(ExportResult {
-        directory: reported(&output),
+        directory: reported(output),
         files: sources.len(),
         archives: Vec::new(),
         warnings: warnings.into(),
@@ -370,7 +370,7 @@ fn reorder_big_endian_pixels(obj: &mut DefaultDicomObject) -> Result<()> {
         return Ok(());
     };
     ensure!(bytes.len() % 2 == 0, "OW pixel data has an odd number of bytes");
-    let words = bytes.chunks_exact(2).flat_map(|w| [w[1], w[0]]).collect();
+    let words = bytes.as_chunks::<2>().0.iter().flat_map(|w| [w[1], w[0]]).collect();
     obj.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW, PrimitiveValue::U8(words)));
     Ok(())
 }
@@ -927,7 +927,7 @@ fn build_dicomdir(instances: &[InstanceRecord]) -> Result<Vec<u8>> {
 
 fn text_element(bytes: &mut Vec<u8>, tag: Tag, vr: &str, text: &str) -> Result<()> {
     let mut value = text.as_bytes().to_vec();
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         value.push(if vr == "UI" { 0 } else { b' ' });
     }
     element(bytes, tag, vr, &value)
@@ -1181,7 +1181,7 @@ mod tests {
         obj.write_to_file(&source).unwrap();
         for anonymize in [false, true] {
             let result = export_series(
-                &[source.clone()],
+                std::slice::from_ref(&source),
                 &ExportOptions { operation: None, cancelled: None,
                     directory: dir.path().join(format!("out-{anonymize}")).to_string_lossy().into_owned(),
                     anonymize,
@@ -1198,7 +1198,7 @@ mod tests {
             for (tag, text) in long {
                 assert_eq!(value(&exported, tag), text, "{tag:?}");
             }
-            let imported = crate::ingest::import(&[result.directory.clone()]).unwrap();
+            let imported = crate::ingest::import(std::slice::from_ref(&result.directory)).unwrap();
             assert_eq!(imported.sources.len(), 1);
             assert!((imported.sources[0].info.spacing[0] - 0.48828125).abs() < 1e-9);
         }

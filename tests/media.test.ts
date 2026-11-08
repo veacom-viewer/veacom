@@ -259,7 +259,7 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       const overlay = viewport.querySelector('svg')!;
       const colors = ['#ff0000', '#00ff00', '#0000ff'];
       let current = 2, cancelled = false, fail = false;
-      const captured: number[][] = [], progress: number[] = [];
+      const progress: number[] = [];
       const setSlice = (slice: number) => {
         current = slice;
         canvas.dataset.slice = String(slice);

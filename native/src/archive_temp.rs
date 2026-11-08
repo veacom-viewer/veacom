@@ -31,7 +31,7 @@ fn create_in(root:&Path,prefix:&str)->Result<ArchiveTempDir> {
     ensure!(prefix=="veacom-import-" || (cfg!(test) && prefix==LEGACY_RAR_PREFIX),"Invalid extraction directory prefix");
     let nonce=crate::random::uuid_v4_simple();
     let name=format!("{prefix}{nonce}");
-    #[cfg_attr(not(unix), allow(unused_mut))]
+    #[cfg_attr(not(unix), allow(unused_mut, reason = "only Unix sets the mode"))]
     let mut builder=fs::DirBuilder::new();
     #[cfg(unix)] {use std::os::unix::fs::DirBuilderExt;builder.mode(0o700);}
     // Fails if anything, including a symlink, already has this name.

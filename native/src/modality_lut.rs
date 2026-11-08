@@ -223,6 +223,94 @@ pub fn voi_window(lut: &crate::model::VoiLut) -> (f64, f64) {
     (lower + width / 2., width)
 }
 
+pub fn descriptor(object: &InMemDicomObject, frame: usize) -> Result<Option<Descriptor>> {
+    item(object, frame)?
+        .map(|item| describe(object, item))
+        .transpose()
+}
+
+pub fn read(
+    object: &InMemDicomObject,
+    frame: usize,
+    little_endian: bool,
+) -> Result<Option<Lut<'_>>> {
+    let Some(item) = item(object, frame)? else {
+        return Ok(None);
+    };
+    let descriptor = describe(object, item)?;
+    let element = item
+        .get(Tag(0x0028, 0x3006))
+        .context("Missing Modality LUT Data")?;
+    let Value::Primitive(data) = element.value() else {
+        anyhow::bail!("Modality LUT Data is not primitive")
+    };
+    let count = descriptor.count;
+    let values = match data {
+        PrimitiveValue::U16(words)
+            if words.len() == count
+                && (descriptor.bits == 16 || words.iter().all(|&v| v <= 255)) =>
+        {
+            Cow::Borrowed(words.as_slice())
+        }
+        PrimitiveValue::U8(bytes) => decode_bytes(bytes, &descriptor, little_endian)?,
+        // Packed 8-bit entries: entry 2k is the low-order byte of word k, as with 8-bit
+        // pixels in OW (PS3.3 C.11.1.1, "equivalent to 8 bits allocated"). The words are
+        // already values here, so that holds whichever byte order the file used.
+        PrimitiveValue::U16(words)
+            if descriptor.bits == 8 && words.len() * 2 == count + count % 2 =>
+        {
+            let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
+            Cow::Owned(decode_bytes(&bytes, &descriptor, true)?.into_owned())
+        }
+        _ => anyhow::bail!("Modality LUT Data length or representation differs from descriptor"),
+    };
+    ensure!(
+        descriptor.bits == 16 || values.iter().all(|&v| v <= 255),
+        "8-bit Modality LUT contains nonzero high bits"
+    );
+    Ok(Some(Lut { descriptor, values }))
+}
+
+fn decode_bytes<'a>(
+    bytes: &'a [u8],
+    descriptor: &Descriptor,
+    little_endian: bool,
+) -> Result<Cow<'a, [u16]>> {
+    let count = descriptor.count;
+    if descriptor.bits == 8 {
+        // Raw OW bytes from a big-endian file hold each word high byte first: swap them so
+        // that entry 2k, the word's low-order byte, comes first.
+        let ordered: Cow<[u8]> = if little_endian || bytes.len() % 2 == 1 {
+            Cow::Borrowed(bytes)
+        } else {
+            Cow::Owned(bytes.as_chunks::<2>().0.iter().flat_map(|v| [v[1], v[0]]).collect())
+        };
+        if ordered.len() == count
+            || (count % 2 == 1 && ordered.len() == count + 1 && ordered.last() == Some(&0))
+        {
+            return Ok(Cow::Owned(
+                ordered[..count].iter().map(|&n| u16::from(n)).collect(),
+            ));
+        }
+    }
+    ensure!(
+        bytes.len() == count * 2,
+        "Modality LUT Data length differs from descriptor"
+    );
+    Ok(Cow::Owned(
+        bytes
+            .as_chunks::<2>().0.iter()
+            .map(|v| {
+                if little_endian {
+                    u16::from_le_bytes([v[0], v[1]])
+                } else {
+                    u16::from_be_bytes([v[0], v[1]])
+                }
+            })
+            .collect(),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,92 +427,4 @@ mod tests {
         ));
         assert!(read(&source, 0, true).is_err());
     }
-}
-
-pub fn descriptor(object: &InMemDicomObject, frame: usize) -> Result<Option<Descriptor>> {
-    item(object, frame)?
-        .map(|item| describe(object, item))
-        .transpose()
-}
-
-pub fn read(
-    object: &InMemDicomObject,
-    frame: usize,
-    little_endian: bool,
-) -> Result<Option<Lut<'_>>> {
-    let Some(item) = item(object, frame)? else {
-        return Ok(None);
-    };
-    let descriptor = describe(object, item)?;
-    let element = item
-        .get(Tag(0x0028, 0x3006))
-        .context("Missing Modality LUT Data")?;
-    let Value::Primitive(data) = element.value() else {
-        anyhow::bail!("Modality LUT Data is not primitive")
-    };
-    let count = descriptor.count;
-    let values = match data {
-        PrimitiveValue::U16(words)
-            if words.len() == count
-                && (descriptor.bits == 16 || words.iter().all(|&v| v <= 255)) =>
-        {
-            Cow::Borrowed(words.as_slice())
-        }
-        PrimitiveValue::U8(bytes) => decode_bytes(bytes, &descriptor, little_endian)?,
-        // Packed 8-bit entries: entry 2k is the low-order byte of word k, as with 8-bit
-        // pixels in OW (PS3.3 C.11.1.1, "equivalent to 8 bits allocated"). The words are
-        // already values here, so that holds whichever byte order the file used.
-        PrimitiveValue::U16(words)
-            if descriptor.bits == 8 && words.len() * 2 == count + count % 2 =>
-        {
-            let bytes: Vec<_> = words.iter().flat_map(|v| v.to_le_bytes()).collect();
-            Cow::Owned(decode_bytes(&bytes, &descriptor, true)?.into_owned())
-        }
-        _ => anyhow::bail!("Modality LUT Data length or representation differs from descriptor"),
-    };
-    ensure!(
-        descriptor.bits == 16 || values.iter().all(|&v| v <= 255),
-        "8-bit Modality LUT contains nonzero high bits"
-    );
-    Ok(Some(Lut { descriptor, values }))
-}
-
-fn decode_bytes<'a>(
-    bytes: &'a [u8],
-    descriptor: &Descriptor,
-    little_endian: bool,
-) -> Result<Cow<'a, [u16]>> {
-    let count = descriptor.count;
-    if descriptor.bits == 8 {
-        // Raw OW bytes from a big-endian file hold each word high byte first: swap them so
-        // that entry 2k, the word's low-order byte, comes first.
-        let ordered: Cow<[u8]> = if little_endian || bytes.len() % 2 == 1 {
-            Cow::Borrowed(bytes)
-        } else {
-            Cow::Owned(bytes.chunks_exact(2).flat_map(|v| [v[1], v[0]]).collect())
-        };
-        if ordered.len() == count
-            || (count % 2 == 1 && ordered.len() == count + 1 && ordered.last() == Some(&0))
-        {
-            return Ok(Cow::Owned(
-                ordered[..count].iter().map(|&n| u16::from(n)).collect(),
-            ));
-        }
-    }
-    ensure!(
-        bytes.len() == count * 2,
-        "Modality LUT Data length differs from descriptor"
-    );
-    Ok(Cow::Owned(
-        bytes
-            .chunks_exact(2)
-            .map(|v| {
-                if little_endian {
-                    u16::from_le_bytes([v[0], v[1]])
-                } else {
-                    u16::from_be_bytes([v[0], v[1]])
-                }
-            })
-            .collect(),
-    ))
 }

@@ -110,10 +110,7 @@ impl StatefulDecode for GuardDecoder {
 impl Read for GuardRead {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if crate::progress::is_stopping() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Native core is shutting down",
-            ));
+            return Err(io::Error::other("Native core is shutting down"));
         }
         if output.is_empty() {
             return Ok(0);
@@ -625,8 +622,7 @@ fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: Scan
                         .checked_mul(65536)
                         .context("Frame count overflow")?;
                     let limit = (decoded.saturating_mul(2).saturating_add(overhead))
-                        .max(16 * 1024 * 1024)
-                        .min(MAX_PIXELS);
+                        .clamp(16 * 1024 * 1024, MAX_PIXELS);
                     compressed = Some(Encapsulated {
                         items: 0,
                         fragments: 0,
@@ -785,9 +781,8 @@ fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: Scan
                         "Truncated Extended Offset Table"
                     );
                     let values: Vec<u64> = bytes
-                        .chunks_exact(8)
-                        .map(|word| {
-                            let word: [u8; 8] = word.try_into().unwrap();
+                        .as_chunks::<8>().0.iter()
+                        .map(|&word| {
                             if syntax.endianness() == dicom_encoding::Endianness::Big {
                                 u64::from_be_bytes(word)
                             } else {
@@ -833,8 +828,8 @@ fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: Scan
                     decoder.read_to_vec(len, &mut table)?;
                     ensure!(table.len() == len as usize, "Truncated Basic Offset Table");
                     compressed.offsets = table
-                        .chunks_exact(4)
-                        .map(|v| u64::from(u32::from_le_bytes(v.try_into().unwrap())))
+                        .as_chunks::<4>().0.iter()
+                        .map(|&v| u64::from(u32::from_le_bytes(v)))
                         .collect();
                     ensure!(
                         compressed.offsets.first().is_none_or(|v| *v == 0)
@@ -933,7 +928,7 @@ mod tests {
             bytes.extend(element(tag, b"US", &value.to_le_bytes()));
         }
         let mut count = frames.as_bytes().to_vec();
-        if count.len() % 2 != 0 {
+        if !count.len().is_multiple_of(2) {
             count.push(b' ');
         }
         bytes.extend(element(Tag(0x28, 8), b"IS", &count));

@@ -34,6 +34,9 @@ const LARGE_PIECE: u64 = 1024 * 1024;
 const LARGE_FILE: u64 = 16 * 1024 * 1024;
 const KEPT_PIECES: usize = 64;
 
+/// A piece read lately: the file's id, the piece's index in it and its bytes.
+type Piece = (u32, u64, Rc<Vec<u8>>);
+
 fn piece_size(length: u64) -> u64 {
     if length > LARGE_FILE { LARGE_PIECE } else { PIECE }
 }
@@ -49,7 +52,7 @@ struct Stats {
 
 thread_local! {
     static BLOBS: RefCell<HashMap<u32, web_sys::Blob>> = RefCell::new(HashMap::new());
-    static PIECES: RefCell<VecDeque<(u32, u64, Rc<Vec<u8>>)>> = const { RefCell::new(VecDeque::new()) };
+    static PIECES: RefCell<VecDeque<Piece>> = const { RefCell::new(VecDeque::new()) };
     static STATS: RefCell<Stats> = RefCell::new(Stats::default());
     static READER: web_sys::FileReaderSync = web_sys::FileReaderSync::new().expect("FileReaderSync is only available in a Worker");
     static CLOCK: Option<web_sys::Performance> = js_sys::global().unchecked_into::<web_sys::WorkerGlobalScope>().performance();
@@ -137,7 +140,7 @@ pub fn clear() {
 /// Reads these files whole into shared memory, so that any thread can read them; files that are not the page's (ZIP
 /// entries, already in memory) need nothing. Holds nothing and returns false when they come to more than `limit`
 /// bytes or memory runs short. Called on the thread that has the Blobs; `release` gives the memory back.
-#[cfg_attr(not(feature = "threads"), allow(dead_code))]
+#[cfg_attr(not(feature = "threads"), allow(dead_code, reason = "only the threaded build calls it"))]
 pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
     let wanted: Vec<Arc<BlobSource>> = {
         let sources = sources();
@@ -169,7 +172,7 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
 }
 
 /// Gives back the memory of every file held whole.
-#[cfg_attr(not(feature = "threads"), allow(dead_code))]
+#[cfg_attr(not(feature = "threads"), allow(dead_code, reason = "only the threaded build calls it"))]
 pub fn release() {
     for source in sources().values() {
         *source.whole.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;

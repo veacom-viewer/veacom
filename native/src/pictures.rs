@@ -473,7 +473,7 @@ pub mod testing {
 
     /// Starts the tests' decoder once: it takes pictures as the desktop app does and answers from what `picture` wrote,
     /// or that the picture cannot be decoded.
-    #[allow(clippy::disallowed_methods)] // The test decoder stands in for the desktop process.
+    #[allow(clippy::disallowed_methods, reason = "the test decoder stands in for the desktop process")]
     pub fn serve() {
         static SERVING: OnceLock<()> = OnceLock::new();
         // Never cancelled.

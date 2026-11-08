@@ -180,7 +180,7 @@ function parseSphereValues(text) {
     else if ((match = /^⌀ ([\d.,]+) mm$/.exec(part))) values.diameterMm = number(match[1]);
     else if ((match = /^MTV 41% ([\d.,]+) mL$/.exec(part))) values.mtv = number(match[1]);
     else if ((match = /^TLG ([\d.,]+) \S+·mL$/.exec(part))) values.tlg = number(match[1]);
-    else if (!/^SULglu /.test(part)) values.notes.push(part);
+    else if (!part.startsWith('SULglu ')) values.notes.push(part);
   }
   for (const key of ['max', 'peak', 'mean', 'min', 'sd', 'volumeMl', 'diameterMm', 'mtv', 'tlg']) {
     if (key in values && !Number.isFinite(values[key])) delete values[key];

@@ -12,6 +12,9 @@ path = "src/lib.rs"
 name = "veacom-core"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [features]
 default = ["native-codecs"]
 # The codecs written in C: CharLS for JPEG-LS, OpenJPEG for JPEG 2000. A build without them (WebAssembly, web/engine)

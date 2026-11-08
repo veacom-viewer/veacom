@@ -6,6 +6,9 @@ license = "GPL-3.0-or-later"
 publish = false
 description = "The VEAcom engine in a browser: veacom-core compiled to WebAssembly and called from a Web Worker"
 
+[lints]
+workspace = true
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

@@ -51,4 +51,23 @@ if (locked.size) {
     gone.length && `No lockfile contains these names any more; delete their lines from ${NAMES}:\n${gone.join('\n')}`,
   ].filter(Boolean).join('\n\n'));
 }
-console.log(`PASS repository policy (${files.length} tracked files, ${locked.size} dependency names)`);
+// Every check in tools/ is started by something: a workflow, tools/verify.sh, a package script or another tool. A check
+// that nothing starts goes stale unnoticed. These five are not started anywhere yet; each needs to be wired into CI or
+// removed, and none may join them.
+const UNSTARTED = new Set([
+  'tools/check-resource-spikes.cjs',
+  'tools/check-roi-worker.mjs',
+  'tools/check-source-display.cjs',
+  'tools/check-study-workflows.cjs',
+  'tools/check-window-and-segmentation.cjs',
+]);
+const checks = files.filter(file => /^tools\/check-[^/]+\.(?:cjs|mjs|ps1)$/.test(file));
+const starters = files.filter(file => /\.(?:ya?ml|sh|json|[cm]?js|ts|html|ps1)$/.test(file) && file !== 'tools/check-repository.mjs' && existsSync(file))
+  .map(file => [file, readFileSync(file, 'utf8')]);
+const unstarted = checks.filter(check => !UNSTARTED.has(check)
+  && !starters.some(([file, text]) => file !== check && text.includes(check.slice('tools/'.length))));
+if (unstarted.length) throw new Error(`Nothing starts these checks; run each from CI (.github/workflows) or tools/verify.sh:\n${unstarted.join('\n')}`);
+const started = [...UNSTARTED].filter(check => starters.some(([file, text]) => file !== check && text.includes(check.slice('tools/'.length))));
+if (started.length) throw new Error(`These checks now run, so delete them from UNSTARTED in tools/check-repository.mjs:\n${started.join('\n')}`);
+
+console.log(`PASS repository policy (${files.length} tracked files, ${locked.size} dependency names, ${checks.length - UNSTARTED.size} checks started)`);

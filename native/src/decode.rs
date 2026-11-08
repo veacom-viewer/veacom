@@ -159,7 +159,7 @@ fn decode_rle32(fragment: &[u8], pixels: usize) -> Result<Vec<u32>> {
     if pixels == 0 || pixels > MAX_FRAME_SAMPLES {
         bail!("Invalid RLE32 frame dimensions");
     }
-    if fragment.len() < 64 || fragment.len() % 2 != 0 {
+    if fragment.len() < 64 || !fragment.len().is_multiple_of(2) {
         bail!("Invalid RLE32 frame header or padding");
     }
     let word = |index: usize| {
@@ -550,7 +550,7 @@ fn scalar_values(
         8 => data.iter().map(|&byte| unpack(u16::from(byte))).collect(),
         // The decoder has already converted the file's words to native byte order.
         16 => data
-            .chunks_exact(2)
+            .as_chunks::<2>().0.iter()
             .map(|word| unpack(u16::from_ne_bytes([word[0], word[1]])))
             .collect(),
         _ => bail!("Unsupported scalar BitsAllocated"),
@@ -933,6 +933,7 @@ mod tests {
             .write_to_file(path)
             .unwrap();
     }
+    #[allow(clippy::too_many_arguments, reason = "each argument is one attribute of the test image or one expected value")]
     fn check(
         pixels: &[u16],
         signed: bool,
@@ -1075,7 +1076,7 @@ mod tests {
         ] {
             let bytes: Vec<u8> = hex
                 .as_bytes()
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect();
             assert_eq!(decode_rle32(&bytes, 3).unwrap(), expected);

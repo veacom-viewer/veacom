@@ -112,10 +112,10 @@ pub(super) fn write(sources: &[Arc<SourceFile>], opts: &ExportOptions, destinati
     let mut written = Vec::new();
     let mut failure = packed.as_ref().err().map(|error| format!("{error:#}"));
     for (path, writer) in archives.into_iter().flatten() {
-        if failure.is_none() {
-            if let Err(error) = writer.finish() {
-                failure = Some(format!("Cannot finish {}: {error}", path.display()));
-            }
+        if failure.is_none()
+            && let Err(error) = writer.finish()
+        {
+            failure = Some(format!("Cannot finish {}: {error}", path.display()));
         }
         written.push(path);
     }
@@ -268,8 +268,11 @@ fn jpeg_ls(mut obj: DefaultDicomObject, limit: usize) -> Option<Vec<u8>> {
     (bytes.len() < limit).then_some(bytes)
 }
 
-/// Each source's archive (by index into the names) and folder there, from the files' headers; the archives' names.
-fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<(Vec<String>, Vec<(usize, String)>)> {
+/// The archives' names, and each source's archive (by index into the names) and folder there.
+type Plan = (Vec<String>, Vec<(usize, String)>);
+
+/// Each source's archive and folder there, from the files' headers; the archives' names.
+fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<Plan> {
     struct Patient {
         name: String,
         id: String,
@@ -563,7 +566,7 @@ mod tests {
         pixels[5] = 0xf123;
         let path = sources.path().join("a.dcm");
         slice(&path, "DENEME^HASTA", "2.25.11", "3", "2.25.100", 12, pixels.clone());
-        let result = super::super::export_series(&[path.clone()], &options(out.path())).unwrap();
+        let result = super::super::export_series(std::slice::from_ref(&path), &options(out.path())).unwrap();
         let inside = entries(&result.archives[0]);
         assert_eq!(inside[0].1.meta().transfer_syntax().trim_end_matches('\0'), "1.2.840.10008.1.2.1");
         let mut zipped = zip::ZipArchive::new(File::open(&result.archives[0]).unwrap()).unwrap();

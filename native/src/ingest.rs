@@ -602,7 +602,7 @@ fn dimensions_comparable(frames: &[Frame]) -> bool {
 /// otherwise its first frame's values as recorded.
 fn phase_acquisition(frames: &[Frame]) -> (String, String) {
     let hints = || frames.iter().map(|f| &f.phase_hints);
-    fn earliest<'a>(keyed: Vec<(f64, &'a PhaseHints)>) -> Option<&'a PhaseHints> {
+    fn earliest(keyed: Vec<(f64, &PhaseHints)>) -> Option<&PhaseHints> {
         keyed.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, h)| h)
     }
     let chosen = hints()
@@ -2069,8 +2069,8 @@ pub fn display_window(values: impl Iterator<Item = f64> + Clone) -> Option<(f64,
     let percentile = |fraction: f64| {
         let target = ((kept - 1) as f64 * fraction).round() as usize;
         let mut seen = 0;
-        for bin in first..end {
-            seen += histogram[bin];
+        for (bin, count) in histogram.iter().enumerate().take(end).skip(first) {
+            seen += count;
             if seen > target {
                 return low + bin as f64 * step;
             }

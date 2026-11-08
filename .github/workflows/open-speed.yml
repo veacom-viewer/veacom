@@ -96,19 +96,66 @@ jobs:
           if ! sha=$(git rev-parse --verify --quiet "$ref^{commit}"); then sha=$(git rev-parse "$REFERENCE^{commit}") label=$REFERENCE; fi
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "label=$label $(git rev-parse --short "$sha")" >> "$GITHUB_OUTPUT"
-      - name: Build both engines
+      # An engine built before from the same sources (the native folder, the workspace manifest and lockfile, the Cargo
+      # settings and toolchain) is taken from the cache instead of being built again: main's runs keep each engine they
+      # build for the pull requests based on it, and a pull request's later pushes reuse its base's.
+      - name: Keys for the two engines' sources
+        id: keys
         env:
           BASE_SHA: ${{ steps.base.outputs.sha }}
         run: |
           set -euo pipefail
-          engines="$RUNNER_TEMP/engines"
-          cargo build --release --locked --manifest-path native/Cargo.toml
-          install -D native/target/release/veacom-core "$engines/head/veacom-core"
-          git worktree add --detach "$RUNNER_TEMP/base-source" "$BASE_SHA"
-          # From the base's own folder, so rustup takes its toolchain; the shared target folder keeps the dependencies.
-          (cd "$RUNNER_TEMP/base-source" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/native/target" cargo build --release --locked --manifest-path native/Cargo.toml)
-          install -D native/target/release/veacom-core "$engines/base/veacom-core"
-          if cmp -s "$engines/head/veacom-core" "$engines/base/veacom-core"; then echo 'The two engines are byte-identical, so this run is an A/A check.'; fi
+          key() { git ls-tree "$1" -- native Cargo.toml Cargo.lock .cargo rust-toolchain.toml | sha256sum | cut -c1-20; }
+          echo "head=open-speed-engine-$RUNNER_OS-$RUNNER_ARCH-$(key HEAD)" >> "$GITHUB_OUTPUT"
+          echo "base=open-speed-engine-$RUNNER_OS-$RUNNER_ARCH-$(key "$BASE_SHA")" >> "$GITHUB_OUTPUT"
+      - name: Head engine from the cache
+        id: head-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/engine-cache
+          key: ${{ steps.keys.outputs.head }}
+      - name: Build the head engine
+        run: |
+          set -euo pipefail
+          if [ ! -f "$RUNNER_TEMP/engine-cache/veacom-core" ]; then
+            cargo build --release --locked --manifest-path native/Cargo.toml
+            install -D native/target/release/veacom-core "$RUNNER_TEMP/engine-cache/veacom-core"
+          fi
+          install -D "$RUNNER_TEMP/engine-cache/veacom-core" "$RUNNER_TEMP/engines/head/veacom-core"
+      - name: Keep the head engine
+        if: steps.head-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/engine-cache
+          key: ${{ steps.keys.outputs.head }}
+      - name: Base engine from the cache
+        id: base-cache
+        if: steps.keys.outputs.base != steps.keys.outputs.head
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/engine-cache
+          key: ${{ steps.keys.outputs.base }}
+      - name: Build the base engine
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          SAME_SOURCES: ${{ steps.keys.outputs.base == steps.keys.outputs.head }}
+          BASE_CACHED: ${{ steps.base-cache.outputs.cache-hit == 'true' }}
+        run: |
+          set -euo pipefail
+          if [ "$SAME_SOURCES" != true ] && [ "$BASE_CACHED" != true ]; then
+            git worktree add --detach "$RUNNER_TEMP/base-source" "$BASE_SHA"
+            # From the base's own folder, so rustup takes its toolchain; the shared target folder keeps the dependencies.
+            (cd "$RUNNER_TEMP/base-source" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/native/target" cargo build --release --locked --manifest-path native/Cargo.toml)
+            install -D native/target/release/veacom-core "$RUNNER_TEMP/engine-cache/veacom-core"
+          fi
+          install -D "$RUNNER_TEMP/engine-cache/veacom-core" "$RUNNER_TEMP/engines/base/veacom-core"
+          if cmp -s "$RUNNER_TEMP/engines/head/veacom-core" "$RUNNER_TEMP/engines/base/veacom-core"; then echo 'The two engines are byte-identical, so this run is an A/A check.'; fi
+      - name: Keep the base engine
+        if: steps.keys.outputs.base != steps.keys.outputs.head && steps.base-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/engine-cache
+          key: ${{ steps.keys.outputs.base }}
       - name: Open the synthetic CT with both engines
         env:
           BASE_LABEL: ${{ steps.base.outputs.label }}
