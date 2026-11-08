@@ -1,4 +1,4 @@
-//! cargo run --locked --profile browser-release --example bench -- <folder or zip>...
+//! cargo run --locked -p veacom-web-engine --profile browser-release --example bench -- path/to/study
 //! Prints one JSON line per path: the native build of the browser engine, timed from disk.
 
 fn main() {

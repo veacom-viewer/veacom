@@ -133,11 +133,10 @@ Hostile files (any folder of them, plus one good file to open afterwards):
 pnpm exec electron web/tools/hostile.cjs <folder> <good.dcm>
 ```
 
-The same engine code timed natively from disk:
+To time the browser engine natively, run this from the repository root with a study folder or ZIP.
 
 ```sh
-cd web/engine
-cargo run --locked --profile browser-release --example bench -- <folder or zip>
+cargo run --locked -p veacom-web-engine --profile browser-release --example bench -- path/to/study
 ```
 
 ## Full cleanup in the browser

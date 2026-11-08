@@ -314,7 +314,7 @@ WebAssembly dosyası 3,6 MB (wasm-opt uygulanmadan).
 - Tarayıcı: Electron 45'in Chromium'u. Dosyalar diskten geliyor, yani kullanıcının sürükleyip bıraktığı türden File nesneleri.
 - Tarayıcı süreleri dosyaların Worker'a verildiği andan başlıyor. Her değer 5 turun ortancası; parantez içinde en düşük ve en yüksek tur var.
 - Masaüstü motoru: `D:\veacom-dev\bench\rounds3.jsonl`, `base` motoru, 7 turun ortancası.
-- "Aynı kod, yerel": bu prototipin crate'i Windows için derlenip diskten çalıştırıldı. Bugün aynı ölçüm `cargo run --locked --profile browser-release --example bench` ile yapılabilir. Masaüstü ile WebAssembly arasındaki farkın ne kadarının iş parçacığından geldiğini ayırmak için tek çekirdekle de çalıştırıldı.
+- "Aynı kod, yerel": bu prototipin crate'i Windows için derlenip diskten çalıştırıldı. Aynı ölçüm depo kökünde `cargo run --locked -p veacom-web-engine --profile browser-release --example bench -- calisma/yolu` ile yapılabilir. Son argüman bir klasör veya ZIP dosyasının yoludur. Masaüstü ile WebAssembly arasındaki farkın ne kadarının iş parçacığından geldiğini ayırmak için tek çekirdekle de çalıştırıldı.
 
 **Seri listesi ve ilk görüntü** (başlangıçtan itibaren):
 
