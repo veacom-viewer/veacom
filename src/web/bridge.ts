@@ -5,7 +5,7 @@
 // As on the desktop, a file choice becomes a one-time capability the page passes back to import, series carry the
 // engine generation they belong to, and a crashed engine is replaced by a fresh one with the next generation.
 import type { CoreState, DesktopBridge, ImportResult, Series, UpdateStatus } from '../model';
-import { coreErrorText } from '../i18n/core';
+import { coreErrorText, coreText } from '../i18n/core';
 import { t } from '../i18n';
 import { handOverPixels } from '../imaging/pixelHandoff';
 import type { EngineExport, EngineInfo, EnginePixels, EngineRequest } from './engine.worker';
@@ -159,14 +159,13 @@ export function createWebBridge(): DesktopBridge {
   const known = new Map<string, number>();
   /** Each series as the engine last listed it: its catalog revision, and what the export review names it by. */
   const described = new Map<string, Series>();
-  // The cancel flag the engine reads while it works: a job id, -1 for whatever runs, 0 for none. Only a cross-origin
+  // The cancel flag the engine reads while it works: the bridge request id, or zero. Only a cross-origin
   // isolated page has shared memory. Elsewhere (a host without the site's headers) the single-thread engine runs and
   // cannot see a flag while it works, so a Cancel there replaces the engine once CANCEL_GRACE_MS have passed.
   const cancel = self.crossOriginIsolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   // In the threads build, the same flag and the progress record inside the engine's own shared memory: while a decode
   // runs on the pool, the engine's Worker waits for it and passes nothing on.
   let shared: { cancel: Int32Array; progress: Uint32Array } | null = null;
-  let busyStage = '';
   // The DICOM export under way, for its Cancel.
   let exporting: { id: number; cancelled: boolean } | null = null;
   // The threads build's helper Workers, started here for the engine Worker (see startHelpers).
@@ -245,7 +244,7 @@ export function createWebBridge(): DesktopBridge {
     for (const helper of helpers) helper.terminate();
     helpers = [];
     queue = []; inFlight = null;
-    known.clear(); clearTimeout(cancelTimer); shared = null; setCancel(0);
+    known.clear(); clearTimeout(cancelTimer); cancelTimer = undefined; shared = null; setCancel(0);
     progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
   }
 
@@ -255,21 +254,25 @@ export function createWebBridge(): DesktopBridge {
     const own = worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
     own.onmessage = ({ data }) => {
       if (own !== worker) return;
-      if (data.type === 'progress') { progress = data.value; return; }
+      if (data.type === 'progress') {
+        if (data.value.id === inFlight && data.value.running) progress = data.value;
+        return;
+      }
       if (data.type === 'helpers') { startHelpers(own, data); return; }
-      if (data.id === inFlight) { inFlight = null; dispatch(); }
+      if (data.id !== inFlight) return;
       const request = pending.get(data.id);
       if (!request) return;
+      inFlight = null;
       pending.delete(data.id);
       releaseWhenDrained();
-      if (request.busy) progress = { ...progress, running: false };
-      if (request.busy || request.cancelled) { clearTimeout(cancelTimer); setCancel(0); }
+      if (request.cancelled) { clearTimeout(cancelTimer); cancelTimer = undefined; setCancel(0); }
       if (data.fatal) {
         console.error('The imaging engine stopped:', data.error, data.detail ?? '');
         request.reject(new Error(t('engine.restartedReopen')));
         crashed();
         return;
       }
+      dispatch();
       if (request.abandoned) return;
       if (data.ok) { request.resolve(data.value as never); return; }
       request.reject(new Error(coreErrorText(data.error, locale)));
@@ -321,15 +324,13 @@ export function createWebBridge(): DesktopBridge {
     // Stopped for good (see crashed): nothing would answer.
     if (state.status === 'failed') return Promise.reject(new Error(state.message ?? t('engine.unavailable')));
     if (signal?.aborted) return Promise.reject(signal.reason);
-    const id = ++requestId;
+    do { requestId = (requestId + 1) >>> 0; } while (!requestId || pending.has(requestId));
+    const id = requestId;
     onQueued?.(id);
     return new Promise<T>((resolve, reject) => {
       pending.set(id, { resolve: resolve as (value: never) => void, reject, busy, op: request.op });
       // New files keep the engine busy again: no release waits any more.
       if (request.op === 'import') releaseWhenIdle = false;
-      // A job starts at its own stage with nothing done; the engine's reports (or, while the pool decodes, the shared
-      // record) then fill it in.
-      if (busy) { busyStage = request.op === 'volume' ? 'decode' : 'import'; progress = { ...progress, running: true, cancelled: false, stage: busyStage, completed: 0, total: 0 }; }
       queue.push({ id, request });
       signal?.addEventListener('abort', () => abandon(id, signal.reason), { once: true });
       dispatchSoon();
@@ -341,9 +342,7 @@ export function createWebBridge(): DesktopBridge {
     const at = queue.findIndex(item => item.id === id);
     if (at < 0) return false;
     queue.splice(at, 1);
-    const request = pending.get(id);
     pending.delete(id);
-    if (request?.busy && ![...pending.values()].some(other => other.busy)) progress = { ...progress, running: false };
     releaseWhenDrained();
     return true;
   }
@@ -357,16 +356,39 @@ export function createWebBridge(): DesktopBridge {
     request.abandoned = true;
     request.reject(reason instanceof Error ? reason : new DOMException('The request was abandoned.', 'AbortError'));
     if (unqueue(id)) return;
-    if (id === inFlight && request.busy) { request.cancelled = true; setCancel(-1); }
+    if (id === inFlight && request.busy) { request.cancelled = true; setCancel(id); }
   }
 
-  /** The progress record; during a job, the shared one when the engine has it (threads build). */
+  function cancelRequest(id: number, error: Error): boolean {
+    const request = pending.get(id);
+    if (!request) return false;
+    if (unqueue(id)) { request.reject(error); return true; }
+    if (id !== inFlight) return false;
+    request.cancelled = true;
+    setCancel(id);
+    cancelTimer ??= setTimeout(() => {
+      if (id === inFlight && pending.get(id) === request) { restartCount++; start(t('engine.restartedEmpty')); }
+    }, CANCEL_GRACE_MS);
+    return true;
+  }
+
+  /** Progress belongs to the busy request being dispatched, including while it waits for its first engine report. */
   function currentProgress(): Progress {
-    if (!shared || !progress.running) return { ...progress };
+    const active = inFlight !== null && (pending.get(inFlight)?.busy || (progress.running && progress.id === inFlight));
+    const id = active ? inFlight : queue.find(job => pending.get(job.id)?.busy)?.id;
+    if (id == null) return { ...progress, running: false };
+    const request = pending.get(id)!;
+    const current = progress.id === id ? { ...progress } : {
+      id, running: true, stage: request.op === 'volume' ? 'decode' : 'import', completed: 0, total: 0, cancelled: false,
+    };
+    current.cancelled ||= Boolean(request.cancelled);
+    if (!shared || id !== inFlight) return current;
     const record = shared.progress;
-    const [running, completed, total, id] = [0, 1, 2, 3].map(index => Atomics.load(record, index));
-    if (!running || id < (progress.id ?? 0)) return { ...progress };
-    return { ...progress, id, stage: progress.stage || busyStage, completed, total };
+    if (Atomics.load(record, 3) === id && Atomics.load(record, 0)) {
+      current.completed = Atomics.load(record, 1);
+      current.total = Atomics.load(record, 2);
+    }
+    return current;
   }
 
   function requireGeneration(value: number): void {
@@ -464,13 +486,11 @@ export function createWebBridge(): DesktopBridge {
     async importEarly() { return { import: 0, series: [] }; },
     async listSeries() { return catalog(await call<ImportResult>({ op: 'list' })); },
     async getProgress() { return currentProgress(); },
-    async cancelOperation() {
-      if (!progress.running) return { requested: false };
-      setCancel(-1);
-      // An engine that does not stop (a decoder caught in a loop) is replaced.
-      clearTimeout(cancelTimer);
-      cancelTimer = setTimeout(() => { if ([...pending.values()].some(request => request.busy)) { restartCount++; start(t('engine.restartedEmpty')); } }, CANCEL_GRACE_MS);
-      return { requested: true };
+    async cancelOperation(id) {
+      const shown = currentProgress();
+      if (!shown.running || shown.id === undefined || (id !== undefined && id !== shown.id)) return { requested: false };
+      const error = new Error(coreText({ code: 'job.cancelled', text: 'Operation cancelled' }, locale));
+      return { requested: cancelRequest(shown.id, error) };
     },
     async getTags(seriesId, requestGeneration, frame, revision) {
       requireGeneration(requestGeneration);
@@ -547,13 +567,7 @@ export function createWebBridge(): DesktopBridge {
       const job = exporting;
       if (!job || job.cancelled) return;
       job.cancelled = true;
-      const request = pending.get(job.id);
-      if (!request) return;
-      if (unqueue(job.id)) { request.reject(new Error(t('export.cancelled'))); return; }
-      request.cancelled = true;
-      setCancel(-1);
-      clearTimeout(cancelTimer);
-      cancelTimer = setTimeout(() => { if (pending.has(job.id)) { restartCount++; start(t('engine.restartedEmpty')); } }, CANCEL_GRACE_MS);
+      cancelRequest(job.id, new Error(t('export.cancelled')));
     },
     async beginImages(suggestedName) {
       const id = crypto.randomUUID();

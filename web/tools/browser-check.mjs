@@ -94,6 +94,28 @@ async function checkFilePicker(page) {
   if (frames.length !== 1 || frames[0] !== 2) throw new Error(`Picking two same-named slices returned frame counts ${frames}`);
 }
 
+async function checkQueuedImports() {
+  const bridge = window.veacom;
+  const names = await (await fetch('/__study/files.json')).json();
+  const file = new File([await (await fetch(`/__study/${names[0]}`)).arrayBuffer()], 'slice.dcm');
+  const firstSelection = await bridge.importFiles([file]), secondSelection = await bridge.importFiles([file]);
+  const first = bridge.importSelected(firstSelection);
+  const second = bridge.importSelected(secondSelection);
+  const firstJob = await bridge.getProgress();
+  await first;
+  const nextJob = await bridge.getProgress();
+  const stale = await bridge.cancelOperation(firstJob.id);
+  await second;
+  if (!firstJob.running || !nextJob.running || firstJob.id === nextJob.id || stale.requested) {
+    throw new Error('A queued import lost its progress or accepted the previous job’s Cancel');
+  }
+  const selection = await bridge.importFiles([file]);
+  const queued = bridge.importSelected(selection).then(() => false, () => true);
+  const shown = await bridge.getProgress();
+  const cancelled = await bridge.cancelOperation(shown.id);
+  if (!cancelled.requested || !await queued) throw new Error('The queued import did not cancel');
+}
+
 const browser = await chromium.launch();
 const failures = [];
 try {
@@ -124,6 +146,7 @@ try {
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       await checkFilePicker(page);
+      await page.evaluate(checkQueuedImports);
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
     } catch (error) {

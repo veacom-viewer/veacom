@@ -18,14 +18,14 @@ use wasm_bindgen::prelude::*;
 
 /// The cancel flag and progress record in the module's own memory. In the threads build that memory is shared with
 /// the page, which writes the flag and reads the record directly: while a decode runs on the pool, the Worker's own
-/// thread waits for it and can pass on nothing. Cancel: a job id, -1 for whatever runs, 0 for none. Progress: running,
-/// completed, total, job id.
+/// thread waits for it and can pass on nothing. Cancellation and progress use the same request id as the browser queue.
+static REQUEST_ID: AtomicU32 = AtomicU32::new(0);
 static SHARED_CANCEL: AtomicI32 = AtomicI32::new(0);
 static SHARED_PROGRESS: [AtomicU32; 4] = [const { AtomicU32::new(0) }; 4];
 
 thread_local! {
     static SESSION: RefCell<Session> = RefCell::new(Session::default());
-    /// The page's progress listener and its cancel flag (a job id, -1 for whatever runs, 0 for none).
+    /// The page's progress listener and its cancel flag (a request id or zero).
     static WATCH: RefCell<Option<(js_sys::Function, js_sys::Int32Array)>> = const { RefCell::new(None) };
     static LAST_REPORT: Cell<f64> = const { Cell::new(0.) };
     /// The running export's own stop flag, which the engine checks between files.
@@ -50,16 +50,15 @@ fn json(value: impl serde::Serialize) -> Result<String, JsError> {
     serde_json::to_string(&value).map_err(|e| error(e.into()))
 }
 
+#[wasm_bindgen(js_name = beginRequest)]
+pub fn begin_request(id: u32) {
+    REQUEST_ID.store(id, Ordering::Release);
+}
+
 fn cancel(id: i32) {
-    match id {
-        0 => {}
-        -1 => {
-            progress::cancel();
-            EXPORT_CANCEL.with_borrow(|flag| flag.store(true, Ordering::Release));
-        }
-        id => {
-            progress::cancel_operation(id as u64);
-        }
+    if id != 0 && id as u32 == REQUEST_ID.load(Ordering::Acquire) {
+        progress::cancel();
+        EXPORT_CANCEL.with_borrow(|flag| flag.store(true, Ordering::Release));
     }
 }
 
@@ -78,7 +77,8 @@ fn read_hook() {
         return;
     }
     LAST_REPORT.set(now);
-    let record = progress::snapshot();
+    let mut record = progress::snapshot();
+    record["id"] = REQUEST_ID.load(Ordering::Acquire).into();
     let number = |key: &str| record[key].as_u64().unwrap_or(0) as u32;
     SHARED_PROGRESS[0].store(record["running"].as_bool().unwrap_or(false) as u32, Ordering::Release);
     SHARED_PROGRESS[1].store(number("completed"), Ordering::Release);

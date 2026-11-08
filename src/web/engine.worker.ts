@@ -97,6 +97,7 @@ scope.onmessage = async ({ data }) => {
   }
   try {
     let value: unknown, transfer: Transferable[] = [];
+    engine.beginRequest(data.id);
     switch (data.op) {
       case 'init': {
         // Without shared memory the page cannot reach a flag while the engine works; this one stays 0.
