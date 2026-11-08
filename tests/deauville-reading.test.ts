@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
 import type { Annotation, Series, Vec3, Volume } from '../src/model';
-import { clearEditedScores, currentDeauville, deauvilleReading } from '../src/imaging/deauvilleReading';
+import { canAssessLymphoma, clearEditedScores, currentDeauville, deauvilleReading } from '../src/imaging/deauvilleReading';
 import { spherePoints } from '../src/imaging/voi';
 import { fusedPetSummary } from '../src/imaging/annotations';
 import { setLocale } from '../src/i18n';
@@ -34,6 +34,17 @@ it('requires the lymphoma reading context, a suitable tracer and complete refere
   }
   const padded = { ...volume, series: { ...series, paddingRange: [2, 2] as [number, number] } };
   assert.deepEqual(deauvilleReading(lesion, items, padded), { problem: 'coverage' });
+});
+
+it('reads nothing on a file storing SUV that the engine refused, not corrected for attenuation', () => {
+  // The same PET without the engine's SUV factor: its unit still says SUVbw, but its values are not an SUV.
+  const refused = { ...volume, series: { ...series, suvFactor: null } };
+  assert.equal(canAssessLymphoma(volume), true);
+  assert.equal(canAssessLymphoma(refused), false);
+  assert.deepEqual(deauvilleReading(lesion, items, refused), { problem: 'context' });
+  setLocale('en');
+  assert.doesNotMatch(fusedPetSummary(lesion, refused), /SU[VL]/);
+  assert.match(fusedPetSummary(lesion, refused), /^PET g\/ml max /);
 });
 
 it('invalidates confirmed scores when the lesion, references or measured values change', () => {
