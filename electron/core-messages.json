@@ -65,6 +65,7 @@
     "zip.entryTooLarge": "ZIP içindeki bir dosya, dosya başına sınırı aşıyor.",
     "zip.tooLarge": "ZIP açıldığında içe aktarma sınırını aşıyor.",
     "rar.unsupported": "RAR arşivleri açılamaz. Arşivi çıkarıp klasörü açın.",
+    "pictures.browser": "PNG, JPEG ve BMP resimleri tarayıcıda henüz açılmıyor.",
 
     "decode.cannotRead": "{path} okunamadı: {reason}",
     "decode.noMemory": "Hacmi açmaya yetecek bellek yok.",

@@ -224,6 +224,10 @@ impl Drop for Request {
 
 /// Checks the signature on the open file before allocating for its contents.
 pub fn index(path: &Path) -> Result<std::sync::Arc<crate::source_file::SourceFile>> {
+    // A page has no picture decoder to answer yet; waiting for one would only delay the rest of the import.
+    if cfg!(target_arch = "wasm32") {
+        bail!(coded!("pictures.browser", "PNG, JPEG and BMP pictures cannot be opened in the browser yet"));
+    }
     use std::io::{Seek, SeekFrom};
     let mut file = crate::source_file::open_file(path)?;
     let len = file.metadata()?.len();
@@ -472,12 +476,14 @@ pub mod testing {
     #[allow(clippy::disallowed_methods)] // The test decoder stands in for the desktop process.
     pub fn serve() {
         static SERVING: OnceLock<()> = OnceLock::new();
+        // Never cancelled.
+        static KEPT: AtomicBool = AtomicBool::new(false);
         SERVING.get_or_init(|| {
             std::thread::Builder::new()
                 .name("test-picture-decoder".into())
                 .spawn(|| {
                     loop {
-                        let Some(task) = next(Duration::from_secs(3600), &crate::KEPT) else {
+                        let Some(task) = next(Duration::from_secs(3600), &KEPT) else {
                             continue;
                         };
                         decoded().lock().unwrap().push(task.bytes.clone());

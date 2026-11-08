@@ -1,48 +1,20 @@
-// First, so `note!` and `coded!` are available to every module below.
-#[macro_use]
-mod message;
-#[cfg(test)]
-mod codec_tests;
-mod archive_temp;
-#[cfg(windows)]
-mod archive_owner_windows;
-mod color;
-mod confidentiality;
-mod codec_guard;
-mod decode;
-mod export;
-mod gamma_camera;
-mod geometry;
-mod ingest;
-mod media_directory;
-mod import_budget;
-mod input_guard;
-mod measure;
-mod sampling;
-mod window;
+//! The desktop's transport: the engine (the `veacom_core` library) reached by the app's main process over pipes, with
+//! the session's catalog, volume cache and job queues.
+
+// The engine's modules under the names this transport has always used.
+#[allow(unused_imports)]
+use veacom_core::{
+    archive_temp, codec_guard, coded, color, decode, export, gamma_camera, geometry, import_budget, ingest,
+    input_guard, measure, message, modality_lut, model, note, palette, parallel, pictures, progress, random,
+    rle_guard, sampling, tags, test_dir, window, confidentiality, media_directory, patient, source_file,
+};
 mod memory;
-mod model;
-mod modality_lut;
-mod palette;
-mod patient;
-mod parallel;
-mod pictures;
 mod pipe;
-mod progress;
-mod random;
 mod resources;
-mod rle_guard;
-mod source_file;
-mod tags;
-#[cfg(test)]
-mod test_dir;
 
 /// Volumes and other large buffers are mapped directly, so freeing them returns the memory.
 #[global_allocator]
 static ALLOCATOR: memory::PageAllocator = memory::PageAllocator;
-
-#[cfg(not(target_endian = "little"))]
-compile_error!("VEAcom binary transport currently requires a little-endian target");
 
 use model::{ImportResult, PixelBuffer, SourceSeries, Volume};
 use pipe::Reply;

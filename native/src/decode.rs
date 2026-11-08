@@ -3,7 +3,9 @@ use anyhow::{Context, Result, bail};
 use dicom_pixeldata::{DecodedPixelData, PixelDecoder};
 use std::{collections::HashMap, path::Path};
 
-const MAX_VOLUME_BYTES: usize = 2 * 1024 * 1024 * 1024;
+/// In WebAssembly everything shares 4 GB, so a decoded volume may take a quarter of it there.
+const MAX_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
+const VOLUME_LIMIT: &str = if cfg!(target_arch = "wasm32") { "1 GiB" } else { "2 GiB" };
 const MAX_FRAME_SAMPLES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -147,7 +149,7 @@ fn check_object(object: &dicom_object::DefaultDicomObject, full_volume: bool) ->
                 .context("Decoded DICOM dimensions overflow")?;
         }
         if bytes > MAX_VOLUME_BYTES as u64 {
-            bail!("Multiframe DICOM exceeds the 2 GiB decoded source limit");
+            bail!("Multiframe DICOM exceeds the {VOLUME_LIMIT} decoded source limit");
         }
     }
     Ok(())
@@ -680,7 +682,7 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         .checked_mul(std::mem::size_of::<T>())
         .is_none_or(|n| n > MAX_VOLUME_BYTES)
     {
-        bail!("Volume exceeds the 2 GiB decoded output limit");
+        bail!("Volume exceeds the {VOLUME_LIMIT} decoded output limit");
     }
     let mut output = Vec::new();
     output

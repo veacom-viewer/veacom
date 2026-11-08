@@ -11,17 +11,19 @@ use anyhow::{Context, Result, bail, ensure};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use dicom_core::{PrimitiveValue, Tag};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
+use crate::vfs::{self as fs, File};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
-    fs::{self, File},
     io::{Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
 };
 
 pub const MAX_FILES: usize = 50_000;
-const MAX_ARCHIVE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
-const MAX_ARCHIVE_FILE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+/// Extracted archive entries are held in memory in WebAssembly, where everything shares 4 GB: 1 GiB in all and
+/// 512 MiB per entry there, so a ZIP bomb stops long before memory runs out.
+const MAX_ARCHIVE_BYTES: u64 = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 8 * 1024 * 1024 * 1024 };
+const MAX_ARCHIVE_FILE_BYTES: u64 = if cfg!(target_arch = "wasm32") { 512 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
 /// The threads that read an import's files (crate::parallel names them dicom-index-1…).
 fn index_readers() -> usize {
     crate::parallel::available(2).min(8)
@@ -2071,9 +2073,10 @@ pub fn display_window(values: impl Iterator<Item = f64> + Clone) -> Option<(f64,
     Some(((bottom + top) / 2., (top - bottom).max(1.)))
 }
 
-#[cfg(test)]
+/// `import_session` without early series, at source revision 0: for the tests, the desktop transport's among them
+/// (which build this library without `cfg(test)`).
 pub fn import(paths: &[String]) -> Result<Imported> {
-    import_with(paths, None)
+    import_session(paths, None, 0)
 }
 
 /// Where an import hands over the series it can show before it ends (see `import_with`).
@@ -2107,7 +2110,7 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     for raw in paths {
         crate::progress::check()?;
         let path = Path::new(raw);
-        if !path.exists() {
+        if !fs::exists(path) {
             bail!(coded!("import.pathMissing", "Selected path does not exist: {path}", path = path.display().to_string()));
         }
         let before = files.len();
@@ -2126,10 +2129,10 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
             .is_some_and(|x| x.eq_ignore_ascii_case("rar"))
         {
             bail!(coded!("rar.unsupported", "RAR archives cannot be opened. Extract the archive, then open the folder."));
-        } else if path.is_file() && path.file_name().is_some_and(|x| x.eq_ignore_ascii_case("DICOMDIR"))
+        } else if fs::is_file(path) && path.file_name().is_some_and(|x| x.eq_ignore_ascii_case("DICOMDIR"))
         {
             let parent = path.parent().context("DICOMDIR has no parent directory")?;
-            let root = parent.canonicalize()?;
+            let root = fs::canonicalize(parent)?;
             for (path, reference) in crate::media_directory::references(path, &root)? {
                 if let Some(previous) = media_files.get(&path) {
                     ensure!(reference.agrees_with(previous), "Conflicting DICOMDIR references to the same file");
@@ -2139,7 +2142,7 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
                 ensure!(files.len() <= MAX_FILES, "Too many referenced DICOM files");
             }
             ImageRoot::new(parent, parent.file_name())
-        } else if path.is_file() {
+        } else if fs::is_file(path) {
             collect_files(path, &mut files)?;
             // A loose file belongs to its folder (collect_files keeps it canonical).
             let folder = files.last().and_then(|file| file.parent()).unwrap_or(Path::new("")).to_owned();
@@ -2191,43 +2194,55 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     for index in (0..files.len()).filter(|index| !archived.contains(index)) {
         let _ = send.send(index);
     }
-    let extracted = std::thread::scope(|scope| -> Result<()> {
-        let (extractions, slot_of, unplanned) = (&extractions, &slot_of, &unplanned);
-        let extraction = scope.spawn(move || -> Result<()> {
-            for (archive, dir, _) in extractions {
-                extract_zip_into(archive, dir, &mut |target| match slot_of.get(target) {
-                    Some(&index) => {
-                        let _ = send.send(index);
-                    }
-                    None if !hidden_entry(dir, target) => unplanned.lock().unwrap().push(target.to_owned()),
-                    None => {}
-                })?;
-            }
-            Ok(())
-        });
-        // Says when the reading is over (or has failed: the sender goes with the thread), so the watch below stops at
-        // once rather than at the end of its next pause, which would hold up the catalogue.
-        let (over, reading_over) = std::sync::mpsc::channel::<()>();
-        let reading = scope.spawn(move || {
-            let _over = over;
-            crate::parallel::for_each("dicom-index", index_readers(), receive.into_iter(), read_slot);
-        });
-        if let Some(sink) = early {
-            let mut watch = EarlyWatch::new(&files);
-            while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = reading_over.recv_timeout(std::time::Duration::from_millis(20)) {
+    let (extractions_ref, slot_of_ref, unplanned_ref) = (&extractions, &slot_of, &unplanned);
+    let extract = move || -> Result<()> {
+        for (archive, dir, _) in extractions_ref {
+            extract_zip_into(archive, dir, &mut |target| match slot_of_ref.get(target) {
+                Some(&index) => {
+                    let _ = send.send(index);
+                }
+                None if !hidden_entry(dir, target) => unplanned_ref.lock().unwrap().push(target.to_owned()),
+                None => {}
+            })?;
+        }
+        Ok(())
+    };
+    let read_all = move || crate::parallel::for_each("dicom-index", index_readers(), receive.into_iter(), read_slot);
+    // WebAssembly cannot start a thread of its own: there the archives are extracted first and the files read after
+    // (on the threads the page lends, parallel.rs), and no series is published early.
+    let extracted = if cfg!(target_arch = "wasm32") {
+        let extracted = extract();
+        // The sender goes with the extraction, so the reading ends after the last file.
+        drop(extract);
+        read_all();
+        extracted
+    } else {
+        std::thread::scope(|scope| -> Result<()> {
+            let extraction = scope.spawn(extract);
+            // Says when the reading is over (or has failed: the sender goes with the thread), so the watch below stops at
+            // once rather than at the end of its next pause, which would hold up the catalogue.
+            let (over, reading_over) = std::sync::mpsc::channel::<()>();
+            let reading = scope.spawn(move || {
+                let _over = over;
+                read_all();
+            });
+            if let Some(sink) = early {
+                let mut watch = EarlyWatch::new(&files);
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = reading_over.recv_timeout(std::time::Duration::from_millis(20)) {
+                    watch.publish(&files, &slots, sink, revision);
+                }
+                // Tests read small studies before the first look: one more, so they see the hand-over too.
+                #[cfg(test)]
                 watch.publish(&files, &slots, sink, revision);
             }
-            // Tests read small studies before the first look: one more, so they see the hand-over too.
-            #[cfg(test)]
-            watch.publish(&files, &slots, sink, revision);
-        }
-        let reading = reading.join();
-        let extracted = extraction.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Archive extraction stopped unexpectedly")));
-        if let Err(panic) = reading {
-            std::panic::resume_unwind(panic);
-        }
-        extracted
-    });
+            let reading = reading.join();
+            let extracted = extraction.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Archive extraction stopped unexpectedly")));
+            if let Err(panic) = reading {
+                std::panic::resume_unwind(panic);
+            }
+            extracted
+        })
+    };
     extracted?;
     crate::progress::check()?;
     let mut read: Vec<(&Path, Result<IndexedFile>)> = files
@@ -2635,8 +2650,8 @@ impl EarlyWatch {
 }
 
 fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    if path.is_file() {
-        files.push(path.canonicalize()?);
+    if fs::is_file(path) {
+        files.push(fs::canonicalize(path)?);
         if files.len() > MAX_FILES {
             bail!(coded!("import.tooManySelected", "Too many selected files"));
         }
@@ -2645,7 +2660,7 @@ fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     // The selected folder itself may be a link; nothing inside it is followed. Hidden entries are
     // skipped and hidden folders never entered. Each folder is listed whole before its first
     // entry is visited, so a deeply nested tree doesn't hold one open handle per level.
-    if !std::fs::metadata(path).map_err(|error| walk_error(path, error))?.is_dir() {
+    if !fs::metadata(path).map_err(|error| walk_error(path, error))?.is_dir() {
         return Ok(());
     }
     let mut pending = vec![list_folder(path)?];
@@ -2672,8 +2687,8 @@ fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     Ok(())
 }
 
-fn list_folder(path: &Path) -> Result<std::vec::IntoIter<std::fs::DirEntry>> {
-    let entries = std::fs::read_dir(path)
+fn list_folder(path: &Path) -> Result<std::vec::IntoIter<fs::DirEntry>> {
+    let entries = fs::read_dir(path)
         .and_then(|entries| entries.collect::<std::io::Result<Vec<_>>>())
         .map_err(|error| walk_error(path, error))?;
     Ok(entries.into_iter())
@@ -3488,6 +3503,8 @@ fn merge_pet_acquisition(group: &mut Series, info: &Series) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The tests write real files on the desktop's own file system.
+    use std::fs;
     use dicom_core::{DataElement, VR};
     #[test]
     fn folder_walk_skips_hidden_entries_and_never_follows_links_inside() {
