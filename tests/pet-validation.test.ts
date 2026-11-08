@@ -322,7 +322,7 @@ describe('the files it writes', () => {
     assert.equal(validation.inside(root, root), true);
     assert.equal(validation.inside(path.join(root, '..patient-results'), root), true);
     assert.equal(validation.inside(path.join(root, '..', 'studies'), root), false);
-    assert.equal(validation.inside(`${root.replace(/\/$/, '')}-other/x`, root), false);
+    assert.equal(validation.inside(path.join(`${path.resolve(root)}-other`, 'x'), root), false);
   });
 
   it('rejects a real-study output under a symlink into the checkout before creating directories', t => {
