@@ -177,6 +177,7 @@ try {
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       await checkFilePicker(page);
       await page.evaluate(checkQueuedImports);
+      await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
       await checkArchiveLimit(page);
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);

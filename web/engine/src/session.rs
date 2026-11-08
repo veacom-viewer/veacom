@@ -132,7 +132,11 @@ impl Session {
         let incoming_archives = paths.iter().filter(|path| ingest::is_zip_file(Path::new(path))).count();
         anyhow::ensure!(
             incoming_archives <= MAX_OPEN_ARCHIVES.saturating_sub(self.archives.len()),
-            coded!("import.tooManyArchives", "A session can hold at most 24 ZIP archives at once.")
+            coded!(
+                "import.browserArchiveLimit",
+                "A session can hold at most {limit} ZIP archives at once. Select fewer ZIPs or close all series from an open archive.",
+                limit = MAX_OPEN_ARCHIVES.to_string()
+            )
         );
         progress::check()?;
         progress::begin("import", 0);

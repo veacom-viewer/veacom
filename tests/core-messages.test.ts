@@ -12,12 +12,14 @@ const placeholders = (text: string) => new Set([...text.matchAll(/\{(\w+)\}/g)].
 
 // Every coded message the engine can send, read from its source: note!("code", "English template", …).
 const engine = new Map<string, string>();
-const sources = new URL('../native/src/', import.meta.url);
-for (const file of readdirSync(sources).filter(name => name.endsWith('.rs') && name !== 'message.rs')) {
-  const text = readFileSync(new URL(file, sources), 'utf8');
-  for (const [, code, template] of text.matchAll(/(?:note|coded)!\(\s*"([\w.]+)",\s*"((?:[^"\\]|\\.)*)"/g)) {
-    assert.equal(engine.get(code) ?? template, template, `${code} has one English template`);
-    engine.set(code, template);
+for (const directory of ['../native/src/', '../web/engine/src/']) {
+  const sources = new URL(directory, import.meta.url);
+  for (const file of readdirSync(sources).filter(name => name.endsWith('.rs') && name !== 'message.rs')) {
+    const text = readFileSync(new URL(file, sources), 'utf8');
+    for (const [, code, template] of text.matchAll(/(?:note|coded)!\(\s*"([\w.]+)",\s*"((?:[^"\\]|\\.)*)"/g)) {
+      assert.equal(engine.get(code) ?? template, template, `${code} has one English template`);
+      engine.set(code, template);
+    }
   }
 }
 
