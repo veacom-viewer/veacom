@@ -60,6 +60,9 @@ impl Cache {
     fn put(&mut self, id: String, value: Arc<PixelBuffer>) {
         self.remove(&id);
         let bytes = value.allocated_bytes();
+        if bytes > self.limit {
+            return;
+        }
         while self.bytes + bytes > self.limit {
             if let Some((_, old)) = self.entries.pop_front() {
                 self.bytes -= old.allocated_bytes();
@@ -67,10 +70,8 @@ impl Cache {
                 break;
             }
         }
-        if bytes <= self.limit {
-            self.bytes += bytes;
-            self.entries.push_back((id, value));
-        }
+        self.bytes += bytes;
+        self.entries.push_back((id, value));
     }
     /// Keeps a warmed volume for the request that follows it, even when it exceeds the
     /// cache, so that request does not decode it again.
@@ -892,6 +893,9 @@ mod cache_tests {
         cache.put("small".into(), volume(4));
         assert!(cache.get("picture").is_none());
         cache.limit = 56;
+        cache.put("picture".into(), picture.clone());
+        assert!(cache.get("picture").is_none());
+        assert!(cache.get("small").is_some());
         cache.hand_off("picture".into(), picture);
         assert!(cache.get("picture").is_some());
         assert!(cache.get("picture").is_none());
