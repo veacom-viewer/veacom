@@ -125,10 +125,11 @@ jobs:
           retention-days: 90
 
   windows:
+    # TEMPORARY: the last condition runs the Windows job on this pull request to test it; revert before merging.
     if: >
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows')) ||
-      github.event_name == 'pull_request' # TEMPORARY: test the Windows job on this pull request; revert before merging
+      github.event_name == 'pull_request'
     runs-on: windows-2022
     timeout-minutes: 50
     defaults:
