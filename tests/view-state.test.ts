@@ -24,6 +24,14 @@ describe('acquired-frame window state', () => {
     assertFields(patchView(volume, manual, { slice: 2 }), { windowCenter: 75, windowWidth: 90, windowMode: 'manual' });
     assertFields(patchView(volume, { ...manual, slice: 2 }, { windowMode: 'dicom' }), { windowCenter: 300, windowWidth: 80, windowMode: 'dicom' });
   });
+  it('keeps a requested MIP turn while displaying the acquired preview frame', () => {
+    const preview = { ...volume, data: new Int16Array(4), sourceFrameIndex: 1 };
+    const mip: ViewState = { ...initial, mode: 'mpr', plane: 'coronal', projection: 'mip', slice: 0 };
+    const paged = patchView(preview, mip, { slice: 7 });
+    assertFields(paged, { mode: 'mpr', plane: 'coronal', slice: 7, projection: 'mip' });
+    assertFields(renderedView(preview, paged), { mode: 'source', plane: 'axial', slice: 1 });
+    assertFields(renderedView(volume, paged), { mode: 'mpr', plane: 'coronal', slice: 7, projection: 'mip' });
+  });
   it('normalizes source frame indices without converting irregular acquisitions into MPR', () => {
     const irregular = { ...volume, series: { ...series, canReconstruct: false } };
     assertFields(resolveView(irregular, { ...initial, mode: 'mpr', plane: 'coronal', slice: 200, oblique: [20, 30] }), { mode: 'source', plane: 'axial', slice: 2, oblique: undefined });

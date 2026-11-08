@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
-const { choosePetLayout } = require('./lib/pet-layout.cjs');
+const { choosePetLayout, selectPetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -167,13 +167,28 @@ async function main() {
     check('Forget brings the one-pane fused PET/CT screen back');
 
     // Paged while its PET is read again (a preview frame stands in for it), the MIP stays a MIP.
-    await privileged.importPaths(desktop, page, [study]);
-    await choosePetLayout(page);
-    const mipBox = await cells.nth(3).boundingBox();
-    await page.mouse.move(mipBox.x + mipBox.width / 2, mipBox.y + mipBox.height / 2);
-    for (let step = 0; step < 6; step++) { await page.mouse.wheel(0, 100); await page.waitForTimeout(30); }
+    const gate = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('volume'));
+    let previewTurn;
+    try {
+      await privileged.importPaths(desktop, page, [study]);
+      await selectPetLayout(page);
+      await desktop.evaluate(({ app }, id) => app.__VEACOM_PRIVILEGED_TEST__.waitForHeldPixelRequest(id), gate);
+      const mip = cells.nth(3);
+      await mip.locator(`canvas[data-series-id="${pet.id}"][data-mode="source"]`).hover();
+      assert.equal(await mip.getAttribute('data-volume-complete'), 'false');
+      const initialTurn = (await state()).panes[3].slice;
+      await page.mouse.wheel(0, 100);
+      await page.waitForFunction(start => window.__VEACOM_TEST__.state().panes[3].slice !== start, initialTurn);
+      const paged = (await state()).panes[3];
+      assert.equal(paged.mode, 'mpr');
+      assert.equal(paged.projection, 'mip');
+      previewTurn = paged.slice;
+    } finally {
+      await desktop.evaluate(({ app }, id) => app.__VEACOM_PRIVILEGED_TEST__.releasePixelRequests(id), gate);
+    }
     await settled();
     s = await state();
+    assert.equal(s.panes[3].slice, previewTurn, 'The chosen turn survives arrival of the full PET volume.');
     assert.equal(s.panes[3].projection, 'mip');
     assert.equal(s.panes[3].mode, 'mpr', 'The MIP pane is still a reconstruction.');
     assert.match(await cells.nth(3).locator('[data-testid="image-overlay"]').textContent(), /MIP · \d+°/);
