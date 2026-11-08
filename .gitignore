@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 build/
 dist/
+dist-web/
 packaging/version_info.txt
 
 # Local tool settings

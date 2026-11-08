@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VEAcom tarayıcı prototipi</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="banner">TEST PENCERESİ</div>
+  <header>
+    <label>Klasör aç<input id="pick-folder" type="file" webkitdirectory multiple></label>
+    <label>Dosya ya da ZIP aç<input id="pick-files" type="file" multiple></label>
+    <span id="status">Görüntüler bu bilgisayardan çıkmaz.</span>
+  </header>
+  <main>
+    <ul id="series"></ul>
+    <div id="view">
+      <span id="hint">Klasörü ya da ZIP'i buraya bırakın.</span>
+      <canvas id="canvas" hidden></canvas>
+      <div id="times" hidden></div>
+    </div>
+  </main>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>

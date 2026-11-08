@@ -6,5 +6,8 @@
     "resolveJsonModule": true, "allowImportingTsExtensions": true, "noEmit": true, "erasableSyntaxOnly": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "vite.config.ts"],
+  // The browser build's bridge and engine Worker need the WebAssembly engine's generated modules (web/build.ps1):
+  // tsconfig.web.json checks them. Its MP4 writer, ZIP and Trusted Types rule are checked here through their tests.
+  "exclude": ["src/web"]
 }

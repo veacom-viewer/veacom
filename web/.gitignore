@@ -1,0 +1,7 @@
+# Built by web/build.ps1
+engine/pkg/
+engine/pkg-threads/
+# Made by web/site/prepare.mjs, and wrangler's local state
+site/public/
+site/.wrangler/
+engine/target/

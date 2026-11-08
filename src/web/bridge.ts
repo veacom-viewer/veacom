@@ -1,0 +1,439 @@
+// `window.veacom` for the browser (viewer.veacom.app): the same bridge the desktop's preload offers, with the engine in
+// a Web Worker instead of a separate process. Files never leave the computer: the user's own File objects go to the
+// Worker, which reads them where they are.
+//
+// As on the desktop, a file choice becomes a one-time capability the page passes back to import, series carry the
+// engine generation they belong to, and a crashed engine is replaced by a fresh one with the next generation.
+import type { CoreState, DesktopBridge, ImportResult, Series, UpdateStatus } from '../model';
+import { coreErrorText } from '../i18n/core';
+import { t } from '../i18n';
+import { handOverPixels } from '../imaging/pixelHandoff';
+import type { EngineExport, EngineInfo, EnginePixels, EngineRequest } from './engine.worker';
+import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
+import { zipStored, type ZipEntry } from './zip';
+
+type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
+type Pending = { resolve: (value: never) => void; reject: (error: Error) => void; busy: boolean };
+interface Selection { files: { path: string; file: File }[]; roots: string[]; zip: boolean }
+type Progress = { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean };
+
+const LOCALE_KEY = 'veacom.locale';
+/** How long a cancelled job may take to stop before the engine is replaced. */
+const CANCEL_GRACE_MS = 8000;
+
+function storedLocale(): 'tr' | 'en' {
+  try {
+    const saved = localStorage.getItem(LOCALE_KEY);
+    if (saved === 'tr' || saved === 'en') return saved;
+  } catch { /* No storage (private window): the browser's language decides. */ }
+  return navigator.language.toLowerCase().startsWith('tr') ? 'tr' : 'en';
+}
+
+/** Files from the last drop on the page, taken before the interface's own drop handler (see `watchDrops`). */
+let dropped: { files: File[]; entries: FileSystemEntry[] } | null = null;
+
+/** The files of dropped folders can only be read through the drop's entries, and only while the drop event runs: this
+ * capture-phase listener keeps them for `importFiles`, which the interface calls from its own drop handler. */
+export function watchDrops(): void {
+  document.addEventListener('drop', event => {
+    const transfer = event.dataTransfer;
+    if (!transfer?.types.includes('Files')) return;
+    dropped = {
+      files: Array.from(transfer.files),
+      entries: Array.from(transfer.items).map(item => item.webkitGetAsEntry()).filter((entry): entry is FileSystemEntry => Boolean(entry)),
+    };
+  }, true);
+}
+
+async function walk(entries: FileSystemEntry[]): Promise<{ path: string; file: File }[]> {
+  const found: { path: string; entry: FileSystemFileEntry }[] = [];
+  const visit = async (entry: FileSystemEntry, path: string): Promise<void> => {
+    if (entry.isFile) { found.push({ path, entry: entry as FileSystemFileEntry }); return; }
+    if (!entry.isDirectory) return;
+    const reader = (entry as FileSystemDirectoryEntry).createReader();
+    for (;;) {
+      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
+      if (!batch.length) break;
+      await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
+    }
+  };
+  await Promise.all(entries.map(entry => visit(entry, entry.name)));
+  return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
+}
+
+type FileHandle = { kind: 'file'; name: string; getFile(): Promise<File> };
+type FolderHandle = { kind: 'directory'; name: string; values(): AsyncIterable<FileHandle | FolderHandle> };
+type FolderPicker = (options: { mode: 'read'; id?: string }) => Promise<FolderHandle>;
+
+/** Every file in a folder chosen with the File System Access API, by its path from the folder. */
+async function readFolder(folder: FolderHandle): Promise<{ path: string; file: File }[]> {
+  const found: { path: string; handle: FileHandle }[] = [];
+  const visit = async (handle: FolderHandle, path: string): Promise<void> => {
+    const folders: Promise<void>[] = [];
+    for await (const entry of handle.values()) {
+      if (entry.kind === 'file') found.push({ path: `${path}/${entry.name}`, handle: entry });
+      else folders.push(visit(entry, `${path}/${entry.name}`));
+    }
+    await Promise.all(folders);
+  };
+  await visit(folder, folder.name);
+  return Promise.all(found.map(async ({ path, handle }) => ({ path, file: await handle.getFile() })));
+}
+
+/** Asks the browser for files: several, a folder (with everything inside it, a disc's too) or a ZIP. */
+function chooseFiles(kind: 'files' | 'folder' | 'archive'): Promise<{ path: string; file: File }[]> {
+  // Chrome and Edge ask "Upload N files to this site?" for a folder chosen the classic way, although nothing is
+  // uploaded; their folder picker only asks to let the site view the files. Other browsers ask nothing either way.
+  const picker = (window as { showDirectoryPicker?: FolderPicker }).showDirectoryPicker;
+  if (kind === 'folder' && picker) {
+    return picker.call(window, { mode: 'read', id: 'veacom-open' }).then(readFolder, (error: Error) => {
+      if (error?.name === 'AbortError') return [];
+      throw error;
+    });
+  }
+  return new Promise(resolve => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.multiple = kind !== 'archive';
+    if (kind === 'folder') input.webkitdirectory = true;
+    if (kind === 'archive') input.accept = '.zip,application/zip';
+    input.addEventListener('change', () => resolve(Array.from(input.files ?? []).map(file => ({ path: file.webkitRelativePath || file.name, file }))), { once: true });
+    input.addEventListener('cancel', () => resolve([]), { once: true });
+    input.click();
+  });
+}
+
+/** A file name without folders or characters file systems refuse. */
+function safeName(name: string): string {
+  return name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, '_').replace(/^\.+/, '').trim().slice(0, 120) || 'VEAcom';
+}
+
+function download(name: string, data: Blob): void {
+  const url = URL.createObjectURL(data);
+  const link = document.createElement('a');
+  link.href = url; link.download = name; link.rel = 'noopener';
+  document.body.append(link); link.click(); link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+export function createWebBridge(): DesktopBridge {
+  let locale = storedLocale();
+  let generation = 0, restartCount = 0, requestId = 0, selectionNumber = 0;
+  let worker: Worker;
+  let state: CoreState = { status: 'starting', generation: 0, restartCount: 0 };
+  let progress: Progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
+  let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  const pending = new Map<number, Pending>();
+  const stateListeners = new Set<(state: CoreState) => void>();
+  const selections = new Map<string, Selection>();
+  const known = new Map<string, number>();
+  /** Each series as the engine last listed it: its catalog revision, and what the export review names it by. */
+  const described = new Map<string, Series>();
+  // The cancel flag the engine reads while it works: a job id, -1 for whatever runs, 0 for none.
+  const cancel = new Int32Array(new SharedArrayBuffer(4));
+  // In the threads build, the same flag and the progress record inside the engine's own shared memory: while a decode
+  // runs on the pool, the engine's Worker waits for it and passes nothing on.
+  let shared: { cancel: Int32Array; progress: Uint32Array } | null = null;
+  let busyStage = '';
+
+  const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
+  const setCancel = (value: number) => { Atomics.store(cancel, 0, value); if (shared) Atomics.store(shared.cancel, 0, value); };
+
+  /** A new engine generation: whatever the old engine was doing fails, and the interface hears of it. */
+  function start(message?: string): void {
+    for (const { reject } of pending.values()) reject(new Error(t('engine.restartedReopen')));
+    pending.clear();
+    generation++;
+    spawn();
+    publish({ status: 'ready', generation, restartCount, ...(message ? { message } : {}) });
+  }
+
+  // WebAssembly memory only grows. Once every series is closed and nothing runs, a fresh engine Worker takes the old
+  // one's place and the browser gets its memory back. Nothing open refers to the old engine, so the generation stays.
+  let releaseWhenIdle = false, releases = 0;
+  function releaseMemory(): void {
+    releaseWhenIdle = pending.size > 0;
+    if (releaseWhenIdle) return;
+    spawn();
+    // For the measurement tools (web/tools): how many times the memory was given back.
+    document.documentElement.dataset.engineReleases = String(++releases);
+  }
+
+  // Requests wait here and go to the engine one at a time, as it works through them in order. A slice for the screen
+  // (or a series' tags, or the list) goes ahead of whole series waiting before it: a series of 400 CT slices takes
+  // seconds to decode, a slice milliseconds, and the first image should not wait for the series.
+  let queue: { id: number; request: Request }[] = [];
+  let inFlight: number | null = null, dispatching = false;
+  const QUICK: ReadonlySet<string> = new Set(['frame', 'tags', 'list']);
+  function dispatch(): void {
+    dispatching = false;
+    if (inFlight !== null || !queue.length) return;
+    const first = queue.findIndex(item => item.request.op !== 'volume');
+    const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
+    inFlight = next.id;
+    worker.postMessage({ id: next.id, ...next.request });
+  }
+  // Requests made together (a series and its first slice) are sorted before the first one goes out.
+  const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
+
+  /** A fresh engine Worker, in place of the old one. */
+  function spawn(): void {
+    worker?.terminate();
+    queue = []; inFlight = null;
+    known.clear(); clearTimeout(cancelTimer); shared = null; setCancel(0);
+    progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
+    const own = worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      if (data.type === 'progress') { progress = data.value; return; }
+      if (data.id === inFlight) { inFlight = null; dispatch(); }
+      const request = pending.get(data.id);
+      if (!request) return;
+      pending.delete(data.id);
+      if (releaseWhenIdle && !pending.size) setTimeout(() => { if (releaseWhenIdle) releaseMemory(); });
+      if (request.busy) { progress = { ...progress, running: false }; clearTimeout(cancelTimer); setCancel(0); }
+      if (data.ok) { request.resolve(data.value as never); return; }
+      if (data.fatal) {
+        console.error('The imaging engine stopped:', data.error, data.detail ?? '');
+        request.reject(new Error(t('engine.restartedReopen')));
+        restartCount++; start(t('engine.restartedEmpty'));
+        return;
+      }
+      request.reject(new Error(coreErrorText(data.error, locale)));
+    };
+    worker.onerror = () => { restartCount++; start(t('engine.restartedEmpty')); };
+    void call<EngineInfo>({ op: 'init', cancel: cancel.buffer as SharedArrayBuffer }).then(info => {
+      if (own !== worker) return;
+      if (info.shared) shared = { cancel: new Int32Array(info.shared.buffer, info.shared.cancel, 1), progress: new Uint32Array(info.shared.buffer, info.shared.progress, 4) };
+      // For the measurement tools (web/tools): how many threads decode.
+      document.documentElement.dataset.engineThreads = String(info.threads);
+    }, () => {});
+  }
+
+  function call<T>(request: Request, busy = false): Promise<T> {
+    const id = ++requestId;
+    return new Promise<T>((resolve, reject) => {
+      pending.set(id, { resolve: resolve as (value: never) => void, reject, busy });
+      // New files keep the engine busy again: no release waits any more.
+      if (request.op === 'import') releaseWhenIdle = false;
+      // A job starts at its own stage with nothing done; the engine's reports (or, while the pool decodes, the shared
+      // record) then fill it in.
+      if (busy) { busyStage = request.op === 'volume' ? 'decode' : 'import'; progress = { ...progress, running: true, cancelled: false, stage: busyStage, completed: 0, total: 0 }; }
+      queue.push({ id, request });
+      dispatchSoon();
+    });
+  }
+
+  /** The progress record; during a job, the shared one when the engine has it (threads build). */
+  function currentProgress(): Progress {
+    if (!shared || !progress.running) return { ...progress };
+    const record = shared.progress;
+    const [running, completed, total, id] = [0, 1, 2, 3].map(index => Atomics.load(record, index));
+    if (!running || id < (progress.id ?? 0)) return { ...progress };
+    return { ...progress, id, stage: progress.stage || busyStage, completed, total };
+  }
+
+  function requireGeneration(value: number): void {
+    if (value !== generation) throw new Error(t('engine.restartedReopen'));
+  }
+
+  function catalog(result: ImportResult): ImportResult {
+    const series = result.series.map(item => ({ ...item, engineGeneration: generation }) as Series);
+    for (const item of series) { known.set(item.id, generation); described.set(item.id, item); }
+    return { ...result, series };
+  }
+
+  /** A full cleanup keeps the pixels. As the desktop asks in its own window, the reader confirms here, in the browser's
+   * own dialog (which the page's content cannot draw), that the selected series show no identifying text. */
+  function reviewPixels(ids: string[], frame?: number): boolean {
+    const label = (value: unknown) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/gu, ' ').slice(0, 80);
+    const lines = ids.map(id => {
+      const item = described.get(id);
+      return (item && [item.patientName, item.patientId, item.description, item.studyUid, item.uid].map(label).filter(Boolean).join(' · ')) || id;
+    });
+    const shown = lines.length > 12 ? [...lines.slice(0, 12), '…'] : lines;
+    return window.confirm([t('export.reviewTitle'), t('export.reviewMessage', { count: ids.length }), t('export.reviewDetail'), shown.join('\n'),
+      frame === undefined ? '' : t('export.reviewSlice', { n: frame + 1 })].filter(Boolean).join('\n\n'));
+  }
+
+  function remember(files: { path: string; file: File }[]): string[] {
+    if (!files.length) return [];
+    // Each choice gets a folder of its own, so files of the same name from two choices never meet.
+    const folder = `/in/${++selectionNumber}`;
+    const roots = [...new Set(files.map(({ path }) => path.split('/')[0]))];
+    const token = `import:${crypto.randomUUID()}`;
+    selections.set(token, {
+      files: files.map(({ path, file }) => ({ path: `${folder}/${path}`, file })),
+      roots: roots.map(root => `${folder}/${root}`),
+      zip: roots.some(root => root.toLowerCase().endsWith('.zip')),
+    });
+    return [token];
+  }
+
+  const updates: UpdateStatus = { phase: 'manual', currentVersion: 'web', message: '', canDownload: false, canInstall: false, sourceBuild: true };
+  const unsupported = (key: Parameters<typeof t>[0]) => () => Promise.reject(new Error(t(key)));
+  // Pictures and videos being exported, gathered here until they are downloaded.
+  const pictures = new Map<string, { name: string; files: ZipEntry[] }>();
+  const videos = new Map<string, { name: string; fps: number; config?: { width: number; height: number; config: Uint8Array<ArrayBuffer> };
+    samples: Uint8Array<ArrayBuffer>[]; sizes: number[]; keyFrames: number[] }>();
+
+  start();
+
+  return {
+    web: true,
+    // No disc burning, no folder of its own to write to, no ZIP re-encoding (JPEG-LS is not in the browser's engine),
+    // no self-update, and no feedback service the page may reach.
+    // A page cannot find a disc or offer the import window; folders, files and ZIPs open through the browser's pickers
+    // (a disc's folder among them).
+    features: { discBurning: false, usbExport: false, exportFolder: false, zipExport: false, importWindow: false, discImport: false, updates: false, feedback: false },
+    get locale() { return locale; },
+    async setLocale(value) { locale = value; try { localStorage.setItem(LOCALE_KEY, value); } catch { /* Not kept. */ } },
+    takeStartupPaths: async () => [],
+    getCoreState: async () => ({ ...state }),
+    onCoreState(listener) { stateListeners.add(listener); return () => { stateListeners.delete(listener); }; },
+
+    async openPaths(kind) { return remember(await chooseFiles(kind)); },
+    async importFiles(files) {
+      const drop = dropped;
+      dropped = null;
+      const same = drop && drop.files.length === files.length && drop.files.every((file, i) => file === files[i]);
+      return remember(same && drop.entries.length ? await walk(drop.entries) : files.map(file => ({ path: file.name, file })));
+    },
+    async importSelected(capabilities) {
+      const chosen = capabilities.map(token => selections.get(token));
+      if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
+      for (const token of capabilities) selections.delete(token);
+      const files = chosen.flatMap(selection => selection!.files), roots = chosen.flatMap(selection => selection!.roots);
+      const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, true));
+      return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
+    },
+    // The engine answers one request at a time, so it cannot publish series while an import runs: every series
+    // arrives with the import's own result.
+    async importEarly() { return { import: 0, series: [] }; },
+    async listSeries() { return catalog(await call<ImportResult>({ op: 'list' })); },
+    async getProgress() { return currentProgress(); },
+    async cancelOperation() {
+      if (!progress.running) return { requested: false };
+      setCancel(-1);
+      // An engine that does not stop (a decoder caught in a loop) is replaced.
+      clearTimeout(cancelTimer);
+      cancelTimer = setTimeout(() => { if ([...pending.values()].some(request => request.busy)) { restartCount++; start(t('engine.restartedEmpty')); } }, CANCEL_GRACE_MS);
+      return { requested: true };
+    },
+    async getTags(seriesId, requestGeneration, frame) {
+      requireGeneration(requestGeneration);
+      // The series as listed now: tags of one imported again meanwhile are refused.
+      return call({ op: 'tags', seriesId, revision: described.get(seriesId)?.catalogRevision, ...(frame === undefined ? {} : { frame }) });
+    },
+    // A region's statistics or a window from the source pixels (imaging/nativeMeasurements.ts).
+    async measure(seriesId, requestGeneration, revision, operation) {
+      requireGeneration(requestGeneration);
+      return call({ op: 'sample', seriesId, revision, operation: JSON.stringify(operation) });
+    },
+    async removeSeries(ids, requestGeneration) {
+      requireGeneration(requestGeneration);
+      const mine = [...new Set(ids)].filter(id => known.get(id) === generation);
+      if (!mine.length) return { removed: 0 };
+      const result = await call<{ removed: number; remaining: number }>({ op: 'remove', ids: mine });
+      for (const id of mine) { known.delete(id); described.delete(id); }
+      if (result.remaining === 0 && requestGeneration === generation) releaseMemory();
+      return result;
+    },
+    getPixels: () => Promise.reject(new Error('The browser build hands pixels over with fetchPixels.')),
+    async fetchPixels({ seriesId, generation: requestGeneration, revision, index }) {
+      requireGeneration(requestGeneration);
+      if (known.get(seriesId) !== generation) throw new Error(t('engine.seriesNotOpen'));
+      const pixels = await (index === undefined
+        ? call<EnginePixels>({ op: 'volume', seriesId, revision }, true)
+        : call<EnginePixels>({ op: 'frame', seriesId, index, revision }));
+      const headers = new Headers({
+        'Content-Type': 'application/octet-stream', 'Content-Length': String(pixels.bytes.byteLength),
+        'X-Pixel-Type': pixels.pixelType, 'X-Components': String(pixels.components),
+      });
+      if (pixels.index !== undefined) headers.set('X-Source-Frame-Index', String(pixels.index));
+      if (pixels.sopInstanceUid) headers.set('X-SOP-Instance-UID', pixels.sopInstanceUid);
+      if (pixels.sourceFrameNumber !== undefined) headers.set('X-Source-Frame-Number', String(pixels.sourceFrameNumber));
+      // The engine's bytes arrive in an ArrayBuffer of their own, moved from the Worker without a copy, and go on to the
+      // interface the same way.
+      const { bytes } = pixels;
+      const own = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer as ArrayBuffer : bytes.slice().buffer;
+      return handOverPixels(own, headers);
+    },
+
+    openExternal: async url => { window.open(url, '_blank', 'noopener,noreferrer'); },
+    async saveFile(suggestedName, data) { download(suggestedName, new Blob([data])); return suggestedName; },
+    copyText: text => navigator.clipboard.writeText(text),
+
+    // Exports end in the browser's downloads: DICOM (with a DICOMDIR when asked) and pictures as one ZIP, video as MP4.
+    async exportDicom(seriesIds, options) {
+      const ids = Array.isArray(seriesIds) ? seriesIds : [seriesIds];
+      if (options.engineGeneration !== undefined) requireGeneration(options.engineGeneration);
+      if (ids.some(id => known.get(id) !== generation)) throw new Error(t('engine.seriesNotOpen'));
+      // A full cleanup exports only the revisions the reader reviewed; declined, nothing is exported.
+      const full = options.anonymize && Boolean(options.full);
+      if (full && !reviewPixels(ids, options.frame)) return null;
+      const reviewed = full ? Object.fromEntries(ids.flatMap(id => { const revision = described.get(id)?.catalogRevision; return revision === undefined ? [] : [[id, revision]]; })) : {};
+      const exported = await call<EngineExport>({ op: 'export', ids, ...(options.frame === undefined ? {} : { frame: options.frame }),
+        options: { anonymize: options.anonymize, full: Boolean(options.full), dicomdir: options.dicomdir, decompress: Boolean(options.decompress) }, reviewed });
+      const name = `${exported.result.directory.split('/').pop() || 'VEACOM'}.zip`;
+      download(name, zipStored(exported.files));
+      return { ...exported.result, directory: name };
+    },
+    async beginImages(suggestedName) {
+      const id = crypto.randomUUID();
+      pictures.set(id, { name: `${safeName(suggestedName)}.zip`, files: [] });
+      return { id, directory: `${safeName(suggestedName)}.zip` };
+    },
+    async appendImage(id, name, data) {
+      const job = pictures.get(id);
+      if (!job) throw new Error(t('video.inactive'));
+      job.files.push({ name: safeName(name), bytes: new Uint8Array(data) });
+    },
+    async finishImages(id) {
+      const job = pictures.get(id);
+      pictures.delete(id);
+      if (!job?.files.length) throw new Error(t('video.noFrames'));
+      download(job.name, zipStored(job.files));
+      return job.name;
+    },
+    async cancelImages(id) { pictures.delete(id); },
+    async beginVideo(suggestedName, fps) {
+      if (!Number.isInteger(fps) || fps < 1 || fps > 120) throw new Error(t('video.frameRate'));
+      const id = crypto.randomUUID();
+      videos.set(id, { name: `${safeName(suggestedName.replace(/\.mp4$/i, ''))}.mp4`, fps, samples: [], sizes: [], keyFrames: [] });
+      return { id };
+    },
+    async configureVideo(id, { width, height, description }) {
+      const job = videos.get(id);
+      if (!job) throw new Error(t('video.inactive'));
+      if (!Number.isInteger(width) || !Number.isInteger(height) || width < 2 || height < 2 || width * height > 36_000_000) throw new Error('Invalid video size.');
+      job.config = { width, height, config: checkDecoderConfig(description) };
+    },
+    async appendVideo(id, sample, key) {
+      const job = videos.get(id);
+      if (!job?.config) throw new Error(t('video.inactive'));
+      if (!job.sizes.length && !key) throw new Error('A video must start with a key frame.');
+      const bytes = checkSample(sample);
+      if (key) job.keyFrames.push(job.sizes.length);
+      job.samples.push(bytes); job.sizes.push(bytes.length);
+    },
+    async finishVideo(id) {
+      const job = videos.get(id);
+      videos.delete(id);
+      if (!job?.config || !job.sizes.length) throw new Error(t('video.noFrames'));
+      const header = mp4Header({ ...job.config, fps: job.fps, sizes: job.sizes, keyFrames: job.keyFrames });
+      download(job.name, new Blob([header, ...job.samples], { type: 'video/mp4' }));
+      return job.name;
+    },
+    async cancelVideo(id) { videos.delete(id); },
+    getAiConfig: async () => ({ enabled: false, configured: false, model: '' }),
+    configureAi: unsupported('export.desktopRequired'),
+    askSecondOpinion: unsupported('export.desktopRequired'),
+    getVersion: () => 'web',
+    getUpdateStatus: async () => updates,
+    checkForUpdates: async () => updates,
+    downloadUpdate: async () => updates,
+    installUpdate: async () => updates,
+    openUpdateNotes: async () => {},
+    onUpdateStatus: () => () => {},
+  };
+}
