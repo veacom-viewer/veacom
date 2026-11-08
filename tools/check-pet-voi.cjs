@@ -25,6 +25,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
   const root = path.resolve(process.argv[2]);
@@ -61,6 +62,7 @@ async function main() {
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     await settled();
+    await choosePetLayout(page);
   };
   const state = () => page.evaluate(() => window.__VEACOM_TEST__.state());
   const settled = async () => {
@@ -310,6 +312,7 @@ async function main() {
     await launch(priorStudy);
     await privileged.importPaths(desktop, page, [study]);
     await settled();
+    await choosePetLayout(page, 'arrangement.petFollowUp');
     s = await state();
     const now = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === petGrid.dimensions[2]);
     const before = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === priorGrid.dimensions[2]);

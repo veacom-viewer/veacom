@@ -169,7 +169,7 @@ export async function captureViewportPng(viewport: HTMLElement, options: Pick<Vi
 
 // What x264 at CRF 18 spent on a noisy synthetic CT: quality comes first in an exported study. The rate
 // is an upper limit, so smooth images stay much smaller. Frames are key frames every two seconds.
-const BITS_PER_PIXEL = 1.2;
+const BITS_PER_PIXEL = 0.52;
 const MAX_BITRATE = 240e6;
 const MAX_QUEUED_FRAMES = 2;
 const MAX_QUEUED_WRITES = 8;

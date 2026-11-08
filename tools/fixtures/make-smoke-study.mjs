@@ -9,8 +9,11 @@ import path from 'node:path';
 const [destination, ...options] = process.argv.slice(2);
 const large = options.includes('--pipe-volume');
 const flag = options.indexOf('--modality'), modality = flag >= 0 ? options[flag + 1] : 'CT';
-if (!destination || !['CT', 'MR'].includes(modality) || options.length !== (flag >= 0 ? 2 : 0) + Number(large)) {
-  throw new Error('Usage: node tools/fixtures/make-smoke-study.mjs <new-directory> [--modality CT|MR] [--pipe-volume]');
+const numbered = options.find(arg => arg.startsWith('--series-index='));
+const index = numbered ? Number(numbered.slice('--series-index='.length)) : 1;
+if (!destination || !['CT', 'MR'].includes(modality) || !Number.isInteger(index) || index < 1 || index > 99
+    || options.length !== (flag >= 0 ? 2 : 0) + Number(large) + Number(Boolean(numbered))) {
+  throw new Error('Usage: node tools/fixtures/make-smoke-study.mjs <new-directory> [--modality CT|MR] [--series-index=N] [--pipe-volume]');
 }
 const mr = modality === 'MR';
 await mkdir(destination); // Refuse to replace an existing study.
@@ -22,7 +25,8 @@ const sopClass = mr ? '1.2.840.10008.5.1.4.1.1.4' : '1.2.840.10008.5.1.4.1.1.2',
 const size = large ? 512 : 128, slices = large ? 1000 : 100, hashes = {};
 const volumeHash = createHash('sha256');
 for (let z = 0; z < slices; z++) {
-  const uid = `${root}.3.${z + 1}`;
+  const seriesSuffix = numbered ? `.${index}` : '';
+  const uid = `${root}.3${seriesSuffix}.${z + 1}`;
   const pixels = Buffer.alloc(size * size * 2);
   for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) {
     const r = Math.hypot((x - size / 2) / 53, (y - size / 2) / 46, (z - slices / 2) / 70);
@@ -39,8 +43,8 @@ for (let z = 0; z < slices; z++) {
   const bytes = Buffer.concat([Buffer.alloc(128), Buffer.from('DICM'), element(0x0002, 0x0000, 'UL', meta.length), meta, dataset([
     [0x0008, 0x0016, 'UI', sopClass], [0x0008, 0x0018, 'UI', uid], [0x0008, 0x0020, 'DA', '20000101'], [0x0008, 0x0030, 'TM', '120000'],
     [0x0008, 0x0060, 'CS', modality], [0x0008, 0x103e, 'LO', `Synthetic CI smoke ${modality}`], [0x0010, 0x0010, 'PN', 'SYNTHETIC^SMOKE'],
-    [0x0010, 0x0020, 'LO', 'SYNTHETIC-SMOKE'], [0x0018, 0x0050, 'DS', 1], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2`],
-    [0x0020, 0x0011, 'IS', 1], [0x0020, 0x0013, 'IS', z + 1], [0x0020, 0x0032, 'DS', [0, 0, z]], [0x0020, 0x0037, 'DS', [1, 0, 0, 0, 1, 0]],
+    [0x0010, 0x0020, 'LO', 'SYNTHETIC-SMOKE'], [0x0018, 0x0050, 'DS', 1], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2${seriesSuffix}`],
+    [0x0020, 0x0011, 'IS', index], [0x0020, 0x0013, 'IS', z + 1], [0x0020, 0x0032, 'DS', [0, 0, z]], [0x0020, 0x0037, 'DS', [1, 0, 0, 0, 1, 0]],
     [0x0020, 0x0052, 'UI', `${root}.5`], [0x0028, 0x0002, 'US', 1], [0x0028, 0x0004, 'CS', 'MONOCHROME2'], [0x0028, 0x0010, 'US', size],
     [0x0028, 0x0011, 'US', size], [0x0028, 0x0030, 'DS', [1, 1]], [0x0028, 0x0100, 'US', 16], [0x0028, 0x0101, 'US', 16], [0x0028, 0x0102, 'US', 15],
     // An MR image has no rescale to a physical unit.

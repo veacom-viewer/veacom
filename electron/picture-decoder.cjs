@@ -107,6 +107,17 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
       if (renderer.ready) send(renderer, id, job);
     });
   }
+  function retireWhenIdle() {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => {
+      for (const renderer of [...opened]) if (!renderer.active) retire(renderer, new Error('The picture decoder closed'));
+    }, idleMs);
+  }
+  function prepare(paths) {
+    if (closed || opened.length || !paths.some(name => /\.(png|jpe?g|bmp)$/i.test(name))) return;
+    start();
+    retireWhenIdle();
+  }
   function pump() {
     while (queue.length) {
       const renderer = pick();
@@ -117,8 +128,7 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
         renderer.active--;
         pump();
         if (!closed && !queue.length && opened.length && opened.every(each => !each.active)) {
-          clearTimeout(idleTimer);
-          idleTimer = setTimeout(() => { for (const each of [...opened]) if (!each.active) retire(each, new Error('The picture decoder closed')); }, idleMs);
+          retireWhenIdle();
         }
       });
     }
@@ -138,7 +148,7 @@ function createPictureDecoder({ renderers = 2, concurrency = 8, idleMs = 30_000,
   }
   /** The decoding renderers' process ids (for the desktop checks). */
   function processIds() { return opened.filter(renderer => !renderer.contents.isDestroyed()).map(renderer => renderer.contents.getOSProcessId()); }
-  return { decode, close, processIds };
+  return { prepare, decode, close, processIds };
 }
 
 // Return RGBA one pipe chunk at a time. A valid picture can exceed the 16 MiB request limit.

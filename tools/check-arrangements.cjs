@@ -10,6 +10,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -47,6 +48,15 @@ async function main() {
     // Opening: the PET/CT screen with no click, the attenuation-corrected PET, and nothing reported as pressed.
     let s = await state();
     const ct = named(s, /· CT$/), pet = named(s, /PET AC$/);
+    assert.deepEqual(s.layout, [1, 1]);
+    assert.deepEqual(s.panes.map(pane => [pane.seriesId, pane.unfused]), [[ct.id, false]]);
+    assert.equal(s.fusionId, pet.id);
+    const actions = (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action');
+    assert.deepEqual(actions, [], 'Opening the fused study requires no action.');
+    await shot('1-opened');
+    check('PET/CT opens as one fused pane with the corrected PET over its CT');
+    await choosePetLayout(page);
+    s = await state();
     assert.deepEqual(s.layout, [2, 2]);
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id]);
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, null, 'mip']);
@@ -58,10 +68,8 @@ async function main() {
     assert.deepEqual(await notice(), ['PET/CT: CT · PET · fusion · MIPUndo']);
     assert.match(await cells.nth(1).locator('[data-testid="image-overlay"]').textContent(), /SUV 0–5/);
     assert.match(await cells.nth(3).locator('[data-testid="image-overlay"]').textContent(), /MIP · 0°/);
-    const actions = (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action');
-    assert.deepEqual(actions, [], 'Arranging a study records no action.');
-    await shot('1-opened');
-    check('PET/CT opens as CT · PET · fused · MIP, linked, with a note naming it', { panes: s.panes.length });
+    await shot('1-reading');
+    check('The reading layout shows CT · PET · fused · MIP, linked', { panes: s.panes.length });
 
     // A click on the lung nodule in the MIP: the axial panes go to it (-96 mm), the MIP keeps its turn.
     const box = await cells.nth(3).locator('canvas[data-renderer]').boundingBox();
@@ -128,11 +136,13 @@ async function main() {
     assert.equal(await page.evaluate(() => localStorage.getItem('veacom:arrangements:v1')), '{}');
     await reopen();
     s = await state();
-    assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id]);
-    check('Forget brings VEAcom\'s own PET/CT screen back');
+    assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id]);
+    assert.equal(s.fusionId, pet.id);
+    check('Forget brings the one-pane fused PET/CT screen back');
 
     // Paged while its PET is read again (a preview frame stands in for it), the MIP stays a MIP.
     await privileged.importPaths(desktop, page, [study]);
+    await choosePetLayout(page);
     const mipBox = await cells.nth(3).boundingBox();
     await page.mouse.move(mipBox.x + mipBox.width / 2, mipBox.y + mipBox.height / 2);
     for (let step = 0; step < 6; step++) { await page.mouse.wheel(0, 100); await page.waitForTimeout(30); }

@@ -106,7 +106,7 @@ app.whenReady().then(async () => {
   stopPictures = servePictures({ engine, decode: pictureDecoder.decode });
   const testHooks = process.env.VEACOM_TEST_MODE === '1' ? require('./imaging-test-hooks.cjs').createImagingTestHooks() : undefined;
   imaging = new ImagingBroker({ engine, devOrigin: devUrl ? new URL(devUrl).origin : undefined,
-    beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport });
+    beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport, preparePictures: pictureDecoder.prepare });
   // A study named on the command line starts importing while the window loads.
   const studyArgument = process.argv.indexOf('--study');
   const startupStudy = studyArgument >= 0 && process.argv[studyArgument + 1] ? [path.resolve(process.argv[studyArgument + 1])] : [];
