@@ -258,6 +258,18 @@ impl Queue {
         self.changed.notify_all();
     }
 }
+/// After main cancels a request, wakes every queue a request can wait in, so a cancelled one leaves at once
+/// instead of after whatever is running there finishes.
+fn wake_cancelled(core: &Core) {
+    core.jobs.wake();
+    core.frames.wake();
+    core.samples.wake();
+    #[cfg(any(target_os = "macos", windows))]
+    {
+        core.gpu.wake();
+        core.mesh.wake();
+    }
+}
 /// A queue's turn, given back when dropped.
 struct Turn<'a> {
     queue: &'a Queue,
@@ -865,11 +877,7 @@ fn main() -> anyhow::Result<()> {
     let core = new_core(limit);
     let (serving, waking) = (core.clone(), core.clone());
     let mut server = pipe::Server::start(input, output, move |request| handle(&serving, request), move || {
-        waking.jobs.wake();
-        waking.frames.wake();
-        waking.samples.wake();
-        #[cfg(any(target_os="macos",windows))]
-        { waking.gpu.wake(); waking.mesh.wake(); }
+        wake_cancelled(&waking);
         pictures::wake_poll();
     })?;
     // Until the shutdown request, or main closing stdin (it quit or crashed): an engine without its app exits.
@@ -1224,6 +1232,7 @@ mod protocol_tests {
         requests: PipeWriter,
         replies: PipeReader,
         next: u32,
+        core: App,
         _server: pipe::Server,
     }
     impl Engine {
@@ -1231,20 +1240,17 @@ mod protocol_tests {
             let (input, requests) = std::io::pipe().unwrap();
             let (mut replies, output) = std::io::pipe().unwrap();
             let core = new_core(1 << 20);
-            let waking = core.clone();
-            let server = pipe::Server::start(input, output, move |request| handle(&core, request), move || {
-                waking.jobs.wake();
-                waking.frames.wake();
-        waking.samples.wake();
-        #[cfg(any(target_os="macos",windows))]
-        { waking.gpu.wake(); waking.mesh.wake(); }
+            let (serving, waking) = (core.clone(), core.clone());
+            let server = pipe::Server::start(input, output, move |request| handle(&serving, request), move || {
+                wake_cancelled(&waking);
             }).unwrap();
             let (kind, _, hello) = pipe::read_message(&mut replies).unwrap();
             assert_eq!(kind, 0);
             assert_eq!(serde_json::from_slice::<Value>(&hello).unwrap()["protocol"], json!(pipe::PROTOCOL));
-            Self { requests, replies, next: 1, _server: server }
+            Self { requests, replies, next: 1, core, _server: server }
         }
-        fn call(&mut self, request: Value) -> (Value, Vec<u8>) {
+        /// Sends a request without waiting for its answer, as main does before it cancels one.
+        fn send(&mut self, request: Value) -> u32 {
             let id = self.next;
             self.next += 1;
             let payload = pipe::tests::call(&request, b"");
@@ -1253,6 +1259,16 @@ mod protocol_tests {
             message.extend((payload.len() as u32).to_le_bytes());
             message.extend(payload);
             std::io::Write::write_all(&mut self.requests, &message).unwrap();
+            id
+        }
+        fn cancel(&mut self, id: u32) {
+            let mut message = vec![3u8];
+            message.extend(id.to_le_bytes());
+            message.extend(0u32.to_le_bytes());
+            std::io::Write::write_all(&mut self.requests, &message).unwrap();
+        }
+        fn call(&mut self, request: Value) -> (Value, Vec<u8>) {
+            let id = self.send(request);
             let (kind, from, head) = pipe::read_message(&mut self.replies).unwrap();
             assert_eq!((kind, from), (1, id));
             let head: Value = serde_json::from_slice(&head).unwrap();
@@ -1276,6 +1292,29 @@ mod protocol_tests {
             let (head, body) = self.call(request);
             (head["status"].as_u64().unwrap(), serde_json::from_slice(&body).unwrap())
         }
+    }
+
+    #[test]
+    fn a_cancelled_measurement_leaves_its_queue_while_another_measurement_runs() {
+        let mut engine = Engine::start();
+        let core = engine.core.clone();
+        // A measurement in progress holds the turn; the next one waits behind it.
+        let Ok(running) = core.samples.turn(&AtomicBool::new(false)) else { panic!("the measurement turn is free") };
+        let id = engine.send(json!({"op": "sample", "body": {"id": "none", "sourceRevision": 1,
+            "operation": {"kind": "window", "automatic": true}}}));
+        let waiting = || core.samples.lock().waiting.len();
+        let wait_for = |count: usize| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while waiting() != count {
+                assert!(std::time::Instant::now() < deadline, "{} waiting for the measurement turn, expected {count}", waiting());
+                thread::sleep(std::time::Duration::from_millis(5));
+            }
+        };
+        wait_for(1);
+        engine.cancel(id);
+        // Main cancelled it: it leaves now, not when the running measurement ends.
+        wait_for(0);
+        drop(running);
     }
 
     #[test]

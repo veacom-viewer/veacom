@@ -306,7 +306,7 @@ export async function exportViewportVideo(options: ViewportVideoOptions): Promis
       const frameWidth = canvas.width + canvas.width % 2, frameHeight = canvas.height + canvas.height % 2;
       if (!encoder) {
         width = frameWidth; height = frameHeight;
-        // Keep one MP4 size when the viewer shows or dismisses a notice during export.
+        // Keep one MP4 size when the viewer shows or dismisses a notice during the export.
         captureOptions.outputSize ??= { width: canvas.width, height: canvas.height };
         encoder = await openEncoder(width, height, fps, output, () => fail(encodingFailed()));
         pixels = new Uint8Array(width * height * 3 / 2);

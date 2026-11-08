@@ -367,6 +367,7 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       const output = document.createElement('canvas'); output.width = bitmap.width; output.height = bitmap.height;
       const context = output.getContext('2d')!; context.drawImage(bitmap, 0, 0); bitmap.close();
       const resizedPixels = [...context.getImageData(8, 32, 1, 1).data, ...context.getImageData(35, 5, 1, 1).data];
+      // A notice appearing during the export shrinks the pane: the video keeps its first frame's size.
       frames.length = 0;
       await exportViewportVideo({ ...options, setSlice: (slice: number) => {
         viewport.style.height = slice === 1 ? '48px' : '64px';
