@@ -36,7 +36,7 @@ Once the agreement is adopted, follow its “How to agree” section before merg
 
 Claude reviews each PR for imaging correctness, security boundaries, data/privacy, accessibility, UI consistency, and meaningful tests. Provide a GitHub review or a review file with the checked commit and ranked findings.
 
-Changes to `main` go through a pull request. GitHub requires one approving review, resolved conversations and passing web, engine, desktop and secret checks. New commits dismiss stale approvals. Squash merge after local verification and any required Windows checks pass.
+Changes to `main` go through a pull request. All merges require resolved conversations and passing web, engine, desktop and secret checks. Repository admins may merge a PR without an approving review. Other maintainers need one approval, and new commits dismiss stale approvals. Squash merge after local verification and any required Windows checks pass.
 
 ## Synthetic fixtures and golden images
 
