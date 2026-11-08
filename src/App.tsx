@@ -2174,7 +2174,9 @@ export default function App() {
       <ToolButton icon={<ZoomIn size={18} />} label={t('tool.zoom')} shortcut={singleKey('Z')} testId="tool-quick-zoom" disabled={noStudy} active={tool === 'zoom'} onClick={() => setTool('zoom')} />
       <ToolButton icon={<Crosshair size={18} />} label={t('tool.crosshair')} shortcut={singleKey('C')} testId="tool-crosshair" disabled={noStudy} active={tool === 'crosshair'} onClick={() => setTool('crosshair')} />
     </div> },
-    { id: 'reset', group: 'tools', priority: 8, node: <ToolButton icon={<RotateCcw size={18} />} label={t('help.resetView')} testId="tool-reset-view" disabled={noImage} onClick={resetView} /> },
+    // The reset beside the tools brings the mouse buttons back to their defaults; the view resets with a double click or
+    // the side panel's button.
+    { id: 'reset', group: 'tools', priority: 8, node: <ToolButton icon={<RotateCcw size={18} />} label={t('mouse.reset')} testId="mouse-reset" onClick={resetMouse} /> },
     { id: 'panel', group: 'app', node: <ToolButton icon={inspectorShown ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />} label={t('toolbar.inspector')} testId="tool-inspector" active={inspectorShown}
       onClick={() => { if (inspectorShown) setPanel(null); else { if (showAssessment) setAssessmentBehind(true); setPanel(settings.panel ?? 'display'); } }} /> },
     { id: 'help', group: 'app', node: <ToolButton icon={<CircleHelp size={18} />} label={t('toolbar.shortcuts')} shortcut={singleKey('?')} testId="tool-help" onClick={() => setShowHelp(true)} /> },

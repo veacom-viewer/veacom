@@ -79,7 +79,7 @@ node tools/check-gpu-startup.cjs /path/to/studies/ct-small test-results/gpu-star
 
 Run desktop checks in sequence, with one VEAcom Electron instance at a time. See `tools/README.md` for GPU and platform-specific checks.
 
-For the full local checks, run `tools/verify.sh /path/to/studies/ct-small /path/to/evidence`. It verifies the input against the synthetic fixture fingerprint before launching the viewer, then checks the exported PNG against the committed reference. See [CONTRIBUTING.md](CONTRIBUTING.md) for the review process and fixture policy. Linux CI runs on pull requests and pushes to `main`; the macOS smoke job is manual for release candidates.
+For the full local checks, run `tools/verify.sh /path/to/studies/ct-small /path/to/evidence`. It verifies the input against the synthetic fixture fingerprint before launching the viewer, then checks the exported PNG against the committed reference. See [CONTRIBUTING.md](CONTRIBUTING.md) for the review process and fixture policy. CI runs on Linux and macOS for pull requests and pushes to `main`.
 
 The development checks use synthetic studies. Independent engine verification remains a separate migration task.
 

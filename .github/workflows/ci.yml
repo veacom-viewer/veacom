@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_candidate:
-        description: Run the paid-in-minutes macOS smoke job for this release candidate
+        description: Also run the macOS smoke job on this manual run (pull requests and pushes to main always run it)
         type: boolean
         required: true
         default: false
@@ -238,8 +238,14 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  # The packaged app on Apple Silicon, on every pull request and push to main like the desktop job: DICOM export, linked
+  # paging and MPR in the packaged viewer, then desktop smoke and the video encoder. WebGL on this virtual Mac draws
+  # through ANGLE on Metal on Apple's paravirtual GPU ("Apple Paravirtual device"), which hands the drawing to the host
+  # Mac's GPU, so desktop smoke expects hardware drawing. GitHub runs at most five macOS jobs at once across the
+  # organisation, and more wait in the queue. Keep timing checks off this runner: identical runs vary by 14-30%
+  # (tools/README.md, "Opening speed"). A manual run includes the job only with release_candidate ticked.
   macos-smoke:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_candidate
+    if: github.event_name != 'workflow_dispatch' || inputs.release_candidate
     runs-on: macos-15
     timeout-minutes: 35
     steps:
@@ -278,11 +284,13 @@ jobs:
       - run: node tools/desktop-smoke.cjs "$RUNNER_TEMP/veacom-smoke-study/S01" "$RUNNER_TEMP/desktop-smoke"
       - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder"
       - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder" --no-gpu
-      - name: Retain synthetic smoke evidence on failure
-        if: failure()
+      - name: Retain synthetic smoke and video evidence
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-smoke-${{ github.run_id }}
-          path: ${{ runner.temp }}/desktop-smoke
+          path: |
+            ${{ runner.temp }}/desktop-smoke
+            ${{ runner.temp }}/video-encoder
           if-no-files-found: ignore
           retention-days: 7

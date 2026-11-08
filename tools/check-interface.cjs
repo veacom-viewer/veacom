@@ -210,6 +210,12 @@ async function main() {
     await middle.click(); await mouseMenu.waitFor();
     await mouseMenu.locator('[data-action="mouse-reset"]').click(); await mouseMenu.waitFor({ state: 'detached' });
     assert.equal(await middle.getAttribute('aria-label'), middleBefore, 'Reset brings the middle button back.');
+    // The toolbar's reset button, beside the tools, does the same.
+    await middle.click(); await mouseMenu.waitFor();
+    await mouseMenu.locator('[role="menuitemradio"][aria-checked="false"]').first().click(); await mouseMenu.waitFor({ state: 'detached' });
+    assert.notEqual(await middle.getAttribute('aria-label'), middleBefore);
+    await page.getByTestId('mouse-reset').click();
+    await page.waitForFunction(before => document.querySelector('[data-testid="tool-mouse-middle"]').getAttribute('aria-label') === before, middleBefore);
     check('Mouse button menus name the new action on their button', { before: middleBefore, after: middleAfter });
 
     // A tooltip does not swallow Esc meant for an open menu.
@@ -264,10 +270,10 @@ async function main() {
 
     // Keyboard alternatives to dragging: + / − zoom, Shift + arrows pan, click-click measuring.
     const viewport = page.locator('[data-testid="dicom-viewport"]').first();
-    // Reset view is the toolbar button (or a double click), reached here from the keyboard: 0 now gives the series'
-    // own window, as in VEAcom 1.x.
+    // Between these steps the view goes back to its default through the test hook: 0 gives the series' own window, and
+    // the toolbar's reset button resets the mouse buttons.
     const resetView = async () => {
-      await page.getByTestId('tool-reset-view').focus(); await page.keyboard.press('Enter');
+      await page.evaluate(() => window.__VEACOM_TEST__.setView({ zoom: 1, pan: [0, 0] }));
       await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.zoom === 1);
       await viewport.focus();
     };

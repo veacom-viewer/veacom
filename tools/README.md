@@ -98,6 +98,45 @@ Once it is back, those two tasks run again and fail until their budgets are reco
 `check-budget-coverage.cjs` then fails if any budget went unmeasured. Set `VEACOM_RECORD_BUDGETS=1` to
 write the counts of a run as the new budgets. On macOS and Linux the checks' windows ignore the computer's own mouse and keyboard (see "Using the computer while the desktop checks run"); on Windows, using the computer while they run is counted and fails the budget.
 
+## Opening speed
+
+`check-open-speed.cjs` opens a study with the engine alone (no window) and times three steps: listing (the import),
+the first frame and the full volume. Each open starts a fresh engine. Without `--study` it writes the synthetic
+1,000-slice CT (`make-smoke-study.mjs --pipe-volume`, about 501 MiB) into the output folder and deletes it afterwards.
+
+```sh
+node tools/check-open-speed.cjs --output=/tmp/open-speed
+node tools/check-open-speed.cjs --output=/tmp/open-speed --base=/path/to/other/veacom-core
+```
+
+**Work.** On Linux and macOS, `lib/io-count.c` is loaded into the engine and counts the regular files it opens and the
+bytes it reads under the study folder, per step. These counts are the same on every machine and every run, so
+`open-budgets.json` holds them exactly, like the click budgets: more work fails, less passes and asks for the budget to
+come down, and `VEACOM_RECORD_BUDGETS=1` records them. The summary also gives the bytes read as a multiple of the
+study's size (on 8 Nov 2026, listing the CT opened every file 3 times and read the study twice).
+`tools/verify.sh` runs this part.
+
+**Time.** With `--base`, the two engines open the study in alternating random order: 20 rounds with the file cache
+kept, then 10 with it flushed before each open (Linux and macOS through `sudo -n`, Windows by detaching the virtual
+disk named with `--vhdx` that holds the study). A step counts as slower only when the 95% interval of the change lies
+above 3% and the medians differ by at least 15 ms; a slower listing, full volume or whole open fails. The first frame
+takes a few milliseconds and is reported, not judged. `--rounds` alone times one engine.
+
+Only engines timed in the same run can be compared. On GitHub's runners (8 Nov 2026, the CT above, two copies of one
+engine):
+
+| runner | smallest change one run detects (20 rounds) | same study on three runners |
+|---|---|---|
+| Linux, `ubuntu-24.04` | about 1% | 27–56% apart: each job gets one of several CPUs |
+| Windows, `windows-2022` | about 2% for the whole open, 7–10% for a warm listing | 35–46% apart |
+| macOS, `macos-15` | 14–30% | up to 80% apart |
+
+The `Opening speed` workflow compares each pull request that touches the engine with its base on Linux (and on Windows
+with the `windows` label), and main with the first public beta (`v0.1.0-beta.2`) every night on Linux and Windows,
+so main's speed is followed as a ratio to that fixed build. These runners have no GPU and Windows Defender's real-time
+scanning is off on them, and their disks are fast: what a hospital PC feels needs a PC like it. The app's own steps
+(start-up, drawing, texture upload) are not measured here yet.
+
 ## Arrangements
 
 `check-arrangements.cjs` opens the synthetic PET/CT from `fixtures/make-petct-study.mjs`. It has a CT, an
