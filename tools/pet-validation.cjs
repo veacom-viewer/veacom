@@ -58,6 +58,8 @@ function provenance() {
   };
 }
 
+const positiveFactor = value => Number.isFinite(value) && value > 0;
+
 /** The PET series to measure: the one the spheres file names, else the only calibrated reconstructable PET. */
 function choosePet(catalog, selector, study) {
   const pets = catalog.filter(series => series.modality === 'PT');
@@ -65,7 +67,7 @@ function choosePet(catalog, selector, study) {
   if (selector.number !== undefined) candidates = candidates.filter(series => series.seriesNumber === selector.number);
   if (selector.description) candidates = candidates.filter(series => series.description.toLowerCase().includes(selector.description.toLowerCase()));
   if (selector.number === undefined && !selector.description) {
-    const calibrated = pets.filter(series => series.suvFactor > 0 && series.canReconstruct);
+    const calibrated = pets.filter(series => positiveFactor(series.suvFactor) && series.canReconstruct);
     if (calibrated.length) candidates = calibrated;
   }
   if (candidates.length === 1) return candidates[0];
@@ -87,7 +89,9 @@ function factorRecord(study, pet, tags) {
   const acquisition = pet.petAcquisition ?? {};
   const philipsActivity = Number(privateTag('7053', 'PHILIPS PET PRIVATE GROUP', '09')) || undefined;
   const unit = pet.valueUnit;
-  const suvbwPerBqml = !(pet.suvFactor > 0) ? undefined : unit === 'Bq/ml' ? pet.suvFactor : unit === 'CNTS' && philipsActivity ? pet.suvFactor / philipsActivity : undefined;
+  const byWeight = positiveFactor(pet.suvFactor) && (!/^SU[VL]/i.test(unit) || /^SUVbw$/i.test(unit));
+  const suvbwPerBqml = !byWeight ? undefined : unit === 'Bq/ml' ? pet.suvFactor : unit === 'CNTS' && philipsActivity ? pet.suvFactor / philipsActivity : undefined;
+  const sul = byWeight && positiveFactor(pet.sulFactor);
   const weightKg = acquisition.weight, heightM = acquisition.height, sex = pet.patientSex || '';
   const ratios = validation.leanBodyMassRatios({ weightKg, heightM, sex });
   const decay = validation.decayMinutes({ factorPerBqml: suvbwPerBqml, weightKg, doseBq: acquisition.injectedActivity, halfLifeSeconds: acquisition.halfLife });
@@ -96,8 +100,9 @@ function factorRecord(study, pet, tags) {
     study, series_number: pet.seriesNumber, series_description: pet.description, manufacturer: pet.manufacturer ?? '', scanner_model: acquisition.scannerModel ?? '',
     software_versions: tag('(0018,1020)'), reconstruction: acquisition.reconstruction ?? '', units: tag('(0054,1001)'), value_unit: unit,
     corrected_image: tag('(0028,0051)'), decay_correction: acquisition.decayCorrection ?? '', suv_type: tag('(0054,1006)'),
-    suvbw_factor: pet.suvFactor ?? '', suvbw_per_bqml: suvbwPerBqml ?? '', sul_factor: pet.sulFactor ?? '', suvbsa_factor: pet.suvBsaFactor ?? '',
-    sul_per_suvbw: pet.sulFactor && pet.suvFactor ? pet.sulFactor / pet.suvFactor : '',
+    suvbw_factor: byWeight ? pet.suvFactor : '', suvbw_per_bqml: suvbwPerBqml ?? '', sul_factor: sul ? pet.sulFactor : '',
+    suvbsa_factor: byWeight && positiveFactor(pet.suvBsaFactor) ? pet.suvBsaFactor : '',
+    sul_per_suvbw: sul ? pet.sulFactor / pet.suvFactor : '',
     sul_per_suvbw_james: ratios?.james ? ratios.james : '',
     weight_kg: weightKg ?? '', height_m: heightM ?? '', sex, dose_mbq: acquisition.injectedActivity ? acquisition.injectedActivity / 1e6 : '',
     half_life_s: acquisition.halfLife ?? '', injection_time: injection, injection_datetime: acquisition.injectionDateTime ?? '',
@@ -202,7 +207,8 @@ async function measureStudy(entry, context) {
       }
       return null;
     };
-    const sul = pet.sulFactor > 0;
+    const calibrated = positiveFactor(pet.suvFactor);
+    const sul = calibrated && positiveFactor(pet.sulFactor);
 
     for (const sphere of entry.spheres) {
       try {
@@ -253,12 +259,13 @@ async function measureStudy(entry, context) {
             reading.mtvNote = `MTV from the largest of ${sizes.length} regions at 41% inside the sphere (${sizes[largest]} of ${sizes.reduce((a, b) => a + b, 0)} voxels)`;
           }
         }
-        let mtv = sphere.role === 'lesion' && pet.suvFactor > 0;
+        let mtv = sphere.role === 'lesion' && calibrated;
         if (mtv && !await rowValues(id, text => /MTV 41%/.test(text), 50).catch(() => null)) { mtv = false; reading.mtvNote ??= 'VEAcom gave no MTV for this sphere'; }
         const withMtv = text => !mtv || /MTV 41%/.test(text);
-        reading.values.SUVbw = validation.parseSphereValues(await rowValues(id, withMtv));
-        if (!pet.suvFactor) reading.values = { [reading.values.SUVbw.quantity]: reading.values.SUVbw };
-        const record = pet.suvFactor ? await keptSphere(sphere.role, sphere.name) : null;
+        const shown = validation.parseSphereValues(await rowValues(id, withMtv));
+        if (!calibrated && /^SU[VL]/i.test(shown.quantity)) throw new Error('The viewer reported SUV without a valid engine calibration factor.');
+        reading.values[shown.quantity] = shown;
+        const record = shown.quantity === 'SUVbw' ? await keptSphere(sphere.role, sphere.name) : null;
         if (record) {
           reading.placed = { center: record.center, radius: record.radius };
           const off = placement.offset(record.center);
@@ -269,7 +276,7 @@ async function measureStudy(entry, context) {
         // The hottest voxel's activity concentration: the same voxel reads the same in any workstation.
         const maxSuvbw = record?.values?.max ?? reading.values.SUVbw?.max;
         if (factor._compare.suvbwPerBqml && Number.isFinite(maxSuvbw)) reading.maxBqml = maxSuvbw / factor._compare.suvbwPerBqml;
-        if (sul) {
+        if (sul && shown.quantity === 'SUVbw') {
           await showPetValues('lbm');
           reading.values.SUL = validation.parseSphereValues(await rowValues(id, text => /^SUL max/.test(text) && withMtv(text)));
           await showPetValues('bw');

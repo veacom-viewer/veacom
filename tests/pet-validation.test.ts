@@ -98,6 +98,19 @@ describe('the SUV factor\'s parts', () => {
     assertClose(record.sul_per_suvbw, 0.8, 9);
     assert.equal(record._compare.injectionTime, '110000');
   });
+
+  it('reports a body-weight factor only for calibrated body-weight values', () => {
+    const tags = [{ tag: '(0054,1001)', value: 'GML' }];
+    for (const suvFactor of [null, 0, -1, NaN, Infinity]) {
+      const record = factorRecord('GML-01', { valueUnit: 'g/ml', suvFactor, sulFactor: 0.8, warnings: [] }, tags);
+      assert.equal(record.value_unit, 'g/ml');
+      assert.equal(record.suvbw_factor, '');
+      assert.equal(record.sul_factor, '');
+      assert.equal(record.sul_per_suvbw, '');
+    }
+    assert.equal(factorRecord('GML-01', { valueUnit: 'SUVlbm', suvFactor: 1, warnings: [] }, tags).suvbw_factor, '');
+    assert.equal(factorRecord('GML-01', { valueUnit: 'SUVbw', suvFactor: 1, warnings: [] }, tags).suvbw_factor, 1);
+  });
 });
 
 describe('VEAcom against the vendor', () => {
