@@ -143,8 +143,9 @@ async function measureStudy(entry, context) {
     const answer = await privileged.readCatalog(desktop);
     const catalog = Array.isArray(answer.catalog) ? answer.catalog : answer.catalog?.series ?? [];
     const pet = choosePet(catalog, entry.series, entry.study);
-    const tagsAnswer = await privileged.coreRequest(desktop, 'tags', { id: pet.id });
-    const factor = factorRecord(entry.study, pet, tagsAnswer.ok && Array.isArray(tagsAnswer.json) ? tagsAnswer.json : []);
+    const tagsAnswer = await privileged.coreRequest(desktop, 'tags', { id: pet.id, revision: pet.catalogRevision });
+    if (!tagsAnswer.ok || !Array.isArray(tagsAnswer.json)) throw new Error(`Could not read the selected PET series' DICOM tags (engine status ${tagsAnswer.status}).`);
+    const factor = factorRecord(entry.study, pet, tagsAnswer.json);
     const result = { study: entry.study, series: { number: pet.seriesNumber, description: pet.description }, factor, spheres: [], errors };
     if (!pet.canReconstruct) return { ...result, error: `VEAcom cannot reconstruct series ${pet.seriesNumber} as a volume, so it draws no sphere on it. ${factor.warnings}`.trim() };
 
