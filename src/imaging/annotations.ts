@@ -3,7 +3,7 @@ import { getPlaneFrame, indexToWorld, isPaddingValue, isProjection, sampleVolume
 import { usesSourceFrames } from './viewState';
 import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableVolume, sphereOf, sphereSection, sphereSulGlu, sphereStatisticsFor, thresholdVolumeFor } from './voi';
 import { t } from '../i18n';
-import { isEmission, overlayKind } from './emission';
+import { isEmission, overlayKind, petHasSuv } from './emission';
 import { sulGluGlucose } from './glucose';
 
 export interface RoiStatistics {
@@ -76,17 +76,18 @@ export function polylineLengthMm(points: Vec3[]): number | null {
 
 const positive = (value: number | null | undefined): value is number => value != null && Number.isFinite(value) && value > 0;
 
+/** Older catalogues can name a GML series as SUV even when ingest declined calibration. */
+export const storedUnit = (series: Series) => series.modality === 'PT' && /^SU[VL]/i.test(series.valueUnit) && !petHasSuv(series) ? 'g/ml' : series.valueUnit;
+
 /** How stored values become the quantity shown, and its unit. A PET is given in the SUV the reader chose (body
  * weight, lean body mass or body surface area) where the series has what that needs, else in SUVbw; values stored
  * as SUV stay as they are unless converted. The unit always names the SUV given. */
 export function quantitativeScale(series: Series): { factor: number; unit: string } {
-  const unit = series.valueUnit || t('annotation.valueUnit');
-  if (series.modality !== 'PT') return { factor: 1, unit };
-  // SUL and SUVbsa only beside an SUV: the engine sends their factors only then, and nothing uncalibrated reads as SUV.
-  const calibrated = positive(series.suvFactor) || /^SUV/i.test(unit);
-  if (calibrated && series.suvNormalization === 'lbm' && positive(series.sulFactor)) return { factor: series.sulFactor, unit: 'SUL' };
-  if (calibrated && series.suvNormalization === 'bsa' && positive(series.suvBsaFactor)) return { factor: series.suvBsaFactor, unit: 'SUVbsa' };
-  if (!/^SUV/i.test(unit) && positive(series.suvFactor)) return { factor: series.suvFactor, unit: 'SUVbw' };
+  const unit = storedUnit(series) || t('annotation.valueUnit');
+  if (!petHasSuv(series)) return { factor: 1, unit };
+  if (series.suvNormalization === 'lbm' && positive(series.sulFactor)) return { factor: series.sulFactor, unit: 'SUL' };
+  if (series.suvNormalization === 'bsa' && positive(series.suvBsaFactor)) return { factor: series.suvBsaFactor, unit: 'SUVbsa' };
+  if (!/^SUV/i.test(unit)) return { factor: series.suvFactor, unit: 'SUVbw' };
   return { factor: 1, unit };
 }
 

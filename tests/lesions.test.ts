@@ -2,7 +2,8 @@ import { assertClose } from './support';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Annotation, Series, Vec3, Volume } from '../src/model';
-import { lesionValues, nameLesions, percentChange, seriesRatios, valuesIn } from '../src/imaging/lesions';
+import { bodyWeight, lesionValues, nameLesions, percentChange, seriesRatios, valuesIn } from '../src/imaging/lesions';
+import { bodyWeightFactor } from '../src/imaging/quantity';
 
 const sphere = (id: string, extra: Partial<Annotation> = {}): Annotation => ({ id, type: 'sphere', points: [[40, 40, 40], [52, 40, 40]], plane: 'axial', slice: 0, mode: 'mpr', ...extra });
 const pet: Series = {
@@ -38,6 +39,18 @@ describe('lesion values', () => {
     assertClose(values.peak, 8, 5);
     assertClose(values.tlg! / values.mtv!, 8, 5);
     assert.equal(lesionValues(sphere('b'), volume)!.mtv, undefined);
+  });
+
+  it('are kept only for a PET in SUV: none for a file storing SUV that the engine refused', () => {
+    // Units GML gives values stored as SUV, with the engine's SUV factor 1; not corrected for attenuation, none.
+    const gml = { ...pet, valueUnit: 'SUVbw', suvFactor: 1 }, refused = { ...gml, suvFactor: null };
+    assert.equal(bodyWeightFactor(gml), 1);
+    assert.deepEqual(bodyWeight(gml), { factor: 1, unit: 'SUVbw' });
+    assert.equal(bodyWeightFactor(pet), 0.5);
+    assert.equal(bodyWeightFactor({ ...gml, valueUnit: 'SUVlbm' }), null);
+    for (const unit of ['SUVbw', 'SUVlbm']) assert.equal(bodyWeightFactor({ ...refused, valueUnit: unit }), null, unit);
+    assert.equal(bodyWeight(refused), null);
+    assert.equal(lesionValues(sphere('a'), { ...volume, series: refused }), null);
   });
 
   it('read back in SUL or SUVbsa through the ratios kept beside them; MTV is a volume', () => {

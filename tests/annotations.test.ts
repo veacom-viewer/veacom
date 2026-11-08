@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
 import type { Annotation, Series, Vec3, Volume } from '../src/model';
-import { angleDegrees, annotationSummary, cobbAngleDegrees, distanceMm, fusedPetSummary, polylineLengthMm, quantitativeScale, roiStatistics } from '../src/imaging/annotations';
+import { angleDegrees, annotationSummary, cobbAngleDegrees, distanceMm, fusedPetSummary, polylineLengthMm, quantitativeScale, roiStatistics, storedUnit } from '../src/imaging/annotations';
 import { setLocale } from '../src/i18n';
 
 const series: Series = {
@@ -397,6 +397,26 @@ describe('quantitative units', () => {
   });
   it('retains known activity units when SUV inputs are missing', () => {
     assert.deepEqual(quantitativeScale({ ...series, modality: 'PT', valueUnit: 'BQML', suvFactor: null }), { factor: 1, unit: 'BQML' });
+  });
+  it('calls values a file stores as SUV SUV only where the engine calibrated them, else gives them in g/ml', () => {
+    // Units GML that the engine refused (not corrected for attenuation): its unit still says SUVbw, but no SUV factor.
+    const refused: Partial<Series> = { modality: 'PT', valueUnit: 'SUVbw', suvFactor: null };
+    for (const normalization of ['bw', 'lbm', 'bsa'] as const) {
+      const shown = { ...series, ...refused, sulFactor: 0.8, suvBsaFactor: 0.03, suvNormalization: normalization };
+      assert.equal(storedUnit(shown), 'g/ml');
+      assert.deepEqual(quantitativeScale(shown), { factor: 1, unit: 'g/ml' });
+    }
+    assert.equal(storedUnit({ ...series, ...refused, valueUnit: 'SUVlbm' }), 'g/ml');
+    const pet = volume(() => 3.5, refused);
+    assert.equal(annotationSummary(roi('probe', [[1, 1, 1]]), pet), '3.5 g/ml');
+    assert.equal(roiStatistics(roi('rectangle', box), pet)!.unit, 'g/ml');
+    assert.doesNotMatch(fusedPetSummary(roi('probe', [[1, 1, 1]]), pet), /SU[VL]/);
+    // The same file calibrated (the engine's factor 1) reads SUVbw as before; other units and modalities are untouched.
+    assert.equal(storedUnit({ ...series, ...refused, suvFactor: 1 }), 'SUVbw');
+    assert.deepEqual(quantitativeScale({ ...series, ...refused, suvFactor: 1 }), { factor: 1, unit: 'SUVbw' });
+    assert.equal(annotationSummary(roi('probe', [[1, 1, 1]]), volume(() => 3.5, { ...refused, suvFactor: 1 })), '3.50 SUVbw');
+    assert.equal(storedUnit({ ...series, modality: 'PT', valueUnit: 'Bq/ml', suvFactor: null }), 'Bq/ml');
+    assert.equal(storedUnit(series), 'HU');
   });
   it('gives PET values in the SUV the reader chose, and names the SUV it gives', () => {
     const activity: Series = { ...series, modality: 'PT', valueUnit: 'Bq/ml', suvFactor: 0.25, sulFactor: 0.2, suvBsaFactor: 0.07 };
