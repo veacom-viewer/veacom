@@ -14,8 +14,9 @@ class ApplicationBoundary extends React.Component<{ children: React.ReactNode },
     return this.props.children;
   }
 }
-// The desktop window has no title bar; the toolbar makes room for the window controls (styles.css).
-if ((window as { veacom?: unknown }).veacom) {
+// The desktop window has no title bar; the toolbar makes room for the window controls (styles.css). A browser tab
+// (the browser build's bridge, src/web) has its own.
+if (window.veacom && !window.veacom.web) {
   document.documentElement.dataset.titlebar = 'toolbar';
 }
 createRoot(document.getElementById('root')!).render(<ApplicationBoundary><App /></ApplicationBoundary>);

@@ -41,7 +41,8 @@ function groups(t: Translator): { title: MessageKey; rows: Row[] }[] {
   ];
 }
 
-export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; onCheckUpdates: () => void }) {
+/** `onCheckUpdates`: absent where the app cannot update itself (the browser build). */
+export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; onCheckUpdates?: () => void }) {
   const { t } = useTranslation();
   const dialog = useRef<HTMLDialogElement>(null);
 
@@ -85,7 +86,7 @@ export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; o
     </details>
     <footer>
       <span className="help-version">VEAcom {window.veacom?.getVersion() || '2'}</span>
-      <button type="button" className="secondary-button" data-testid="help-check-updates" onClick={onCheckUpdates}>{t('help.checkUpdates')}</button>
+      {onCheckUpdates && <button type="button" className="secondary-button" data-testid="help-check-updates" onClick={onCheckUpdates}>{t('help.checkUpdates')}</button>}
     </footer>
   </dialog>;
 }

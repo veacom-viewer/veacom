@@ -8,7 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
@@ -1084,12 +1084,16 @@ export default function App() {
   useEffect(() => {
     const externalFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files')
       && !event.dataTransfer.types.includes('application/x-veacom-series');
+    // A link dragged in from elsewhere would make the browser leave the page, and the open studies with it: refused.
+    const link = (event: DragEvent) => Boolean(event.dataTransfer?.types.includes('text/uri-list')) && !externalFiles(event);
     const dragOver = (event: DragEvent) => {
+      if (link(event)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
       if (!externalFiles(event)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     };
     const drop = async (event: DragEvent) => {
+      if (link(event)) { event.preventDefault(); return; }
       if (!externalFiles(event)) return;
       event.preventDefault();
       const files = Array.from(event.dataTransfer?.files ?? []);
@@ -2059,13 +2063,16 @@ export default function App() {
     { id: 'open', group: 'file', node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<FolderOpen size={18} />} label={t('toolbar.open')} shortcut={`${mod}+O`} testId="tool-open" popup="menu" indicator expanded={menu === 'import'} onClick={() => toggleMenu('import')} />
       {menu === 'import' && <Menu label={t('toolbar.open')} onClose={closeMenu}>
-        <MenuItem action="import-dialog" icon={<FolderOpen size={16} />} shortcut={combo(mod, 'O')} onClick={() => void openImport()}>{t('toolbar.openWindow')}</MenuItem>
-        <MenuDivider />
-        <MenuItem action="toolbar-open-folder" icon={<FolderOpen size={16} />} onClick={() => void open('folder')}>{t('toolbar.openFolder')}</MenuItem>
+        {bridgeCan('importWindow') && <>
+          <MenuItem action="import-dialog" icon={<FolderOpen size={16} />} shortcut={combo(mod, 'O')} onClick={() => void openImport()}>{t('toolbar.openWindow')}</MenuItem>
+          <MenuDivider />
+        </>}
+        {/* Without the import window (the browser), the shortcut opens a folder. */}
+        <MenuItem action="toolbar-open-folder" icon={<FolderOpen size={16} />} shortcut={bridgeCan('importWindow') ? undefined : combo(mod, 'O')} onClick={() => void open('folder')}>{t('toolbar.openFolder')}</MenuItem>
         <MenuItem action="toolbar-open-files" icon={<Files size={16} />} onClick={() => void open('files')}>{t('toolbar.openFiles')}</MenuItem>
         <MenuItem action="toolbar-open-archive" icon={<FileArchive size={16} />} onClick={() => void open('archive')}>{t('toolbar.openArchive')}</MenuItem>
       </Menu>}</div> },
-    { id: 'cd', group: 'file', node: <ToolButton icon={<Glyph name="cd" />} label={t('toolbar.openDisc')} testId="tool-open-disc" onClick={() => void openImport('disc')} /> },
+    ...(bridgeCan('discImport') ? [{ id: 'cd', group: 'file', node: <ToolButton icon={<Glyph name="cd" />} label={t('toolbar.openDisc')} testId="tool-open-disc" onClick={() => void openImport('disc')} /> } satisfies ToolbarItem] : []),
     { id: 'export', group: 'file', node: <ToolButton icon={<Upload size={18} />} label={t('toolbar.export')} shortcut={`${mod}+E`} testId="tool-export" disabled={!activeSeries} onClick={() => openExport('dicom')} /> },
     // In VEAcom Next's order: left, right, the wheel's scrolling, then the middle button's press.
     ...(['left', 'right', 'wheel', 'middle'] as const).map((button): ToolbarItem => {
@@ -2208,7 +2215,9 @@ export default function App() {
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
         {usageConsent === null && <div className="notice usage-consent" role="region" aria-label={t('usage.title')} data-testid="usage-consent"><span>{t('usage.question')}</span><span className="usage-consent-actions"><button type="button" className="secondary-button compact" data-testid="usage-consent-share" onClick={() => void chooseUsage('granted')}>{t('usage.share')}</button><button type="button" className="secondary-button compact" data-testid="usage-consent-decline" onClick={() => void chooseUsage('denied')}>{t('usage.decline')}</button></span></div>}
-        {progress && <div className="operation-progress"><LoaderCircle size={12} className="spin" /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={() => { const shown = progress.id ?? null; setCancelledId(shown); void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); }); }}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
+        {/* Not while a series loads: its card and the status bar say so already, and a strip above the image would push
+            the image down and back up for every series opened. */}
+        {progress && progress.stage !== 'decode' && <div className="operation-progress"><LoaderCircle size={12} className="spin" /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={() => { const shown = progress.id ?? null; setCancelledId(shown); void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); }); }}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
         {/* From main (#7): no usable graphics driver, or WebGL drawn in software. */}
         {graphicsNoticeOpen && graphicsError != null && <div className="notice error" role="alert" data-testid="graphics-unavailable-notice"><span>{errorText(graphicsError)}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
         {graphicsNoticeOpen && graphics?.software && <div className="notice warning" role="status" data-testid="software-rendering-notice"><span>{t('gpu.softwareNotice')} <span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
@@ -2395,8 +2404,8 @@ export default function App() {
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
         {playing && <CineSpeed fps={cineFps} max={cineMax} onChange={fps => setSettings(current => ({ ...current, cineFps: fps }))} />}
       </div>
-      {/* Feedback to the team: always at hand, never over the images. */}
-      <button type="button" className="status-button status-feedback" data-testid="feedback-open" data-usage-ignore aria-label={t('feedback.open')} data-tooltip={t('feedback.open')} onClick={() => setShowFeedback(true)}><MessageSquare size={13} aria-hidden="true" /><span>{t('feedback.open')}</span></button>
+      {/* Feedback to the team: always at hand, never over the images (where the bridge can send it). */}
+      {bridgeCan('feedback') && <button type="button" className="status-button status-feedback" data-testid="feedback-open" data-usage-ignore aria-label={t('feedback.open')} data-tooltip={t('feedback.open')} onClick={() => setShowFeedback(true)}><MessageSquare size={13} aria-hidden="true" /><span>{t('feedback.open')}</span></button>}
       {/* Language is set rarely, so it lives in the status bar rather than among the imaging tools. */}
       <div className="menu-anchor status-language" data-menu>
         <button type="button" className="status-button" data-testid="tool-language" aria-label={`${t('language.menu')} · ${locale.toUpperCase()}`} data-tooltip={t('language.menu')} aria-haspopup="menu" aria-expanded={menu === 'language'} onClick={() => toggleMenu('language')}><Languages size={13} aria-hidden="true" /><span className="language-code">{locale.toUpperCase()}</span></button>
@@ -2414,7 +2423,7 @@ export default function App() {
         action: reveal && window.veacom?.revealExport ? { label: 'export.openFolder', run: () => void window.veacom?.revealExport?.(reveal).catch(() => {}) } : undefined })} /></Suspense>}
     {showUpdates && <Suspense fallback={null}><UpdateDialog onClose={() => setShowUpdates(false)} /></Suspense>}
     {showFeedback && <Suspense fallback={null}><FeedbackDialog onClose={() => setShowFeedback(false)} onSent={() => say('feedback.sent', 'info', undefined, true)} /></Suspense>}
-    {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={() => { setShowHelp(false); setShowUpdates(true); }} /></Suspense>}
+    {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={bridgeCan('updates') ? () => { setShowHelp(false); setShowUpdates(true); } : undefined} /></Suspense>}
     {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={crosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
       setShow3d(false);
       if (pointFrom3d.current && crosshairRef.current === pointFrom3d.current) setCrosshair(null);
