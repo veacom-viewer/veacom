@@ -12,6 +12,7 @@ packaging/version_info.txt
 .vscode/
 .idea/
 .context/
+/.wrangler/
 /reports/
 /research_notes/
 

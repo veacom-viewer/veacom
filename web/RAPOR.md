@@ -1,6 +1,6 @@
 # Tarayıcıda VEAcom: ilk prototip
 
-7–8 Kasım 2026. Yerel dal `local/web-prototype`; hiçbir yere gönderilmedi. Ölçümlerde yalnız sentetik ya da açık lisanslı çalışmalar kullanıldı: `PETCT_8fea5f0537`, `bigct`, `demo\Calisma.zip`; kod çözücüler için ayrıca `bigct`'nin kayıpsız sıkıştırılmış kopyaları `bigct_j2k` ve `bigct_jpegll`.
+Ölçümler 7–8 Kasım 2026'da `local/web-prototype` dalında yapıldı. Tarayıcı sürümü artık ortak depodaki [6 numaralı çekme isteğinde](https://github.com/veacom-viewer/veacom/pull/6). Ölçümlerde yalnız sentetik ya da açık lisanslı çalışmalar kullanıldı: `PETCT_8fea5f0537`, `bigct`, `demo\Calisma.zip`; kod çözücüler için ayrıca `bigct`'nin kayıpsız sıkıştırılmış kopyaları `bigct_j2k` ve `bigct_jpegll`.
 
 ## Kısaca
 
@@ -14,7 +14,7 @@
 - 8 Kasım: ilk görüntü 0,4–0,8 saniyede geliyor; PlexusMD ile aynı ya da daha erken. Motor tek iş parçacığında %35–45 daha hızlı, pikseller aynı.
 - 8 Kasım: seri artık en fazla 4 iş parçacığında çözülüyor. JPEG 2000 serisi 5,5 saniye yerine 2 saniyede, sıkıştırılmamış seriler 2 saniye yerine 0,5–0,7 saniyede yükleniyor. Pikseller tek iş parçacığındakiyle bit bit aynı.
 - JPEG 2000 ve JPEG Lossless tarayıcıda bit bit doğru çözülüyor: 400 kesitin hepsi sıkıştırılmamış kopyayla aynı çıktı. JPEG 2000 için openjp2'deki bir hata yüzünden küçük bir düzeltme gerekti.
-- Zararlı dosyalar sayfaya ve kullanıcıya zarar veremiyor. Sayfa yalnız kendi kodunu çalıştırıyor, yalnız kendi sitesine bağlanabiliyor, dosyadaki yazıyı HTML olarak kullanmıyor. 247 bozuk ve kötü niyetli dosya denendi; hiçbiri motoru çökertmedi, kod çalıştıramadı, sayfayı kilitleyemedi.
+- Sayfa yalnız kendi kodunu çalıştırıyor, yalnız kendi sitesine bağlanabiliyor, dosyadaki yazıyı HTML olarak kullanmıyor. 247 bozuk ve kötü niyetli dosya denendi; hiçbiri motoru çökertmedi, kod çalıştıramadı, sayfayı kilitleyemedi.
 - 8 Kasım: masaüstünün arayüzünün kendisi tarayıcıda çalışıyor (`web.html`). Diskten bırakılan Calisma.zip 2,5–3 saniyede listelendi, ilk görüntü hemen ardından geldi. Masaüstü ekran boyutlarının ve ölçeklerinin hepsinde düzgün görünüyor.
 
 ## Gerçek arayüz tarayıcıda (8 Kasım)
@@ -163,7 +163,7 @@ Site `wrangler deploy` ile yayına alındı. Yayından yaklaşık 40 saniye sonr
 
 Yeni bir sürüm aynı komutlarla yayına alınır (`web/README.md`). Sayfa her ziyarette denetlendiği için yeni sürüm herkese hemen ulaşıyor.
 
-Açık kalanlar: Firefox ve Safari denenmedi, telefonda görünüm sıkışık. Kod henüz ortak depoda değil; Ali İhsan görmedi.
+Bu ölçümler Chromium ile yapıldı. Firefox ve Safari denemeleri ile telefon yerleşimi açık kaldı.
 
 ## Güvenlik incelemesi (8 Kasım)
 
@@ -180,14 +180,14 @@ Düzeltilenler:
 
 Açık kalanlar, önem sırasıyla:
 
-1. **Yayın yetkisi tek bilgisayarda.** Site bu bilgisayardan, Cloudflare hesabına bağlı bir oturumla yayınlanıyor. Kod ortak depoda değil; hangi sürümün yayında olduğu da kayıtlı değil. Bu bilgisayar ya da hesap ele geçirilirse site değiştirilebilir ve bunu kimse fark etmez. Öneriler: hesapta donanım anahtarlı iki aşamalı giriş; geniş yetkili oturum yerine yalnız bu siteyi yayınlayabilen bir anahtar; yayının ortak depodaki incelenmiş bir sürümden yapılması; yayındaki dosyaların düzenli olarak denetlenmesi.
-2. **JPEG 2000 çözücüsü güvensiz kod içeriyor.** C'den makineyle çevrilmiş; bir hatası zaten bulundu. WebAssembly'deki bir bellek hatası sayfanın dışına çıkamaz, ama motorun belleğindeki başka bir seriyi sessizce bozabilir. Bu raporda "en kötü durumda motor çöker" deniyordu; bu garanti değil. Öneriler: JPEG 2000 dosyalarıyla bulanık test (fuzzing), çözücüyü ayrı bir bellek alanında çalıştırmak.
+1. **Yayın yetkisi tek bilgisayarda.** Site bu bilgisayardan, Cloudflare hesabına bağlı bir oturumla yayınlanıyor. Kaynak kod ortak depoda. Bu ölçümde yayındaki dosyaların hangi commit’ten üretildiği kaydedilmedi. Bu bilgisayar ya da hesap ele geçirilirse site değiştirilebilir ve bunu kimse fark etmez. Öneriler: hesapta donanım anahtarlı iki aşamalı giriş; geniş yetkili oturum yerine yalnız bu siteyi yayınlayabilen bir anahtar; yayının ortak depodaki incelenmiş bir sürümden yapılması; yayındaki dosyaların düzenli olarak denetlenmesi.
+2. **JPEG 2000 çözücüsü güvensiz kod içeriyor.** C'den makineyle çevrilmiş; bir hatası zaten bulundu. Bir bellek hatası motoru durdurabilir veya aynı Wasm belleğindeki başka bir serinin piksellerini fark edilmeden bozabilir. Öneriler: JPEG 2000 dosyalarıyla bulanık test (fuzzing), çözücüyü ayrı bir bellek alanında çalıştırmak.
 3. **Düz DICOM dışa aktarmada dosyanın ilk 128 baytı olduğu gibi kopyalanıyor.** İçine program gizlenmiş bir dosya, dışa aktarılan ZIP'e de öyle geçiyor. Kimlik temizlemeli ve sıkıştırmasız dışa aktarma bu baytları sıfırlıyor. Öneri: düz dışa aktarmada da sıfırlamak (ortak motorda).
 4. **"Tam" kimlik temizliği bazı alanları bırakıyor:** çalışma ve seri açıklamaları, serbest metin alanları (ör. çalışma nedeni, alerjiler), bazı UID'ler; resim ve videoda çalışma tarihi. Öneri: DICOM'un temel anonimleştirme profiline (PS3.15 Ek E) göre tamamlamak (ortak motor ve arayüz).
 5. Takılan bir kesit isteği motoru sayfa yenilenene kadar bekletebilir; isteklerin süre sınırı yok.
 6. DICOMDIR alanlarının uzunluğu ve karakterleri denetlenmiyor. Bozuk bir kaynak, katı okuyucuları (PACS, nöronavigasyon) zorlayabilir.
 
-Hesap ayarları da var: Cloudflare'ın hata raporu başlıkları (NEL) ve alan adı kayıtları (CAA, DNSSEC). Ayrıca masaüstü deposundaki `.wrangler` klasörü bu bilgisayarın konum bilgisini içeriyor ve git'te yok sayılmıyor.
+Hesap ayarları da var: Cloudflare'ın hata raporu başlıkları (NEL) ve alan adı kayıtları (CAA, DNSSEC). Wrangler’ın yerel durumunu tutan `.wrangler/` ve `web/site/.wrangler/` dizinleri Git tarafından yok sayılıyor.
 
 ## İş parçacıkları (8 Kasım)
 
@@ -250,7 +250,6 @@ WebAssembly belleği JPEG 2000'de 219 MB'tan 250 MB'a, bigct'de 419 MB'tan 651 M
 **Kalanlar:**
 - Dokunmatik hareketler ve telefon yerleşimi.
 - Firefox ve Safari denemesi.
-- İş parçacıkları.
 - Büyük dışa aktarmalar bellekte iki kopya tutuyor (dışa aktarılan dosyalar ve ZIP); çok büyük çalışmalar için ZIP'i parça parça yazmak gerekir.
 
 ## Ne yapıldı (prototip, 7 Kasım)
@@ -357,7 +356,7 @@ Uygulama içi tarayıcıda deneme verisi önce belleğe indiriliyor; orada seri 
 - Seri listesinde zamanın çoğu tarayıcının dosya okumasında geçiyor. PET/CT'de motorun ~400 ms'sinin ~310 ms'si, bigct'de ~720 ms'nin ~640 ms'si okumayı bekleyerek geçiyor.
 - Her okuma (`FileReaderSync`) okunan bayttan bağımsız olarak yaklaşık 0,8 ms tutuyor. 16 KiB'lık parçalar denendi; hızlandırmadı, ZIP'i yavaşlattı.
 - Okuma çıkarılınca WebAssembly'deki başlık ayrıştırma 80–100 ms tutuyor. Bu, aynı kodun yerel tek çekirdekteki süresiyle aynı düzeyde.
-- **Başları önceden okumak:** Worker her dosyanın ilk 64 KiB'ını `file.slice(0, 65536).arrayBuffer()` ile aynı anda istiyor, motor başlıkları bellekten okuyor. Liste yaklaşık yarıya iniyor. Dosya başına 64 KiB bellek tutuyor; 50.000 dosyada 3 GB eder, gerçek sürümde partiler halinde yapılmalı.
+- **Başları önceden okumak:** Prototipte ilk 64 KiB'ı önceden okumak listeleme süresini yaklaşık yarıya indirdi. Güncel Worker, bir içe aktarmada başlıklar için en fazla 16 MiB okuyor. 16 MiB'tan büyük dosyaları motor gerektikçe okuyor.
 - **ZIP:** 16 MB'tan büyük dosyalar 1 MiB'lık parçalarla okunuyor. ZIP'in okuma süresi ~1,4 s'den ~0,35 s'ye indi.
 - **Hacim çözme** hesaba bağlı. WebAssembly burada yerel tek çekirdekten 1,2–1,4 kat yavaş. Masaüstü düzeyine iş parçacıklarıyla yaklaşılır.
 
@@ -369,7 +368,7 @@ Dosyalar sunucuya hiç gitmediği için sunucu dosyalardan etkilenemez. Tehlike,
 - **İçerik politikası (CSP) ve Trusted Types:** Sayfa ve Worker yalnız sitenin kendi betiklerini ve WebAssembly'sini çalıştırabiliyor. Yalnız kendi sitesine bağlanabiliyor; görüntü ya da bilgi başka bir yere gönderilemiyor. Yazıdan HTML üretilemiyor, satır içi betik ve `eval` çalışmıyor. Başlatılabilecek tek betik motorun kendi Worker'ı. Stiller ayrı dosyaya (`style.css`) taşındı.
 - **Dosyadaki yazı yalnız yazı olarak gösteriliyor:** Seri adı, hasta adı gibi alanlar `textContent` ile konuyor, sayfada hiç `innerHTML` yok.
 - **Motor ayrı bir Worker'da:** Bir dosya motoru çökertirse (çözücü hatası, bellek taşması, yığın taşması) Worker atılıyor, yerine yenisi başlıyor, sayfa çalışmaya devam ediyor. Motor takılırsa sayfa yine yanıt veriyor; yeni dosya açmak takılan motoru durduruyor. Reddedilen her açılıştan sonra da motor yenileniyor; WebAssembly belleği küçülmediği için böylece bellek geri veriliyor.
-- **Tarayıcıya göre düşük sınırlar:** Bir dosyanın piksel verisi ve çözülmüş bir hacim en fazla 1 GiB; ZIP'ten açılan veri toplam 1 GiB, girdi başına 512 MiB. Masaüstündeki 2 ve 8 GiB'lık sınırlar 4 GB'a sığmıyordu. Motorun kendi denetimleri (boyut, kare sayısı, iç içe dizi derinliği, üst veri boyutu) olduğu gibi çalışıyor.
+- **Tarayıcıya göre düşük sınırlar:** Bir dosyanın piksel verisi ve çözülmüş bir hacim en fazla 1 GiB; açık arşivlerden bellekte tutulan veri oturum boyunca toplam 1 GiB, girdi başına 512 MiB. Bir arşivin son serisi kapatıldığında o arşivin belleği serbest kalıyor. Masaüstündeki 2 ve 8 GiB'lık sınırlar 4 GB'a sığmıyordu. Motorun kendi denetimleri (boyut, kare sayısı, iç içe dizi derinliği, üst veri boyutu) olduğu gibi çalışıyor.
 - **ZIP:** Dışarı çıkmaya çalışan yollar ve sembolik bağlantılar motorun kendisince reddediliyor. Dosyalar zaten yalnız bellekteki sanal dosya sistemine yazılıyor, diske hiçbir şey yazılmıyor.
 - **Dosya içeriği hiç çalıştırılmıyor:** DICOM'un başındaki 128 baytlık alana gizlenmiş bir program ya da HTML (bilinen "polyglot" saldırısı) yalnız veri olarak okunup atlanıyor. Düz resimler (PNG, JPEG, BMP) tarayıcıda şimdilik hiç açılmıyor, SVG de açılmıyor.
 
@@ -395,7 +394,7 @@ Ayrıca sayfada şunlar denendi ve hepsi engellendi: başka bir siteye istek, ya
 - Kullanım verisi ve geri bildirim adresleri `connect-src`'ye tek tek eklenmeli; başka hiçbir adres eklenmemeli.
 - Sitede yalnız derlenmiş dosyalar yayımlanmalı. `serve.mjs`'teki deneme verisi adresi yalnız geliştirme içindir.
 - Dışa aktarmada özgün dosya olduğu gibi indirilirse içindeki gizli program da gider. Dışa aktarma dosyayı yeniden yazmalı ya da başındaki 128 baytı sıfırlamalı.
-- openjp2 C'den çevrilmiş güvensiz kod. WebAssembly'deki bellek hatası tarayıcının dışına çıkamaz, en kötü durumda motor çöker ve yenilenir. Yine de bulunan hata openjp2'ye bildirilmeli.
+- openjp2 C'den çevrilmiş güvensiz kod. Bir bellek hatası motoru durdurabilir veya aynı bellekteki başka bir serinin piksellerini bozabilir. Bulunan hata openjp2 projesine bildirilmeli.
 
 ## Riskler
 
@@ -403,7 +402,7 @@ Ayrıca sayfada şunlar denendi ve hepsi engellendi: başka bir siteye istek, ya
 - Paylaşılan bellek için sayfanın "cross-origin isolated" olması gerekiyor. Başlıkları yerelde `serve.mjs`, Cloudflare'da `site/worker.js` veriyor.
 - Bu başlıklarla dışarıdan yüklenen her kaynak (yazı tipi, kullanım verisi, geri bildirim gönderimi) CORP ya da CORS başlığı istiyor. Sayfanın açtığı pencerelerle bağı kopuyor.
 - Asıl maliyet derlemede: WebAssembly iş parçacıkları kararlı Rust ile derlenmiyor; nightly Rust ve `-Z build-std` gerekiyor. Nightly'nin tarihi `build.ps1`'de sabit; yenisine geçmek ayrı bir iş, her geçişte özetler yeniden karşılaştırılmalı.
-- Bir iş parçacığı çözme sırasında çökerse motor onu sonsuza dek bekler. Kullanıcı işi durdurunca köprü motoru süre dolunca yeniliyor (döngüye giren çözücüdeki gibi). Bu durum ayrıca denenmedi.
+- Güncel köprü yardımcı Worker’ları sayfadan başlatır. Bir yardımcı çözme sırasında çökerse sayfa hatayı alır ve motoru yeniden başlatır.
 - Seri listesindeki darboğaz okuma olduğu için orada SharedArrayBuffer'sız yollar yetiyor: başları önceden okumak ya da birden çok Worker. İş parçacıkları en çok hacim çözmeyi hızlandırır.
 
 **2. 4 GB bellek**
@@ -420,7 +419,7 @@ Ayrıca sayfada şunlar denendi ve hepsi engellendi: başka bir siteye istek, ya
 - JPEG-LS yok; ayrı bir WebAssembly derlemesi gerekiyor.
 - PNG, JPEG ve BMP resimleri açılmıyor. Masaüstünde bunları arayüz süreci çözüyor; tarayıcıda bu yol henüz yok, motor açık bir iletiyle reddediyor.
 - JPEG 2000 çözücüsü `openjp2`, C'den makineyle çevrilmiş güvensiz (unsafe) kod; WebAssembly'de bir hatası bulundu ve aşıldı (yukarıda).
-- Blob nesneleri onları alan Worker'a ait. İş parçacıkları dosyaları bu yüzden yalnız paylaşılan bellekte bütün olarak tutulduklarında okuyabiliyor (yukarıda, "İş parçacıkları").
+- Bu sürüm dosya nesnelerini motor Worker’ına gönderiyor. Yardımcılar, motorun paylaşılan belleğe okuduğu dosyaları çözüyor (yukarıda, "İş parçacıkları").
 - WebAssembly belleği hiç küçülmüyor. Bütün seriler kapatılınca motor yenileniyor ve bellek geri veriliyor; bir seri açıkken öbürleri kapatılınca bellek geri gelmiyor.
 - Tarayıcıdaki dosyaların değişiklik zamanı yok. `input_guard`'ın "dosya okunurken değişti" denetimi bu yüzden her zaman geçiyor. Dosya diskte değişirse Chrome okumayı hatayla kesiyor; motor bunu okuma hatası olarak bildiriyor.
 - Her dosya okuması bir tarayıcı çağrısı olduğundan 50.000 dosyalık bir klasörde düz okuma yaklaşık 40 saniye sürer. Önceden okuma ya da paralel Worker'lar burada şart.

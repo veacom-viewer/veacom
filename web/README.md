@@ -57,9 +57,9 @@ the local copy or the published site.
 
 - `../native`: the engine, a library (`veacom_core`) with the desktop's engine process built on it. It
   reads files through `vfs`: the computer's file system on the desktop, `memory_fs` in WebAssembly,
-  where the page's files are byte sources and extracted ZIP entries live in memory. In WebAssembly
-  its size limits are lower (pixel data and volumes 1 GiB, extracted ZIP data 1 GiB, 512 MiB per
-  entry), since everything shares 4 GB.
+  where the page's files are byte sources and extracted ZIP entries live in memory. Pixel data and
+  volumes are limited to 1 GiB each. All open archives share a 1 GiB extraction budget, with a
+  512 MiB limit per entry. Closing the last series from an archive frees its share of the budget.
 - `engine/`: the WebAssembly crate. It uses the engine without its server and without the codecs
   written in C (`default-features = false`), and turns on the pure-Rust JPEG 2000 decoder. It is
   built twice: `pkg` on one thread with the repository's stable Rust, and `pkg-threads`, where a
@@ -70,10 +70,9 @@ the local copy or the published site.
   its helpers take half the cores, at most 4, and if the helpers cannot start the engine falls back
   to `pkg`:
   - `src/blob.rs` lists the page's File objects in `memory_fs` and reads them with `Blob.slice()`.
-    A File can be read only by the Worker that received it, so before a series is decoded on the
-    helpers its files are held whole in shared memory (up to 256 MiB; a larger series is decoded on
-    the engine's own thread, as is everything else that reads the page's files);
-  - `src/api.rs` is what the Worker calls; `src/view.rs` the session behind it;
+    The engine Worker owns those File objects. For parallel decoding it reads up to 256 MiB of
+    source files into shared memory for the helpers. It decodes larger series on its own thread.
+  - `src/api.rs` exposes the Worker's calls and `src/session.rs` holds its catalog.
   - `src/libc_shim.rs` provides the C library calls of `openjp2` (JPEG 2000);
   - `src/allocator.rs` ignores freeing a null pointer, which openjp2 does and WebAssembly's
     allocator does not survive;
@@ -107,8 +106,8 @@ with and without the headers (`tools/browser-check.mjs`). The test studies for `
 `VEACOM_TESTDATA` names.
 
 Open http://127.0.0.1:5199/ and drop a folder or ZIP. `?test=petct|bigct|calisma|jtwok|jpegll&rounds=N`
-opens a test study; `&prefetch=1` reads every file's first 64 KiB in parallel before the engine
-starts; `&checksum=1` adds a SHA-1 of every decoded series (lossless copies must match);
+opens a test study. `&prefetch=1` reads up to 64 KiB per file ahead of import, up to 16 MiB in total.
+Files larger than 16 MiB are read on demand. `&checksum=1` adds a SHA-1 of every decoded series (lossless copies must match).
 `&threads=N` picks the build (1: one thread; N > 1: the engine's thread and N − 1 helpers); `&hold=N` lowers the limit for
 holding a series' files, to time the decoding of a series too large to hold.
 

@@ -5,3 +5,4 @@ engine/pkg-threads/
 site/public/
 site/.wrangler/
 engine/target/
+engine/target-threads/
