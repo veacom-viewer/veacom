@@ -177,7 +177,7 @@ pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
 /// import's, an archive once extracted, a closed series'), and so do the first pieces read ahead for the import.
 fn release_files() {
     crate::blob::drop_heads();
-    crate::blob::retain(&SESSION.with_borrow(Session::referenced_paths));
+    crate::blob::retain(&SESSION.with_borrow_mut(Session::prune_archives));
 }
 
 /// Every series in the catalog, as `{series, warnings}`.

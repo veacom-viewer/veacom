@@ -2205,7 +2205,7 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     let (extractions_ref, slot_of_ref, unplanned_ref) = (&extractions, &slot_of, &unplanned);
     let extract = move || -> Result<()> {
         for (archive, dir, _) in extractions_ref {
-            extract_zip_into(archive, dir, &mut |target| match slot_of_ref.get(target) {
+            extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| match slot_of_ref.get(target) {
                 Some(&index) => {
                     let _ = send.send(index);
                 }
@@ -2219,11 +2219,11 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     // WebAssembly cannot start a thread of its own: there the archives are extracted first and the files read after
     // (on the threads the page lends, parallel.rs), and no series is published early.
     let extracted = if cfg!(target_arch = "wasm32") {
-        let extracted = extract();
+        extract()?;
         // The sender goes with the extraction, so the reading ends after the last file.
         drop(extract);
         read_all();
-        extracted
+        Ok(())
     } else {
         std::thread::scope(|scope| -> Result<()> {
             let extraction = scope.spawn(extract);
@@ -2839,16 +2839,26 @@ fn zip_target(dir: &Path, name: Option<PathBuf>, unix_mode: Option<u32>, is_dir:
     Ok(Some(target))
 }
 
+fn available_archive_bytes() -> u64 {
+    #[cfg(target_arch = "wasm32")]
+    {
+        MAX_ARCHIVE_BYTES.saturating_sub(crate::memory_fs::memory_bytes())
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        MAX_ARCHIVE_BYTES
+    }
+}
+
 /// Extracts every entry of the archive into `dir` (made by plan_zip), handing `extracted` each file's path once it is
 /// written whole. Each entry is checked as it is written: a name that would leave `dir`, a symbolic link, a local
 /// header that disagrees with the central directory, or an entry or the archive over its size limit stops the
 /// extraction with an error.
-fn extract_zip_into(path: &Path, dir: &Path, extracted: &mut dyn FnMut(&Path)) -> Result<()> {
+fn extract_zip_into(path: &Path, dir: &Path, mut remaining: u64, extracted: &mut dyn FnMut(&Path)) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(path)?)?;
     if archive.len() > MAX_FILES {
         bail!(coded!("zip.tooManyEntries", "ZIP contains too many entries"));
     }
-    let mut total = 0u64;
     for index in 0..archive.len() {
         crate::progress::check()?;
         let mut entry = archive.by_index_with_options(
@@ -2858,18 +2868,19 @@ fn extract_zip_into(path: &Path, dir: &Path, extracted: &mut dyn FnMut(&Path)) -
         let Some(target) = zip_target(dir, entry.enclosed_name(), entry.unix_mode(), entry.is_dir(), entry.size())? else {
             continue;
         };
-        fs::create_dir_all(target.parent().context("Invalid ZIP path")?)?;
-        let mut output = File::options().write(true).create_new(true).open(&target)?;
-        let copied = std::io::copy(
-            &mut entry.by_ref().take(MAX_ARCHIVE_FILE_BYTES + 1),
-            &mut output,
-        )?;
-        output.flush()?;
-        drop(output);
-        total = total.checked_add(copied).context("Archive size overflow")?;
-        if copied > MAX_ARCHIVE_FILE_BYTES || total > MAX_ARCHIVE_BYTES {
+        if entry.size() > remaining {
             bail!(coded!("zip.tooLarge", "ZIP expanded data exceeds the import limit"));
         }
+        fs::create_dir_all(target.parent().context("Invalid ZIP path")?)?;
+        let mut output = File::options().write(true).create_new(true).open(&target)?;
+        let limit = remaining.min(MAX_ARCHIVE_FILE_BYTES);
+        let copied = std::io::copy(&mut entry.by_ref().take(limit), &mut output)?;
+        if copied == limit && entry.read(&mut [0])? != 0 {
+            bail!(coded!("zip.tooLarge", "ZIP expanded data exceeds the import limit"));
+        }
+        remaining -= copied;
+        output.flush()?;
+        drop(output);
         extracted(&target);
     }
     Ok(())
@@ -2879,7 +2890,7 @@ fn extract_zip_into(path: &Path, dir: &Path, extracted: &mut dyn FnMut(&Path)) -
 #[cfg(test)]
 fn extract_zip(path: &Path) -> Result<ArchiveTempDir> {
     let (dir, _) = plan_zip(path)?;
-    extract_zip_into(path, dir.path(), &mut |_| {})?;
+    extract_zip_into(path, dir.path(), available_archive_bytes(), &mut |_| {})?;
     Ok(dir)
 }
 
@@ -4580,6 +4591,25 @@ mod tests {
         zip.finish().unwrap();
         assert!(extract_zip(&file).is_err());
         assert!(!temp.path().join("outside").exists());
+    }
+
+    #[test]
+    fn zip_entries_share_the_bytes_left_for_extraction() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let file = temp.path().join("study.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
+        for name in ["first", "second"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.write_all(b"1234").unwrap();
+        }
+        drop(zip.finish().unwrap());
+        let (short, _) = plan_zip(&file).unwrap();
+        let error = extract_zip_into(&file, short.path(), 7, &mut |_| {}).unwrap_err();
+        assert_eq!(crate::message::coded(&error).unwrap().code, "zip.tooLarge");
+        assert!(!short.path().join("second").exists());
+        let (exact, _) = plan_zip(&file).unwrap();
+        extract_zip_into(&file, exact.path(), 8, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(exact.path().join("second")).unwrap(), b"1234");
     }
 
     #[test]

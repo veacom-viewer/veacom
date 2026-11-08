@@ -161,16 +161,18 @@ impl Session {
         Ok(result)
     }
 
-    /// Every file the catalog's series read from, their frames' and their documents': the page's files that must stay.
+    /// Drops archive directories as soon as their last series goes. The remaining paths also own the page's Blob files.
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-    pub fn referenced_paths(&self) -> HashSet<PathBuf> {
-        self.sources
+    pub fn prune_archives(&mut self) -> HashSet<PathBuf> {
+        let paths: HashSet<_> = self.sources
             .values()
             .flat_map(|source| {
                 let frames = source.frames.iter().map(|frame| frame.source.path.clone());
                 frames.chain(source.documents.iter().map(|file| file.path.clone()))
             })
-            .collect()
+            .collect();
+        self.archives.retain(|archive| paths.iter().any(|path| path.starts_with(archive.path())));
+        paths
     }
 
     /// Takes series off the catalog; once it is empty, the extracted archives go too.
