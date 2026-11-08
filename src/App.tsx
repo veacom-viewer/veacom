@@ -1,5 +1,5 @@
 import { studyKey } from './domain/patient';
-import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import {
   ChevronRight, Circle, CircleHelp, Columns3, Contrast, Crosshair, FileArchive, Files, FlipHorizontal2,
@@ -1479,8 +1479,9 @@ export default function App() {
   /** Lays a study out as `plan` says: its panes, links and fusion, with a note in the first pane naming it and Undo. Undo
    * puts back what was on screen with `first` in the active pane (what VEAcom shows without arrangements), and offers to
    * keep that instead. */
-  const applyArrangement = (plan: Plan, first: Series) => {
+  const applyArrangement = (plan: Plan, first?: Series) => {
     const before = { slots: slotsRef.current, layout: layoutRef.current, activeId: activeIdRef.current, hidden: hiddenSlots.current, maximized: maximizedRef.current,
+      mpr: beforeMpr.current, isMpr, arranged: arranged.current,
       linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current };
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
@@ -1511,7 +1512,8 @@ export default function App() {
     arranged.current = { plan, slotIds: panes.map(slot => slot.id) };
     const name = arrangementName(plan), notice = plan.arrangement.notice;
     const undo = () => {
-      arranged.current = null; fusionRequest.current++;
+      arranged.current = first ? null : before.arranged; fusionRequest.current++;
+      beforeMpr.current = before.mpr; setIsMpr(before.isMpr);
       hiddenSlots.current = before.hidden; setMaximized(before.maximized);
       setSlots(before.slots); setLayout(before.layout); activateSlot(before.activeId);
       setSettings(state => state.linked === before.linked ? state : { ...state, linked: before.linked });
@@ -1521,7 +1523,12 @@ export default function App() {
       for (const id of new Set(before.slots.map(slot => slot.seriesId))) {
         const item = seriesRef.current.find(value => value.id === id); loadPaneImage(item);
       }
-      assignSeries(before.activeId, first);
+      if (!first) {
+        const shown = before.slots.find(slot => slot.id === before.activeId)?.seriesId;
+        if (shown) setPaneToast({ slotId: before.activeId, seriesId: shown, text: t('arrangement.undone', { name }) });
+        return;
+      }
+      if (before.slots.find(slot => slot.id === before.activeId)?.seriesId !== first.id) assignSeries(before.activeId, first);
       setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.undone', { name }), sticky: true, keepAction: 'keep-plain', onKeep: () => {
         saveKept({ ...keptRef.current, [plan.arrangement.id]: { off: true } });
         setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.keptPlain', { name }) });
@@ -2068,11 +2075,8 @@ export default function App() {
     <MenuItem action="toolbar-flip-vertical" kind="checkbox" icon={<FlipVertical2 size={16} />} checked={activeSlot.view.flipY} onClick={() => act(() => updateView(activeSlot.id, { flipY: !activeSlot.view.flipY }))}>{t('toolbar.flipVertical')}</MenuItem>
     <MenuDivider />
     <MenuItem action="toolbar-reset-orientation" icon={<RotateCcw size={16} />} onClick={() => act(() => updateView(activeSlot.id, { rotation: 0, flipX: false, flipY: false }))}>{t('toolbar.resetOrientation')}</MenuItem></>;
-  const layoutStudy = useMemo(() => {
-    if (menu !== 'layout' || !activeSeries) return null;
-    const key = studyKey(activeSeries);
-    return { series: series.filter(item => studyKey(item) === key), session: series };
-  }, [menu, activeSeries, series]);
+  const layoutStudyKey = menu === 'layout' && activeSeries ? studyKey(activeSeries) : null;
+  const layoutStudy = layoutStudyKey === null ? null : { series: series.filter(item => studyKey(item) === layoutStudyKey), session: series };
   const toolbarStart: ToolbarItem[] = [
     { id: 'open', group: 'file', node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<FolderOpen size={18} />} label={t('toolbar.open')} shortcut={`${mod}+O`} testId="tool-open" popup="menu" indicator expanded={menu === 'import'} onClick={() => toggleMenu('import')} />
@@ -2119,7 +2123,7 @@ export default function App() {
           const plan = match([rule], 'open', layoutStudy);
           if (!plan) return null;
           return <button className="secondary-button compact" type="button" data-action={action} key={action}
-            onClick={() => applyArrangement(plan, activeSeries)}>{t(key)}</button>;
+            onClick={() => applyArrangement(plan)}>{t(key)}</button>;
         })}
       </Popover>}</div> },
     { id: 'measure', group: 'measure', node: <div className="menu-anchor" data-menu><div className="split">
