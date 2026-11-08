@@ -118,34 +118,6 @@ node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
 
-## PET quantification
-
-`check-pet-voi.cjs` opens the current study of the synthetic follow-up from `fixtures/make-pet-followup.mjs`. That
-fixture has one patient with a prior and a current study, each a CT and an attenuation-corrected PET. The PET has no
-noise or blur, so its values are known: uniform liver (SUV 2), descending aorta (1.5) and two lesions whose SUV falls
-from the prior study to the current one. The prior was scanned at another table position, over more slices, in its own
-frame of reference.
-The check covers [PET quantification](../docs/pet-quantification.md):
-
-- A sphere dragged on the lesion gives SUVmax, SUVpeak, mean and volume, in the image and in the list, and shows on the MIP.
-- On a coronal reconstruction it reads the same, and its row in the list sends the pane to its centre.
-- Spheres marked as the liver (made 3 cm across) and blood pool references read 2.00 and 1.50.
-- The lesion's Deauville suggestion shows its basis, and the reader confirms it.
-- A sphere on the fused CT also gives the PET's SUVmax and SUVpeak.
-- At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
-- The references are kept by digest, with no UID, and the actions are recorded by id.
-- In a new session on the same computer the references and the lesion table come back.
-- Opened after its prior, the study lays out as the PET follow-up screen. Linked by hand with the link button, the two
-  studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
-- With the current study alone, that change comes from what was kept for the prior.
-
-CI's desktop job, the Windows job and `tools/verify.sh` run it.
-
-```sh
-node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
-node tools/check-pet-voi.cjs /tmp/pet-followup test-results/pet-voi
-```
-
 ## PET validation against the vendor workstation
 
 `pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET
@@ -179,6 +151,34 @@ On real studies, with `--screenshots` for a picture of each sphere (patient deta
 
 ```sh
 node tools/pet-validation.cjs ~/pet-validation/studies ~/pet-validation/spheres.json ~/pet-validation/results --vendor ~/pet-validation/vendor.json
+```
+
+## PET quantification
+
+`check-pet-voi.cjs` opens the current study of the synthetic follow-up from `fixtures/make-pet-followup.mjs`. That
+fixture has one patient with a prior and a current study, each a CT and an attenuation-corrected PET. The PET has no
+noise or blur, so its values are known: uniform liver (SUV 2), descending aorta (1.5) and two lesions whose SUV falls
+from the prior study to the current one. The prior was scanned at another table position, over more slices, in its own
+frame of reference.
+The check covers [PET quantification](../docs/pet-quantification.md):
+
+- A sphere dragged on the lesion gives SUVmax, SUVpeak, mean and volume, in the image and in the list, and shows on the MIP.
+- On a coronal reconstruction it reads the same, and its row in the list sends the pane to its centre.
+- Spheres marked as the liver (made 3 cm across) and blood pool references read 2.00 and 1.50.
+- The lesion's Deauville suggestion shows its basis, and the reader confirms it.
+- A sphere on the fused CT also gives the PET's SUVmax and SUVpeak.
+- At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
+- The references are kept by digest, with no UID, and the actions are recorded by id.
+- In a new session on the same computer the references and the lesion table come back.
+- Opened after its prior, the study lays out as the PET follow-up screen. Linked by hand with the link button, the two
+  studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
+- With the current study alone, that change comes from what was kept for the prior.
+
+CI's desktop job, the Windows job and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/check-pet-voi.cjs /tmp/pet-followup test-results/pet-voi
 ```
 
 ## Gamma camera studies
