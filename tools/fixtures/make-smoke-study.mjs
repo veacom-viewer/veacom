@@ -1,5 +1,5 @@
 import { dataset, element } from './dicom-elements.mjs';
-// A small deterministic CT for the manual CI smoke job. Performance and golden tests use ct-small instead.
+// A small deterministic CT for the CI desktop checks. Performance and golden tests use ct-small instead.
 // `--modality MR` writes the same phantom as an MR study with its own UIDs, for the checks of what only MR has
 // (the assessment button, whose pre-diagnosis is switched off for now); the CT is the default and does not change.
 import { createHash } from 'node:crypto';
