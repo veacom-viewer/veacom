@@ -276,6 +276,25 @@ mod tests {
     use super::*;
     use std::io::Write;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn tmpfs_sources_use_block_hashes() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+        // An anonymous memory file uses tmpfs without depending on the runner's /tmp mount.
+        let fd = unsafe { libc::memfd_create(c"veacom-source-test".as_ptr(), libc::MFD_CLOEXEC) };
+        assert!(fd >= 0);
+        let mut file = unsafe { File::from_raw_fd(fd) };
+        file.write_all(&[11; 8]).unwrap();
+        let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
+        let original = SourceFile::index(&path).unwrap();
+        assert!(original.stamp.is_none());
+        assert_eq!(original.hashes.len(), 1);
+        let mut reader = original.open().unwrap();
+        file.rewind().unwrap();
+        file.write_all(&[22; 8]).unwrap();
+        assert!(reader.read_exact(&mut [0; 8]).is_err());
+    }
+
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]
     fn existing_writable_mapping_cannot_supply_new_pixels_to_an_imported_source() {

@@ -31,7 +31,7 @@ impl Stamp {
         if unsafe { libc::fstatfs(file.as_raw_fd(), info.as_mut_ptr()) } != 0 { return None; }
         let info = unsafe { info.assume_init() };
         #[cfg(target_os = "linux")]
-        let local = matches!(info.f_type, libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | libc::TMPFS_MAGIC | 0x58465342 /* XFS */);
+        let local = matches!(info.f_type, libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | 0x58465342 /* XFS */);
         #[cfg(target_os = "macos")]
         let local = info.f_fstypename.starts_with(&[b'a' as _, b'p' as _, b'f' as _, b's' as _, 0]);
         (local && metadata.ino() != 0).then(|| Self::from(metadata))

@@ -783,7 +783,9 @@ fn decode_volume_compact(source: &SourceSeries) -> Result<PixelBuffer> {
         bail!("Frame count differs from series dimensions");
     }
     if let [frame] = source.frames.as_slice() && frame.ordinary_image {
-        return ordinary_rgb(source, frame, crate::progress::check).map(PixelBuffer::U8);
+        let pixels = ordinary_rgb(source, frame, crate::progress::check)?;
+        crate::progress::step()?;
+        return Ok(PixelBuffer::U8(pixels));
     }
     if source.info.pixel_type == "float32"
         && source.info.components == 1
