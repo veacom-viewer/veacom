@@ -60,12 +60,31 @@ jobs:
       - name: Prepare Mac video verification
         if: runner.os == 'macOS'
         run: command -v ffmpeg >/dev/null || brew install ffmpeg
+      # Beta 2 never changes, so its build (the page in dist/ and the release engine) is kept between runs: without it
+      # each run compiled beta 2's engine and all its crates from nothing, in a target folder no cache covered.
+      - name: Beta 2's source
+        id: beta2
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/beta2" v0.1.0-beta.2
+          echo "sha=$(git rev-parse 'v0.1.0-beta.2^{commit}')" >> "$GITHUB_OUTPUT"
+      - name: Beta 2's build from the cache
+        id: beta2-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/beta2/dist
+            ${{ runner.temp }}/beta2/native/target/release/veacom-core
+          key: beta2-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.beta2.outputs.sha }}
       - name: Build beta 2 and the candidate
+        env:
+          BETA2_CACHED: ${{ steps.beta2-cache.outputs.cache-hit }}
         run: |
           set -euo pipefail
           release="$RUNNER_TEMP/beta2"
-          git worktree add --detach "$release" v0.1.0-beta.2
-          for root in "$release" "$GITHUB_WORKSPACE"; do
+          roots=("$release" "$GITHUB_WORKSPACE")
+          if [ "$BETA2_CACHED" = true ]; then roots=("$GITHUB_WORKSPACE"); fi
+          for root in "${roots[@]}"; do
             (cd "$root" && pnpm install --frozen-lockfile && pnpm run build:web)
             (cd "$root" && cargo build --release --locked --manifest-path native/Cargo.toml)
           done
@@ -76,6 +95,14 @@ jobs:
           pnpm run setup:runtime
           echo "BASE_APP=$release" >> "$GITHUB_ENV"
           echo "HEAD_APP=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - name: Keep beta 2's build
+        if: steps.beta2-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/beta2/dist
+            ${{ runner.temp }}/beta2/native/target/release/veacom-core
+          key: beta2-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.beta2.outputs.sha }}
       - name: Check source changes during and after import
         run: |
           cargo test --locked --release --manifest-path native/Cargo.toml source_file::tests
