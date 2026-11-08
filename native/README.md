@@ -1,5 +1,11 @@
 # VEAcom native imaging core
 
+The installer includes the codec notices in `THIRD_PARTY_NOTICES.txt` and Rust dependency notices in `RUST_LICENSES.txt`. After changing the lockfile, regenerate the Rust notices from the repository root with cargo-about 0.9.3:
+
+```sh
+cargo about generate --locked --manifest-path native/Cargo.toml --config native/about.toml native/licenses.hbs --output-file native/RUST_LICENSES.txt
+```
+
 Build with `cargo build --release` and test with `cargo test` in this directory. CMake and a C++ compiler (Clang or MSVC) are required to build the bundled static CharLS JPEG-LS codec; no separate CharLS library is needed at runtime. The executable is `target/release/veacom-core` (`.exe` on Windows).
 
 JPEG 2000 uses the vendored OpenJPEG 2.5.3 C codec through `openjpeg-sys`; the existing C compiler builds and statically links it on macOS and Windows. There is no extra OpenJPEG runtime DLL. The former `openjp2` Rust port invoked an invalid null deallocation on a valid synthetic image. Do not enable both backends. The C backend has been built and checked on macOS; the post-audit Windows build is still pending.

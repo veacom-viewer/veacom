@@ -2,16 +2,16 @@
 
 The [first departmental beta](https://github.com/veacom-viewer/veacom-private/releases/tag/v0.1.0-beta.1) is a private prerelease tagged `v0.1.0-beta.1`. New releases use the [VEAcom releases page](https://github.com/veacom-viewer/veacom/releases). Subsequent betas use `0.1.0-beta.2`, `0.1.0-beta.3`, and so on.
 
-The repository is private. This beta does not poll an update service, download an installer, or carry a GitHub token. **Updates → Release page** opens this repository in the user's browser only when selected. Staff need repository access to use that page. The department administrator can also distribute the verified assets internally.
+The first public release candidate is `0.1.0-beta.2`. **Updates → Release page** opens the public releases page in the user's browser. Automatic update checks are off.
 
 ## Packaging
 
-The release configuration keeps the app identity `com.veacom.electron` and display name **VEAcom Electron**. Windows uses an interactive per-user installer. The standard distribution build requires signing and macOS notarization. The owner approved an exception for the first private department beta: a Windows x64 NSIS installer and an Apple Silicon Mac disk image without a publisher signature or notarization. The release notes declare this and include SHA-256 checksums. Leave the standard signing configuration enabled for other releases.
+The release configuration keeps the app identity `com.veacom.electron` and display name **VEAcom Electron**. Windows uses an interactive per-user installer. The departmental beta and public beta `0.1.0-beta.2` ship without a publisher signature or macOS notarization. The release notes identify the unsigned builds and include `SHA256SUMS.txt`. The standard release configuration requires signing for subsequent releases.
 
-| Target | Expected asset for this beta |
+| Target | Expected asset for the public beta |
 | --- | --- |
-| Windows x64 | `VEAcom-Electron-0.1.0-beta.1-win-x64-Installer.exe` |
-| macOS Apple Silicon | `VEAcom-Electron-0.1.0-beta.1-mac-arm64.dmg` |
+| Windows x64 | `VEAcom-Electron-0.1.0-beta.2-win-x64-Installer.exe` |
+| macOS Apple Silicon | `VEAcom-Electron-0.1.0-beta.2-mac-arm64.dmg` |
 
 Use `pnpm install --frozen-lockfile`, `pnpm run setup:runtime`, `pnpm run build:core`, and `pnpm run build:web`. On Windows, run `scripts/windows-runtime.ps1` for the packaged native runtime. electron-builder installs apart from the root: run `pnpm --dir packaging install --frozen-lockfile`, then, from the repository root, `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win nsis --x64 --publish never` or `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac dmg --arm64 --publish never`, only with the approved signing setup. Verify the packaged viewer and signatures before attaching installers. Signing or publishing a release requires owner approval.
 

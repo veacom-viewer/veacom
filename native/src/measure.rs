@@ -424,7 +424,7 @@ fn plane_roi(
     );
     let mut output = json!({"kind":kind,"area":area,"areaUnit":"mm²","count":statistics.count,
         "mean":statistics.mean,"min":statistics.min,"max":statistics.max,"stddev":statistics.stddev(),
-        "unit":source.info.value_unit,"sampling":"plane-grid-trilinear","sampleSpacing":step});
+        "unit":source.info.stored_unit(),"sampling":"plane-grid-trilinear","sampleSpacing":step});
     add_suv_stats(&mut output, source, &statistics);
     Ok(output)
 }
@@ -558,7 +558,7 @@ fn roi(
     );
     let mut output = json!({"kind":kind,"area":area,"areaUnit":"mm²","count":statistics.count,
         "mean":statistics.mean,"min":statistics.min,"max":statistics.max,"stddev":statistics.stddev(),
-        "unit":source.info.value_unit,"sampling":"source-voxel-centres","excludedPadding":excluded_padding});
+        "unit":source.info.stored_unit(),"sampling":"source-voxel-centres","excludedPadding":excluded_padding});
     add_suv_stats(&mut output, source, &statistics);
     Ok(output)
 }
@@ -618,7 +618,7 @@ pub fn measure(
             let index = nearest_index(positions[0], source.info.dimensions);
             let value = pixels.value(offset(index, source.info.dimensions));
             ensure!(value.is_finite(), "The selected pixel is not finite.");
-            let mut result = json!({"kind":kind,"value":value,"unit":source.info.value_unit,"index":index,"world":points[0]});
+            let mut result = json!({"kind":kind,"value":value,"unit":source.info.stored_unit(),"index":index,"world":points[0]});
             if let Some(factor) = source
                 .info
                 .suv_factor

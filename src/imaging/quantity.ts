@@ -2,7 +2,7 @@
 // scale), HU for a CT. The renderer windows stored values with DICOM's linear function, so a window given in a
 // quantity is turned into the exact centre and width that draw it: "SUV 0–5" on screen is what the pixels show.
 import type { Series, ViewState } from '../model';
-import { petHasSuv } from './fusion';
+import { petHasSuv } from './emission';
 import { general } from '../ui/overlayCorners';
 
 export type QuantityUnit = 'SUV' | 'HU';
@@ -12,13 +12,13 @@ export interface QuantityWindow { unit: QuantityUnit; from: number; to: number }
  * SUV has none: nothing on it is called SUV. */
 export function quantityScale(series: Series, unit: QuantityUnit): number | null {
   if (unit === 'HU') return series.modality === 'CT' && series.valueUnit === 'HU' ? 1 : null;
-  if (series.modality !== 'PT' || !petHasSuv(series)) return null;
-  return /^SUV/i.test(series.valueUnit) ? 1 : series.suvFactor!;
+  if (!petHasSuv(series)) return null;
+  return /^SUV/i.test(series.valueUnit) ? 1 : series.suvFactor;
 }
 
 /** Conversion from decoded pixels to SUV normalized by actual body weight. */
 export function bodyWeightFactor(series: Series): number | null {
-  if (series.modality !== 'PT') return null;
+  if (!petHasSuv(series)) return null;
   if (/^SUVbw$/i.test(series.valueUnit)) return 1;
   if (/^SU[VL]/i.test(series.valueUnit)) return null;
   return quantityScale(series, 'SUV');

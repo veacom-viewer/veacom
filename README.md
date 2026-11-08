@@ -2,6 +2,22 @@
 
 VEAcom is a standalone DICOM viewer with an Electron and React interface and a Rust imaging engine. The first departmental beta is `0.1.0-beta.1`.
 
+## Install
+
+On an Apple Silicon Mac, run this in Terminal. Drag VEAcom Electron to Applications when the disk image opens.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/veacom-viewer/veacom/v0.1.0-beta.2/scripts/install.sh | bash
+```
+
+On Windows x64, run this in PowerShell and follow the installer.
+
+```powershell
+irm https://raw.githubusercontent.com/veacom-viewer/veacom/v0.1.0-beta.2/scripts/install.ps1 | iex
+```
+
+The scripts download the most recently published release, including betas, and verify its SHA-256 checksum before opening the installer. Public beta `0.1.0-beta.2` is unsigned and the Mac build is unnotarized. You can also download the installers and checksums from [GitHub Releases](https://github.com/veacom-viewer/veacom/releases).
+
 ## Layout
 
 | Folder | Contents |

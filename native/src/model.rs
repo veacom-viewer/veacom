@@ -381,6 +381,26 @@ pub struct Series {
     pub voi_luts: Vec<VoiLut>,
 }
 
+pub fn is_suv_unit(unit: &str) -> bool {
+    unit.get(..3).is_some_and(|prefix| {
+        prefix.eq_ignore_ascii_case("SUV") || prefix.eq_ignore_ascii_case("SUL")
+    })
+}
+
+impl Series {
+    /// GML values retain their physical unit when the engine declines SUV calibration.
+    pub fn stored_unit(&self) -> &str {
+        if self.modality == "PT"
+            && is_suv_unit(&self.value_unit)
+            && !self.suv_factor.is_some_and(|v| v.is_finite() && v > 0.)
+        {
+            "g/ml"
+        } else {
+            &self.value_unit
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub source: Arc<SourceFile>,

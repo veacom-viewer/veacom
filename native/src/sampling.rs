@@ -110,8 +110,8 @@ impl Normalization {
     pub fn quantity(self, source: &SourceSeries) -> (f64, &str) {
         let s = &source.info;
         let positive = |value: Option<f64>| value.filter(|v| v.is_finite() && *v > 0.);
-        let stored_suv = s.value_unit.to_ascii_uppercase().starts_with("SUV");
-        if s.modality == "PT" && (stored_suv || positive(s.suv_factor).is_some()) {
+        let unit = s.stored_unit();
+        if s.modality == "PT" && let Some(factor) = positive(s.suv_factor) {
             match self {
                 Self::Lbm if positive(s.sul_factor).is_some() => {
                     return (s.sul_factor.unwrap(), "SUL");
@@ -121,11 +121,11 @@ impl Normalization {
                 }
                 _ => {}
             }
-            if !stored_suv && let Some(factor) = positive(s.suv_factor) {
+            if !unit.to_ascii_uppercase().starts_with("SUV") {
                 return (factor, "SUVbw");
             }
         }
-        (1., &s.value_unit)
+        (1., unit)
     }
 }
 
@@ -466,3 +466,61 @@ pub fn region(
 }
 
 mod reslice;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Series;
+
+    fn pet(value_unit: &str, suv_factor: Option<f64>, sul_factor: Option<f64>) -> SourceSeries {
+        SourceSeries {
+            info: Series {
+                modality: "PT".into(),
+                value_unit: value_unit.into(),
+                suv_factor,
+                sul_factor,
+                ..Default::default()
+            },
+            frames: Vec::new(),
+            geometry: crate::geometry::assemble(&[]),
+            documents: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_pet_reads_in_suv_only_with_the_factor_ingest_gave_it() {
+        // Calibrated: Bq/ml through its factor, values stored as SUV (factor 1) as they are, SUL beside either.
+        assert_eq!(
+            Normalization::Bw.quantity(&pet("Bq/ml", Some(0.25), None)),
+            (0.25, "SUVbw")
+        );
+        assert_eq!(
+            Normalization::Bw.quantity(&pet("SUVbw", Some(1.), Some(0.75))),
+            (1., "SUVbw")
+        );
+        assert_eq!(
+            Normalization::Lbm.quantity(&pet("SUVbw", Some(1.), Some(0.75))),
+            (0.75, "SUL")
+        );
+        // Stored as SUV but refused by ingest (Units GML without attenuation correction): its own g/ml, whichever SUV
+        // the reader chose.
+        for normalization in [Normalization::Bw, Normalization::Lbm, Normalization::Bsa] {
+            assert_eq!(
+                normalization.quantity(&pet("SUVbw", None, Some(0.75))),
+                (1., "g/ml")
+            );
+        }
+        assert_eq!(
+            Normalization::Bw.quantity(&pet("SUVlbm", None, None)),
+            (1., "g/ml")
+        );
+        // Activity without SUV keeps its unit, as does anything that is not a PET.
+        assert_eq!(
+            Normalization::Bw.quantity(&pet("Bq/ml", None, None)),
+            (1., "Bq/ml")
+        );
+        let mut ct = pet("HU", Some(0.25), None);
+        ct.info.modality = "CT".into();
+        assert_eq!(Normalization::Bw.quantity(&ct), (1., "HU"));
+    }
+}

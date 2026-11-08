@@ -80,12 +80,24 @@ describe('PET/CT fusion as in VEAcom Next', () => {
     assert.equal(petHasSuv(raw), false);
     assertClose(petScale({ series: raw, data: values }) * petAutoLevel(values), 5);
     assert.equal(petScale({ series: pet('x'), data: values }), 0.001);
-    assert.equal(petScale({ series: series({ modality: 'PT', valueUnit: 'SUVbw' }), data: values }), 1);
+    assert.equal(petScale({ series: series({ modality: 'PT', valueUnit: 'SUVbw', suvFactor: 1 }), data: values }), 1);
+  });
+  it('reads a PET in SUV only with the engine\'s SUV factor, whatever its file\'s unit says', () => {
+    // Units GML: values stored as SUV, which the engine gives an SUV factor of 1 (native/src/ingest.rs, suv_factor).
+    // Not corrected for attenuation, the same file gets no factor: its unit still says SUVbw, but it has no SUV.
+    const values = new Float32Array(1000).map((_, i) => i / 100);
+    const gml = series({ modality: 'PT', valueUnit: 'SUVbw', suvFactor: 1 }), refused = { ...gml, suvFactor: null };
+    assert.equal(petHasSuv(gml), true);
+    assert.equal(petScale({ series: gml, data: values }), 1);
+    for (const unit of ['SUVbw', 'SUVlbm', 'SUVbsa', 'SUV']) assert.equal(petHasSuv({ ...refused, valueUnit: unit }), false, unit);
+    assertClose(petScale({ series: refused, data: values }) * petAutoLevel(values), 5);
+    assert.equal(fusionScaleMaxKey(refused), 'fusion.scaleMax');
   });
   it('calls the top of the scale SUV only for a PET that has SUV', () => {
     assert.equal(fusionScaleMaxKey(series({ modality: 'PT', valueUnit: 'BQML', suvFactor: null })), 'fusion.scaleMax');
     assert.equal(fusionScaleMaxKey(pet('factor')), 'fusion.suvMax');
-    assert.equal(fusionScaleMaxKey(series({ modality: 'PT', valueUnit: 'SUVbw' })), 'fusion.suvMax');
+    assert.equal(fusionScaleMaxKey(series({ modality: 'PT', valueUnit: 'SUVbw', suvFactor: 1 })), 'fusion.suvMax');
+    assert.equal(fusionScaleMaxKey(series({ modality: 'PT', valueUnit: 'SUVbw', suvFactor: null })), 'fusion.scaleMax');
     assert.equal(fusionScaleMaxKey(undefined), 'fusion.suvMax');
     for (const words of [en, tr]) assert.doesNotMatch(words['fusion.scaleMax'], /SUV/i);
   });
