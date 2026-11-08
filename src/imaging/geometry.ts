@@ -233,12 +233,9 @@ export function worldToScreen(mapping: ScreenMapping, world: Vec3): [number, num
     mapping.height / 2 + mapping.pan[1] + dot(p, mapping.down) * mapping.pixelsPerMm];
 }
 
-/** The patient directions a screen direction points to, the main one first. Another letter follows only when the
- * direction leans more than 30° towards it (a truly oblique plane): a CT taken with gantry tilt reads A and P, not AI
- * and PS. */
 export function orientationLabel(direction: Vec3): string {
   return direction.map((value, axis) => ({ value, axis })).sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
-    .filter((x, index) => Math.abs(x.value) > (index === 0 ? 0.2 : 0.5)).map(({ value, axis }) => [['R', 'L'], ['A', 'P'], ['I', 'S']][axis][value >= 0 ? 1 : 0]).join('');
+    .filter(x => Math.abs(x.value) > 0.2).map(({ value, axis }) => [['R', 'L'], ['A', 'P'], ['I', 'S']][axis][value >= 0 ? 1 : 0]).join('');
 }
 
 /** The point closest to the patient-space origin and a unit direction along both planes. */

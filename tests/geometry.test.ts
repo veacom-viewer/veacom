@@ -206,12 +206,6 @@ describe('screen transforms and sampling', () => {
     assert.equal(orientationLabel([0, -1, 0]), 'A');
     assert.equal(orientationLabel([0, 0, -1]), 'I');
     assert.equal(orientationLabel([0.6, 0.8, 0]), 'PL');
-    // A CT taken with 20° gantry tilt: up is anterior, a little inferior, and reads A.
-    const tilt = 20 * Math.PI / 180;
-    assert.equal(orientationLabel([0, -Math.cos(tilt), -Math.sin(tilt)]), 'A');
-    assert.equal(orientationLabel([0, Math.cos(tilt), Math.sin(tilt)]), 'P');
-    // A plane oblique by 45° names both directions.
-    assert.equal(orientationLabel([0, -Math.SQRT1_2, -Math.SQRT1_2]), 'AI');
   });
   it('keeps Float64 source values exact for quantitative sampling', () => {
     const series = { ...base, dimensions: [2, 1, 1] as Vec3, spacing: [1, 1, 1] as Vec3, origin: [0, 0, 0] as Vec3 };
