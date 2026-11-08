@@ -2,6 +2,7 @@
 // containing dist/ and their own release engines, and an output directory as the first argument.
 const assert = require('node:assert/strict');
 const { execFileSync } = require('node:child_process');
+const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -74,18 +75,20 @@ async function exportMovie(page, folder) {
   await page.locator('select[data-action="export-size"]').selectOption('0');
   await page.locator('[data-action="export-fps"]').fill('15');
   assert.equal(await page.locator('[data-action="export-last-slice"]').inputValue(), '100');
-  // Keep the actual uncompressed frame the exporter passed to its colour conversion.
-  await page.evaluate(() => {
+  // Keep the uncompressed frames the exporter passed to its colour conversion.
+  const indices = [19, 50, 79];
+  await page.evaluate(indices => {
     const original = CanvasRenderingContext2D.prototype.getImageData;
-    let frames = 0;
+    window.__videoReferences = [];
+    let index = 0;
     CanvasRenderingContext2D.prototype.getImageData = function(...args) {
       const data = original.apply(this, args);
-      if (data.width === 1280 && data.height === 720 && ++frames === 51) {
-        window.__videoReference = this.canvas.toDataURL('image/png');
+      if (data.width === 1280 && data.height === 720 && indices.includes(index++)) {
+        window.__videoReferences.push(this.canvas.toDataURL('image/png'));
       }
       return data;
     };
-  });
+  }, indices);
   const start = performance.now();
   await click(page.getByTestId('export-submit'));
   await page.waitForFunction(() => document.querySelector('[data-code="export-complete"], [data-code="export-failed"], .export-error'), undefined, { timeout: 90_000 });
@@ -97,21 +100,26 @@ async function exportMovie(page, folder) {
   const stream = JSON.parse(execFileSync('ffprobe', ['-v','error','-select_streams','v:0','-count_frames',
     '-show_entries','stream=width,height,nb_read_frames,r_frame_rate','-of','json',movie])).streams[0];
   assert.deepEqual([stream.width, stream.height, stream.nb_read_frames, stream.r_frame_rate], [1280,720,'100','15/1']);
-  const image = await page.evaluate(() => window.__videoReference);
-  assert(image, 'Missing uncompressed video frame');
-  const ref = decodePng(Buffer.from(image.split(',')[1], 'base64')).data;
-  const pixels = execFileSync('ffmpeg', ['-v','error','-i',movie,'-vf','select=eq(n\\,50)','-frames:v','1','-pix_fmt','rgb24','-f','rawvideo','pipe:1'], { maxBuffer: 6 << 20 });
-  assert.equal(pixels.length, 1280 * 720 * 3);
-  let error = 0, samples = 0;
-  for (let i = 0; i < pixels.length / 3; i++) {
-    if (ref[i * 4] < 8) continue; // Leave black padding out of the quality score.
-    for (let channel = 0; channel < 3; channel++) {
-      error += (ref[i * 4 + channel] - pixels[i * 3 + channel]) ** 2;
-      samples++;
+  const images = await page.evaluate(() => window.__videoReferences);
+  assert.equal(images.length, indices.length, 'Missing uncompressed video frames');
+  const select = 'select=' + indices.map(n => 'eq(n\\,' + n + ')').join('+');
+  const frameBytes = 1280 * 720 * 3;
+  const pixels = execFileSync('ffmpeg', ['-v','error','-i',movie,'-vf',select,'-fps_mode','passthrough','-frames:v',String(indices.length),'-pix_fmt','rgb24','-f','rawvideo','pipe:1'], { maxBuffer: 12 << 20 });
+  assert.equal(pixels.length, frameBytes * indices.length);
+  const quality = images.map((image, n) => {
+    const ref = decodePng(Buffer.from(image.split(',')[1], 'base64')).data;
+    let error = 0, samples = 0;
+    for (let i = 0; i < frameBytes / 3; i++) {
+      if (ref[i * 4] < 8) continue;
+      for (let channel = 0; channel < 3; channel++) {
+        error += (ref[i * 4 + channel] - pixels[n * frameBytes + i * 3 + channel]) ** 2;
+        samples++;
+      }
     }
-  }
-  assert(samples > 1000);
-  return { exportMs, videoBytes: fs.statSync(movie).size, psnrDb: 10 * Math.log10(255 ** 2 / Math.max(0.0001, error / samples)) };
+    assert(samples > 1000);
+    return 10 * Math.log10(255 ** 2 / Math.max(0.0001, error / samples));
+  });
+  return { exportMs, videoBytes: fs.statSync(movie).size, framePsnrDb: quality, psnrDb: Math.min(...quality) };
 }
 
 async function run(build, study, counter) {
@@ -133,6 +141,10 @@ async function run(build, study, counter) {
     await ignoreOutsideInput(desktop);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 800));
     await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true' && window.__VEACOM_TEST__);
+    await page.evaluate(async () => {
+      await document.fonts.ready;
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    });
     const errors = [], requests = { frame: 0, volume: 0 }, pixelPaths = [];
     page.on('pageerror', error => errors.push(error.message));
     page.on('response', response => {
@@ -213,9 +225,11 @@ async function run(build, study, counter) {
 
 async function main() {
   generate();
-  const report = { platform: process.platform, arch: process.arch, rounds, versions: {}, samples: [], comparisons: [], failures: [] };
+  const report = { platform: process.platform, arch: process.arch, release: os.release(), cpu: os.cpus()[0].model,
+    rounds, versions: {}, engines: {}, samples: [], comparisons: [], failures: [] };
   for (const [build, root] of Object.entries(roots)) {
     report.versions[build] = execFileSync('git', ['rev-parse','HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    report.engines[build] = createHash('sha256').update(fs.readFileSync(binary(root))).digest('hex');
   }
   const save = () => fs.writeFileSync(path.join(output, 'desktop.json'), JSON.stringify(report, null, 2));
   const counter = prepareCounter(output);

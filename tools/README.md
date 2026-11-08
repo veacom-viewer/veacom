@@ -119,8 +119,10 @@ study's size (on 8 Nov 2026, listing the CT opened every file 3 times and read t
 **Time.** With `--base`, the two engines open the study in alternating random order: 20 rounds with the file cache
 kept, then 10 with it flushed before each open (Linux and macOS through `sudo -n`, Windows by detaching the virtual
 disk named with `--vhdx` that holds the study). A step counts as slower only when the 95% interval of the change lies
-above 3% and the medians differ by at least 15 ms; a slower listing, full volume or whole open fails. The first frame
-takes a few milliseconds and is reported, not judged. `--rounds` alone times one engine.
+above 3% and the medians differ by at least 15 ms. Listing, warm full-volume decode and the whole open are gated.
+On Linux and macOS, a second engine lists the same study, then the harness flushes the file cache immediately before
+requesting its volume. This gates cold-volume performance with the same cache state for both builds. The report also
+shows the ordinary volume phase, whose time depends on the data already read while listing. `--rounds` alone times one engine.
 
 Only engines timed in the same run can be compared. On GitHub's runners (8 Nov 2026, the CT above, two copies of one
 engine):
@@ -147,7 +149,7 @@ With both engines and web apps built and Electron installed, run:
 BASE_APP=/path/to/beta2 HEAD_APP=/path/to/candidate node tools/check-beta-performance.cjs /tmp/beta-desktop 7
 ```
 
-The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares a decoded frame with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
+The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
 
 ## Arrangements
 

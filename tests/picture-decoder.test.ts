@@ -59,7 +59,7 @@ describe('picture decoder', () => {
 
   it('refuses an oversized JPEG before creating a bitmap even if its display size fits', async () => {
     let handler!: (event: object, id: number, bytes: Uint8Array, want: string) => Promise<void>;
-    let answer: Answer = null, bitmapCalls = 0;
+    let answer: Answer = null, bitmapCalls = 0, headerReads = 0;
     const ipcRenderer = {
       on: (_channel: string, callback: typeof handler) => { handler = callback; },
       send: (_channel: string, _id: number, result: Answer) => { answer = result; },
@@ -67,14 +67,20 @@ describe('picture decoder', () => {
     class Image {
       naturalWidth = 2500; naturalHeight = 2500;
       onload!: () => void;
-      set src(_url: string) { this.onload(); }
+      set src(_url: string) { headerReads++; this.onload(); }
     }
     const preload = readFileSync(new URL('../electron/picture-preload.cjs', import.meta.url), 'utf8');
     runInNewContext(preload, { require: () => ({ ipcRenderer }), Image, Blob, URL,
       createImageBitmap: () => { bitmapCalls++; throw Error('unexpected bitmap'); } });
     // A JPEG SOF declares 5000 × 5000 encoded pixels.
     const jpeg = Uint8Array.of(0xff, 0xd8, 0xff, 0xc0, 0, 11, 8, 0x13, 0x88, 0x13, 0x88, 1, 1, 0x11, 0, 0xff, 0xda);
-    await handler({}, 1, jpeg, 'pixels');
+    await handler({}, 1, jpeg, 'size');
+    await handler({}, 2, jpeg.slice(), 'pixels');
+    assert.equal(headerReads, 1);
+    assert.equal((answer as Answer)?.error, 'Frame exceeds the supported 64 million sample limit');
+    const changed = jpeg.slice(); changed[13] ^= 1;
+    await handler({}, 3, changed, 'pixels');
+    assert.equal(headerReads, 2);
     assert.equal(bitmapCalls, 0);
     assert.equal((answer as Answer)?.error, 'Frame exceeds the supported 64 million sample limit');
   });

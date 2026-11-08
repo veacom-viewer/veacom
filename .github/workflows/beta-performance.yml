@@ -71,11 +71,15 @@ jobs:
           pnpm run setup:runtime
           echo "BASE_APP=$release" >> "$GITHUB_ENV"
           echo "HEAD_APP=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - name: Check source changes during and after import
+        run: |
+          cargo test --locked --release --manifest-path native/Cargo.toml source_file::tests
+          cargo test --locked --release --manifest-path native/Cargo.toml changed_source_never_supplies_pixels_tags_or_exports
       - name: Compare cold and warm imports and count study reads
         run: >
           node tools/check-open-speed.cjs "--output=$RUNNER_TEMP/open-speed"
           "--base=$BASE_APP/native/target/release/veacom-core" --base-label=beta.2 --head-label=candidate
-          --rounds=10 --cold-rounds=5 --threshold=12 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
+          --fixture=ct-1000-local --rounds=10 --cold-rounds=5 --threshold=12 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
       - name: Compare seven paired desktop runs
         if: ${{ !cancelled() && env.BASE_APP != '' }}
         run: node tools/check-beta-performance.cjs "$RUNNER_TEMP/beta-desktop" 7

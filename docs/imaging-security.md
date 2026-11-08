@@ -1,5 +1,7 @@
 # Desktop imaging boundary
 
+On local APFS, ext, XFS, Btrfs and tmpfs volumes, the engine records the file’s device, inode, size, modification time and change time. It checks the open file before and after each read. Files changed in the last two seconds, Windows files and filesystems outside that list use SHA-256 block hashes. Those hashes are taken at import and verified when pixels, tags or exports read the file again. Local change stamps depend on the filesystem recording writes. They do not provide a cryptographic fingerprint of unread pixels.
+
 Electron's main process starts the engine with its stdin and stdout as pipes, and only main holds their other ends. The engine opens no port and has no token: no web page, and no other program on the computer, has anything to connect to. The sandboxed renderer receives typed operations and one-use read capabilities, not a way to reach the engine or an arbitrary proxy.
 
 - Native Open dialogs, the import window and CLI startup selections create opaque import capabilities in main. OS-backed browser File objects are resolved inside the isolated preload; it sends their native paths directly to main and returns only capabilities to the page. Synthetic Files without OS backing are rejected.

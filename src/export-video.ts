@@ -169,7 +169,7 @@ export async function captureViewportPng(viewport: HTMLElement, options: Pick<Vi
 
 // Target bits per output pixel per frame. The paired desktop test measures encoded bytes and
 // decodes a CT frame to check it against the uncompressed export.
-const BITS_PER_PIXEL = 0.52;
+const BITS_PER_PIXEL = 0.30;
 const MAX_BITRATE = 240e6;
 const MAX_QUEUED_FRAMES = 2;
 const MAX_QUEUED_WRITES = 8;

@@ -77,13 +77,14 @@ export function sampleVolume(volume: Volume, world: Vec3, interpolate = false): 
 }
 
 function sampleAtIndex(volume: Volume, p: Vec3, d: Vec3, interpolate: boolean): number | null {
-  if (p.some((n, i) => n < -0.500001 || n > d[i] - 0.499999)) return null;
-  const at = (x: number, y: number, z: number) => volume.data[(clamp(z, 0, d[2] - 1) * d[1] + clamp(y, 0, d[1] - 1)) * d[0] + clamp(x, 0, d[0] - 1)];
-  const nearest = at(Math.round(p[0]), Math.round(p[1]), Math.round(p[2]));
-  const padding = (value: number, z: number) => isPaddingValue(volume.series, value, volume.sourceFrameIndex ?? clamp(z, 0, d[2] - 1));
-  if (padding(nearest, Math.round(p[2]))) return NaN;
-  if (!interpolate || p.every(n => Math.abs(n - Math.round(n)) < 1e-7)) return nearest;
+  if (p.some((n, i) => !Number.isFinite(n) || n < -0.500001 || n > d[i] - 0.499999)) return null;
+  const x = clamp(Math.round(p[0]), 0, d[0] - 1), y = clamp(Math.round(p[1]), 0, d[1] - 1), z = clamp(Math.round(p[2]), 0, d[2] - 1);
+  const nearest = volume.data[(z * d[1] + y) * d[0] + x];
+  if (isPaddingValue(volume.series, nearest, volume.sourceFrameIndex ?? z)) return NaN;
+  if (!interpolate || (Math.abs(p[0] - x) < 1e-7 && Math.abs(p[1] - y) < 1e-7 && Math.abs(p[2] - z) < 1e-7)) return nearest;
   if (!Number.isFinite(nearest)) return NaN;
+  const at = (x: number, y: number, z: number) => volume.data[(clamp(z, 0, d[2] - 1) * d[1] + clamp(y, 0, d[1] - 1)) * d[0] + clamp(x, 0, d[0] - 1)];
+  const padding = (value: number, z: number) => isPaddingValue(volume.series, value, volume.sourceFrameIndex ?? clamp(z, 0, d[2] - 1));
   const a = p.map(Math.floor), t = p.map((n, i) => n - a[i]);
   let result = 0, totalWeight = 0;
   for (let z = 0; z < 2; z++) for (let y = 0; y < 2; y++) for (let x = 0; x < 2; x++) {

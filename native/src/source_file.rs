@@ -74,8 +74,16 @@ impl SourceFile {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let stamp = stamp::Stamp::capture(file, &metadata);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if stamp.as_ref().is_some_and(stamp::Stamp::settled) {
-            return Ok((Arc::new(Self { path: path.to_owned(), len, hashes: Vec::new(), stamp }), Arc::default()));
+        if let Some(local) = stamp.as_ref().filter(|s| s.settled()) {
+            // Both DICOM header passes repeatedly seek inside their initial 8 KiB buffer.
+            let mut prefix = vec![0; keep.min(8192).min(len as usize)];
+            let mut offset = 0;
+            while offset < prefix.len() {
+                let read = local.read(file, &mut prefix[offset..], offset as u64)?;
+                ensure!(read != 0, changed());
+                offset += read;
+            }
+            return Ok((Arc::new(Self { path: path.to_owned(), len, hashes: Vec::new(), stamp }), Arc::new(prefix)));
         }
         let mut remaining = len;
         let mut buffer = Vec::new();
@@ -170,19 +178,19 @@ impl Read for SourceReader {
         if dst.is_empty() || self.pos >= self.source.len {
             return Ok(0);
         }
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.source.hashes.is_empty() && let Some(stamp) = &self.source.stamp {
-            let length = dst.len().min((self.source.len - self.pos) as usize);
-            let read = stamp.read(&self.file, &mut dst[..length], self.pos)?;
-            self.pos += read as u64;
-            return Ok(read);
-        }
         if self.pos < self.prefix.len() as u64 {
             let bytes = &self.prefix[self.pos as usize..];
             let n = dst.len().min(bytes.len());
             dst[..n].copy_from_slice(&bytes[..n]);
             self.pos += n as u64;
             return Ok(n);
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        if self.source.hashes.is_empty() && let Some(stamp) = &self.source.stamp {
+            let length = dst.len().min((self.source.len - self.pos) as usize);
+            let read = stamp.read(&self.file, &mut dst[..length], self.pos)?;
+            self.pos += read as u64;
+            return Ok(read);
         }
         let index = (self.pos / BLOCK as u64) as usize;
         if self.loaded != Some(index) {

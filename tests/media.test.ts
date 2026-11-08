@@ -195,7 +195,7 @@ describe('encoder settings', () => {
     const configs = videoEncoderConfigs(640, 480, 15);
     assert.deepEqual(configs.map(config => `${config.codec.slice(5, 9)} ${config.hardwareAcceleration}`), [
       '6400 prefer-software', '4d40 prefer-software', '42e0 prefer-software', '6400 no-preference', '4d40 no-preference', '42e0 no-preference']);
-    assert.equal(configs[0].bitrate, Math.round(640 * 480 * 15 * 0.52));
+    assert.equal(configs[0].bitrate, Math.round(640 * 480 * 15 * 0.30));
     assert.equal(videoEncoderConfigs(16, 16, 1)[0].bitrate, 1e6);
     assert.equal(configs[0].avc?.format, 'avc');
   });
