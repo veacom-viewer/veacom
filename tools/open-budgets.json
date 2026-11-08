@@ -3,8 +3,8 @@
   "studies": {
     "ct-1000": {
       "listing": {
-        "filesOpened": 3001,
-        "bytesRead": 1049503702
+        "filesOpened": 1001,
+        "bytesRead": 525215702
       },
       "firstFrame": {
         "filesOpened": 1,

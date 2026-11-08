@@ -8,6 +8,8 @@ use std::{
 };
 
 const BLOCK: usize = 256 * 1024;
+// Two MiB covers an ordinary CT slice. This prefix lives only while a file is being indexed.
+const IMPORT_PREFIX: usize = 2 * 1024 * 1024;
 pub fn changed() -> crate::message::Coded {
     coded!(
         "file.sourceChanged",
@@ -56,6 +58,10 @@ impl SourceFile {
     }
 
     pub(crate) fn index_handle(path: &Path, mut file: File) -> Result<Arc<Self>> {
+        Ok(Self::index_prefix(path, &mut file, 0)?.0)
+    }
+
+    fn index_prefix(path: &Path, file: &mut File, keep: usize) -> Result<(Arc<Self>, Arc<[u8]>)> {
         let metadata = file.metadata()?;
         let len = metadata.len();
         ensure!(
@@ -65,11 +71,14 @@ impl SourceFile {
         let mut remaining = len;
         let mut buffer = vec![0; len.min(BLOCK as u64) as usize];
         let mut hashes = Vec::with_capacity(len.div_ceil(BLOCK as u64) as usize);
+        let mut prefix = Vec::with_capacity(keep.min(len as usize));
         while remaining != 0 {
             crate::progress::check()?;
             let n = remaining.min(BLOCK as u64) as usize;
             file.read_exact(&mut buffer[..n])?;
             hashes.push(Sha256::digest(&buffer[..n]).into());
+            let retained = (keep - prefix.len()).min(n);
+            prefix.extend_from_slice(&buffer[..retained]);
             remaining -= n as u64;
         }
         let after = file.metadata()?;
@@ -77,24 +86,26 @@ impl SourceFile {
             after.len() == len && after.modified().ok() == metadata.modified().ok(),
             changed()
         );
-        Ok(Arc::new(Self {
+        Ok((Arc::new(Self {
             path: path.to_owned(),
             len,
             hashes,
-        }))
+        }), prefix.into()))
     }
 
-    pub fn dicom(path: &Path) -> Result<(Arc<Self>, crate::input_guard::InputInfo)> {
+    pub fn dicom(path: &Path) -> Result<(Arc<Self>, crate::input_guard::InputInfo, SourceReader)> {
         Self::dicom_handle(path, open_file(path)?)
     }
 
     pub fn dicom_handle(
         path: &Path,
-        file: File,
-    ) -> Result<(Arc<Self>, crate::input_guard::InputInfo)> {
-        let file = Self::index_handle(path, file)?;
-        let info = crate::input_guard::inspect_reader(file.open()?, file.len)?;
-        Ok((file, info))
+        mut file: File,
+    ) -> Result<(Arc<Self>, crate::input_guard::InputInfo, SourceReader)> {
+        let (source, prefix) = Self::index_prefix(path, &mut file, IMPORT_PREFIX)?;
+        let guard = source.reader(file.try_clone()?, prefix.clone());
+        let info = crate::input_guard::inspect_reader(guard, source.len)?;
+        let header = source.reader(file, prefix);
+        Ok((source, info, header))
     }
 
     pub fn same_contents(&self, other: &Self) -> bool {
@@ -108,18 +119,24 @@ impl SourceFile {
     pub fn open(self: &Arc<Self>) -> Result<SourceReader> {
         let file = open_file(&self.path)?;
         ensure!(file.metadata()?.len() == self.len, changed());
-        Ok(SourceReader {
+        Ok(self.reader(file, Arc::default()))
+    }
+
+    fn reader(self: &Arc<Self>, file: File, prefix: Arc<[u8]>) -> SourceReader {
+        SourceReader {
             file,
+            prefix,
             source: self.clone(),
             pos: 0,
             loaded: None,
             bytes: Vec::new(),
-        })
+        }
     }
 }
 
 pub struct SourceReader {
     file: File,
+    prefix: Arc<[u8]>,
     source: Arc<SourceFile>,
     pos: u64,
     loaded: Option<usize>,
@@ -130,6 +147,13 @@ impl Read for SourceReader {
     fn read(&mut self, dst: &mut [u8]) -> io::Result<usize> {
         if dst.is_empty() || self.pos >= self.source.len {
             return Ok(0);
+        }
+        if self.pos < self.prefix.len() as u64 {
+            let bytes = &self.prefix[self.pos as usize..];
+            let n = dst.len().min(bytes.len());
+            dst[..n].copy_from_slice(&bytes[..n]);
+            self.pos += n as u64;
+            return Ok(n);
         }
         let index = (self.pos / BLOCK as u64) as usize;
         if self.loaded != Some(index) {
@@ -175,6 +199,26 @@ impl Seek for SourceReader {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn import_uses_the_hashed_prefix_and_checks_bytes_outside_it() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = temp.path().join("prefix.bin");
+        std::fs::write(&path, vec![11; IMPORT_PREFIX + BLOCK]).unwrap();
+        let mut file = open_file(&path).unwrap();
+        let (source, prefix) = SourceFile::index_prefix(&path, &mut file, IMPORT_PREFIX).unwrap();
+        let mut reader = source.reader(file, prefix);
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer.write_all(&[99]).unwrap();
+        writer.seek(SeekFrom::Start(IMPORT_PREFIX as u64)).unwrap();
+        writer.write_all(&[88]).unwrap();
+        let mut byte = [0];
+        reader.read_exact(&mut byte).unwrap();
+        assert_eq!(byte, [11]);
+        reader.seek(SeekFrom::Start(IMPORT_PREFIX as u64)).unwrap();
+        assert!(reader.read_exact(&mut byte).is_err());
+        assert!(source.open().unwrap().read_exact(&mut byte).is_err());
+    }
 
     #[test]
     fn verifies_later_blocks_as_they_are_read_even_if_size_and_mtime_are_restored() {
