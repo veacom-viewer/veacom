@@ -1,0 +1,35 @@
+[package]
+name = "veacom-web-engine"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+description = "The VEAcom engine in a browser: veacom-core compiled to WebAssembly and called from a Web Worker"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# A second build whose engine works on several threads: Web Workers that share the module's memory are lent to the
+# engine's own parallel work (veacom_core::parallel, src/helpers.rs). It needs a nightly Rust (the standard library
+# rebuilt with atomics) and a page that is cross-origin isolated; web/build.ps1 builds it next to the single-thread
+# one, and the page picks one at start.
+threads = []
+
+[dependencies]
+# The engine itself, without the codecs written in C (its desktop transport is a separate binary).
+veacom-core = { path = "../../native", default-features = false }
+anyhow.workspace = true
+# JPEG 2000 through the pure-Rust OpenJPEG port, the one that compiles to WebAssembly. This turns it on in the engine's
+# own dicom-pixeldata (one crate, features unified).
+dicom-pixeldata = { workspace = true, features = ["openjp2"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+console_error_panic_hook = "0.1"
+# The engine's random identifiers come from the browser's crypto (also unified with the engine's getrandom).
+getrandom = { workspace = true, features = ["wasm_js"] }
+js-sys = "0.3"
+wasm-bindgen = "=0.2.130"
+web-sys = { version = "0.3", features = ["Blob", "FileReaderSync", "Performance", "WorkerGlobalScope"] }

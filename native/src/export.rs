@@ -6,14 +6,13 @@ use dicom_core::{DataElement, PrimitiveValue, Tag, VR, header::{HasLength, Heade
 use dicom_object::{DefaultDicomObject, InMemDicomObject, OpenFileOptions};
 use dicom_pixeldata::PixelDecoder;
 use serde::{Deserialize, Serialize};
+use crate::vfs::{self as fs, OpenOptions};
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, OpenOptions},
     io::{Seek, SeekFrom, Write},
     path::Path,
     sync::Arc,
 };
-#[cfg(test)]
 use std::path::PathBuf;
 
 #[path = "export_zip.rs"]
@@ -78,13 +77,14 @@ pub struct ExportResult {
     pub warnings: crate::message::Notes,
 }
 
-#[cfg(test)]
+/// Exports files by path, indexing them first: for the tests, the desktop transport's among them (which build this
+/// library without `cfg(test)`).
+#[doc(hidden)]
 pub fn export_series(files: &[PathBuf], opts: &ExportOptions) -> Result<ExportResult> {
     opts.check()?;
     export_indexed(&index_test_files(files)?, opts)
 }
 
-#[cfg(test)]
 fn index_test_files(files: &[PathBuf]) -> Result<Vec<Arc<SourceFile>>> {
     files.iter().map(|p| SourceFile::dicom(p).map(|(source, _)| source)).collect()
 }
@@ -100,7 +100,7 @@ pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result
     let mut sources = Vec::new();
     for file in files {
         opts.check()?;
-        let path = file.path.canonicalize()?;
+        let path = fs::canonicalize(&file.path)?;
         if let Some(previous) = seen.insert(path, file) {
             ensure!(file.same_contents(previous), "Selected series refer to different versions of the same file. Reimport the study.");
         } else {
@@ -113,9 +113,9 @@ pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result
     );
     let destination = Path::new(&opts.directory);
     fs::create_dir_all(destination).context("Cannot create destination directory")?;
-    let destination = destination.canonicalize()?;
+    let destination = fs::canonicalize(destination)?;
     for source in &sources {
-        if let Some(parent) = source.path.canonicalize()?.parent() {
+        if let Some(parent) = fs::canonicalize(&source.path)?.parent() {
             ensure!(
                 !destination.starts_with(parent),
                 coded!("export.insideSource", "Choose a destination outside the source DICOM directory")
@@ -129,7 +129,7 @@ pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result
     if opts.root {
         ensure!(opts.dicomdir, "Only media with a DICOMDIR is written at the destination's root");
         ensure!(
-            !destination.join("DICOMDIR").exists() && !destination.join("DICOM").exists(),
+            !fs::exists(&destination.join("DICOMDIR")) && !fs::exists(&destination.join("DICOM")),
             coded!("export.rootOccupied", "The destination already has a DICOMDIR or a DICOM folder; nothing was overwritten")
         );
         // On failure only what this export made there goes: its DICOM folder and DICOMDIR.
@@ -978,6 +978,8 @@ fn element(bytes: &mut Vec<u8>, tag: Tag, vr: &str, value: &[u8]) -> Result<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    // The tests read and write real files on the desktop's own file system.
+    use std::fs;
     use dicom_object::open_file;
     use dicom_core::{DataElement, PrimitiveValue};
 

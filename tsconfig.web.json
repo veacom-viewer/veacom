@@ -1,0 +1,7 @@
+{
+  // The browser build (web.html, src/web), once web/build.ps1 has made the engine's modules in web/engine.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "allowJs": true },
+  "include": ["src", "vite.web.config.ts"],
+  "exclude": []
+}

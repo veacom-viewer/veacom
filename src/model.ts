@@ -249,7 +249,33 @@ export interface UpdateStatus {
   currentVersion: string; message: string; version?: string; releaseNotes?: string; progress?: number;
   canDownload: boolean; canInstall: boolean; sourceBuild: boolean; signature?: string; checkedAt?: string;
 }
+/** What a bridge may be unable to do; the interface hides it then (see `bridgeCan` in api.ts). */
+export type BridgeFeature =
+  /** Writing a disc image and opening the burner. */
+  | 'discBurning'
+  /** Writing an export straight to a USB stick's root. */
+  | 'usbExport'
+  /** A remembered export folder, choosing it, and showing an export there. */
+  | 'exportFolder'
+  /** One ZIP per patient with images re-encoded without loss (the engine's export_zip, which needs JPEG-LS). */
+  | 'zipExport'
+  /** The import window, where a folder, a disc or a USB stick is chosen; without it, opening goes to the pickers. */
+  | 'importWindow'
+  /** Finding a CD or DVD and opening it. */
+  | 'discImport'
+  /** Checking for and installing updates. */
+  | 'updates'
+  /** Sending feedback to the team. */
+  | 'feedback';
 export interface DesktopBridge {
+  /** The browser build (viewer.veacom.app, src/web): no desktop window around the page, files chosen in the page. */
+  web?: boolean;
+  /** Features this bridge lacks are `false`; without the field (the desktop) it has them all. */
+  features?: Partial<Record<BridgeFeature, boolean>>;
+  /** The browser build's engine runs in a Web Worker and hands pixels over directly, instead of a `veacom://`
+   *  capability URL (`getPixels`); the response has the same headers. `signal`: the caller giving up, which drops a
+   *  request still waiting, as the desktop's own fetch is cancelled. */
+  fetchPixels?(request: { seriesId: string; generation: number; revision?: number; index?: number }, signal?: AbortSignal): Promise<Response>;
   /** The saved interface language, passed by the main process ('tr' or 'en'). */
   locale?: string;
   /** Saves the interface language for the main process's own text and the next start. */
@@ -305,7 +331,7 @@ export interface DesktopBridge {
   cancelImages?: (id: string) => Promise<void>;
   /** Stops the disc (ISO) export under way. */
   cancelIso?: () => Promise<void>;
-  exportIso: (seriesId: string | string[], options: { anonymize: boolean; full?: boolean; label?: string; openBurner?: boolean; decompress?: boolean; engineGeneration?: number }) => Promise<IsoExportResult | null>;
+  exportIso?: (seriesId: string | string[], options: { anonymize: boolean; full?: boolean; label?: string; openBurner?: boolean; decompress?: boolean; engineGeneration?: number }) => Promise<IsoExportResult | null>;
   getAiConfig: () => Promise<{ enabled: boolean; configured: boolean; model: string }>;
   configureAi: (settings: { apiKey?: string; model: string; forget?: boolean }) => Promise<void>;
   askSecondOpinion: (request: { summary: string }) => Promise<string>;

@@ -2,7 +2,7 @@ import { patientKey, studyKey } from '../domain/patient';
 import { useEffect, useRef, useState } from 'react';
 import { Download, Film, FolderOpen, HardDrive, X } from './icons';
 import type { ExportEstimate, Series } from '../model';
-import { assertSeriesEngine } from '../api';
+import { assertSeriesEngine, bridgeCan } from '../api';
 import { exportViewportImages, exportViewportVideo } from '../export-video';
 import { errorMessage, type Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
@@ -109,6 +109,8 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const [openAfter, setOpenAfter] = useState(() => remembered(OPEN_AFTER) === '1');
   const [anonymity, setAnonymity] = useState<Anonymity>('none');
   const [target, setTarget] = useState<Target>('folder');
+  const targets = ([['cd', 'discBurning'], ['usb', 'usbExport'], ['folder', null]] as const)
+    .filter(([, feature]) => !feature || bridgeCan(feature)).map(([key]) => key);
   const [neuro, setNeuro] = useState(false);
   // Off each time the window opens, as in VEAcom 1.x: a plain DICOM folder unless asked for.
   const [zip, setZip] = useState(false);
@@ -213,6 +215,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
         if (!path) { usage.milestone(task, 'cancel'); onClose(); return; }
         message = t('export.videoSaved', { path }); reveal = path;
       } else if (isMedia && target === 'cd') {
+        if (!bridge.exportIso) throw new Error(t('export.desktopRequired'));
         const exported = await bridge.exportIso(ids, { anonymize: anonymity !== 'none', full: anonymity === 'full', decompress: neuro, label, openBurner: isWindows, engineGeneration });
         if (!exported) { usage.milestone(task, 'cancel'); onClose(); return; }
         message = isWindows ? t('export.isoSavedBurner', { path: exported.path }) : t('export.isoSaved', { path: exported.path });
@@ -300,21 +303,22 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
             </>}
             {mode === 'dicom' && anonymityRow}
             {isMedia && <>
-              <Choice name="target" action="export-target" label={t('export.target')} value={target} onChange={setTarget}
-                options={[['cd', t('export.targetCd')], ['usb', t('export.targetUsb')], ['folder', t('export.targetFolder')]]} />
+              {/* Where the bridge cannot burn a disc or write a stick's root (the browser), a folder is the only target. */}
+              {targets.length > 1 && <Choice name="target" action="export-target" label={t('export.target')} value={target} onChange={setTarget}
+                options={targets.map(key => [key, t(key === 'cd' ? 'export.targetCd' : key === 'usb' ? 'export.targetUsb' : 'export.targetFolder')])} />}
               {target === 'cd' && <div className="export-row"><span className="export-row-label">{t('export.discLabel')}</span><input data-action="export-disc-label" value={label} maxLength={32} onChange={event => setLabel(event.target.value)} /></div>}
               {target === 'usb' && <p className="export-note">{t('export.usbNote')}</p>}
               <label className="export-check"><input type="checkbox" data-action="export-neuro" checked={neuro} onChange={event => setNeuro(event.target.checked)} /><span>{t('export.neuro')}</span></label>
               {anonymityRow}
             </>}
             {anonymity !== 'none' && (mode === 'dicom' || isMedia) && <p className="export-note export-caution">{anonymity === 'full' ? t('export.anonFullNote') : t('export.anonymizeNote')}</p>}
-            {mode === 'dicom' && <div className="export-zip">
+            {mode === 'dicom' && bridgeCan('zipExport') && <div className="export-zip">
               <label className="export-check"><input type="checkbox" data-action="export-zip" checked={zip} onChange={event => { setZip(event.target.checked); if (!event.target.checked) setSmallest(false); }} /><span>{t('export.zip')}</span></label>
               <label className={`export-check export-sub${zip ? '' : ' is-disabled'}`}><input type="checkbox" data-action="export-smallest" checked={smallest} disabled={!zip} onChange={event => setSmallest(event.target.checked)} /><span>{t('export.smallest')}</span></label>
               {zip && <p className="export-estimate" data-testid="export-estimate" aria-live="polite">{estimateText || '…'}</p>}
             </div>}
-            {shownScope !== 'layout' && !(isMedia && target !== 'folder') && folderRow}
-            {shownScope !== 'layout' && <label className="export-check"><input type="checkbox" data-action="export-open-after" checked={openAfter} onChange={event => { setOpenAfter(event.target.checked); remember(OPEN_AFTER, event.target.checked ? '1' : '0'); }} /><span>{t('export.openAfter')}</span></label>}
+            {shownScope !== 'layout' && !(isMedia && target !== 'folder') && bridgeCan('exportFolder') && folderRow}
+            {shownScope !== 'layout' && bridgeCan('exportFolder') && <label className="export-check"><input type="checkbox" data-action="export-open-after" checked={openAfter} onChange={event => { setOpenAfter(event.target.checked); remember(OPEN_AFTER, event.target.checked ? '1' : '0'); }} /><span>{t('export.openAfter')}</span></label>}
           </fieldset>
           {!window.veacom && <p className="export-error">{t('export.desktopRequired')}</p>}
           {error && <p className="export-error" role="alert">{error}</p>}
