@@ -1609,6 +1609,7 @@ fn read_frames_budget(
         .then(|| crate::gamma_camera::activity(&obj))
         .flatten().map(Arc::new);
     let has_mapping = camera.is_some() && obj.get(Tag(0x0040, 0x9096)).is_some();
+    let pet_units = text(&obj, Tag(0x0054, 0x1001));
     let value_unit = if modality == "PT" {
         pet_value_unit(&obj)
     } else if camera.is_some() && (activity.is_some() || (!has_mapping && text(&obj, Tag(0x0054, 0x1001)) == "BQML"))
@@ -1739,7 +1740,7 @@ fn read_frames_budget(
             number(&obj, Tag(0x0028, 0x0100)).unwrap_or(bits as f64) as u32,
         ) };
         let value_unit = lut.as_ref().map(|v|if v.unit=="OD" {"mOD".into()} else {v.unit.clone()}).unwrap_or_else(||value_unit.clone());
-        let lut_suv_compatible = lut.as_ref().is_none_or(|v|v.unit==text(&obj,Tag(0x0054,0x1001)));
+        let lut_suv_compatible = lut.as_ref().is_none_or(|v| v.unit == pet_units);
         let mut warnings=crate::message::Notes::from(pet_warnings.clone());
         if modality=="PT" && !lut_suv_compatible && suv_factor.is_some() {
             warnings.push(note!("series.suvLutUnits", "SUV conversion is unavailable because Modality LUT output units differ from the PET calibration units"));
@@ -1823,6 +1824,13 @@ fn read_frames_budget(
                 acquisition.flip_angle
             ),
         };
+        // Keep the original grouping key. Only GML establishes a stored unit of g/ml.
+        let value_unit = match (modality.as_str(), value_unit.as_str()) {
+            ("PT", "GML") if lut_suv_compatible => pet_value_unit(&obj),
+            ("PT", "GML") => "g/ml".into(),
+            ("PT", unit) if crate::model::is_suv_unit(unit) && (pet_units != "GML" || !lut_suv_compatible) => "a.u.".into(),
+            _ => value_unit,
+        };
         let info = Series {
             catalog_revision: 0,
             source_revision: 0,
@@ -1843,7 +1851,7 @@ fn read_frames_budget(
             direction: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
             window_center: window_center.unwrap_or(default_window.0),
             window_width: window_width.unwrap_or(default_window.1),
-            value_unit: value_unit.clone(),
+            value_unit,
             suv_factor: if lut_suv_compatible { suv_factor } else { None },
             sul_factor: suv.and_then(|factors| factors.lbm).filter(|_| lut_suv_compatible),
             suv_bsa_factor: suv.and_then(|factors| factors.bsa).filter(|_| lut_suv_compatible),
@@ -2499,6 +2507,11 @@ fn catalogue(
                 "series.noPixelSpacing",
                 "Physical measurements unavailable: pixel spacing is missing"
             ));
+        }
+        // Decide the displayed unit after all frames have agreed on calibration.
+        let stored_unit = info.stored_unit();
+        if stored_unit != info.value_unit {
+            info.value_unit = stored_unit.to_owned();
         }
         info.source_revision = revision;
         sources.push(SourceSeries {
@@ -4147,6 +4160,32 @@ mod tests {
         assert_eq!(suv_bw(&obj), Some(1.));
         obj.remove_element(Tag(0x0028, 0x0051));
         assert_eq!(suv_bw(&obj), Some(1.));
+    }
+    #[test]
+    fn gml_catalogue_only_reports_suv_if_every_slice_is_calibrated() {
+        for (dicom_units, corrections, factor, unit) in [
+            ("GML", ["ATTN\\DECY", "ATTN\\DECY"], Some(1.), "SUVbw"),
+            ("GML", ["DECY", "DECY"], None, "g/ml"),
+            ("GML", ["ATTN\\DECY", "DECY"], None, "g/ml"),
+            ("GML", ["DECY", "ATTN\\DECY"], None, "g/ml"),
+            ("SUV", ["ATTN\\DECY", "ATTN\\DECY"], None, "a.u."),
+        ] {
+            let slices = corrections.into_iter().enumerate().map(|(i, corrected)| {
+                let mut obj = classic_slice(i + 1, 2. * i as f64);
+                obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.128");
+                obj.put_str(Tag(0x0008, 0x0060), VR::CS, "PT");
+                obj.put_str(Tag(0x0054, 0x1001), VR::CS, dicom_units);
+                obj.put_str(Tag(0x0028, 0x0051), VR::CS, corrected);
+                obj
+            }).collect();
+            let imported = import_dir(&write_slices(slices));
+            assert_eq!(imported.sources.len(), 1);
+            let source = &imported.sources[0];
+            assert_eq!(source.frames.len(), 2);
+            assert_eq!(source.info.suv_factor, factor);
+            assert_eq!(source.info.value_unit, unit);
+            assert_eq!(crate::sampling::Normalization::Bw.quantity(source), (1., unit));
+        }
     }
     #[test]
     fn pet_sul_and_suv_bsa_follow_height_and_sex() {

@@ -11,6 +11,7 @@ import { translate, type Locale, type MessageKey, type MessageParams } from '../
 import { coreText, type CoreNote } from '../i18n/core';
 import { dicomDate, general } from '../ui/overlayCorners';
 import { quantitativeScale } from './annotations';
+import { petHasSuv } from './emission';
 import { currentDeauville } from './deauvilleReading';
 import { studyGlucose, sulGlu, sulGluGlucose, type StudyGlucose } from './glucose';
 import { isLesion, lesionValues, percentChange, percentText } from './lesions';
@@ -88,13 +89,10 @@ const change = (now: number | undefined, before: number | undefined) => percentC
 const told = (changes: Changes): Changes => Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
 const coverageOf = (stats: SphereStatistics | null): Coverage | undefined => stats && (stats.clipped || stats.paddingCount || stats.invalidCount)
   ? { clipped: stats.clipped, padding: stats.paddingCount, invalid: stats.invalidCount } : undefined;
-/** The engine gives a PET a positive SUV factor only when it calibrated it (native/src/ingest.rs, suv_factor). A file
- * that stores SUV but that the engine refused, for want of attenuation correction say, is called SUV by its unit alone. */
-const calibrated = (series: Series) => series.suvFactor != null && Number.isFinite(series.suvFactor) && series.suvFactor > 0;
 
 /** What the report says, read from the PET's measurements as the lesion table and the acquisition panel read them. */
 export function petReport({ series, volume, annotations, typedGlucose, lesionPrior, comparison }: PetReportInput): PetReport {
-  const shown = volume?.series ?? series, quantity = quantitativeScale(shown), suv = isSuv(quantity.unit) && calibrated(shown);
+  const shown = volume?.series ?? series, quantity = quantitativeScale(shown), suv = isSuv(quantity.unit) && petHasSuv(shown);
   const measured = volume && measurableVolume(volume) ? volume : null;
   const statistics = (sphere: Annotation) => measured ? sphereStatisticsFor(sphere, measured, quantity) : null;
   const glucose = suv ? sulGluGlucose(shown, quantity.unit) : null, priorGlucose = lesionPrior?.glucose ?? null;

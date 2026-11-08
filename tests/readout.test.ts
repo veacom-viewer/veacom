@@ -47,6 +47,8 @@ describe('the value under the pointer', () => {
     // Whatever else it carries: SUL and SUVbsa are SUV too.
     assert.deepEqual(pointerReadout(petVolume({ suvFactor: null, valueUnit: 'CNTS', suvNormalization: 'lbm', sulFactor: 0.0008 }), view(), hot), ['PET 9000.0 CNTS']);
     assert.deepEqual(pointerReadout(petVolume({ suvFactor: null, suvNormalization: 'bsa', suvBsaFactor: 0.0002 }), view(), hot), ['PET 9000.0 Bq/ml']);
+    // Stored as SUV (GML) but refused by the engine, not corrected for attenuation: its own g/ml, not SUVbw.
+    assert.deepEqual(pointerReadout(petVolume({ valueUnit: 'SUVbw', suvFactor: null, suvNormalization: 'lbm', sulFactor: 0.0008 }), view(), hot), ['PET 9000.0 g/ml']);
   });
 
   it('reads a CT in HU, and other series in their stored unit', () => {

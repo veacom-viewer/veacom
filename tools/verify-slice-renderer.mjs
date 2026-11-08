@@ -13,6 +13,7 @@ export function verifySliceRenderer() {
     suvFactor: null, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2', components: 1 };
   const view = { mode: 'mpr', plane: 'axial', slice: 0, windowCenter: 0, windowWidth: 401, zoom: 1, pan: [0, 0],
     rotation: 0, flipX: false, flipY: false, inverted: false };
+  const calibratedPet = { modality: 'PT', valueUnit: 'SUVbw', suvFactor: 1 };
   const types = [
     ['float64', Float64Array, 42.25000000001, 0, 401, gl.R32F],
     ['float32', Float32Array, 42.25, 0, 401, gl.R32F],
@@ -65,7 +66,7 @@ export function verifySliceRenderer() {
       const grey = Math.round(255 * Math.min(1, Math.max(0, (value - (center - 0.5)) / (width - 1) + 0.5)));
       check(`${kind}: windowed scalar`, [grey, grey, grey, 255]);
       for (const [petKind, PetCtor, , , , petFormat] of types) {
-        const pet = volume(`pet-${petKind}`, new PetCtor(8).fill(2), { pixelType: petKind, modality: 'PT', valueUnit: 'SUVbw' }, petFormat);
+        const pet = volume(`pet-${petKind}`, new PetCtor(8).fill(2), { pixelType: petKind, ...calibratedPet }, petFormat);
         renderer.render(canvas, main, view, { volume: pet, opacity: 1, upperSuv: 4, palette: 'hot' });
         check(`${kind}/${petKind}: fusion shader`, [255, 153, 0, 255]);
       }
@@ -94,7 +95,7 @@ export function verifySliceRenderer() {
         && preciseUploads[0].bytes === preciseSource.length * 4 && preciseUploads[0].internalFormat === gl.R32F,
       uploads: preciseUploads });
     const scalar = volume('fusion-patient-space', new Int16Array(8), { pixelType: 'int16' }, gl.R16I);
-    const displacedPet = volume('displaced-pet', new Float32Array(8).fill(2), { origin: [20, 0, 0], modality: 'PT', valueUnit: 'SUVbw' });
+    const displacedPet = volume('displaced-pet', new Float32Array(8).fill(2), { origin: [20, 0, 0], ...calibratedPet });
     renderer.render(canvas, scalar, view, { volume: displacedPet, opacity: 1, upperSuv: 4, palette: 'hot' });
     check('PET outside patient-space extent does not overlay', [128, 128, 128, 255]);
     const mono1 = volume('mono1', new Int16Array(8).fill(-100), { pixelType: 'int16', photometricInterpretation: 'MONOCHROME1' }, gl.R16I);
@@ -109,6 +110,9 @@ export function verifySliceRenderer() {
     const uncalibratedPet = volume('uncalibrated-pet', new Float32Array(8).fill(2), { modality: 'PT', valueUnit: 'BQML', suvFactor: null });
     renderer.render(canvas, scalar, view, { volume: uncalibratedPet, opacity: 1, upperSuv: 10, palette: 'hot' });
     check('PET without SUV fuses on its own relative scale', [255, 153, 0, 255]);
+    const refusedGml = volume('uncalibrated-gml', new Float32Array(8).fill(2), { ...calibratedPet, suvFactor: null });
+    renderer.render(canvas, scalar, view, { volume: refusedGml, opacity: 1, upperSuv: 10, palette: 'hot' });
+    check('A GML label without a calibration factor also uses the relative scale', [255, 153, 0, 255]);
 
     const longDepth = renderer.info.max3DTextureSize + 1;
     for (const [kind, Ctor, format] of [['int16', Int16Array, gl.R16I], ['float64', Float64Array, gl.R32F]]) {
@@ -137,7 +141,7 @@ export function verifySliceRenderer() {
       rejects(`${kind}: long-stack MPR refused`, () => renderer.render(canvas, long, { ...view, plane: 'coronal' }), t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
       rejects(`${kind}: long-stack oblique refused`, () => renderer.render(canvas, long, { ...view, oblique: [5, 0] }), t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
       rejects(`${kind}: long-stack volume fusion refused`, () => renderer.render(canvas, long, view, { volume: displacedPet, opacity: 1, upperSuv: 4, palette: 'hot' }), t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
-      const longPet = { ...long, series: { ...long.series, modality: 'PT', valueUnit: 'SUVbw' } };
+      const longPet = { ...long, series: { ...long.series, ...calibratedPet } };
       rejects(`${kind}: oversized PET fusion refused`, () => renderer.render(canvas, scalar, view, { volume: longPet, opacity: 1, upperSuv: 4, palette: 'hot' }), t('gpu.fusionLimit', { limit: renderer.info.max3DTextureSize }));
     }
 
@@ -165,7 +169,7 @@ export function verifySliceRenderer() {
       check(`${kind}: finite interpolation weights are renormalized`, [38, 38, 38, 255], 1, 1);
 
       const paddedPet = volume(`padding-pet-${kind}`, new Ctor([2, NaN, Infinity, -Infinity]),
-        { pixelType: kind, dimensions: [2, 2, 1], modality: 'PT', valueUnit: 'SUVbw' });
+        { pixelType: kind, dimensions: [2, 2, 1], ...calibratedPet });
       canvas.width = canvas.height = 2;
       renderer.render(canvas, scalar, view, { volume: paddedPet, opacity: 1, upperSuv: 4, palette: 'hot' });
       check(`${kind}: finite PET pixel survives invalid neighbors`, [255, 153, 0, 255], 0, 0);

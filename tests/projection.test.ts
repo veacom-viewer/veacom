@@ -85,6 +85,14 @@ describe('a window in SUV', () => {
   it('never calls a PET without SUV, or a CT, SUV', () => {
     assert.equal(windowFor(raw, { unit: 'SUV', from: 0, to: 5 }), null);
     assert.equal(suvWindowText(raw, { windowCenter: 100, windowWidth: 200 }), null);
+    // A file storing SUV that the engine refused (no SUV factor) has no SUV window and no SUV preset: what would draw
+    // SUV 0–5 for the same file calibrated (factor 1) is its own values 0–5.
+    const refused = { ...gml, suvFactor: null }, five = windowFor(gml, { unit: 'SUV', from: 0, to: 5 })!;
+    assert.equal(quantityScale(refused, 'SUV'), null);
+    assert.equal(windowFor(refused, { unit: 'SUV', from: 0, to: 5 }), null);
+    assert.equal(suvWindowText(refused, five), null);
+    assert.equal(suvPresetFor(refused, five), undefined);
+    assert.deepEqual(petLook(refused), { inverted: true, palette: undefined });
     assert.equal(suvWindowText(ct, { windowCenter: 40, windowWidth: 400 }), null);
     assert.deepEqual(windowIn(ct, { windowCenter: 40, windowWidth: 400 }, 'HU'), { unit: 'HU', from: -160, to: 239 });
   });

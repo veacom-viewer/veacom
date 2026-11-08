@@ -170,7 +170,7 @@ describe('the PET follow-up screen', () => {
     assert.equal(PET_FOLLOW_UP.scale, 'shared');
     const plan = match([PET_FOLLOW_UP], 'open', { series: current, session: [prior('before')] })!;
     assert.equal(sharesSuvScale(plan), true);
-    for (const raw of [prior('raw', { suvFactor: null }), prior('lbm', { valueUnit: 'SUVlbm' })]) {
+    for (const raw of [prior('raw', { suvFactor: null }), prior('lbm', { valueUnit: 'SUVlbm' }), prior('refused', { valueUnit: 'SUVbw', suvFactor: null })]) {
       assert.equal(sharesSuvScale({ ...plan, roles: { ...plan.roles, prior: raw } }), false);
     }
     assert.equal(PET_CT.scale, undefined);
