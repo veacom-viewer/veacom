@@ -6,9 +6,9 @@ import { findRole } from '../arrangements/roles';
 import { FUSION } from '../arrangements/builtin';
 import { indexToWorld } from './geometry';
 import { shareFrame } from './linking';
-import { isEmission } from './emission';
+import { isEmission, petHasSuv } from './emission';
 
-export { isEmission, overlayKind } from './emission';
+export { isEmission, overlayKind, petHasSuv } from './emission';
 
 /** A series laid over another as PET is: a PET, or a SPECT reconstructed into a volume. Planar gamma camera images
  * have no place in the patient to be fused at. */
@@ -88,9 +88,6 @@ export function contrastPair(a: Series, b: Series): [after: Series, before: Seri
   return a.seriesNumber >= b.seriesNumber ? [a, b] : [b, a];
 }
 
-/** A PET in SUV, or with what SUV needs. Only a PET: a SPECT is never read in SUV here. */
-export const petHasSuv = (pet: Series) => pet.modality === 'PT' && (/^SUV/i.test(pet.valueUnit) || (pet.suvFactor != null && Number.isFinite(pet.suvFactor) && pet.suvFactor > 0));
-
 /** The name of the top of the fusion scale: SUV only for a PET that has SUV (none chosen yet: SUV, the usual case). */
 export const fusionScaleMaxKey = (pet: Series | undefined) => pet && !petHasSuv(pet) ? 'fusion.scaleMax' as const : 'fusion.suvMax' as const;
 
@@ -121,6 +118,6 @@ export function petScale(pet: { series: Series; data: PixelArray }): number {
     const top = pet.series.windowCenter + pet.series.windowWidth / 2;
     if (Number.isFinite(top) && top > 0) return 5 / top;
   }
-  if (petHasSuv(pet.series)) return /^SUV/i.test(pet.series.valueUnit) ? 1 : pet.series.suvFactor!;
+  if (petHasSuv(pet.series)) return /^SUV/i.test(pet.series.valueUnit) ? 1 : pet.series.suvFactor;
   return 5 / petAutoLevel(pet.data);
 }

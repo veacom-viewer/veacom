@@ -3,6 +3,7 @@ import type { PointerEvent as ReactPointerEvent } from 'react';
 import * as THREE from 'three';
 import type { Annotation, Plane, Vec3, ViewState, Volume, VolumeViewProps } from '../model';
 import { segmentationTexture, type SegmentationTexture } from '../imaging/segmentation';
+import { storedUnit } from '../imaging/annotations';
 import Viewport from './Viewport';
 import { getPlaneFrame, screenMapping, screenToWorld, sliceAtWorld, sliceCount, sourceFrameSeries, worldToScreen } from '../imaging/geometry';
 import {
@@ -932,7 +933,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       <div className="v3d-toolbar">
         <label style={{ display: 'flex', alignItems: 'center', gap: 8, flex: '1 1 240px' }}>{t('view3d.threshold')}
           <input data-action="volume-threshold" aria-label={t('view3d.thresholdLabel')} type="range" disabled={exporting} min={range[0]} max={range[1]} step={1} value={threshold} onChange={event => changeThreshold(Number(event.target.value))} style={{ flex: 1 }} />
-          <output style={{ minWidth: 65, fontSize: 12 }}>{Math.round(threshold)} {volume.series.valueUnit}</output>
+          <output style={{ minWidth: 65, fontSize: 12 }}>{Math.round(threshold)} {storedUnit(volume.series)}</output>
         </label>
         {volume.series.modality === 'CT' && <>
           <button data-action="volume-threshold-bone" type="button" className="secondary-button compact" aria-pressed={Math.round(threshold) === 300} disabled={exporting} onClick={() => changeThreshold(300)}>{t('view3d.bone')}</button>

@@ -159,6 +159,14 @@ describe('sphere VOI statistics', () => {
     assert.equal(hu.peak, null);
     setLocale('en');
     assert.match(formatSphereStatistics(hu), /^HU max 16\.0 · mean [\d.]+ · min 2\.0 · 7\.24 mL · ⌀ 24\.0 mm · σ/);
+    // Stored as SUV (Units GML) but refused by the engine, with no SUV factor: its own values in g/ml, never an SUV.
+    const refused = { ...source, series: { ...source.series, suvFactor: null, sulFactor: 0.8, valueUnit: 'SUVbw', suvNormalization: 'lbm' as const } };
+    const stored = sphereStatistics(refused, { center: lesion, radius: 12 }, quantitativeScale(refused.series))!;
+    assert.equal(stored.unit, 'g/ml');
+    assert.equal(stored.peak, null);
+    assertClose(stored.max, 16, 4);
+    assert.match(formatSphereStatistics(stored), /^g\/ml max 16\.0 · mean /);
+    assert.doesNotMatch(formatSphereStatistics(stored), /SU[VL]/);
   });
 
   it('measures only a whole, reconstructable, scalar volume', () => {
@@ -225,6 +233,8 @@ describe('metabolic volume inside a sphere', () => {
     assert.equal(thresholdVolume(ct, sphere, quantitativeScale(ct.series), max41), null);
     const activity = { ...source, series: { ...source.series, suvFactor: null, sulFactor: null, valueUnit: 'BQML' } };
     assert.equal(thresholdVolume(activity, sphere, quantitativeScale(activity.series), suv25), null);
+    const refused = { ...source, series: { ...source.series, suvFactor: null, sulFactor: null, valueUnit: 'SUVbw' } };
+    for (const threshold of [max41, suv25]) assert.equal(thresholdVolume(refused, sphere, quantitativeScale(refused.series), threshold), null);
   });
 
   it('gives MTV and TLG after the sphere\'s own volume in its line', () => {

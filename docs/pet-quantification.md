@@ -13,7 +13,7 @@ Choose **Sphere VOI** in the measuring tools (key V), press at the centre of a l
 - its centre handle and its circle move it within the plane (its depth stays), and the handle on its circle sets the radius;
 - choosing it in the measurement list sends every linked pane to its centre.
 
-It reports the statistics of the voxels whose centres lie inside it: max, mean, min (except on a PET), SD and the voxel count. It also gives its own volume and diameter. Values are in the quantity of the Units panel's **PET values** setting (from #53): SUVbw, SUL or SUVbsa, each named by its unit. A PET without SUV keeps its stored unit, and nothing on it is called SUV. A sphere is measured once the whole volume has loaded, on a series that can be reconstructed. One whose bounding box spans more than 16 million voxels is not measured.
+It reports the statistics of the voxels whose centres lie inside it: max, mean, min (except on a PET), SD and the voxel count. It also gives its own volume and diameter. Values are in the quantity of the Units panel's **PET values** setting (from #53): SUVbw, SUL or SUVbsa, each named by its unit. A PET without SUV keeps its stored unit, and nothing on it is called SUV. A PET has SUV only when the engine calibrated it, whatever its file's unit says: a file that stores SUV (DICOM Units GML) but that the engine refused, for example without attenuation correction, gives its values in g/ml, GML's own unit. A sphere is measured once the whole volume has loaded, on a series that can be reconstructed. One whose bounding box spans more than 16 million voxels is not measured.
 
 Drawn on a CT with a PET fused over it, the label adds the PET's max, peak and mean, from the PET's own voxels inside the sphere.
 
