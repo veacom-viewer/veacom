@@ -98,7 +98,7 @@ A gamma camera file says what each frame is outside the frames, and the engine r
 
 ```json
 {
-  "id": "spect-ct", "name": "arrangement.spectCt", "when": "open",
+  "id": "spect-ct", "name": "arrangement.spectCt", "when": "screen",
   "roles": {
     "spect": { "modality": "NM", "volume": true, "prefer": ["ungated", "corrected", "slices"] },
     "ct": { "modality": "CT", "of": "spect", "frame": "same", "prefer": ["corrected", "sameGrid", "overlap", "slices"] }
@@ -111,7 +111,7 @@ A gamma camera file says what each frame is outside the frames, and the engine r
     { "role": "spect", "plane": "coronal", "show": "mip", "display": { "palette": "gray", "invert": true } }
   ],
   "link": "crosshair",
-  "notice": "arrangement.spectCt.notice"
+  "notice": { "key": "arrangement.spectCt.notice" }
 }
 ```
 
@@ -121,7 +121,7 @@ The SPECT is fused as a PET without SUV is: on its own scale, its 99.5th percent
 
 ```json
 {
-  "id": "whole-body", "name": "arrangement.wholeBody", "when": "open",
+  "id": "whole-body", "name": "arrangement.wholeBody", "when": "screen",
   "roles": { "body": { "modality": "NM", "imageType": "WHOLE BODY", "views": ["ANT", "POST"] } },
   "grid": [1, 2],
   "panes": [
@@ -129,7 +129,7 @@ The SPECT is fused as a PET without SUV is: on its own scale, its 99.5th percent
     { "role": "body", "view": "POST", "display": { "palette": "gray", "invert": true } }
   ],
   "link": "none",
-  "notice": "arrangement.wholeBody.notice"
+  "notice": { "key": "arrangement.wholeBody.notice" }
 }
 ```
 
