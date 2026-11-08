@@ -9,7 +9,7 @@ import type { EngineRegistration, FusionSettings, Series, Vec3, ViewState } from
 // Two visits of the synthetic follow-up (tools/fixtures/make-pet-followup.mjs): each a CT and a PET in a frame of
 // reference of its own. The prior was scanned 24 mm further along the table, so its point p is this study's p − (0, 0, 24).
 const series = (overrides: Partial<Series>): Series => ({
-  id: 's', uid: 'u', studyUid: 'current', patientId: 'P1', patientName: 'SYNTHETIC^FOLLOWUP', studyDate: '20000101', description: '', modality: 'CT',
+  id: 's', uid: 'u', studyUid: 'current', patientKey: 'synthetic-site-patient', patientId: 'P1', patientName: 'SYNTHETIC^FOLLOWUP', studyDate: '20000101', description: '', modality: 'CT',
   seriesNumber: 1, dimensions: [8, 8, 80], spacing: [4, 4, 4], origin: [-14, -14, -316], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, spacingKnown: true, orientationKnown: true, positionKnown: true,
   warnings: [], photometricInterpretation: 'MONOCHROME2', frameOfReferenceUid: 'current-frame', ...overrides,
@@ -27,7 +27,7 @@ const close = (actual: Vec3, expected: Vec3) => actual.forEach((value, axis) => 
 
 describe('aligned frames of reference', () => {
   it('keep the engine\'s transform for the two frames, not the two series', () => {
-    assert.deepEqual([aligned.fixed, aligned.moving, aligned.fixedSeriesId, aligned.movingSeriesId], ['current-frame', 'prior-frame', 'current-ct', 'prior-ct']);
+    assert.deepEqual([aligned.fixed, aligned.moving, aligned.fixedSeriesId, aligned.movingSeriesId], [frameOf(currentCt), frameOf(priorCt), 'current-ct', 'prior-ct']);
     assert.equal(alignmentFrom(engine(), currentCt, currentPet), null, 'one frame needs no alignment');
     assert.equal(alignmentFrom(engine(), currentCt, series({ id: 'flat', frameOfReferenceUid: 'x', canReconstruct: false })), null, 'nor can a series not placed in the patient be aligned');
     assert.equal(alignmentFrom(engine([1, 2]), currentCt, priorCt), null);
@@ -48,6 +48,14 @@ describe('aligned frames of reference', () => {
     assert.notEqual(transformBetween([...alignments], priorCt, currentCt), transformBetween(alignments, priorCt, currentCt));
   });
 
+  it('keeps alignments with their patient when frame UIDs are reused', () => {
+    const anotherPrior = { ...priorCt, patientKey: 'different-site' }, anotherCurrent = { ...currentCt, patientKey: 'different-site' };
+    assert.equal(alignmentFrom(engine([...IDENTITY]), currentCt, anotherPrior), null);
+    assert.equal(transformBetween([aligned], priorCt, anotherPrior), null);
+    assert.equal(transformBetween([aligned], anotherPrior, anotherCurrent), null);
+    assert.equal(alignmentOf([aligned], anotherPrior), null);
+  });
+
   it('chain through other alignments: an MR laid over this study places the prior on it too', () => {
     const mr = series({ id: 'mr', modality: 'MR', studyUid: 'mr', frameOfReferenceUid: 'mr-frame' });
     const onMr = alignmentFrom(engine([...rotation(2, 90, [0, 0, 0])]), mr, currentCt)!;
@@ -62,7 +70,7 @@ describe('aligned frames of reference', () => {
   it('are replaced and removed by pair of frames, either way round', () => {
     const again = alignmentFrom(engine([...translation([0, 0, -23])]), priorCt, currentCt)!;
     assert.deepEqual(withAlignment([aligned], again), [again]);
-    assert.deepEqual(withoutAlignment([aligned], { fixed: 'prior-frame', moving: 'current-frame' }), []);
+    assert.deepEqual(withoutAlignment([aligned], { fixed: aligned.moving, moving: aligned.fixed }), []);
   });
 
   it('take the reader\'s nudges in the fixed frame after the engine\'s transform, and go back to it', () => {

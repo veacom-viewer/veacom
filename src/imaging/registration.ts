@@ -5,7 +5,7 @@
 // crosshair and the fused readings map points through the transform, and each series is read in its own voxels.
 import type { EngineRegistration, FusionSettings, Plane, Series, Vec3 } from '../model';
 import { indexToWorld, type PlaneFrame } from './geometry';
-import { shareFrame } from './linking';
+import { samePatient, shareFrame } from './linking';
 import { angleOf, applyPoint, applyVector, compose, displacement, IDENTITY, invert, isIdentity, isMatrix, rotation, translation, type Matrix } from './rigid';
 
 export interface Alignment {
@@ -22,14 +22,15 @@ export interface Alignment {
   centre: Vec3;
 }
 
-/** The frame of reference a series is placed in, if it can be aligned at all: a volume with a known orientation. */
+/** Key an alignment by patient and frame, since different patients can reuse a frame UID. */
 export const frameOf = (series: Series): string | null =>
-  series.canReconstruct && series.orientationKnown === true && series.frameOfReferenceUid ? series.frameOfReferenceUid : null;
+  series.canReconstruct && series.orientationKnown === true && series.patientKey && series.frameOfReferenceUid
+    ? JSON.stringify([series.patientKey, series.frameOfReferenceUid]) : null;
 
 /** The engine's answer for `moving` laid over `fixed`, as an alignment of their frames; null when they share one. */
 export function alignmentFrom(result: EngineRegistration, fixed: Series, moving: Series): Alignment | null {
   const fixedFrame = frameOf(fixed), movingFrame = frameOf(moving);
-  if (!fixedFrame || !movingFrame || fixedFrame === movingFrame || !isMatrix(result.matrix)) return null;
+  if (!fixedFrame || !movingFrame || fixedFrame === movingFrame || !samePatient(fixed, moving) || !isMatrix(result.matrix)) return null;
   const centre = indexToWorld(moving, moving.dimensions.map(n => (n - 1) / 2) as Vec3);
   return { fixed: fixedFrame, moving: movingFrame, fixedSeriesId: fixed.id, movingSeriesId: moving.id,
     found: [...result.matrix], nudge: IDENTITY, matrix: [...result.matrix],
@@ -52,9 +53,9 @@ const paths = new WeakMap<readonly Alignment[], Map<string, Matrix | null>>();
  * alignments (either way, and one after another) between two, null where none joins them. */
 export function transformBetween(alignments: readonly Alignment[], from: Series, to: Series): Matrix | null {
   if (shareFrame(from, to)) return IDENTITY;
+  if (!samePatient(from, to)) return null;
   const start = frameOf(from), end = frameOf(to);
   if (!start || !end) return null;
-  if (start === end) return IDENTITY;
   let known = paths.get(alignments);
   if (!known) { known = new Map(); paths.set(alignments, known); }
   const key = `${start}\n${end}`;

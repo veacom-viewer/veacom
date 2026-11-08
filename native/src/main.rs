@@ -799,8 +799,9 @@ fn register_series(core: &App, cancelled: &AtomicBool, request: RegisterRequest)
         if series.info.source_revision != revision { return Err(changed()); }
         Ok(series)
     };
-    registration::check(&*current(&request.fixed_id, request.fixed_revision)?)?;
-    registration::check(&*current(&request.moving_id, request.moving_revision)?)?;
+    let fixed_source = current(&request.fixed_id, request.fixed_revision)?;
+    let moving_source = current(&request.moving_id, request.moving_revision)?;
+    registration::check_pair(&fixed_source, &moving_source)?;
     let (fixed, fixed_series) = load_volume(core, &request.fixed_id, false, cancelled)?;
     let (moving, moving_series) = load_volume(core, &request.moving_id, false, cancelled)?;
     if fixed_series.info.source_revision != request.fixed_revision || moving_series.info.source_revision != request.moving_revision {

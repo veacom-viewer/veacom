@@ -69,7 +69,7 @@ pub struct Registration {
 }
 
 /// Whether a series can be registered: a volume placed in the patient, with its own spacing and orientation.
-pub fn check(source: &SourceSeries) -> Result<()> {
+fn check(source: &SourceSeries) -> Result<()> {
     let info = &source.info;
     if !info.can_reconstruct
         || !info.spacing_known
@@ -85,14 +85,25 @@ pub fn check(source: &SourceSeries) -> Result<()> {
     Ok(())
 }
 
+pub fn check_pair(fixed: &SourceSeries, moving: &SourceSeries) -> Result<()> {
+    check(fixed)?;
+    check(moving)?;
+    let (a, b) = (&fixed.info, &moving.info);
+    if a.patient_key.is_empty() || a.patient_key != b.patient_key
+        || (a.patient_id.is_empty() && a.patient_name.is_empty())
+    {
+        bail!(coded!("registration.patientMismatch", "Alignment requires both series to belong to the same identified patient"));
+    }
+    Ok(())
+}
+
 /// Finds the transform that lays `moving` over `fixed`. Stops with an error once `cancelled` is set.
 pub fn register(
     fixed: (&SourceSeries, &PixelBuffer),
     moving: (&SourceSeries, &PixelBuffer),
     cancelled: &AtomicBool,
 ) -> Result<Registration> {
-    check(fixed.0)?;
-    check(moving.0)?;
+    check_pair(fixed.0, moving.0)?;
     let stop = || -> Result<()> {
         if cancelled.load(Ordering::Acquire) || crate::progress::is_stopping() {
             bail!(coded!("job.cancelled", "Operation cancelled"));
@@ -1042,6 +1053,8 @@ mod tests {
             }
         }
         let info = Series {
+            patient_key: "synthetic-site-patient".into(),
+            patient_id: "SYNTHETIC".into(),
             dimensions: dims,
             spacing,
             origin,
@@ -1218,6 +1231,10 @@ mod tests {
             Some("registration.needsVolumes")
         );
         flat.info.can_reconstruct = true;
+        flat.info.patient_key = "different-issuer".into();
+        let error = register((&flat, &pixels), (&other, &other_pixels), &NEVER).unwrap_err();
+        assert_eq!(crate::message::coded(&error).map(|note| note.code), Some("registration.patientMismatch"));
+        flat.info.patient_key.clone_from(&other.info.patient_key);
         let blank = PixelBuffer::F32(vec![5.0; 16 * 16 * 16]);
         let error = register((&flat, &blank), (&other, &other_pixels), &NEVER).unwrap_err();
         assert_eq!(

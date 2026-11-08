@@ -5,7 +5,7 @@ import type { MessageKey } from '../i18n';
 import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry';
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
-import { shareFrame } from '../imaging/linking';
+import { samePatient, shareFrame } from '../imaging/linking';
 import { BUILTIN_ARRANGEMENTS } from './builtin';
 
 export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from './roles';
@@ -134,7 +134,7 @@ function planFor(arrangement: Arrangement, context: MatchContext): Plan | null {
  * when the two roles lie in one frame of reference already. */
 export function alignmentPair(plan: Plan, series: readonly Series[]): { fixed: Series; moving: Series } | null {
   const align = plan.arrangement.align, fixed = align && plan.roles[align.to], moving = align && plan.roles[align.role];
-  if (!align || !fixed || !moving || shareFrame(fixed, moving)) return null;
+  if (!align || !fixed || !moving || !samePatient(fixed, moving) || shareFrame(fixed, moving)) return null;
   const by = (anchor: Series) => align.by ? findRole({ modality: align.by, frame: 'same', prefer: ['corrected', 'sameGrid', 'overlap', 'slices'] }, series, anchor) : null;
   const fixedBy = by(fixed), movingBy = by(moving);
   return fixedBy && movingBy ? { fixed: fixedBy, moving: movingBy } : { fixed, moving };
