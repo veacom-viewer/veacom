@@ -125,11 +125,10 @@ export const FUSION: Arrangement = {
   panes: [{ role: 'ct', show: 'fused', over: 'overlay' }],
 };
 
-/** Tried in this order; the first whose roles are all found applies. A bone scan holding both a whole body and a
- * SPECT/CT opens on the whole body, as it is read first. */
+/** The first arrangement matching the trigger and all required roles applies. */
 export const BUILTIN_ARRANGEMENTS: readonly Arrangement[] = [PET_FOLLOW_UP, PET_CT, WHOLE_BODY, SPECT_CT, DWI_ADC, ADC_DWI, SIDE_BY_SIDE, FUSION];
 
-/** The reading screens offered beside Fusion, including follow-up when a compatible prior is loaded. */
+/** The menu beside Fusion prefers PET follow-up when a prior matches, and whole-body over SPECT/CT. */
 export const NUCLEAR_MEDICINE_SCREENS: readonly Arrangement[] = [
   { ...PET_FOLLOW_UP, when: 'screen' }, PET_CT_READING, WHOLE_BODY, SPECT_CT,
 ];
