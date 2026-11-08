@@ -60,6 +60,12 @@ function provenance() {
 
 const positiveFactor = value => Number.isFinite(value) && value > 0;
 
+function maxActivityBqml(shown, storedMax, factorPerBqml) {
+  if (shown.quantity === 'Bq/ml') return shown.max;
+  const max = storedMax ?? shown.max;
+  if (shown.quantity === 'SUVbw' && positiveFactor(factorPerBqml) && Number.isFinite(max)) return max / factorPerBqml;
+}
+
 /** The PET series to measure: the one the spheres file names, else the only calibrated reconstructable PET. */
 function choosePet(catalog, selector, study) {
   const pets = catalog.filter(series => series.modality === 'PT');
@@ -95,11 +101,15 @@ function factorRecord(study, pet, tags) {
   const weightKg = acquisition.weight, heightM = acquisition.height, sex = pet.patientSex || '';
   const ratios = validation.leanBodyMassRatios({ weightKg, heightM, sex });
   const decay = validation.decayMinutes({ factorPerBqml: suvbwPerBqml, weightKg, doseBq: acquisition.injectedActivity, halfLifeSeconds: acquisition.halfLife });
-  const injection = acquisition.injectionTime || (acquisition.injectionDateTime ?? '').slice(8, 14);
+  // The engine uses Start DateTime when present. Compare the scanner clock and retain the full DT in factors.csv.
+  const datetime = acquisition.injectionDateTime?.trim();
+  const injection = datetime ? datetime.slice(8).replace(/[+-]\d{4}$/, '') : acquisition.injectionTime ?? '';
+  const units = tag('(0054,1001)'), suvType = tag('(0054,1006)');
+  const storedLbmType = units === 'GML' && ['LBM', 'LBMJAMES128', 'LBMJANMA'].includes(suvType) ? suvType : undefined;
   return {
     study, series_number: pet.seriesNumber, series_description: pet.description, manufacturer: pet.manufacturer ?? '', scanner_model: acquisition.scannerModel ?? '',
-    software_versions: tag('(0018,1020)'), reconstruction: acquisition.reconstruction ?? '', units: tag('(0054,1001)'), value_unit: unit,
-    corrected_image: tag('(0028,0051)'), decay_correction: acquisition.decayCorrection ?? '', suv_type: tag('(0054,1006)'),
+    software_versions: tag('(0018,1020)'), reconstruction: acquisition.reconstruction ?? '', units, value_unit: unit,
+    corrected_image: tag('(0028,0051)'), decay_correction: acquisition.decayCorrection ?? '', suv_type: suvType,
     suvbw_factor: byWeight ? pet.suvFactor : '', suvbw_per_bqml: suvbwPerBqml ?? '', sul_factor: sul ? pet.sulFactor : '',
     suvbsa_factor: byWeight && positiveFactor(pet.suvBsaFactor) ? pet.suvBsaFactor : '',
     sul_per_suvbw: sul ? pet.sulFactor / pet.suvFactor : '',
@@ -113,12 +123,12 @@ function factorRecord(study, pet, tags) {
     uptake_min: acquisition.uptakeSeconds === undefined ? '' : acquisition.uptakeSeconds / 60, decay_min: decay ?? '',
     warnings: (pet.warnings ?? []).join(' | '),
     // For the comparison (not written as such).
-    _compare: { suvbwPerBqml, weightKg, heightM, sex, doseBq: acquisition.injectedActivity, halfLifeSeconds: acquisition.halfLife, injectionTime: injection || undefined },
+    _compare: { suvbwPerBqml, storedLbmType, weightKg, heightM, sex, doseBq: acquisition.injectedActivity, halfLifeSeconds: acquisition.halfLife, injectionTime: injection || undefined },
   };
 }
 
 async function measureStudy(entry, context) {
-  const folder = path.join(context.studies, entry.study);
+  const folder = entry.folder;
   if (!existsSync(folder)) throw new Error(`${entry.study}: no such folder in ${context.studies}.`);
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-pet-validation-'));
   const errors = [];
@@ -266,7 +276,7 @@ async function measureStudy(entry, context) {
         const shown = validation.parseSphereValues(await rowValues(id, withMtv));
         if (!calibrated && /^SU[VL]/i.test(shown.quantity)) throw new Error('The viewer reported SUV without a valid engine calibration factor.');
         reading.values[shown.quantity] = shown;
-        const record = shown.quantity === 'SUVbw' ? await keptSphere(sphere.role, sphere.name) : null;
+        const record = calibrated ? await keptSphere(sphere.role, sphere.name) : null;
         if (record) {
           reading.placed = { center: record.center, radius: record.radius };
           const off = placement.offset(record.center);
@@ -274,9 +284,7 @@ async function measureStudy(entry, context) {
             throw new Error(`VEAcom placed the sphere at ${record.center.map(value => value.toFixed(1)).join(', ')} mm, radius ${record.radius.toFixed(1)} mm, not where asked.`);
           }
         }
-        // The hottest voxel's activity concentration: the same voxel reads the same in any workstation.
-        const maxSuvbw = record?.values?.max ?? reading.values.SUVbw?.max;
-        if (factor._compare.suvbwPerBqml && Number.isFinite(maxSuvbw)) reading.maxBqml = maxSuvbw / factor._compare.suvbwPerBqml;
+        reading.maxBqml = maxActivityBqml(shown, record?.values?.max, factor._compare.suvbwPerBqml);
         if (sul && shown.quantity === 'SUVbw') {
           await showPetValues('lbm');
           reading.values.SUL = validation.parseSphereValues(await rowValues(id, text => /^SUL max/.test(text) && withMtv(text)));
@@ -327,9 +335,9 @@ function readingRows(studies) {
       if (sphere.error) { rows.push({ ...base, note: sphere.error }); continue; }
       for (const [quantity, values] of Object.entries(sphere.values)) {
         const notes = [...values.notes, ...(values.peakUnavailable ? [`${quantity === 'SUL' ? 'SULpeak' : 'SUVpeak'} unavailable: no complete 1 cm³ sphere inside the VOI`] : []),
-          ...(sphere.mtvNote && quantity === 'SUVbw' ? [sphere.mtvNote] : []), ...(sphere.roleNote ? [sphere.roleNote] : []), ...(sphere.placed ? [] : ['Placement not confirmed: VEAcom keeps no record of spheres on a PET without SUV'])];
+          ...(sphere.mtvNote && quantity !== 'SUL' ? [sphere.mtvNote] : []), ...(sphere.roleNote ? [sphere.roleNote] : []), ...(sphere.placed ? [] : ['Placement not confirmed'])];
         rows.push({ ...base, quantity, max: values.max, peak: values.peak, mean: values.mean, sd: values.sd, voxels: values.voxels, mtv41_ml: values.mtv, tlg: values.tlg,
-          max_bqml: quantity === 'SUVbw' && sphere.maxBqml !== undefined ? Number(sphere.maxBqml.toPrecision(7)) : undefined, note: notes.join('; ') });
+          max_bqml: (quantity === 'SUVbw' || quantity === 'Bq/ml') && sphere.maxBqml !== undefined ? Number(sphere.maxBqml.toPrecision(7)) : undefined, note: notes.join('; ') });
       }
     }
   }
@@ -340,12 +348,21 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   const manifest = existsSync(path.join(options.studies, 'manifest.json')) ? JSON.parse(await fs.readFile(path.join(options.studies, 'manifest.json'), 'utf8')) : null;
   const synthetic = manifest?.synthetic === true;
-  for (const [what, file] of [['STUDIES_DIR', options.studies], ['SPHERES_JSON', options.spheres], ['--vendor', options.vendor], ['OUTPUT_DIR', options.output]]) {
-    if (file && !synthetic && validation.inside(file, repository)) {
+  for (const [key, what] of [['studies', 'STUDIES_DIR'], ['spheres', 'SPHERES_JSON'], ['vendor', '--vendor'], ['output', 'OUTPUT_DIR']]) {
+    const file = options[key];
+    if (!file) continue;
+    const resolved = validation.canonicalPath(file);
+    if (!synthetic && validation.inside(file, repository, resolved)) {
       throw new Error(`${what} ${file} is inside the repository. Real studies, their spheres, the vendor's readings and VEAcom's readings stay outside it.`);
     }
+    options[key] = resolved;
   }
   const spheres = validation.readSpheres(JSON.parse(await fs.readFile(options.spheres, 'utf8')));
+  for (const entry of spheres.studies) {
+    entry.folder = validation.canonicalPath(path.join(options.studies, entry.study));
+    if (!validation.inside(entry.folder, options.studies)) throw new Error(`${entry.study} resolves outside STUDIES_DIR.`);
+    if (!synthetic && validation.inside(entry.folder, repository)) throw new Error(`${entry.study} is inside the repository.`);
+  }
   const vendor = options.vendor ? validation.readVendor(JSON.parse(await fs.readFile(options.vendor, 'utf8'))) : null;
   if (existsSync(options.output) && (await fs.readdir(options.output)).length) throw new Error(`OUTPUT_DIR ${options.output} is not empty. Give a new or empty folder.`);
   await fs.mkdir(path.join(options.output, ...(options.screenshots ? ['screenshots'] : [])), { recursive: true });
@@ -382,7 +399,7 @@ async function main() {
   await fs.writeFile(path.join(options.output, 'run.json'), `${JSON.stringify(run, null, 2)}\n`);
   console.log(`Wrote ${['readings.csv', 'factors.csv', ...(vendor ? ['comparison.csv'] : []), 'run.json'].join(', ')} to ${options.output}`);
   if (vendor) {
-    console.log(`Against the vendor: ${count('within')} within tolerance, ${count('beyond')} beyond, ${count('missing')} missing, ${count('reported')} reported without a limit.`);
+    console.log(`Against the vendor: ${count('within')} within tolerance, ${count('beyond')} beyond, ${count('missing')} missing, ${count('reported')} reported.`);
     for (const row of comparison.filter(item => item.status === 'beyond' || item.status === 'missing')) {
       console.log(`  ${row.status.toUpperCase()} ${row.study} ${row.sphere} ${row.quantity} ${row.measure}: VEAcom ${row.veacom ?? '—'}, vendor ${row.vendor ?? '—'}${row.difference_percent === '' ? '' : ` (${row.difference_percent}%)`}${row.note ? ` · ${row.note}` : ''}`);
     }
@@ -393,4 +410,4 @@ async function main() {
 
 if (require.main === module) main().catch(error => { console.error(error.message ?? error); process.exitCode = 1; });
 
-module.exports = { choosePet, factorRecord, readingRows };
+module.exports = { choosePet, factorRecord, maxActivityBqml, readingRows };

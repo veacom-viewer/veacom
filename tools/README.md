@@ -134,12 +134,12 @@ sphere centres and radii per study, it:
   SUVpeak beyond 5%, and any difference in the SUV factor or its parameters, and notes the likely cause;
 - records the commit, the build's fingerprints and the inputs in `run.json`.
 
-Real studies, both JSON files and the output stay outside the repository; the tool refuses paths inside it unless the
-studies are synthetic. Its window ignores the computer's own mouse and keyboard (`lib/outside-input.cjs`). It exits
-unsuccessfully when a value is beyond its limit or missing. `make-pet-validation-inputs.mjs` writes both JSON files for
-the synthetic follow-up, with its known values as the vendor's: the tool must reproduce liver 2, blood pool 1.5 and the
-lesions' 10 then 7 and 4.5 then 3, in SUVbw and SUL. CI's desktop job and `tools/verify.sh` run that. It has not run on
-Windows.
+Real studies, both JSON files and the output stay outside the repository. The tool checks symlink targets, including
+the parent of a new output directory. Its window ignores the computer's own input on macOS and Linux. It exits
+unsuccessfully when a value is beyond its limit or missing. `make-pet-validation-inputs.mjs` writes both JSON files
+for the synthetic follow-up. CI and `tools/verify.sh` compare all expected readings at display precision, including
+reference means, MTV and TLG. They also exercise raw Bq/ml, stored lean-body-mass SUV and injection times using PET
+series derived from the same fixture. The desktop kit has not run on Windows.
 
 ```sh
 node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup

@@ -1,15 +1,16 @@
 // What tools/pet-validation.cjs needs besides the desktop app: reading its two input files, reading a sphere's values
 // as VEAcom shows them, the SUV factor's parts, comparing with the vendor's readings, and writing CSV. No patient data
 // passes through here except the values themselves; docs/pet-validation.md is the protocol.
+const { lstatSync, realpathSync } = require('node:fs');
 const path = require('node:path');
 
-/** Acceptance limits in per cent (docs/pet-validation.md): SUVmax on the same voxel, SUVpeak across methods, and the SUV
- * factor and its parts. The same voxel is recognised by its activity concentration, read in both tools. */
+/** Acceptance limits in per cent. The vendor key sameVoxel sets the limit on the Bq/ml maxima. */
 const TOLERANCES = Object.freeze({ max: 1, peak: 5, factor: 0.2, sameVoxel: 0.5 });
 const ROLES = Object.freeze(['lesion', 'liver', 'bloodPool']);
 const QUANTITIES = Object.freeze(['SUVbw', 'SUL']);
 /** What can be read for each sphere, as the vendor file names it, and how the CSV names it. */
 const MEASURES = Object.freeze({ max: 'max', peak: 'peak', mean: 'mean', sd: 'sd', mtv: 'MTV 41%', tlg: 'TLG' });
+const TOLERANCE_KEYS = new Set([...Object.keys(TOLERANCES), ...Object.keys(MEASURES)]);
 /** VEAcom makes the liver reference 3 cm across, about its centre (docs/pet-quantification.md). */
 const LIVER_RADIUS_MM = 15;
 /** Lesion names in VEAcom: up to 24 characters, no control characters (src/domain/petStudies.ts). */
@@ -71,9 +72,12 @@ function readVendor(json) {
   if (!json || !Array.isArray(json.studies)) throw new Error('The vendor file needs a "studies" list.');
   const tolerances = { ...TOLERANCES };
   for (const [key, value] of Object.entries(json.tolerances ?? {})) {
-    if (!(key in TOLERANCES) || !(Number.isFinite(value) && value >= 0)) throw new Error(`Vendor file: tolerances are per cent for ${Object.keys(TOLERANCES).join(', ')}.`);
+    if (!TOLERANCE_KEYS.has(key) || !Number.isFinite(value) || value < 0) {
+      throw new Error(`Vendor file: tolerances are nonnegative per cent for ${[...TOLERANCE_KEYS].join(', ')}.`);
+    }
     tolerances[key] = value;
   }
+  if (!json.studies.length) throw new Error('The vendor file needs at least one study with readings.');
   const number = (value, where) => {
     if (value === undefined) return undefined;
     if (!Number.isFinite(value)) throw new Error(`${where} is a number.`);
@@ -92,31 +96,67 @@ function readVendor(json) {
       sex: suv.sex === undefined ? undefined : String(suv.sex).toUpperCase(),
       injectionTime: suv.injectionTime === undefined ? undefined : String(suv.injectionTime),
     };
+    for (const key of Object.keys(suv)) {
+      if (!Object.hasOwn(parameters, key)) throw new Error(`${where}: unknown SUV parameter "${key}".`);
+    }
     if (parameters.injectionTime !== undefined) clockSeconds(parameters.injectionTime, `${where}: suv.injectionTime`);
     const spheres = new Map();
     for (const [name, sphere] of Object.entries(entry.spheres ?? {})) {
+      const place = `${where}, ${name}`;
+      if (!sphere || typeof sphere !== 'object' || Array.isArray(sphere) || !Object.keys(sphere).length) throw new Error(`${place}: supply at least one sphere reading.`);
       const reading = {};
-      for (const quantity of QUANTITIES) {
-        if (sphere?.[quantity] === undefined) continue;
+      for (const [quantity, measures] of Object.entries(sphere)) {
+        if (quantity === 'maxBqml') {
+          reading.maxBqml = number(measures, `${place}: maxBqml`);
+          continue;
+        }
+        if (!QUANTITIES.includes(quantity)) throw new Error(`${place}: unknown quantity "${quantity}". Use SUVbw, SUL or maxBqml.`);
+        if (!measures || typeof measures !== 'object' || Array.isArray(measures) || !Object.keys(measures).length) throw new Error(`${place}: supply at least one ${quantity} measure.`);
         reading[quantity] = {};
-        for (const [measure, value] of Object.entries(sphere[quantity])) {
-          if (!(measure in MEASURES)) throw new Error(`${where}, ${name}: ${quantity} measures are ${Object.keys(MEASURES).join(', ')}.`);
-          reading[quantity][measure] = number(value, `${where}, ${name}, ${quantity}.${measure}`);
+        for (const [measure, value] of Object.entries(measures)) {
+          if (!Object.hasOwn(MEASURES, measure)) throw new Error(`${place}: ${quantity} measures are ${Object.keys(MEASURES).join(', ')}.`);
+          reading[quantity][measure] = number(value, `${place}, ${quantity}.${measure}`);
         }
       }
-      reading.maxBqml = number(sphere?.maxBqml, `${where}, ${name}: maxBqml`);
       spheres.set(name, reading);
     }
+    if (!spheres.size && Object.values(parameters).every(value => value === undefined)) throw new Error(`${where}: supply at least one SUV parameter or sphere reading.`);
     studies.set(study, { study, software: entry.software ?? json.software ?? '', suv: parameters, spheres });
   });
   return { software: json.software ?? '', tolerances, studies };
 }
 
-/** Seconds since midnight from "HH:MM", "HH:MM:SS" or DICOM TM ("HHMMSS.ffffff"). */
+/** DICOM TM and workstation clock readings, with their recorded precision. */
+function parseClock(value) {
+  const match = /^(\d{2})(?::?(\d{2})(?::?(\d{2})(\.\d{1,6})?)?)?$/.exec(String(value ?? '').trim());
+  if (!match) return null;
+  const [, hour, minute, second, fraction = ''] = match;
+  const hours = Number(hour), minutes = Number(minute ?? 0);
+  if (hours > 23 || minutes > 59 || Number(second ?? 0) > 60) return null;
+  return { seconds: hours * 3600 + minutes * 60 + Number((second ?? '00') + fraction),
+    precision: minute === undefined ? 3600 : second === undefined ? 60 : 1,
+    display: [hour, minute, second].filter(part => part !== undefined).join(':') + fraction };
+}
+
 function clockSeconds(value, where = 'A time') {
-  const text = String(value).trim(), match = /^(\d{2}):?(\d{2})(?::?(\d{2}(?:\.\d+)?))?$/.exec(text);
-  if (!match || Number(match[1]) > 23 || Number(match[2]) > 59) throw new Error(`${where} is HH:MM or HH:MM:SS.`);
-  return Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3] ?? 0);
+  const clock = parseClock(value);
+  if (!clock) throw new Error(`${where} is HH, HH:MM or HH:MM:SS, with optional fractional seconds.`);
+  return clock.seconds;
+}
+
+function compareInjectionTime(measured, expected) {
+  const ours = parseClock(measured), vendor = parseClock(expected);
+  if (!ours) return { status: 'missing', note: measured ? 'VEAcom recorded an invalid injection time' : 'VEAcom gave no injection time' };
+  const apart = ours.seconds - vendor.seconds;
+  const precision = Math.max(ours.precision, vendor.precision);
+  if (precision === 3600 || ours.precision > vendor.precision) {
+    const width = precision === 3600 ? 2 : 5;
+    const matches = ours.display.slice(0, width) === vendor.display.slice(0, width);
+    return { veacom: ours.display, status: matches ? 'reported' : 'beyond',
+      note: `Injection times ${matches ? 'agree' : 'differ'} at the recorded ${precision === 3600 ? 'hour' : 'minute'} precision.` };
+  }
+  const within = Math.abs(apart) < precision;
+  return { veacom: ours.display, status: within ? 'within' : 'beyond', note: within ? '' : `${Math.round(apart)} s apart` };
 }
 
 const number = text => Number(text.replace(',', '.'));
@@ -165,13 +205,18 @@ function decayMinutes({ factorPerBqml, weightKg, doseBq, halfLifeSeconds }) {
 }
 
 const percent = (value, reference) => Number.isFinite(value) && Number.isFinite(reference) && reference !== 0 ? (value - reference) / Math.abs(reference) * 100 : null;
+function withinTolerance(value, reference, tolerance) {
+  if (reference === 0) return value === 0;
+  const difference = percent(value, reference);
+  return difference !== null && Math.abs(difference) <= tolerance + 1e-9;
+}
 const round = (value, digits = 6) => value === null || value === undefined || !Number.isFinite(value) ? value : Number(value.toPrecision(digits));
 const signed = value => `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(value).toFixed(2)}%`;
 
 /**
  * VEAcom's readings side by side with the vendor's, one row per value. SUVmax and SUVpeak are held to their limits,
  * and the SUV factor and its parameters (weight, height, activity, injection time, sex) to the factor's; means, MTV
- * and TLG are reported without a limit. A note suggests the cause of a difference: another voxel, another SUV factor,
+ * and TLG are reported unless the vendor file sets a limit. A note suggests what to check: voxel coordinates, SUV factors,
  * another lean body mass formula, another SUVpeak method. Statuses: within, beyond, reported (no limit) and missing
  * (VEAcom gave no value).
  * @param studies VEAcom's readings, as tools/pet-validation.cjs collects them
@@ -180,9 +225,13 @@ const signed = value => `${value > 0 ? '+' : value < 0 ? '−' : ''}${Math.abs(v
 function compare(studies, vendor) {
   const rows = [], { tolerances } = vendor;
   const add = ({ study, sphere = '', quantity = '', measure, veacom, theirs, tolerance, note = '', status }) => {
-    const known = veacom !== undefined && veacom !== null && veacom !== '';
+    const known = typeof veacom === 'number' ? Number.isFinite(veacom) : veacom !== undefined && veacom !== null && veacom !== '';
     const difference = known && typeof veacom === 'number' ? percent(veacom, theirs) : null;
-    status ??= !known ? 'missing' : tolerance === undefined || difference === null ? 'reported' : Math.abs(difference) <= tolerance + 1e-9 ? 'within' : 'beyond';
+    if (!status) {
+      if (!known) status = 'missing';
+      else if (tolerance === undefined) status = 'reported';
+      else status = withinTolerance(veacom, theirs, tolerance) ? 'within' : 'beyond';
+    }
     rows.push({ study, sphere, quantity, measure, veacom: typeof veacom === 'number' ? round(veacom) : veacom, vendor: typeof theirs === 'number' ? round(theirs) : theirs,
       difference_percent: difference === null ? '' : Number(difference.toFixed(3)), tolerance_percent: tolerance ?? '', status,
       note: status === 'missing' && !note ? 'VEAcom gave no value' : note });
@@ -210,44 +259,42 @@ function compare(studies, vendor) {
       add({ study: name, measure: 'sex', veacom: ours, theirs: parameters.sex, status: ours === undefined ? 'missing' : ours === parameters.sex ? 'within' : 'beyond' });
     }
     if (parameters.injectionTime !== undefined) {
-      const given = clockSeconds(parameters.injectionTime), toSecond = /\d{2}:\d{2}:\d{2}|^\d{6}/.test(parameters.injectionTime);
-      const ours = factor.injectionTime ? clockSeconds(factor.injectionTime) : undefined, apart = ours === undefined ? null : ours - given;
-      add({ study: name, measure: 'injection time', veacom: formatClock(ours), theirs: parameters.injectionTime,
-        status: apart === null ? 'missing' : Math.abs(apart) < (toSecond ? 1 : 60) ? 'within' : 'beyond', note: apart !== null && Math.abs(apart) >= (toSecond ? 1 : 60) ? `${Math.round(apart)} s apart` : '' });
+      add({ study: name, measure: 'injection time', theirs: parameters.injectionTime, ...compareInjectionTime(factor.injectionTime, parameters.injectionTime) });
     }
     for (const [sphereName, reading] of expected.spheres) {
       const sphere = measured.spheres.find(item => item.name === sphereName);
       if (!sphere || sphere.error) { add({ study: name, sphere: sphereName, measure: 'sphere', note: sphere?.error ?? 'Not in the spheres file for this study' }); continue; }
-      let sameVoxel = null;
+      let activityNote = '';
       if (reading.maxBqml !== undefined) {
-        if (sphere.maxBqml === undefined) add({ study: name, sphere: sphereName, quantity: 'Bq/ml', measure: 'max', veacom: '', theirs: reading.maxBqml, status: 'reported',
-          note: 'VEAcom cannot give this series in Bq/ml' });
-        else {
-          sameVoxel = Math.abs(percent(sphere.maxBqml, reading.maxBqml)) <= tolerances.sameVoxel;
-          add({ study: name, sphere: sphereName, quantity: 'Bq/ml', measure: 'max', veacom: sphere.maxBqml, theirs: reading.maxBqml, tolerance: tolerances.sameVoxel,
-            note: sameVoxel ? 'The same voxel' : 'Not the same voxel: check that both spheres hold the same hottest voxel' });
-        }
+        if (sphere.maxBqml !== undefined) activityNote = withinTolerance(sphere.maxBqml, reading.maxBqml, tolerances.sameVoxel)
+          ? 'The maximum activity concentrations agree.' : 'The maximum activity concentrations differ. Check the hottest voxel coordinates and activity scaling.';
+        add({ study: name, sphere: sphereName, quantity: 'Bq/ml', measure: 'max', veacom: sphere.maxBqml, theirs: reading.maxBqml, tolerance: tolerances.sameVoxel,
+          note: activityNote || 'VEAcom gave no maximum in Bq/ml' });
       }
       for (const quantity of QUANTITIES) {
-        const ours = sphere.values?.[quantity];
+        let ours = sphere.values?.[quantity], storedLbm = false;
+        if (quantity === 'SUL' && !ours) {
+          ours = sphere.values?.SUVlbm ?? (factor.storedLbmType ? sphere.values?.SUV : undefined);
+          storedLbm = Boolean(ours);
+        }
         for (const [measure, value] of Object.entries(reading[quantity] ?? {})) {
           if (value === undefined) continue;
           const veacom = ours?.[measure], limit = tolerances[measure];
           let note = '';
-          if (!ours) note = quantity === 'SUL' && sphere.values?.SUVbw ? 'VEAcom gives no SUL: the file lacks height or sex' : 'VEAcom gives no SUV for this series';
+          if (!ours) note = `VEAcom gave no ${quantity} reading for this series`;
           else if (veacom === undefined && measure === 'peak') note = ours.peakUnavailable ? 'No complete 1 cm³ sphere fits inside the VOI' : '';
           else if (veacom === undefined && (measure === 'mtv' || measure === 'tlg')) note = sphere.mtvNote || 'No MTV for this sphere';
-          else if (veacom !== undefined && limit !== undefined && Math.abs(percent(veacom, value)) > limit) {
+          else if (veacom !== undefined && limit !== undefined && !withinTolerance(veacom, value, limit)) {
             const causes = [];
-            if (measure === 'max' && sameVoxel === false) causes.push('Not the same voxel (see Bq/ml).');
-            if (measure === 'max' && sameVoxel === true) causes.push('The same voxel, so the SUV factors differ.');
+            if (measure === 'max' && activityNote) causes.push(activityNote);
             if (measure === 'peak') causes.push('SUVpeak methods differ: VEAcom takes the highest 1 cm³ mean anywhere inside the VOI.');
             if (factorNote) causes.push(factorNote);
-            if (quantity === 'SUL' && ratios?.james && Math.abs(percent(ratios.james / ratios.janmahasatian * veacom, value)) <= limit) {
+            if (quantity === 'SUL' && !storedLbm && ratios?.james && withinTolerance(ratios.james / ratios.janmahasatian * veacom, value, limit)) {
               causes.push('SUL by the James lean body mass matches; VEAcom uses Janmahasatian.');
             }
             note = causes.join(' ');
           } else if (sphere.mtvNote && (measure === 'mtv' || measure === 'tlg')) note = sphere.mtvNote;
+          if (storedLbm) note = [`Stored ${ours.quantity}, DICOM SUV Type ${factor.storedLbmType ?? 'LBM'}.`, note].filter(Boolean).join(' ');
           add({ study: name, sphere: sphereName, quantity: measure === 'mtv' ? 'mL' : quantity, measure: MEASURES[measure], veacom, theirs: value, tolerance: limit, note });
         }
       }
@@ -256,24 +303,35 @@ function compare(studies, vendor) {
   return rows;
 }
 
-const formatClock = seconds => seconds === undefined ? undefined
-  : [Math.floor(seconds / 3600), Math.floor(seconds / 60) % 60, Math.floor(seconds % 60)].map(part => String(part).padStart(2, '0')).join(':');
-
 /** RFC 4180 CSV with a header row: numbers as written in JavaScript (a dot for decimals), text quoted when it needs it. */
 function toCsv(rows, columns) {
   const cell = value => {
     if (value === undefined || value === null) return '';
-    const text = typeof value === 'number' ? (Number.isFinite(value) ? String(value) : '') : Array.isArray(value) ? value.join(' ') : String(value);
+    if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+    let text = Array.isArray(value) ? value.join(' ') : String(value);
+    // CSV quoting alone leaves spreadsheet formulas active in text fields.
+    if (/^\s*[=+@＝＋＠－-]|^[\t\r\n]/u.test(text)) text = `'${text}`;
     return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   };
   return `${[columns.join(','), ...rows.map(row => columns.map(column => cell(row[column])).join(','))].join('\r\n')}\r\n`;
 }
 
-/** Whether `file` lies inside the folder `root` (the repository): real studies and their readings stay out of it. */
-function inside(file, root) {
-  const relative = path.relative(path.resolve(root), path.resolve(file));
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+/** Resolve symlinks even when an output directory has yet to be created. */
+function canonicalPath(file) {
+  const absolute = path.resolve(file);
+  try { return realpathSync.native(absolute); }
+  catch (error) {
+    const parent = path.dirname(absolute);
+    if (error.code !== 'ENOENT' || parent === absolute || lstatSync(absolute, { throwIfNoEntry: false })?.isSymbolicLink()) throw error;
+    return path.join(canonicalPath(parent), path.basename(absolute));
+  }
+}
+
+/** Check both the named path and its physical destination. */
+function inside(file, root, resolved = canonicalPath(file)) {
+  const contained = relative => relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+  return contained(path.relative(root, file)) || contained(path.relative(canonicalPath(root), resolved));
 }
 
 module.exports = { TOLERANCES, ROLES, QUANTITIES, MEASURES, LIVER_RADIUS_MM, readSpheres, readVendor, parseSphereValues, leanBodyMassRatios,
-  decayMinutes, clockSeconds, compare, toCsv, inside, percent };
+  decayMinutes, clockSeconds, compare, toCsv, canonicalPath, inside, percent };

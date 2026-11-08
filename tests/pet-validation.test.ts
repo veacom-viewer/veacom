@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,7 +14,7 @@ import { assertClose } from './support';
 const require = createRequire(import.meta.url);
 const validation = require('../tools/lib/pet-validation.cjs');
 const { axialPlacement } = require('../tools/lib/pet-validation-geometry.cjs');
-const { factorRecord, readingRows } = require('../tools/pet-validation.cjs');
+const { factorRecord, maxActivityBqml, readingRows } = require('../tools/pet-validation.cjs');
 const root = fileURLToPath(new URL('..', import.meta.url));
 
 describe('the spheres file', () => {
@@ -139,18 +142,67 @@ describe('VEAcom against the vendor', () => {
     assert.match(row(beyond, 'L1', 'SUVbw', 'peak').note, /SUVpeak methods differ/);
   });
 
-  it('tells the same voxel from another by its activity concentration, and names the SUV factor', () => {
-    // The same voxel (20,000 Bq/ml in both), SUVbw 1.5% apart: the vendor's factor is 1.5% lower.
+  it('compares activity concentrations and reports independently measured factor differences', () => {
     const same = rows(vendor({ L1: { SUVbw: { max: 6.897 }, maxBqml: 20_000 } }, { factor: 3.5e-4 / 1.015 }));
     assert.equal(row(same, 'L1', 'Bq/ml', 'max').status, 'within');
     assert.equal(row(same, '', '', 'SUVbw factor (per Bq/ml)').status, 'beyond');
     assert.match(row(same, '', '', 'SUVbw factor (per Bq/ml)').note, /differ by \+1\.50%, as 2\.4 min of decay would/);
-    assert.match(row(same, 'L1', 'SUVbw', 'max').note, /^The same voxel, so the SUV factors differ\. The SUV factors differ by \+1\.50%/);
-    // Another voxel: its Bq/ml differ, the factors agree.
+    assert.match(row(same, 'L1', 'SUVbw', 'max').note, /^The maximum activity concentrations agree\. The SUV factors differ by \+1\.50%/);
     const other = rows(vendor({ L1: { SUVbw: { max: 7.2 }, maxBqml: 20_570 } }, { factor: 3.5e-4 }));
     assert.equal(row(other, 'L1', 'Bq/ml', 'max').status, 'beyond');
-    assert.match(row(other, 'L1', 'SUVbw', 'max').note, /^Not the same voxel/);
+    assert.match(row(other, 'L1', 'SUVbw', 'max').note, /^The maximum activity concentrations differ/);
     assert.equal(row(other, '', '', 'SUVbw factor (per Bq/ml)').status, 'within');
+  });
+
+  it('reports agreement for disjoint spheres with identical activity without claiming voxel identity', () => {
+    const sites = [-100, -50].map((x, i) => ({ name: `L${i + 1}`, placed: { center: [x, 0, -215], radius: 8 }, maxBqml: 5714 }));
+    const all: Row[] = validation.compare([{ study: 'GE-01', factor: {}, spheres: sites }], vendor({ L1: { maxBqml: 5714 }, L2: { maxBqml: 5714 } }));
+    assert.equal(all.length, 2);
+    for (const item of all) assert.deepEqual([item.status, item.note], ['within', 'The maximum activity concentrations agree.']);
+  });
+
+  it('requires an exact zero for a limited reading with a zero reference', () => {
+    const expected = vendor({ L1: { SUVbw: { max: 0, peak: 0, mean: 0 }, maxBqml: 0 } }, { factor: 0 });
+    const all = rows(expected);
+    for (const item of all.filter(item => item.measure !== 'mean')) {
+      assert.deepEqual([item.status, item.difference_percent], ['beyond', '']);
+    }
+    const zero: Row[] = validation.compare([{ study: 'GE-01', factor: { suvbwPerBqml: 0 }, spheres: [
+      { name: 'L1', values: { SUVbw: values('SUVbw', 0, 0, { mean: 2 }) }, maxBqml: 0 },
+    ] }], expected);
+    assert.deepEqual(zero.map(item => item.status), ['within', 'within', 'within', 'within', 'reported']);
+  });
+
+  it('compares the displayed Bq/ml directly and leaves unavailable activity missing', () => {
+    const raw = validation.parseSphereValues('Bq/ml max 20000.0 · mean 9164.3');
+    const maxBqml = maxActivityBqml(raw, undefined, undefined);
+    assert.equal(maxBqml, 20_000);
+    const sphere = { name: 'L1', role: 'lesion', requested: { center: [0, 0, 0], radius: 10 }, values: { 'Bq/ml': raw }, maxBqml };
+    const study = { study: 'GE-01', series: { number: 3 }, factor: {}, spheres: [sphere] };
+    assert.equal(readingRows([study])[0].max_bqml, 20_000);
+    const expected = vendor({ L1: { maxBqml: 1000 } });
+    const [mismatch] = validation.compare([study], expected);
+    assert.deepEqual([mismatch.veacom, mismatch.status, mismatch.difference_percent], [20_000, 'beyond', 1900]);
+    const [missing] = validation.compare([{ ...study, spheres: [{ name: 'L1', values: { CNTS: values('CNTS', 5) } }] }], expected);
+    assert.equal(missing.status, 'missing');
+    assert.equal(maxActivityBqml(values('SUVbw', 7), 7.00021, 0.00035), 7.00021 / 0.00035);
+    assert.equal(maxActivityBqml(values('SUVlbm', 7), undefined, 0.00035), undefined);
+  });
+
+  it('compares stored lean-body-mass SUV with SUL and retains its normalization', () => {
+    for (const [suvType, unit] of [['LBM', 'SUVlbm'], ['LBMJAMES128', 'SUV'], ['LBMJANMA', 'SUV'], ['BSA', 'SUVbsa']]) {
+      const factor = factorRecord('GE-01', { valueUnit: unit, suvFactor: 1, warnings: [] }, [
+        { tag: '(0054,1001)', value: 'GML' }, { tag: '(0054,1006)', value: suvType },
+      ])._compare;
+      const raw = validation.parseSphereValues(`${unit} max 7.00 · SULpeak 7.00 · mean 3.21`);
+      const all: Row[] = validation.compare([{ study: 'GE-01', factor, spheres: [{ name: 'L1', values: { [unit]: raw } }] }],
+        vendor({ L1: { SUVbw: { max: 7 }, SUL: { max: 7, peak: 7 } } }));
+      assert.equal(all[0].status, 'missing');
+      for (const item of all.slice(1)) {
+        if (suvType === 'BSA') assert.equal(item.status, 'missing');
+        else assert.deepEqual([item.veacom, item.status, item.note], [7, 'within', `Stored ${unit}, DICOM SUV Type ${suvType}.`]);
+      }
+    }
   });
 
   it('recognises SUL by the James lean body mass', () => {
@@ -169,18 +221,36 @@ describe('VEAcom against the vendor', () => {
     assert.deepEqual([late[0].status, late[0].veacom, late[0].note], ['beyond', '11:00:00', '30 s apart']);
   });
 
+  it('takes the injection clock from Start DateTime before Start Time', () => {
+    const record = factorRecord('GE-01', { petAcquisition: { injectionTime: '103000', injectionDateTime: '19991001104800.25+0100' } }, []);
+    assert.equal(record.injection_time, '104800.25');
+    assert.equal(record.injection_datetime, '19991001104800.25+0100');
+    const [item] = rows(vendor({}, { injectionTime: '10:48:00' }), measured(record._compare));
+    assert.deepEqual([item.veacom, item.status], ['10:48:00.25', 'within']);
+  });
+
+  it('keeps time precision and continues comparing when a scanner time is invalid', () => {
+    for (const [ours, theirs, display, status] of [
+      ['11', '11:34:56', '11', 'reported'], ['11', '12:00', '11', 'beyond'], ['11', '11', '11', 'reported'],
+      ['1105', '11:05:59', '11:05', 'reported'], ['1100', '11:00', '11:00', 'within'], ['110099', '11:00', undefined, 'missing'],
+    ]) {
+      const [time, max] = rows(vendor({ L1: { SUVbw: { max: 7 } } }, { injectionTime: theirs }), measured({ injectionTime: ours }));
+      assert.deepEqual([time.veacom, time.status, max.status], [display, status, 'within']);
+    }
+  });
+
   it('says why VEAcom has no value', () => {
     const studies = measured();
     studies[0].spheres[1] = { name: 'L1', values: { SUVbw: values('SUVbw', 7, undefined, { peakUnavailable: true }) } } as never;
     const all = rows(vendor({ L1: { SUVbw: { peak: 6.9, mtv: 14 }, SUL: { max: 5.6 } }, L9: { SUVbw: { max: 3 } } }), studies);
     assert.deepEqual(all.map(({ measure, status, note }: Row) => `${measure} ${status}: ${note}`), [
       'peak missing: No complete 1 cm³ sphere fits inside the VOI', 'MTV 41% missing: No MTV for this sphere',
-      'max missing: VEAcom gives no SUL: the file lacks height or sex', 'sphere missing: Not in the spheres file for this study']);
+      'max missing: VEAcom gave no SUL reading for this series', 'sphere missing: Not in the spheres file for this study']);
     // A PET VEAcom gives no SUV: its values stay in counts, and neither SUVbw nor SUL is compared.
     const counts = [{ ...studies[0], spheres: [{ name: 'L1', values: { CNTS: values('CNTS', 2857) } }] }];
     assert.deepEqual(rows(vendor({ L1: { SUVbw: { max: 7 }, SUL: { max: 5.6 } } }), counts as never).map(({ status, note }: Row) => `${status}: ${note}`),
-      ['missing: VEAcom gives no SUV for this series', 'missing: VEAcom gives no SUV for this series']);
-    assert.deepEqual(validation.compare([{ study: 'GE-01', error: 'No PET series matches' }], vendor({})).map((item: { status: string; note: string }) => `${item.status}: ${item.note}`),
+      ['missing: VEAcom gave no SUVbw reading for this series', 'missing: VEAcom gave no SUL reading for this series']);
+    assert.deepEqual(validation.compare([{ study: 'GE-01', error: 'No PET series matches' }], vendor({}, { weightKg: 70 })).map((item: { status: string; note: string }) => `${item.status}: ${item.note}`),
       ['missing: No PET series matches']);
   });
 
@@ -188,7 +258,38 @@ describe('VEAcom against the vendor', () => {
     assert.throws(() => validation.readVendor({ studies: [{ study: 'GE-01', spheres: { L1: { SUVbw: { maximum: 3 } } } }] }), /measures are max, peak, mean, sd, mtv, tlg/);
     assert.throws(() => validation.readVendor({ studies: [{ study: 'GE-01', suv: { injectionTime: '25:00' } }] }), /HH:MM/);
     assert.throws(() => validation.readVendor({ tolerances: { max: -1 }, studies: [] }), /per cent/);
-    assert.equal(validation.readVendor({ tolerances: { max: 2 }, studies: [] }).tolerances.max, 2);
+    assert.equal(validation.readVendor({ tolerances: { max: 2 }, studies: [{ study: 'GE-01', suv: { weightKg: 70 } }] }).tolerances.max, 2);
+    assert.throws(() => validation.readVendor({ studies: [] }), /at least one study/);
+    assert.throws(() => vendor({}), /at least one SUV parameter or sphere reading/);
+    assert.throws(() => vendor({ L1: {} }), /at least one sphere reading/);
+    assert.throws(() => vendor({ L1: { SUVbw: {} } }), /at least one SUVbw measure/);
+    assert.throws(() => vendor({ L1: { SUVBW: { max: 7 } } }), /unknown quantity "SUVBW"/);
+    assert.throws(() => vendor({ L1: { maxBqml: 20_000, SUVBW: { max: 7 } } }), /unknown quantity "SUVBW"/);
+    assert.throws(() => vendor({}, { injectionTime: '11:00:99' }), /HH:MM/);
+  });
+
+  it('checks known synthetic means, MTV and TLG at the displayed precision', t => {
+    const temp = mkdtempSync(path.join(tmpdir(), 'veacom-pet-expectations-'));
+    t.after(() => rmSync(temp, { recursive: true, force: true }));
+    const folder = path.join(temp, 'study');
+    for (const script of ['make-pet-followup.mjs', 'make-pet-validation-inputs.mjs']) {
+      execFileSync(process.execPath, [path.join(root, 'tools/fixtures', script), folder]);
+    }
+    const expected = JSON.parse(readFileSync(path.join(folder, 'pet-validation-expected.json'), 'utf8'));
+    const current = expected.studies.find((study: { study: string }) => study.study === 'current');
+    const actual = [{ study: 'current', factor: {}, spheres: [
+      { name: 'liver', values: { SUL: values('SUL', 1.6, undefined, { mean: 1.6 }) } },
+      { name: 'L1', values: { SUVbw: values('SUVbw', 7, 7, { mtv: 14.6, tlg: 102.1 }) } },
+    ] }];
+    const statuses = () => {
+      const all = validation.compare(actual, validation.readVendor(expected));
+      return [row(all, 'liver', 'SUL', 'mean'), row(all, 'L1', 'mL', 'MTV 41%'), row(all, 'L1', 'SUVbw', 'TLG')].map(item => item.status);
+    };
+    assert.deepEqual(statuses(), ['within', 'within', 'within']);
+    current.spheres.liver.SUL.mean = 9999;
+    current.spheres.L1.SUVbw.mtv += 0.1;
+    current.spheres.L1.SUVbw.tlg += 0.1;
+    assert.deepEqual(statuses(), ['beyond', 'beyond', 'beyond']);
   });
 });
 
@@ -196,6 +297,14 @@ describe('the files it writes', () => {
   it('writes RFC 4180 CSV with a dot for decimals', () => {
     assert.equal(validation.toCsv([{ a: 1.5, b: 'x, "y"', c: undefined }, { a: Number.NaN, b: 'line\nbreak', c: [1, 2] }], ['a', 'b', 'c']),
       'a,b,c\r\n1.5,"x, ""y""",\r\n,"line\nbreak",1 2\r\n');
+  });
+
+  it('escapes spreadsheet formulas in text fields and preserves negative numeric readings', () => {
+    for (const value of ['=1+2', '+1', '-1', '@SUM(A1)', '  =1+2', '\t=1+2', '＝1+2', '＋1']) {
+      assert.equal(validation.toCsv([{ description: value, max: -7.25 }], ['description', 'max']), `description,max\r\n'${value},-7.25\r\n`);
+    }
+    assert.equal(validation.toCsv([{ description: '=SUM(1,2)' }], ['description']), 'description\r\n"\'=SUM(1,2)"\r\n');
+    assert.equal(validation.toCsv([{ name: '\r=1' }], ['name']), 'name\r\n"\'\r=1"\r\n');
   });
 
   it('writes one row per sphere and quantity, with where VEAcom placed it', () => {
@@ -211,8 +320,28 @@ describe('the files it writes', () => {
   it('keeps real studies and readings out of the repository', () => {
     assert.equal(validation.inside(path.join(root, 'test-results/x'), root), true);
     assert.equal(validation.inside(root, root), true);
+    assert.equal(validation.inside(path.join(root, '..patient-results'), root), true);
     assert.equal(validation.inside(path.join(root, '..', 'studies'), root), false);
     assert.equal(validation.inside(`${root.replace(/\/$/, '')}-other/x`, root), false);
+  });
+
+  it('rejects a real-study output under a symlink into the checkout before creating directories', t => {
+    const temp = mkdtempSync(path.join(tmpdir(), 'veacom-pet-path-'));
+    const destination = mkdtempSync(path.join(root, '.pet-validation-test-'));
+    t.after(() => { rmSync(temp, { recursive: true, force: true }); rmSync(destination, { recursive: true, force: true }); });
+    const alias = path.join(temp, 'external');
+    symlinkSync(destination, alias, 'junction');
+    const spheres = path.join(temp, 'spheres.json');
+    writeFileSync(spheres, JSON.stringify({ studies: [{ study: 'absent', spheres: [{ name: 'L1', center: [0, 0, 0], radius: 8 }] }] }));
+    const cli = (output: string) => spawnSync(process.execPath, [path.join(root, 'tools/pet-validation.cjs'), temp, spheres, output], { encoding: 'utf8' });
+    const output = path.join(alias, 'new', 'results');
+    assert.equal(validation.inside(output, root), true);
+    const rejected = cli(output);
+    assert.equal(rejected.status, 1);
+    assert.match(rejected.stderr, /OUTPUT_DIR .* is inside the repository/);
+    assert.equal(existsSync(path.join(destination, 'new')), false);
+    symlinkSync(destination, path.join(temp, 'absent'), 'junction');
+    assert.match(cli(path.join(temp, 'results')).stderr, /resolves outside STUDIES_DIR/);
   });
 });
 

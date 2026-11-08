@@ -46,7 +46,7 @@ Make the same readings in both tools, in SUVbw. Repeat them in SUL where height 
 
 - Draw each sphere at the same centre and radius in both tools. Record the centre in DICOM patient coordinates (LPS, mm): x towards the patient's left, y towards the back, z towards the head. A workstation that shows R, A or I values gives them as negative x, y and z. VEAcom puts the centre on the nearest slice; its output says where.
 - Where the vendor shows them, also record:
-  - the hottest voxel of each lesion in Bq/ml, which shows that both tools took the same voxel;
+  - the hottest voxel of each lesion in Bq/ml, and its LPS coordinates in the same frame of reference if both tools expose them;
   - the SUV parameters it used: weight, height, sex, injected activity and injection time;
   - its SUV factor (SUVbw per Bq/ml);
   - its definitions of SUVpeak, of MTV (all voxels in the sphere, or the region connected to the hottest) and of lean body mass, from its manual.
@@ -62,7 +62,7 @@ node tools/pet-validation.cjs ~/pet-validation/studies ~/pet-validation/spheres.
 
 `STUDIES_DIR` holds one folder per study. The output folder must be new or empty. `--screenshots` adds a picture of each sphere, with the patient's details hidden (Shift+F12); leave it out unless needed.
 
-For each study the tool opens the folder in the desktop app with a fresh profile, finds the PET and draws each sphere, one at a time. It gives the sphere its role, reads its values in SUVbw and SUL, and deletes it. It checks each sphere against where VEAcom kept it and stops that sphere if it is out of place. While it runs, the app's window ignores the computer's own mouse and keyboard (macOS and Linux).
+For each study the tool opens the folder in the desktop app with a fresh profile, finds the PET and draws each sphere, one at a time. It assigns the role where available, reads the displayed quantities, and deletes the sphere. When VEAcom stores the placement, the tool checks its centre and radius. It flags an unconfirmed placement in the readings. On macOS and Linux the window ignores the computer's own mouse and keyboard.
 
 ### The spheres file
 
@@ -111,9 +111,10 @@ For each study the tool opens the folder in the desktop app with a fresh profile
 ```
 
 - `software` names the workstation, application and version. It can be given per study as well.
-- `suv` holds what the vendor shows of its SUV factor; every field is optional. `factor` is SUVbw per Bq/ml. For a reading with SUV and Bq/ml, it is the SUV divided by the Bq/ml.
+- `suv` holds the parameters the workstation displays. Each field is optional. `factor` is SUVbw divided by Bq/ml. Enter the injection time on the same scanner clock as the DICOM file, using only the digits the workstation shows.
 - Each sphere, by its name in the spheres file, gives `SUVbw` and `SUL` readings: `max`, `peak`, `mean`, `sd`, `mtv` (mL at 41%) and `tlg`. `maxBqml` is the hottest voxel in Bq/ml.
-- `tolerances` (optional, in per cent) changes the limits below.
+- Supply at least one reading or SUV parameter per study. Each named sphere needs at least one reading.
+- `tolerances` sets percentage limits for `max`, `peak`, `factor` and `sameVoxel` (the Bq/ml maximum). You can also set limits for `mean`, `sd`, `mtv` and `tlg`. A zero reference matches only a measured zero when a limit applies. The percentage difference is left blank for a zero reference.
 
 `node tools/fixtures/make-pet-validation-inputs.mjs <folder>` writes both files for the synthetic follow-up. Use them as templates.
 
@@ -126,7 +127,9 @@ For each study the tool opens the folder in the desktop app with a fresh profile
 | `comparison.csv` | With `--vendor`: each value side by side with its difference in per cent and a status, and a note on the likely cause of a difference |
 | `run.json` | VEAcom's commit and version, whether the checkout had changes, fingerprints of the engine and interface, the platform, fingerprints of both JSON files, the vendor's software and the limits used |
 
-The statuses are `within` and `beyond` a limit, `reported` (no limit applies) and `missing` (VEAcom gave no value, with the reason). The tool exits unsuccessfully when anything is beyond its limit or missing, or a study or sphere could not be measured.
+The statuses are `within` and `beyond` a limit, `reported` (no limit applies or the time has limited precision) and `missing` (VEAcom gave no comparable value). The tool exits unsuccessfully when anything is beyond its limit or missing, or a study or sphere could not be measured.
+
+The CSV files prefix formula-like text with an apostrophe for spreadsheet import. Numeric readings keep their signs.
 
 ## Acceptance
 
@@ -134,9 +137,9 @@ The statuses are `within` and `beyond` a limit, `reported` (no limit applies) an
 |---|---|
 | SUVmax, where both tools take the same voxel | Within 1% |
 | SUVpeak | Within 5%: the methods may differ |
-| SUV factor, and the weight, height, activity and injection time behind it | Any difference explained. The tool flags a factor or value more than 0.2% apart, and an injection time a second apart (a minute if the vendor shows minutes); smaller differences are rounding. |
+| SUV factor, and the weight, height, activity and injection time behind it | Explain differences above 0.2%. Compare injection times to the second, or to the minute when the workstation gives minutes. When either time gives only an hour, or VEAcom gives less precision than the workstation, a match at that precision is reported and a mismatch is flagged. |
 
-- **The same voxel.** The hottest voxel's activity concentration is independent of the SUV factor. When both tools read the same Bq/ml within 0.5%, they took the same voxel. Then any SUVmax difference is the SUV factor's. When the Bq/ml differ, move or widen the spheres until both hold the same hottest voxel, and read again.
+- **Hottest voxel.** The kit compares the maximum activity concentrations within 0.5%. Different voxels can have the same concentration. To establish voxel identity, check the hottest voxel coordinates on the same image grid. The CSV centre coordinates locate the drawn sphere. If the concentrations differ, check sphere placement and activity scaling in both tools.
 - **SUVpeak.** VEAcom gives the highest mean of a 1 cm³ sphere anywhere inside the VOI, partial voxels weighted (Practical PERCIST). Some workstations centre the 1 cm³ sphere on the hottest voxel instead, or average a cube of voxels. Record the vendor's definition.
 - **The SUV factor.** The comparison gives the difference in per cent, and the minutes of decay that would explain it. Known causes:
   - the decay reference of a later reconstruction: the scan start, or the Series Time;
@@ -145,8 +148,8 @@ The statuses are `within` and `beyond` a limit, `reported` (no limit applies) an
   - the half-life constant (a 0.01% effect);
   - an injection before midnight or a timezone offset;
   - Philips' own scale factors for a series in counts.
-- **SUL.** VEAcom computes lean body mass by Janmahasatian et al. (2005), as recommended for SUL. Some workstations use James (1976), which gives a lower lean body mass in obese patients. The comparison notes when SUL by James would match the vendor. `factors.csv` gives both ratios.
-- **Without a limit.** Liver and blood pool means, MTV and TLG are reported, not accepted or rejected. The same SUV factor applies to them, and tools include edge voxels differently. A large difference usually means the spheres are not in the same place.
+- **SUL.** VEAcom uses Janmahasatian et al. (2005) when computing SUL from SUVbw. A GML series can already store lean-body-mass SUV. The kit compares that value directly with the vendor's SUL and records its DICOM SUV Type. For computed SUL, the comparison notes when the James (1976) formula would match the workstation.
+- **Optional limits.** Liver and blood pool means, MTV and TLG are informational by default. The same SUV factor applies to them, and tools can include edge voxels differently.
 
 A study passes when every SUVmax and SUVpeak is within its limit and every SUV factor difference is explained. A difference VEAcom causes is a defect. Report it with a synthetic study that reproduces it, never with the real one. A difference the vendor causes, for example by decaying a later reconstruction to its Series Time, is recorded as explained. VEAcom keeps to QIBA and EANM rather than copy it.
 
@@ -161,11 +164,11 @@ A study passes when every SUVmax and SUVpeak is within its limit and every SUV f
 
 ## Known limits
 
-- The tool reads values as VEAcom's measurement list shows them: two decimals for SUV, MTV in mL to two decimals below 10 mL and one above. A lesion's hottest voxel in Bq/ml comes from VEAcom's unrounded SUVbw and its factor.
+- The tool reads values at the precision VEAcom displays. SUV has two decimals. MTV has two decimals below 10 mL and one at or above 10 mL. When the viewer displays Bq/ml directly, the kit uses that maximum. For a lesion displayed in SUVbw, it uses the stored unrounded SUVbw maximum and its Bq/ml factor where available.
 - It draws on axial slices only, with no rotation or flips; a sphere's centre lies on the nearest slice or plane.
 - It finds VEAcom's controls by their `data-action` and `data-testid` attributes, as the desktop checks do.
 - It has run on macOS. It has not run on Windows, where the app's window still takes the computer's own input.
-- `tools/fixtures/make-pet-validation-inputs.mjs` and the synthetic follow-up check the tool itself. It reproduces the known values: liver 2, blood pool 1.5, and lesions 10 then 7 and 4.5 then 3, in SUVbw and SUL.
+- CI checks each expected value from the synthetic follow-up at the precision of the displayed readings, including reference means, MTV and TLG.
 
 ## Sources
 

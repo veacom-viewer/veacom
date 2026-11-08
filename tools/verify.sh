@@ -46,6 +46,7 @@ run pet-followup-fixture node tools/fixtures/make-pet-followup.mjs "$out/pet-fol
 run pet-voi node tools/check-pet-voi.cjs "$out/pet-followup" "$out/pet-voi"
 run pet-validation-inputs node tools/fixtures/make-pet-validation-inputs.mjs "$out/pet-followup"
 run pet-validation node tools/pet-validation.cjs "$out/pet-followup" "$out/pet-followup/pet-validation-spheres.json" "$out/pet-validation" --vendor "$out/pet-followup/pet-validation-expected.json"
+run pet-validation-cases node tools/check-pet-validation-cases.mjs "$out/pet-followup" "$out/pet-validation-cases"
 run petct-fixture node tools/fixtures/make-petct-study.mjs "$out/petct-study"
 run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arrangements"
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"

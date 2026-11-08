@@ -28,7 +28,11 @@ const lesionMtv = (grid, lesion) => {
   return count * sx * sy * sz / 1000;
 };
 
-const spheres = { studies: [] }, expected = { software: 'Known values of the synthetic follow-up (tools/fixtures/make-pet-followup.mjs)', studies: [] };
+const spheres = { studies: [] }, expected = {
+  software: 'Known values of the synthetic follow-up (tools/fixtures/make-pet-followup.mjs)',
+  tolerances: { max: 0, peak: 0, mean: 0, mtv: 0, tlg: 0, factor: 0, sameVoxel: 0 },
+  studies: [],
+};
 for (const study of manifest.studies) {
   const grid = study.series.find(series => series.modality === 'PT');
   spheres.studies.push({ study: study.folder, spheres: [
@@ -44,7 +48,7 @@ for (const study of manifest.studies) {
   };
   for (const lesion of study.lesions) {
     const mtv = lesionMtv(grid, lesion);
-    readings[lesion.id] = { SUVbw: { max: lesion.suv, peak: lesion.suv, mtv: two(mtv), tlg: Number((mtv * lesion.suv).toFixed(1)) },
+    readings[lesion.id] = { SUVbw: { max: lesion.suv, peak: lesion.suv, mtv: Number(mtv.toFixed(mtv < 10 ? 2 : 1)), tlg: Number((mtv * lesion.suv).toFixed(1)) },
       SUL: { max: two(lesion.suv * sulPerBw), peak: two(lesion.suv * sulPerBw) },
       // Stored as whole Bq/ml (the fixture writes 16-bit values with a rescale slope of 1).
       maxBqml: Math.round(lesion.suv * bqPerSuv) };
