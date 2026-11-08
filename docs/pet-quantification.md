@@ -134,7 +134,7 @@ The copy waits while the PET is loading. If the clipboard refuses the text, the 
 ## Known limits
 
 - Roles, thresholds and the Deauville helper are offered on spheres drawn on the PET itself. A sphere on a fused CT reports the PET's values, but takes no role.
-- The synthetic follow-up has no noise, so every value is known. Nothing here has been tried with real PET data.
+- The synthetic follow-up has no noise, so every value is known. Nothing here has been tried with real PET data. [PET validation](pet-validation.md) is the protocol, and the tool, for checking these numbers against the vendor workstation on real studies.
 
 ## Checks
 

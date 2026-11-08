@@ -153,6 +153,12 @@ jobs:
         run: |
           node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-followup"
           node tools/check-pet-voi.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/pet-voi"
+      - name: PET validation kit on the synthetic follow-up
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-validation-followup"
+          node tools/fixtures/make-pet-validation-inputs.mjs "$RUNNER_TEMP/pet-validation-followup"
+          node tools/pet-validation.cjs "$RUNNER_TEMP/pet-validation-followup" "$RUNNER_TEMP/pet-validation-followup/pet-validation-spheres.json" "$EVIDENCE/pet-validation" --vendor "$RUNNER_TEMP/pet-validation-followup/pet-validation-expected.json"
       - name: Arrangements on a synthetic PET/CT
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
