@@ -30,6 +30,10 @@ run core-build pnpm run build:core
 run core-tests cargo test --release --locked --manifest-path native/Cargo.toml
 run unit pnpm test
 run web-build pnpm run build:web
+if [ "$(uname -s)" = Darwin ]; then
+  run native-views node tools/check-native-views.cjs
+  run native-texture node tools/check-native-presentation.cjs
+fi
 run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
 run video-encoder node tools/check-video-encoder.cjs "$out/video-encoder"
 run video-encoder-no-gpu node tools/check-video-encoder.cjs "$out/video-encoder" --no-gpu

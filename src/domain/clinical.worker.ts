@@ -1,10 +1,13 @@
 import type { PixelArray, Series, Volume } from '../model';
-import { CLINICAL_CACHE_BYTES, CLINICAL_COPY_CHUNK_BYTES, measureStudy, type Measurement, type RoiMark, type SequenceChoice } from './clinical';
+import { CLINICAL_CACHE_BYTES, CLINICAL_COPY_CHUNK_BYTES, measureStudy, type Measurement, type RoiMark, type SequenceChoice, type StudyVolume, type Sample, type SampleTask, studySamples } from './clinical';
 import { isLocale, setLocale, t, type Locale } from '../i18n';
 
 export type ClinicalPixelType = 'float64' | 'float32' | 'int16' | 'uint16' | 'uint8';
 export interface ClinicalVolumeDescriptor { series: Series; version: number; pixelType: ClinicalPixelType; byteLength: number; sourceFrameIndex?: number; }
 export type ClinicalWorkerRequest =
+  | { type: 'study'; id: number; volumes: StudyVolume[]; marks: RoiMark[]; sequences: Record<string, SequenceChoice>; locale: Locale }
+  | { type: 'sampled'; id: number; number: number; sample: Sample | null }
+
   | { type: 'begin'; id: number; volumes: ClinicalVolumeDescriptor[]; locale?: Locale }
   | { type: 'start'; id: number; seriesId: string }
   | { type: 'chunk'; id: number; seriesId: string; offset: number; bytes: ArrayBuffer }
@@ -13,6 +16,8 @@ export type ClinicalWorkerRequest =
   | { type: 'measure'; id: number; marks: RoiMark[]; sequences: Record<string, SequenceChoice>; locale?: Locale }
   | { type: 'cancel'; id: number };
 export type ClinicalWorkerResult =
+  | { type: 'sample'; id: number; number: number; task: SampleTask }
+
   | { type: 'ready'; id: number; missing: string[] }
   | { type: 'committed'; id: number; seriesId: string }
   | { type: 'received'; id: number; seriesId: string; offset: number }
@@ -41,7 +46,35 @@ function validateDescriptor(descriptor: ClinicalVolumeDescriptor): number {
   return expected;
 }
 
+let study: { id: number; number: number; steps: ReturnType<typeof studySamples>; started: number } | undefined;
+function nextSample(sample?: Sample | null) {
+  if (!study) return;
+  const { id, steps, started } = study;
+  try {
+    const next = sample === undefined ? steps.next() : steps.next(sample);
+    if (next.done) {
+      study = undefined;
+      scope.postMessage({ type: 'result', id, measurement: next.value, milliseconds: performance.now() - started });
+    } else scope.postMessage({ type: 'sample', id, number: ++study.number, task: next.value });
+  } catch (error) {
+    study = undefined;
+    scope.postMessage({ type: 'error', id, message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 scope.onmessage = ({ data }) => {
+  if (data.type === 'study') {
+    if (data.id <= latestId) return;
+    latestId = data.id;
+    setLocale(data.locale);
+    study = { id: data.id, steps: studySamples(data.volumes, data.marks, data.sequences), number: 0, started: performance.now() };
+    nextSample(); return;
+  }
+  if (data.type === 'sampled') {
+    if (study?.id === data.id && study.number === data.number) nextSample(data.sample);
+    return;
+  }
+  if (data.type === 'cancel' && study?.id === data.id) { study = undefined; return; }
   if (data.type !== 'begin' && data.id !== current?.id) return;
   if ((data.type === 'begin' || data.type === 'measure') && isLocale(data.locale)) setLocale(data.locale);
   try {

@@ -243,17 +243,21 @@ fn add_suv_stats(output: &mut Value, source: &SourceSeries, statistics: &Statist
     }
 }
 
-fn trilinear(pixels: &PixelBuffer, position: [f64; 3], dimensions: [usize; 3]) -> Result<f64> {
+fn trilinear(source: &SourceSeries, pixels: &PixelBuffer, position: [f64; 3]) -> Result<Option<f64>> {
+    let dimensions = source.info.dimensions;
     ensure!(
         inside(position, dimensions),
         "The selected region extends outside the volume."
     );
     let position: [f64; 3] =
         std::array::from_fn(|a| position[a].clamp(0.0, (dimensions[a] - 1) as f64));
+    let nearest=nearest_index(position,dimensions);
+    if pixels.is_padding(source,nearest[2],pixels.value(offset(nearest,dimensions))) {return Ok(None);}
     let low = position.map(|n| n.floor() as usize);
     let high: [usize; 3] = std::array::from_fn(|a| (low[a] + 1).min(dimensions[a] - 1));
     let fraction: [f64; 3] = std::array::from_fn(|a| position[a] - low[a] as f64);
     let mut value = 0.0;
+    let mut sum_weights = 0.0;
     for z in 0..2 {
         for y in 0..2 {
             for x in 0..2 {
@@ -270,16 +274,18 @@ fn trilinear(pixels: &PixelBuffer, position: [f64; 3], dimensions: [usize; 3]) -
                     .product();
                 if weight > 0.0 {
                     let sample = pixels.value(offset(index, dimensions));
+                    if pixels.is_padding(source,index[2],sample) {continue;}
                     ensure!(
                         sample.is_finite(),
                         "The selected region contains a non-finite pixel value."
                     );
                     value += weight * sample;
+                    sum_weights += weight;
                 }
             }
         }
     }
-    Ok(value)
+    Ok((sum_weights > 0.0).then(||value / sum_weights))
 }
 
 fn plane_roi(
@@ -414,7 +420,7 @@ fn plane_roi(
             if included {
                 let index = world_to_index(&source.geometry, world(uv))
                     .ok_or_else(|| anyhow::anyhow!("Invalid sampling plane."))?;
-                statistics.push(trilinear(pixels, index, source.info.dimensions)?)?;
+                if let Some(value) = trilinear(source, pixels, index)? { statistics.push(value)?; }
             }
         }
     }
@@ -543,9 +549,9 @@ fn roi(
                 index[fixed] = slice.round() as usize;
                 index[axes[0]] = u;
                 index[axes[1]] = v;
-                let value=pixels.value(offset(index, dimensions));
-                if value.is_nan() && source.frames.get(index[2]).is_some_and(|frame|frame.metadata.padding_is_nan) {
-                    excluded_padding+=1;
+                let value = pixels.value(offset(index, dimensions));
+                if pixels.is_padding(source, index[2], value) {
+                    excluded_padding += 1;
                 } else {
                     statistics.push(value)?;
                 }
@@ -617,6 +623,7 @@ pub fn measure(
             ensure!(points.len() == 1, "Pixel probe requires one point.");
             let index = nearest_index(positions[0], source.info.dimensions);
             let value = pixels.value(offset(index, source.info.dimensions));
+            ensure!(!pixels.is_padding(source,index[2],value), "The selected pixel is padding.");
             ensure!(value.is_finite(), "The selected pixel is not finite.");
             let mut result = json!({"kind":kind,"value":value,"unit":source.info.stored_unit(),"index":index,"world":points[0]});
             if let Some(factor) = source
@@ -722,6 +729,35 @@ mod tests {
             (value.as_f64().unwrap() - expected).abs() < 1.0e-9,
             "{value} != {expected}"
         );
+    }
+
+    #[test]
+    fn interpolated_measurements_exclude_padding_and_renormalize() {
+        let (mut source, _) = phantom();
+        source.info.padding_range = Some([-1000., -1000.]);
+        let mut values = vec![10i16;125];
+        values[0] = -1000;
+        let pixels = PixelBuffer::I16(values);
+        assert_eq!(trilinear(&source,&pixels,[0.25,0.,0.]).unwrap(), None);
+        assert_eq!(trilinear(&source,&pixels,[0.75,0.,0.]).unwrap(), Some(10.));
+        let point=source.info.origin;
+        assert!(measure(&source,&pixels,&[point],"probe").is_err());
+    }
+    #[test]
+    fn source_roi_excludes_declared_finite_padding_and_rejects_an_empty_sample() {
+        let (mut source, _) = phantom();
+        source.info.padding_range = Some([-1000.0, -999.0]);
+        let corners = points(&source, &[[0., 0., 0.], [1., 1., 0.]]);
+        let mut data = vec![-1000; 125];
+        data[1] = 10;
+        data[5] = 20;
+        data[6] = 30;
+        let result = measure(&source, &PixelBuffer::I16(data), &corners, "rectangle").unwrap();
+        near(&result["mean"], 20.);
+        assert_eq!(result["count"], 3);
+        assert_eq!(result["excludedPadding"], 1);
+        let padding = PixelBuffer::I16(vec![-999; 125]);
+        assert!(measure(&source, &padding, &corners, "rectangle").is_err());
     }
 
     #[test]
@@ -871,7 +907,7 @@ mod tests {
         near(&result["mean"], 222.0);
         assert_eq!(result["count"], 4);
         assert_eq!(result["sampling"], "plane-grid-trilinear");
-        assert!((trilinear(&pixels, [1.2, 2.3, 3.4], [5, 5, 5]).unwrap() - 364.2).abs() < 1.0e-10);
+        assert!((trilinear(&source, &pixels, [1.2, 2.3, 3.4]).unwrap().unwrap() - 364.2).abs() < 1.0e-10);
     }
 
     #[test]

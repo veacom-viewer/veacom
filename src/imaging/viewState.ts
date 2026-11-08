@@ -1,4 +1,4 @@
-import type { Series, ViewState, VoiFunction, Volume } from '../model';
+import type { Series, ViewState, VoiFunction, ViewVolume as Volume } from '../model';
 
 export function usesSourceFrames(series: Series, view: Pick<ViewState, 'mode'>): boolean {
   return view.mode === 'source' || !series.canReconstruct || series.sourceFramesOnly === true || series.components === 3;

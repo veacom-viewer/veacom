@@ -139,7 +139,7 @@ wait_phase() {
   until=$(( $(date +%s) + minutes * 60 ))
   while :; do
     rc=0
-    out=$(remote "$(kit "$name")\\status.ps1" -Name "$name" -Phase "$phase" 2>&1 | tr -d '\r') || rc=$?
+    out=$(remote "$(kit "$name")\\status.ps1" -Name "$name" -Phase "$phase" 2>&1 | LC_ALL=C tr -d '\r') || rc=$?
     if [ "$rc" -eq 255 ]; then
       drops=$((drops + 1))
       [ "$drops" -lt 3 ] || die "lost SSH three times; the task keeps running on the VM. Check it with: tools/windows-vm/vm.sh status $name"
@@ -245,7 +245,7 @@ cmd_status() {
   local rc=0
   check_name "$1"
   ssh_ready
-  remote "$(kit "$1")\\status.ps1" -Name "$1" -Phase all | tr -d '\r' || rc=$?
+  remote "$(kit "$1")\\status.ps1" -Name "$1" -Phase all | LC_ALL=C tr -d '\r' || rc=$?
   return "$rc"
 }
 
@@ -253,7 +253,7 @@ cmd_collect() {
   local name=$1 dest=${2:-$repo/test-results/windows-vm} out line bytes sha commit zip local_zip
   check_name "$name"
   ssh_ready
-  out=$(remote "$(kit "$name")\\collect.ps1" -Name "$name" | tr -d '\r') || die 'collect.ps1 failed on the VM (see above)'
+  out=$(remote "$(kit "$name")\\collect.ps1" -Name "$name" | LC_ALL=C tr -d '\r') || die 'collect.ps1 failed on the VM (see above)'
   printf '%s\n' "$out" | grep -v '^EVIDENCE-ZIP: ' || true
   line=$(printf '%s\n' "$out" | sed -n 's/^EVIDENCE-ZIP: //p' | tail -1)
   [ -n "$line" ] || die 'collect.ps1 reported no evidence zip'
@@ -281,7 +281,7 @@ cmd_stop() {
   if [ -n "$name" ]; then
     check_name "$name"
     ssh_ready
-    remote "$(kit "$name")\\cleanup.ps1" | tr -d '\r' || note 'cleanup on the VM reported a problem (above); deal with it before the next session'
+    remote "$(kit "$name")\\cleanup.ps1" | LC_ALL=C tr -d '\r' || note 'cleanup on the VM reported a problem (above); deal with it before the next session'
   else
     note 'no run name given, so the VM was not cleaned up (finished tasks, T4 state)'
   fi

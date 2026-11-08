@@ -119,7 +119,7 @@ async function pixelResponse(series: Series, index?: number, externalSignal?: Ab
   signal.throwIfAborted();
   const current = await readyState(series.engineGeneration);
   signal.throwIfAborted();
-  const capability = await abortable(desktop().getPixels({ seriesId: series.id, generation: current.generation, ...(series.catalogRevision === undefined ? {} : { revision: series.catalogRevision }), ...(index === undefined ? {} : { index }) }), signal);
+  const capability = await abortable(desktop().getPixels({ seriesId: series.id, generation: current.generation, ...(series.catalogRevision === undefined ? {} : { revision: series.catalogRevision }), ...(series.sourceRevision ? { sourceRevision: series.sourceRevision } : {}), ...(index === undefined ? {} : { index }) }), signal);
   signal.throwIfAborted();
   if (capability.generation !== current.generation) throw new Error(restartedMessage());
   const url = new URL(capability.url);

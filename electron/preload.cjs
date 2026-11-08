@@ -1,4 +1,47 @@
-const { contextBridge, ipcRenderer, webFrame, webUtils } = require('electron');
+const { contextBridge, ipcRenderer, webFrame, webUtils, sharedTexture } = require('electron');
+
+function displayCanvas(target, revision, width, height) {
+  const canvas = document.getElementById(target);
+  if (!(canvas instanceof HTMLCanvasElement) || canvas.dataset.nativeRevision !== String(revision)) return null;
+  const desiredWidth = Number(canvas.dataset.nativeWidth ?? canvas.width), desiredHeight = Number(canvas.dataset.nativeHeight ?? canvas.height);
+  if (width !== desiredWidth || height !== desiredHeight) return null;
+  // Resizing clears a canvas. Keep its last pixels until their replacement is ready.
+  if (canvas.width !== width) canvas.width = width;
+  if (canvas.height !== height) canvas.height = height;
+  return canvas;
+}
+
+if (process.isMainFrame && sharedTexture && ['darwin','win32'].includes(process.platform)) {
+  sharedTexture.setSharedTextureReceiver(async ({ importedSharedTexture }, target, revision) => {
+    let frame;
+    try {
+      frame = importedSharedTexture.getVideoFrame();
+      const canvas = displayCanvas(target, revision, frame.displayWidth, frame.displayHeight);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d', { alpha: false });
+      ctx.drawImage(frame, 0, 0);
+      canvas.dataset.nativeTransport = 'shared';
+      canvas.dataset.nativePresented = String(revision);
+    } finally { frame?.close(); importedSharedTexture.release(); }
+  });
+}
+
+if (process.isMainFrame) {
+  ipcRenderer.on('imaging:bitmap', (event, { target, revision, width, height, bytes }) => {
+    const port = event.ports[0];
+    try {
+      if (!(bytes instanceof Uint8Array) || bytes.length !== width * height * 4) throw new Error('Invalid display frame');
+      const canvas = displayCanvas(target, revision, width, height);
+      if (canvas) {
+        const rgba = new Uint8ClampedArray(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        canvas.getContext('2d', { alpha:false }).putImageData(new ImageData(rgba, width, height), 0, 0);
+        canvas.dataset.nativeTransport = 'bitmap';
+        canvas.dataset.nativePresented = String(revision);
+      }
+      port.postMessage(true);
+    } catch { port.postMessage(false); } finally { port.close(); }
+  });
+}
 
 // The main process passes the saved interface language (main.cjs, additionalArguments).
 const argument = name => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3) || undefined;
@@ -20,6 +63,12 @@ const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args).catch(
 });
 
 contextBridge.exposeInMainWorld('veacom', {
+  nativeRendering: Boolean(sharedTexture && argument('veacom-native-render') === '1'),
+  renderView: (target, revision, generation, view) => invoke('imaging:render', target, revision, generation, view),
+  surfaceMesh: (id, generation, revision, target, body) => invoke('imaging:mesh', id, generation, revision, target, body),
+  renderVolume: (target, revision, generation, view) => invoke('imaging:render', target, revision, generation, view, 'volume'),
+  volumeLayers: (id, revision, generation, target, version, bytes) => invoke('imaging:layers', id, revision, generation, target, version, bytes),
+  rendererInfo: () => invoke('imaging:renderer'),
   locale, localUsageCheck: argument('veacom-local-usage-check') === '1',
   setLocale: value => { if (dropMessages[value]) currentLocale = value; return invoke('app:locale', value); },
   listSeries: () => invoke('imaging:series'),
@@ -28,9 +77,9 @@ contextBridge.exposeInMainWorld('veacom', {
   importEarly: (capabilities, after) => invoke('imaging:early', capabilities, after),
   cancelOperation: id => invoke('imaging:cancel', id),
   cancelExport: () => invoke('dicom:cancel'),
-  measure: (id, generation, revision, operation) => invoke('imaging:measure', id, generation, revision, operation),
   getTags: (seriesId, generation, frame, revision) => invoke('imaging:tags', seriesId, generation, frame, revision),
   removeSeries: (ids, generation) => invoke('imaging:remove', ids, generation),
+  measure: (id, generation, revision, operation) => invoke('imaging:measure', id, generation, revision, operation),
   getPixels: request => invoke('imaging:pixels', request),
   takeStartupPaths: () => invoke('files:startup'),
   getCoreState: () => invoke('core:state'),

@@ -1,9 +1,8 @@
-const { _electron: electron } = require('playwright');
 const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 const repo = path.resolve(__dirname, '..');
 const options = {};
@@ -49,7 +48,7 @@ async function main() {
     const env = { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' };
     delete env.VEACOM_DEV_URL;
     delete env.VEACOM_DEVTOOLS;
-    desktop = await electron.launch({ ...(options.app ? { executablePath: path.resolve(options.app) } : {}), args: options.app ? [] : [repo], env, timeout: 90_000 });
+    desktop = await launchDesktop({ ...(options.app ? { executablePath: path.resolve(options.app) } : {}), args: options.app ? [] : [repo], env, timeout: 90_000 });
     desktop.process().stderr?.on('data', data => logs.push(data.toString()));
     page = await desktop.firstWindow();
     // The drops below are DragEvents dispatched in the page, not dragged by the operating system, so the window can
@@ -106,7 +105,8 @@ async function main() {
       assert.equal(capabilities.length, new Set(expectedPaths.map(normalize)).size);
       assert(capabilities.every(value => /^import:/.test(value)), 'The renderer must receive opaque capabilities.');
       const beforeImports = (await importEvents()).length;
-      const gate = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('volume'));
+      const nativeView = await page.evaluate(() => !!window.veacom.nativeRendering);
+      const gate = await desktop.evaluate(({ app }, kind) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests(kind), nativeView ? 'render' : 'volume');
       const events = await page.evaluate(({ inputId, target, duplicateFirst }) => {
         const input = document.getElementById(inputId), element = document.querySelector(target);
         if (!element || !input.files.length) throw new Error('Missing drop target or real input files.');
@@ -121,7 +121,14 @@ async function main() {
       }, { inputId, target, duplicateFirst });
       assert(events.types.includes('Files') && events.dragoverPrevented && events.dropPrevented, 'External drop was not accepted.');
       await desktop.evaluate(({ app }, gate) => app.__VEACOM_PRIVILEGED_TEST__.waitForHeldPixelRequest(gate), gate);
-      const recorded = await importEvents();
+      let recorded = await importEvents();
+      const until = Date.now() + 60_000;
+      while (recorded.length === beforeImports && Date.now() < until) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        recorded = await importEvents();
+      }
+      assert.equal(recorded.length, beforeImports + 1, 'The drop did not finish importing.');
+
       const imported = recorded.at(-1).result;
       imports.splice(0, imports.length, ...recorded.map(event => event.paths));
       assert(imported.series.length, 'Drop did not import a DICOM series.');

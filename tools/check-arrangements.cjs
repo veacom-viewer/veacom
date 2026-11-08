@@ -3,13 +3,12 @@
 // to the lesion; a pane moved and kept opens the next study so; Undo gives the study's first image and can be kept too;
 // Forget brings VEAcom's own screen back; a PET opened by hand is inverted grey with its window in SUV.
 // usage: node tools/check-arrangements.cjs PETCT_STUDY [OUTPUT_DIR]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -18,7 +17,7 @@ async function main() {
   assert.equal(manifest.generator, 'veacom-petct-v1', 'Run on the study made by tools/fixtures/make-petct-study.mjs.');
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-arrangements-'));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study], timeout: 90_000,
+  const desktop = await launchDesktop({ args: [path.resolve(__dirname, '..'), '--study', study], timeout: 90_000,
     env: { ...process.env, VEACOM_USER_DATA: userData, VEACOM_LOCALE: 'en', VEACOM_TELEMETRY_CONSENT: 'denied', VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_TEST_MODE: '1' } });
   const errors = [], checks = [];
   let page;
@@ -32,7 +31,7 @@ async function main() {
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     const state = () => page.evaluate(() => window.__VEACOM_TEST__.state());
     const settled = async () => {
-      await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
+      await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
       await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(cell => !cell.dataset.seriesId || cell.dataset.volumeComplete === 'true'), undefined, { timeout: 120_000 });
       await page.waitForTimeout(600);
     };

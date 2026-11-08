@@ -4,8 +4,7 @@ const { createHash } = require('node:crypto');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { _electron: electron } = require('playwright');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const { decodePng } = require('./lib/png.cjs');
 
 const state = page => page.evaluate(() => window.__VEACOM_TEST__.state());
@@ -20,17 +19,16 @@ async function withStudy(executablePath, study, destination, run) {
     await fs.writeFile(path.join(profile, 'export-folder.json'), JSON.stringify({ folder: destination }));
     const env = { ...process.env, VEACOM_USER_DATA: profile, VEACOM_USAGE_CHECK_LOCAL: '1' };
     delete env.VEACOM_CORE_PATH;
-    app = await electron.launch({ executablePath,
-      ...(path.basename(study) === 'linked' ? { recordVideo: { dir: path.join(destination, 'video'), size: { width: 960, height: 640 } } } : {}),
-      args: ['--study', study], env, timeout: 90_000 });
+    app = await launchDesktop({ executablePath, args: ['--study', study], env, timeout: 90_000 });
     const runtime = await app.evaluate(({ app }) => ({ packaged: app.isPackaged, resources: process.resourcesPath, electron: process.versions.electron }));
     assert.equal(runtime.packaged, true);
     const engine = path.join(runtime.resources, 'native', process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core');
     runtime.engineSha256 = sha(await fs.readFile(engine));
-    page = await app.firstWindow();
+    page = await app.firstWindow({ timeout: 60_000 });
+    page.setDefaultTimeout(30_000);
     await ignoreOutsideInput(app);
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1200, 800));
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 90_000 });
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
     const result = await run(page);
@@ -38,12 +36,16 @@ async function withStudy(executablePath, study, destination, run) {
     return { runtime, renderer: await page.locator('canvas[data-renderer]').first().getAttribute('data-renderer'), ...result };
   } catch (error) {
     if (page) {
-      await page.screenshot({ path: path.join(destination, 'failure.png') }).catch(() => {});
+      await page.screenshot({ path: path.join(destination, 'failure.png'), timeout: 3000 }).catch(() => {});
       console.error('Viewer notice:', await page.getByTestId('notice').allTextContents().catch(() => []));
     }
     throw error;
   } finally {
-    try { if (app) await app.close(); } finally { await fs.rm(profile, { recursive: true, force: true }); }
+    const stop = setTimeout(() => app?.process().kill('SIGKILL'), 8000);
+    try { if (app) await app.close(); } finally {
+      clearTimeout(stop);
+      await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    }
   }
 }
 
@@ -131,7 +133,7 @@ async function checkLinked(page, series, output) {
   const pick = async (n, item) => {
     await cells.nth(n).locator('.viewport-content').click({ position: { x: 40, y: 40 } });
     await page.getByTestId('series-' + item.id).click();
-    await page.waitForFunction(id => { const s = window.__VEACOM_TEST__.state(); return s.activeSeriesId === id && s.fullVolumeLoaded; }, item.id);
+    await page.waitForFunction(id => { const s = window.__VEACOM_TEST__.state(); return s.activeSeriesId === id && s.seriesReady; }, item.id);
   };
   const wheel = async () => {
     const s = await state(page), box = await cells.first().locator('canvas').boundingBox();
@@ -190,7 +192,7 @@ async function main() {
       await page.getByTestId('tool-export').click(); assert(await sliceScope(page).isDisabled()); await page.getByTestId('export-close').click();
       const ct = series.find(s => s.modality === 'CT' && !s.description);
       await page.getByTestId('series-' + ct.id).click();
-      await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
+      await page.waitForFunction(() => window.__VEACOM_TEST__.state().seriesReady);
       const linked = name === 'linked' ? await checkLinked(page, series, output) : undefined;
       return { files: Object.keys(files).length, mpr, linked };
     });

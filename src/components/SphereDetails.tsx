@@ -3,12 +3,13 @@ import { bodyWeightFactor } from '../imaging/quantity';
 // reference), and for a lesion the Deauville score its SUVmax suggests against the two references, with the basis. The
 // reader confirms the score or chooses another; nothing is scored without them.
 import { useState } from 'react';
-import type { Annotation, DeauvilleScore, ReferenceRole, Volume } from '../model';
+import { useMeasuredSpheres } from '../imaging/useMeasuredSpheres';
+import type { Annotation, DeauvilleScore, ReferenceRole, ViewVolume as Volume } from '../model';
 import { quantitativeScale } from '../imaging/annotations';
 import { DEAUVILLE_SCORES, isDeauvilleScore, NEAR_BOUND, type Suggestion } from '../imaging/deauville';
 import { canAssessLymphoma, deauvilleReading } from '../imaging/deauvilleReading';
 import { petTracer } from '../imaging/petTracer';
-import { isSuv, isThresholdId, thresholdVolumeFor, LIVER_REFERENCE_RADIUS_MM, measurableVolume, sphereOf, spherePoints } from '../imaging/voi';
+import { isSuv, isThresholdId, LIVER_REFERENCE_RADIUS_MM, measurableVolume, sphereOf, spherePoints } from '../imaging/voi';
 import { useTranslation } from '../i18n/react';
 
 type Role = ReferenceRole | 'lesion';
@@ -77,6 +78,7 @@ export function SphereDetails({ annotation, annotations, volume, onChange }: {
   annotation: Annotation; annotations: readonly Annotation[]; volume: Volume | undefined; onChange: (next: Annotation[]) => void;
 }) {
   const { t } = useTranslation();
+  const measured = useMeasuredSpheres(annotations, volume);
   if (annotation.type !== 'sphere' || !scoresSuv(volume) || !measurableVolume(volume)) return null;
   const role: Role = annotation.role ?? 'lesion';
   const choose = (next: Role) => onChange(withRole(annotations, annotation.id, next));
@@ -86,13 +88,13 @@ export function SphereDetails({ annotation, annotations, volume, onChange }: {
     </select></label>;
   if (role !== 'lesion') return <div className="sphere-details" data-sphere-details>{roleSelect}
     <p className="field-help">{t(role === 'liver' ? 'sphere.liverHelp' : 'sphere.bloodPoolHelp')} {t('sphere.kept')}</p></div>;
-  const reading = deauvilleReading(annotation, annotations, volume);
+  const reading = deauvilleReading(annotation, annotations, volume, item => measured.get(item)?.result ?? null);
   const basis = 'suggestion' in reading ? reading.basis : undefined;
   const confirmed = basis && annotation.deauvilleBasis === basis ? annotation.deauville : undefined;
   const update = (change: Partial<Annotation>) => onChange(annotations.map(item => item.id === annotation.id ? { ...item, ...change } : item));
   const score = (value: DeauvilleScore | undefined) => update({ deauville: value, deauvilleBasis: value === undefined ? undefined : basis });
   const unknown = petTracer(volume.series.petAcquisition) === 'unknown';
-  const metabolic = annotation.threshold ? thresholdVolumeFor(annotation, volume, quantitativeScale(volume.series)) : null;
+  const metabolic = measured.get(annotation)?.result?.metabolic;
   return <div className="sphere-details" data-sphere-details>{roleSelect}
     {annotation.label && <LesionName name={annotation.label} onRename={label => update({ label })} />}
     <label className="sphere-field">{t('sphere.threshold')}

@@ -5,13 +5,13 @@ const { t, coreErrorText } = require('./i18n.cjs');
 const { classifySource } = require('./usage.cjs');
 
 const pixelHeaders = ['Content-Type', 'Content-Length', 'Cache-Control', 'X-Pixel-Type', 'X-Components',
-  'X-Source-Frame-Index', 'X-SOP-Instance-UID', 'X-Source-Frame-Number'];
+  'X-Source-Revision', 'X-Source-Frame-Index', 'X-SOP-Instance-UID', 'X-Source-Frame-Number'];
 
 class ImagingBroker {
   // The engine is reached only through engine.connection().request (its pipes, engine-pipe.cjs), which answers with a
   // Response whose body streams as the engine sends it.
-  constructor({ engine, realpath = fs.realpath, now = Date.now, devOrigin, beforePixel, afterImport }) {
-    Object.assign(this, { engine, realpath, now, devOrigin, beforePixel, afterImport });
+  constructor({ engine, realpath = fs.realpath, now = Date.now, devOrigin, beforePixel, afterImport, warmFirstVolume = true }) {
+    Object.assign(this, { engine, realpath, now, devOrigin, beforePixel, afterImport, warmFirstVolume });
     this.imports = new Map(); this.activeImports = new Map(); this.pixels = new Map(); this.series = new Map();
     this.epoch = new AbortController();
     this.generation = engine.state().generation;
@@ -69,7 +69,7 @@ class ImagingBroker {
     pending.then(result => {
       // The series the viewer opens first: a segmentation is drawn over another series and is not opened itself.
       const first = result.series.find(series => !series.segmentation && series.dimensions[2] > 0);
-      if (first) this.requestJson('warm', { id: first.id }, first.engineGeneration).catch(() => {});
+      if (first && this.warmFirstVolume) this.requestJson('warm', { id: first.id }, first.engineGeneration).catch(() => {});
     }, () => {});
   }
   async importSelected(capabilities) {
@@ -137,21 +137,38 @@ class ImagingBroker {
   async measure(id, generation, revision, operation) {
     const series = this.requireSeries(id, generation);
     if (!Number.isSafeInteger(revision) || revision < 1 || series.sourceRevision !== revision) throw new Error('Source series changed.');
-    if (!operation || !['sourceRegion', 'window'].includes(operation.kind)) throw new Error('Invalid sampling operation.');
-    if (operation.kind === 'sourceRegion' && (!Array.isArray(operation.points) || operation.points.length > 10_000)) throw new Error('Invalid region points.');
+    if (!operation || typeof operation !== 'object' || !['sourceRegion', 'planeRegion', 'sphere', 'assessment', 'probe', 'ray', 'window', 'surface', 'selection'].includes(operation.kind)
+      || (operation.kind === 'assessment' && (!Array.isArray(operation.sets) || operation.sets.length > 128 || operation.sets.some(s => !s || !Array.isArray(s.outline) || s.outline.length > 10000)))
+      || (operation.kind === 'planeRegion' && (!Array.isArray(operation.polygon) || operation.polygon.length > 10000))
+      || (operation.kind === 'sourceRegion' && (!Array.isArray(operation.points) || operation.points.length > 10000))) throw new Error('Invalid measurement request.');
     if (JSON.stringify(operation).length > 512 * 1024) throw new Error('Measurement request is too large.');
-    return (await this.requestJson('sample', { id, sourceRevision: revision, operation }, generation)).value;
+    const result = await this.requestJson('sample', { id, sourceRevision: revision, operation }, generation);
+    if (this.requireSeries(id, generation).sourceRevision !== revision) throw new Error('Source series changed.');
+    return result.value;
+  }
+  async surfaceMesh(id, generation, revision, body, signal) {
+    if (this.requireSeries(id, generation).sourceRevision !== revision) throw new Error('Source series changed.');
+    const connection = this.engine.connection(generation);
+    const response = await connection.request('renderMesh', { ...body, id, revision }, { signal: AbortSignal.any([this.epoch.signal, signal]) });
+    if (!response.ok) throw new Error(coreErrorText(await response.text()));
+    const length = Number(response.headers.get('Content-Length'));
+    if (length < 84 || length > 100_000_084 || (length - 84) % 50 !== 0) throw new Error('Invalid STL length');
+    const data = await response.arrayBuffer();
+    if (this.requireSeries(id, generation).sourceRevision !== revision || data.byteLength !== length
+      || new DataView(data).getUint32(80, true) !== (length - 84) / 50) throw new Error('Invalid STL result');
+    return data;
   }
   getPixels(request) {
-    if (!request || typeof request !== 'object' || Object.keys(request).some(key => !['seriesId', 'generation', 'index', 'revision'].includes(key))) throw new Error('Invalid pixel request.');
+    if (!request || typeof request !== 'object' || Object.keys(request).some(key => !['seriesId', 'generation', 'sourceRevision', 'index', 'revision'].includes(key))) throw new Error('Invalid pixel request.');
     const series = this.requireSeries(request.seriesId, request.generation);
     if (request.revision !== undefined && series.catalogRevision !== request.revision) throw new Error(t('broker.seriesNotOpen'));
+    if (request.sourceRevision !== undefined && series.sourceRevision !== request.sourceRevision) throw new Error('Source series changed.');
     const frame = request.index !== undefined;
     if (frame && (!Number.isSafeInteger(request.index) || request.index < 0 || request.index >= series.dimensions[2])) throw new Error('Source frame index is out of range.');
     this.expire(this.pixels);
     if (this.pixels.size >= 512) throw new Error(t('broker.tooManyImages'));
     const nonce = randomUUID(), kind = frame ? 'frame' : 'volume';
-    this.pixels.set(nonce, { kind, index: request.index, seriesId: request.seriesId, generation: request.generation, expires: this.now() + 60_000,
+    this.pixels.set(nonce, { kind, index: request.index, seriesId: request.seriesId, generation: request.generation, sourceRevision: request.sourceRevision, expires: this.now() + 60_000,
       body: { id: request.seriesId, ...(frame ? { index: request.index } : {}), ...(series.catalogRevision === undefined ? {} : { revision: series.catalogRevision }) } });
     return { url: `veacom://app/_imaging/${kind}/${nonce}`, generation: request.generation };
   }
@@ -174,6 +191,11 @@ class ImagingBroker {
       const response = await connection.request(entry.kind, entry.body, { signal });
       if (!current()) { await response.body?.cancel(); return new Response('Series replaced', { status: 409 }); }
       signal.throwIfAborted(); this.engine.connection(entry.generation);
+      if (response.ok && entry.sourceRevision !== undefined && (this.requireSeries(entry.seriesId, entry.generation).sourceRevision !== entry.sourceRevision
+        || response.headers.get('X-Source-Revision') !== String(entry.sourceRevision))) {
+        await response.body?.cancel();
+        return new Response('Source series changed.', { status: 409 });
+      }
       const headers = new Headers();
       for (const key of pixelHeaders) if (response.headers.has(key)) headers.set(key, response.headers.get(key));
       headers.set('Cache-Control', 'no-store');

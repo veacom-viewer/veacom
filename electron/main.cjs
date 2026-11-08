@@ -1,6 +1,6 @@
 const { reviewExportPixels } = require('./export-review.cjs');
 const { createImportView } = require('./import-view.cjs');
-const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, clipboard, sharedTexture, dialog, ipcMain, protocol, net, shell, nativeTheme } = require('electron');
 const { registerUsageHandlers } = require('./usage.cjs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -45,10 +45,19 @@ const root = path.resolve(__dirname, '..');
 const devUrl = process.env.VEACOM_DEV_URL;
 if (devUrl && new URL(devUrl).hostname !== '127.0.0.1') throw new Error('Development UI must be local.');
 
+let presenter;
 function createEngine() {
   const executable = process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core';
   const binary = process.env.VEACOM_CORE_PATH || (app.isPackaged ? path.join(process.resourcesPath, 'native', executable) : path.join(root, 'native', 'target', 'release', executable));
-  const manager = new EngineProcess({ binary });
+  let env = process.env;
+  if (['darwin','win32'].includes(process.platform) && sharedTexture) {
+    try {
+      const { NativePresenter } = require('./native-render.cjs');
+      presenter = new NativePresenter(path.dirname(binary), sharedTexture);
+      env = { ...env, VEACOM_SURFACE_SERVICE: presenter.name };
+    } catch { presenter = null; }
+  }
+  const manager = new EngineProcess({ binary, env });
   manager.on('incident', ({ reason, code, signal }) => crashes?.record('engine', reason,
     { code, signal, recovery: manager.closed ? 'unknown' : 'pending' }));
   manager.on('state', state => {
@@ -100,12 +109,19 @@ app.whenReady().then(async () => {
   // Before anything can fail, so the "could not start" box is in the user's language.
   i18n.load(app.getPath('userData'));
   engine = createEngine();
-  await engine.start();
+  const connection = await engine.start();
+  if (presenter) {
+    try {
+      const response = await connection.request('renderInfo', {}, { signal: AbortSignal.timeout(10_000) });
+      await response.arrayBuffer();
+      if (!response.ok) presenter = null;
+    } catch { presenter = null; }
+  }
   // The engine parses no picture format: PNG, JPEG and BMP files it meets go to a sandboxed renderer (picture-decoder.cjs).
   pictureDecoder = createPictureDecoder();
   stopPictures = servePictures({ engine, decode: pictureDecoder.decode });
   const testHooks = process.env.VEACOM_TEST_MODE === '1' ? require('./imaging-test-hooks.cjs').createImagingTestHooks() : undefined;
-  imaging = new ImagingBroker({ engine, devOrigin: devUrl ? new URL(devUrl).origin : undefined,
+  imaging = new ImagingBroker({ engine, warmFirstVolume: !presenter, devOrigin: devUrl ? new URL(devUrl).origin : undefined,
     beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport });
   // A study named on the command line starts importing while the window loads.
   const studyArgument = process.argv.indexOf('--study');
@@ -139,7 +155,7 @@ app.whenReady().then(async () => {
     : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#16181d', symbolColor: '#e4e7ec', height: 44 } };
   window = new BrowserWindow({ width: 1500, height: 960, minWidth: 900, minHeight: 640, backgroundColor: '#111519', title: 'VEAcom', show: false, ...chrome, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
     // The preload reads the saved language from here, so the first frame is already in it.
-    additionalArguments: [`--veacom-locale=${i18n.getLocale()}`, `--veacom-version=${app.getVersion()}`, `--veacom-local-usage-check=${process.env.VEACOM_USAGE_CHECK_LOCAL === '1' ? 1 : 0}`] } });
+    additionalArguments: [`--veacom-native-render=${presenter ? 1 : 0}`, `--veacom-locale=${i18n.getLocale()}`, `--veacom-version=${app.getVersion()}`, `--veacom-local-usage-check=${process.env.VEACOM_USAGE_CHECK_LOCAL === '1' ? 1 : 0}`] } });
   window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
@@ -170,6 +186,48 @@ app.whenReady().then(async () => {
   handle('imaging:measure', (...args) => imaging.measure(...args));
   handle('imaging:tags', (id, generation, frame, revision) => imaging.getTags(id, generation, frame, revision));
   handle('imaging:remove', (ids, generation) => imaging.removeSeries(ids, generation));
+  handle('imaging:renderer', async () => (await imaging.requestJson('renderInfo')).value);
+  handle('imaging:layers', async (id, revision, generation, target, version, bytes) => {
+    if (!presenter || !/^veacom-native-[0-9]{1,12}(?:-selection)?$/.test(target) || !Number.isSafeInteger(version) || version<0
+      || !(bytes instanceof Uint8Array) || bytes.byteLength > 64 * 1024 * 1024 || imaging.requireSeries(id,generation).sourceRevision!==revision) throw new Error('Invalid volume layers');
+    const connection = engine.connection(generation);
+    const part = 4 * 1024 * 1024;
+    for (let offset = 0; offset < bytes.length || offset === 0; offset += part) {
+      const response = await connection.request('renderLayers', { id, target, revision, version, offset, total: bytes.length },
+        { signal: imaging.epoch.signal, data: bytes.subarray(offset, offset + part) });
+      if (!response.ok) throw new Error(await response.text());
+      await response.arrayBuffer();
+    }
+
+  });
+  handle('imaging:render', async (target, revision, generation, view, mode = 'slice') => {
+    if (!presenter || typeof target !== 'string' || !/^veacom-native-[0-9]{1,12}$/.test(target) || !Number.isSafeInteger(revision) || revision < 1
+      || !view || !Number.isSafeInteger(view.width) || !Number.isSafeInteger(view.height) || view.width < 1 || view.height < 1
+      || view.width > 8192 || view.height > 8192 || view.width * view.height > 16777216) throw new Error('Invalid render request');
+    if (mode !== 'slice' && mode !== 'volume') throw new Error('Invalid viewport type');
+    if (mode === 'volume' && view.target !== target) throw new Error('Invalid volume target');
+    const validate = () => {
+      for (const s of [view, view.fusion].filter(Boolean)) {
+        if (imaging.requireSeries(s.seriesId, generation).sourceRevision !== s.revision) throw new Error('Source series changed');
+      }
+    };
+    validate();
+    if (testHooks) await testHooks.beforePixel({ kind: 'render', index: view.frame?.index }, imaging.epoch.signal);
+    // Video encoding reads CPU pixels. On Windows, read the finished D3D12 frame once instead of
+    // asking Chromium to read back imported textures while its video encoder is active.
+    const readback = process.platform === 'win32' && disposeMedia?.isExportingVideo?.() === true;
+    return presenter.present(imaging, engine, window, mode === 'volume' ? 'renderVolume' : 'renderView', target, revision, view, validate, readback);
+  });
+  const meshRequests = new Map();
+  handle('imaging:mesh', async (id, generation, revision, target, body) => {
+    if (typeof target !== 'string' || !/^veacom-native-\d+$/.test(target)) throw new Error('Invalid volume target');
+    if (body === null) { meshRequests.get(target)?.abort(); return; }
+    if (meshRequests.size >= 3 || meshRequests.has(target)) throw new Error('STL export is already running');
+    const control = new AbortController();
+    meshRequests.set(target, control);
+    try { return await imaging.surfaceMesh(id, generation, revision, { ...body, target }, control.signal); }
+    finally { meshRequests.delete(target); }
+  });
   handle('imaging:pixels', request => imaging.getPixels(request));
   handle('files:drop-capabilities', paths => imaging.authorizeImportPaths(paths));
   handle('files:startup', () => { const pending = startupCapabilities; startupCapabilities = null; return pending ?? []; });
@@ -184,6 +242,7 @@ app.whenReady().then(async () => {
     authorizeImportPaths: paths => imaging.authorizeImportPaths(paths),
     // The engine's generation; and a request to it straight from main, for checks that compare the engine's own state
     // with what the page shows. The engine's pipes stay here: a check gets the answer, never a way to reach the engine.
+    renderPattern: (target, revision, width, height, bitmap = false) => presenter.present(imaging, engine, window, 'renderPattern', target, revision, { width, height }, undefined, bitmap === true),
     coreConnection: () => ({ generation: engine.connection().generation }),
     coreRequest: async (op, body) => {
       const connection = engine.connection(), response = await connection.request(op, body);

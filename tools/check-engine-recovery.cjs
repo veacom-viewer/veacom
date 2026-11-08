@@ -1,4 +1,3 @@
-const { _electron: electron } = require('playwright');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -6,7 +5,7 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const { messages } = require('../electron/i18n.cjs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 
@@ -18,16 +17,16 @@ async function main() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-recovery-'));
   const checks = [], errors = [];
   const nativeSha256 = hash(await fs.readFile(process.env.VEACOM_CORE_PATH || path.resolve(__dirname, '../native/target/release/veacom-core')));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study],
+  const desktop = await launchDesktop({ args: [path.resolve(__dirname, '..'), '--study', study],
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
   let page;
   const check = (name, detail) => { checks.push({ name, passed: true, detail }); console.log(`PASS ${name}`); };
   try {
-    page = await desktop.firstWindow();
+    page = await desktop.firstWindow({ timeout: 90_000 });
     // A scroll or key press from the person at the computer would move the slice off the measurement drawn below.
     await ignoreOutsideInput(desktop);
     page.on('pageerror', error => errors.push(error.message));
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 60_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 60_000 });
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
     const canvas = page.locator('canvas[data-renderer]').first();
     await canvas.waitFor();
@@ -89,20 +88,37 @@ async function main() {
     await page.keyboard.press('ControlOrMeta+Shift+z');
     await page.locator('[data-annotation-id]').first().waitFor();
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: 11 }));
-    await page.waitForFunction(() => +document.querySelector('canvas[data-renderer]').dataset.slice === 11);
-    assert.notEqual(hash(await canvas.evaluate(node => node.toDataURL())), hash(before.pixels));
-    check('Retained images still page and annotation undo/redo still works');
+    const native = await page.evaluate(() => !!window.veacom.nativeRendering);
+    if (native) {
+      // Additional source data belonged to the dead engine. The last image must keep its own slice and pixels.
+      await page.waitForFunction(() => document.querySelector('.viewport-render-error')?.textContent);
+      assert.equal(await canvas.getAttribute('data-slice'), '10');
+      assert.equal(hash(await canvas.evaluate(node => node.toDataURL())), hash(before.pixels));
+      check('Native viewport retains its displayed pixels and annotations until the study is reopened');
+    } else {
+      await page.waitForFunction(() => Number(document.querySelector('canvas[data-renderer]')?.dataset.slice) === 11);
+      assert.notEqual(hash(await canvas.evaluate(node => node.toDataURL())), hash(before.pixels));
+      check('Retained renderer volume still pages after undo and redo');
+    }
     await privileged.importPaths(desktop, page, [study]);
-    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded && !window.__VEACOM_TEST__.state().pendingLoads);
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().seriesReady && !window.__VEACOM_TEST__.state().pendingLoads);
     const freshCatalogCount = (await privileged.readCatalog(desktop)).catalog.series.length;
     assert(freshCatalogCount > 0);
-    check('A fresh user import works after recovery', { catalogCount: freshCatalogCount });
+    await page.waitForFunction(() => document.querySelector('canvas[data-renderer]')?.dataset.engineGeneration === '2');
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: 11 }));
+    await page.waitForFunction(() => Number(document.querySelector('canvas[data-renderer]')?.dataset.slice) === 11);
+    assert.notEqual(hash(await canvas.evaluate(node => node.toDataURL())), hash(before.pixels));
+    check('A fresh user import restores paging after recovery', { catalogCount: freshCatalogCount });
     assert.deepEqual(errors, []);
     await fs.writeFile(path.join(output, 'engine-recovery.json'), JSON.stringify({ passed: true, nativeSha256, nativeScope: 'Lifecycle recovery; binary hash identifies the exact build exercised.', checks, states: after.states, errors }, null, 2));
   } catch (error) {
     await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
     await fs.writeFile(path.join(output, 'engine-recovery.json'), JSON.stringify({ passed: false, nativeSha256, checks, error: error.stack, errors }, null, 2));
     throw error;
-  } finally { await desktop.close(); await fs.rm(profile, { recursive: true, force: true }); }
+  } finally {
+    const stopping = setTimeout(() => desktop.process().kill('SIGKILL'), 10_000);
+    try { await desktop.close(); } finally { clearTimeout(stopping); }
+    await fs.rm(profile, { recursive: true, force: true });
+  }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

@@ -1,14 +1,15 @@
 import { studyKey } from '../domain/patient';
 import { useEffect, useRef, useState } from 'react';
 import { ClipboardCopy, Info, X } from './icons';
-import type { Annotation, Volume } from '../model';
+import type { Annotation, ViewVolume as Volume } from '../model';
 import { annotationSourceIndex } from '../imaging/annotations';
 import {
-  CLINICAL_CACHE_BYTES, CLINICAL_COPY_CHUNK_BYTES, FEATURES, ROLE_NAMES, assessmentSummary, candidateName, candidates, featureName, inferStudySequences, measureStudy,
+  FEATURES, ROLE_NAMES, assessmentSummary, candidateName, candidates, featureName, inferStudySequences, studySamples,
   radiopaedia, rank, referenceTissue, regions, sameRoiSlice, searchRegions, sampleMethod, source, word, words,
   type Feature, type Findings, type Measurement, type Patient, type RoiMark, type SequenceChoice, type SequenceRole,
 } from '../domain/clinical';
-import type { ClinicalVolumeDescriptor, ClinicalWorkerRequest, ClinicalWorkerResult } from '../domain/clinical.worker';
+import { measureAssessmentTask } from '../imaging/nativeMeasurements';
+import type { ClinicalWorkerRequest, ClinicalWorkerResult } from '../domain/clinical.worker';
 import { errorMessage } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { focusOnMount } from '../ui/navigation';
@@ -78,46 +79,10 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
     }).catch(error => { if (live) setConfigError(errorMessage(error)); });
     return () => { live = false; };
   }, []);
-  const background = useRef<Worker | null>(null);
-  const volumeVersions = useRef(new WeakMap<Volume['data'], number>());
-  const nextVolumeVersion = useRef(1);
-  const failedMeasurement = useRef<number | null>(null);
-  const workerUnavailable = useRef(false);
-  const workerReplies = useRef(new Map<string, { resolve: (reply: ClinicalWorkerResult) => void; reject: (error: Error) => void }>());
-  const latestMeasurement = useRef<{ id: number; query: object } | null>(null);
+  const measurementId = useRef(0);
   // The panel's own state changed: actions here are not reported as changing nothing (src/usage).
   useEffect(() => { usage.touch('panel'); }, [study, region, regionSearch, regionSearching, regionOptionIndex, waitingForRoi, age, sex, assignments, sequenceOverrides, overrides, note, showSummary, copyStatus, aiModel, apiKey, aiReply]);
   const [completedMeasurement, setCompletedMeasurement] = useState<{ query: object; value: Measurement } | null>(null);
-  useEffect(() => {
-    const worker = new Worker(new URL('../domain/clinical.worker.ts', import.meta.url), { type: 'module' });
-    background.current = worker; workerUnavailable.current = false;
-    worker.onmessage = ({ data }: MessageEvent<ClinicalWorkerResult>) => {
-      const latest = latestMeasurement.current;
-      if (data.type === 'error') {
-        if (latest?.id === data.id) failedMeasurement.current = data.id;
-        for (const [key, waiting] of workerReplies.current) if (key.startsWith(`${data.id}:`)) { waiting.reject(new Error(data.message)); workerReplies.current.delete(key); }
-        if (latest?.id === data.id) setCompletedMeasurement({ query: latest.query, value: { readings: [], findings: {}, blockers: [], diffusionReason: '', warnings: [t('assessment.measurementUnavailable', { error: data.message })] } });
-      } else if (data.type === 'result') {
-        if (latest?.id === data.id) setCompletedMeasurement({ query: latest.query, value: data.measurement });
-      } else {
-        const key = `${data.id}:${data.type}:${data.type === 'received' ? `${data.seriesId}:${data.offset}` : data.type === 'committed' ? data.seriesId : ''}`;
-        workerReplies.current.get(key)?.resolve(data); workerReplies.current.delete(key);
-      }
-    };
-    worker.onerror = () => {
-      workerUnavailable.current = true;
-      failedMeasurement.current = latestMeasurement.current?.id ?? null;
-      for (const waiting of workerReplies.current.values()) waiting.reject(new Error(t('assessment.backgroundFailed')));
-      workerReplies.current.clear();
-      const latest = latestMeasurement.current;
-      if (latest) setCompletedMeasurement({ query: latest.query, value: { readings: [], findings: {}, blockers: [], diffusionReason: '', warnings: [t('assessment.backgroundFailed')] } });
-    };
-    return () => {
-      worker.terminate(); background.current = null;
-      for (const waiting of workerReplies.current.values()) waiting.reject(new Error(t('assessment.cancelled')));
-      workerReplies.current.clear();
-    };
-  }, []);
   const first = activeVolumes[0]?.series;
   const shownAge = age ?? (first?.patientAge === undefined ? '' : String(first.patientAge));
   const shownSex = sex ?? (first?.patientSex === 'M' ? 'E' : first?.patientSex === 'F' ? 'K' : '');
@@ -134,72 +99,34 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
   const marks = roiOptions.flatMap(roi => assignments[roi.key]
     ? [{ annotation: roi.annotation, seriesId: roi.series.id, ...assignments[roi.key] }] : []);
   const measurementQuery = { activeVolumes, marks, sequences, locale };
-  const emptyMeasurement = measureStudy(activeVolumes, [], sequences, t);
+  const emptyMeasurement = studySamples(activeVolumes, [], sequences, t).next().value as Measurement;
   const measurement = completedMeasurement?.query === measurementQuery ? completedMeasurement.value : emptyMeasurement;
   const measurementPending = marks.length > 0 && completedMeasurement?.query !== measurementQuery;
   useEffect(() => {
-    const worker = background.current;
-    if (!worker || workerUnavailable.current) {
-      setCompletedMeasurement({ query: measurementQuery, value: { ...emptyMeasurement, warnings: [t('assessment.backgroundFailed')] } });
-      return;
-    }
-    const id = (latestMeasurement.current?.id ?? 0) + 1;
-    latestMeasurement.current = { id, query: measurementQuery };
-    failedMeasurement.current = null;
-    let cancelled = false;
-    const waitFor = (type: 'ready' | 'committed' | 'received', seriesId = '') => new Promise<ClinicalWorkerResult>((resolve, reject) => {
-      workerReplies.current.set(`${id}:${type}:${seriesId}`, { resolve, reject });
-    });
-    const post = (request: ClinicalWorkerRequest, transfer: Transferable[] = []) => worker.postMessage(request, transfer);
-    const descriptors: ClinicalVolumeDescriptor[] = activeVolumes.map(volume => {
-      let version = volumeVersions.current.get(volume.data);
-      if (!version) { version = nextVolumeVersion.current++; volumeVersions.current.set(volume.data, version); }
-      const data = volume.data;
-      const pixelType = data instanceof Float64Array ? 'float64' : data instanceof Float32Array ? 'float32' : data instanceof Int16Array ? 'int16' : data instanceof Uint16Array ? 'uint16' : 'uint8';
-      return { series: volume.series, version, pixelType, byteLength: data.byteLength, sourceFrameIndex: volume.sourceFrameIndex };
-    });
-    const bytes = descriptors.reduce((sum, descriptor) => sum + descriptor.byteLength, 0);
-    if (!marks.length || bytes > CLINICAL_CACHE_BYTES) {
-      post({ type: 'begin', id, volumes: [] });
-      setCompletedMeasurement({ query: measurementQuery, value: bytes > CLINICAL_CACHE_BYTES
-        ? { ...emptyMeasurement, warnings: [t('assessment.studyTooLarge')] } : emptyMeasurement });
-      return;
-    }
-    async function uploadAndMeasure() {
-      const ready = waitFor('ready');
-      post({ type: 'begin', id, volumes: descriptors, locale });
-      const reply = await ready;
-      if (cancelled || failedMeasurement.current === id || reply.type !== 'ready') return;
-      for (const seriesId of reply.missing) {
-        if (cancelled || failedMeasurement.current === id) return;
-        const volume = activeVolumes.find(v => v.series.id === seriesId)!;
-        post({ type: 'start', id, seriesId });
-        for (let offset = 0; offset < volume.data.byteLength; offset += CLINICAL_COPY_CHUNK_BYTES) {
-          if (cancelled || failedMeasurement.current === id) return;
-          const count = Math.min(CLINICAL_COPY_CHUNK_BYTES, volume.data.byteLength - offset);
-          // Copy bounded pieces, transfer only those copies, then yield so input and painting can run.
-          const copy = new Uint8Array(count);
-          copy.set(new Uint8Array(volume.data.buffer, volume.data.byteOffset + offset, count));
-          const received = waitFor('received', `${seriesId}:${offset + count}`);
-          post({ type: 'chunk', id, seriesId, offset, bytes: copy.buffer }, [copy.buffer]);
-          await received;
-          await new Promise<void>(resolve => setTimeout(resolve, 0));
-        }
-        if (cancelled || failedMeasurement.current === id) return;
-        const committed = waitFor('committed', seriesId);
-        post({ type: 'commit', id, seriesId });
-        await committed;
-      }
-      if (!cancelled && failedMeasurement.current !== id) post({ type: 'measure', id, marks, sequences, locale });
-    }
-    void uploadAndMeasure().catch(error => {
-      if (!cancelled) setCompletedMeasurement({ query: measurementQuery, value: { ...emptyMeasurement, warnings: [t('assessment.measurementUnavailable', { error: errorMessage(error) })] } });
-    });
-    return () => {
-      cancelled = true;
-      post({ type: 'cancel', id });
-      for (const [key, waiting] of workerReplies.current) if (key.startsWith(`${id}:`)) { waiting.reject(new Error(t('assessment.cancelled'))); workerReplies.current.delete(key); }
+    if (!marks.length) return;
+    const id = ++measurementId.current;
+    let live = true;
+    const worker = new Worker(new URL('../domain/clinical.worker.ts', import.meta.url), { type: 'module' });
+    const post = (message: ClinicalWorkerRequest) => worker.postMessage(message);
+    const failed = (error: unknown) => {
+      if (live) setCompletedMeasurement({ query: measurementQuery, value: { ...emptyMeasurement, warnings: [t('assessment.measurementUnavailable', { error: errorMessage(error) })] } });
     };
+    worker.onmessage = async ({ data }: MessageEvent<ClinicalWorkerResult>) => {
+      if (!live || data.id !== id) return;
+      if (data.type === 'error') failed(data.message);
+      if (data.type === 'result') setCompletedMeasurement({ query: measurementQuery, value: data.measurement });
+      if (data.type === 'sample') {
+        const volume = activeVolumes.find(v => v.series.id === data.task.seriesId);
+        if (!volume) { failed(new Error('Source series changed.')); return; }
+        try {
+          const sample = await measureAssessmentTask(volume, data.task);
+          if (live) post({ type: 'sampled', id, number: data.number, sample });
+        } catch (error) { failed(error); }
+      }
+    };
+    worker.onerror = () => failed(new Error(t('assessment.backgroundFailed')));
+    post({ type: 'study', id, marks, sequences, locale, volumes: activeVolumes.map(({ series, sourceFrameIndex }) => ({ series, sourceFrameIndex })) });
+    return () => { live = false; worker.terminate(); };
   }, [measurementQuery, activeVolumes, marks, sequences, emptyMeasurement, locale]);
   const found: Findings = {};
   for (const feature of FEATURES) found[feature] = overrides[feature] === 'unknown' ? null : overrides[feature] || measurement.findings[feature] || null;

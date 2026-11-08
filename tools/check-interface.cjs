@@ -1,14 +1,13 @@
 // Desktop checks for the workspace interface: keyboard access, menus, tooltips, panels, layout picker,
 // export layers and narrow/zoomed layouts. Finds controls by data-testid and ARIA, so either language works.
 // usage: node tools/check-interface.cjs STUDY_PATH [OUTPUT_DIR]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -16,7 +15,7 @@ async function main() {
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-interface-'));
   await temporaryExportFolder(userData);
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study], env: { ...process.env, VEACOM_USER_DATA: userData }, timeout: 90_000 });
+  const desktop = await launchDesktop({ args: [path.resolve(__dirname, '..'), '--study', study], env: { ...process.env, VEACOM_USER_DATA: userData }, timeout: 90_000 });
   const errors = [], checks = [];
   let page;
   const check = (name, detail) => { checks.push({ name, detail }); console.log(`PASS ${name}`); };
@@ -40,7 +39,7 @@ async function main() {
     await ignoreOutsideInput(desktop);
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 90_000 });
     await size(1280, 800);
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: 50 }));
     await page.waitForFunction(() => Number(document.querySelector('canvas[data-slice]')?.dataset.slice) === 50);
@@ -59,9 +58,18 @@ async function main() {
       };
       try {
         for (const slice of [51, 52, 50]) {
-          window.__VEACOM_TEST__.setView({ slice });
-          await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(done))));
-          if (Number(document.querySelector('canvas[data-slice]').dataset.slice) !== slice) throw new Error(`Slice ${slice} did not render`);
+          const canvas = document.querySelector('canvas[data-slice]');
+          await new Promise((resolve, reject) => {
+            const shown = () => {
+              if (Number(canvas.dataset.slice) !== slice) return;
+              clearTimeout(timeout); canvas.removeEventListener('veacom:frame', shown); resolve();
+            };
+            const timeout = setTimeout(() => {
+              canvas.removeEventListener('veacom:frame', shown); reject(new Error(`Slice ${slice} did not render`));
+            }, 10_000);
+            canvas.addEventListener('veacom:frame', shown);
+            window.__VEACOM_TEST__.setView({ slice }); shown();
+          });
         }
       } finally {
         Array.prototype.sort = sort;
@@ -268,7 +276,8 @@ async function main() {
     // own window, as in VEAcom 1.x.
     const resetView = async () => {
       await page.getByTestId('tool-reset-view').focus(); await page.keyboard.press('Enter');
-      await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.zoom === 1);
+      await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.zoom === 1
+        && document.querySelector('canvas[data-slice]')?.dataset.zoom === '1');
       await viewport.focus();
     };
     await viewport.focus();
@@ -301,6 +310,7 @@ async function main() {
     await page.keyboard.press('r');
     await page.mouse.click(box.x + box.width * 0.35, box.y + box.height * 0.4);
     await page.keyboard.press('+');
+    await page.waitForFunction(() => Number(document.querySelector('canvas[data-slice]')?.dataset.zoom) > 1);
     await page.mouse.move(box.x + box.width * 0.55, box.y + box.height * 0.62, { steps: 4 });
     await page.mouse.click(box.x + box.width * 0.55, box.y + box.height * 0.62);
     await page.waitForFunction(before => document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])').length === before + 1, annotationsBefore);
@@ -378,7 +388,10 @@ async function main() {
     const measuredSlice = await slice();
     // Two slices down the page: towards lower indices on a stack stored from the feet up (src/imaging/paging.ts).
     await viewport.focus(); await page.keyboard.press('ArrowDown'); await page.keyboard.press('ArrowDown');
-    await page.waitForFunction(before => Math.abs(window.__VEACOM_TEST__.state().view.slice - before) === 2, measuredSlice);
+    await page.waitForFunction(before => {
+      const slice = window.__VEACOM_TEST__.state().view.slice;
+      return Math.abs(slice - before) === 2 && document.querySelector('canvas[data-slice]')?.dataset.slice === String(slice);
+    }, measuredSlice);
     await drawLine([0.3, 0.5], [0.5, 0.55]);
     const firstRow = page.locator('[data-annotation-row]').first(), firstButton = firstRow.locator('[data-action="measurement-go"]');
     const pickedId = await firstRow.getAttribute('data-annotation-row');
@@ -685,7 +698,7 @@ async function main() {
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().series.some(item => item.modality === 'MR'), undefined, { timeout: 90_000 });
     const mr = (await page.evaluate(() => window.__VEACOM_TEST__.state())).series.find(item => item.modality === 'MR');
     if (await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId) !== mr.id) await page.locator(`[data-testid="series-${mr.id}"]`).click();
-    await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, mr.id, { timeout: 90_000 });
+    await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().seriesReady, mr.id, { timeout: 90_000 });
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus(); await page.keyboard.press('w');
     const mrPanes = await panes();
     // The lesion pre-diagnosis is switched off while its knowledge base is out of the repository: on an MR its button
@@ -727,7 +740,7 @@ async function main() {
     const ct = (await page.evaluate(() => window.__VEACOM_TEST__.state())).series.find(item => item.modality === 'CT');
     await page.getByTestId('tool-assessment').click(); await page.getByTestId('assessment-panel').waitFor();
     await page.locator(`[data-testid="series-${ct.id}"]`).click();
-    await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, ct.id, { timeout: 90_000 });
+    await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().seriesReady, ct.id, { timeout: 90_000 });
     await page.getByTestId('tool-assessment').click(); await checklist.waitFor();
     await inChecklist('Opening the checklist beside the assessment moves focus into it.');
     await page.keyboard.press('Escape'); await checklist.waitFor({ state: 'detached', timeout: 3000 });

@@ -583,7 +583,7 @@ export const tr: Record<keyof typeof en, string> = {
   'fatal.title': 'Görüntüleyici devam edemedi',
   'fatal.reopen': 'Görüntüleyiciyi yeniden aç',
 
-  'engine.restarted': 'Görüntüleme motoru yeniden başladı. Yüklü görüntüler ve ölçümler yerinde. Özgün verileri kullanmak için çalışmaları yeniden açın; yarım kalan işlem yeniden denenmedi.',
+  'engine.restarted': 'Görüntüleme motoru yeniden başladı. Son görüntü ve ölçümleriniz ekranda. Kesitler arasında gezinmek veya kaynak verileri kullanmak için çalışmayı yeniden açın.',
   'engine.stopped': 'Görüntüleme motoru durdu. Yüklü görüntüler ve ölçümler yerinde.',
   'engine.desktopRequired': 'Görüntüleme motoruna bağlanmak için VEAcom masaüstü uygulamasını açın.',
   'engine.restartedReopen': 'Görüntüleme motoru yeniden başladı. Özgün verilerini yüklemek ya da dışa aktarmak için bu çalışmayı yeniden açın.',
@@ -927,6 +927,7 @@ export const tr: Record<keyof typeof en, string> = {
   'lesion.match': '{name} için önceki lezyon',
   'lesion.differentThreshold': 'Kontur eşikleri farklı',
   'lesion.unmatched': 'Eşleştirilmedi',
+  'lesion.retrySave': 'PET ölçümlerini kaydetmeyi yeniden dene',
   'lesion.saveFailed': 'Ölçümler bu bilgisayara kaydedilemedi.',
   'lesion.table': 'Lezyonlar',
   'lesion.lesion': 'Lezyon',

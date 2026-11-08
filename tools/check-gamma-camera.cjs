@@ -7,13 +7,12 @@
 // SPECT/CT screen keeps the summed SPECT; a gate follows the CT's height, shows its MIP and fuses over the CT; the export
 // window says a gate exports with every gate of its file.
 // usage: node tools/check-gamma-camera.cjs NM_STUDIES [OUTPUT_DIR]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const studies = path.resolve(process.argv[2]);
@@ -23,7 +22,7 @@ async function main() {
   const spectCt = path.join(studies, manifest.studies.spectCt), wholeBody = path.join(studies, manifest.studies.wholeBody);
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-gamma-camera-'));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', spectCt], timeout: 90_000,
+  const desktop = await launchDesktop({ args: [path.resolve(__dirname, '..'), '--study', spectCt], timeout: 90_000,
     env: { ...process.env, VEACOM_USER_DATA: userData, VEACOM_LOCALE: 'en', VEACOM_TELEMETRY_CONSENT: 'denied', VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_TEST_MODE: '1' } });
   const errors = [], checks = [];
   let page;
@@ -37,7 +36,7 @@ async function main() {
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     const state = () => page.evaluate(() => window.__VEACOM_TEST__.state());
     const settled = async () => {
-      await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
+      await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
       await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(cell => !cell.dataset.seriesId || cell.dataset.volumeComplete === 'true'), undefined, { timeout: 120_000 });
       await page.waitForTimeout(600);
     };
@@ -122,7 +121,11 @@ async function main() {
     await page.mouse.move(first.x + first.width / 2, first.y + first.height / 2);
     await page.mouse.wheel(0, 100);
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes[0].slice === 1);
-    await page.waitForTimeout(300);
+    await page.waitForFunction(() => {
+      const cell = document.querySelector('[data-testid="viewport-cell"]');
+      return cell?.querySelector('canvas[data-slice]')?.dataset.slice === '1'
+        && /NM · POST · Detector 2/.test(cell.querySelector('[data-testid="patient-overlay"]')?.textContent || '');
+    });
     assert.equal((await state()).panes[1].slice, 1, 'The posterior pane stays where it was.');
     assert.match(await corner(0), /NM · POST · Detector 2/);
     await page.mouse.wheel(0, -100);

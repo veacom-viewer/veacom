@@ -3,11 +3,10 @@ const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { _electron: electron } = require('playwright');
 const reference = require('../tests/golden/ct-small.json');
 const { decodePng } = require('./lib/png.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const [input, output, app = path.resolve(__dirname, '..')] = process.argv.slice(2);
@@ -20,12 +19,15 @@ async function main() {
   const exports = await temporaryExportFolder(profile);
   let desktop;
   try {
-    desktop = await electron.launch({ args: [path.resolve(app), '--force-device-scale-factor=1', '--study', path.join(study, 'S01')],
+    desktop = await launchDesktop({ args: [path.resolve(app), '--force-device-scale-factor=1', '--study', path.join(study, 'S01')],
       env: { ...process.env, VEACOM_USER_DATA: profile }, timeout: 90000 });
     const page = await desktop.firstWindow();
     // A scroll or key press from the computer would move the slice or the window level and fail the golden.
     await ignoreOutsideInput(desktop);
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90000 });
+    await page.waitForFunction(() => {
+      const state = window.__VEACOM_TEST__?.state();
+      return state?.activeSeriesId && state.loadedSeriesIds.includes(state.activeSeriesId);
+    }, undefined, { timeout: 90000 });
     await page.waitForFunction(() => Boolean(window.__VEACOM_TEST__?.state().graphics?.renderer), undefined, { timeout: 30000 });
     const renderer = await page.evaluate(() => window.__VEACOM_TEST__.state().graphics.renderer);
     const platform = `${process.platform}-${process.arch}`;

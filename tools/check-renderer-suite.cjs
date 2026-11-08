@@ -5,11 +5,10 @@
 //   node tools/check-renderer-suite.cjs <output> [-- <app switches>]
 //
 // VEACOM_SMOKE_EXECUTABLE selects a packaged app; VEACOM_TEST_URL overrides the page.
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const split = process.argv.indexOf('--');
@@ -19,7 +18,7 @@ async function main() {
   const packaged = process.env.VEACOM_SMOKE_EXECUTABLE;
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-renderer-suite-'));
-  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), ...switches],
+  const desktop = await launchDesktop({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), ...switches],
     env: { ...process.env, VEACOM_DEV_URL: url, VEACOM_USER_DATA: userData }, timeout: 90_000 });
   let report = { passed: false, url, switches, executable: packaged ?? 'unpackaged' };
   try {

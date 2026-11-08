@@ -25,7 +25,9 @@ if (rejected.length) throw new Error(`Files excluded by repository policy:\n${re
 const NAMES = 'tools/dependency-names.txt';
 const CRATES_IO = /^(registry\+https:\/\/github\.com\/rust-lang\/crates\.io-index|sparse\+https:\/\/index\.crates\.io\/)$/;
 const locked = new Set(), foreign = [];
-for (const file of files) {
+const lockfiles = new Set(files);
+if (existsSync('native/fuzz/Cargo.lock')) lockfiles.add('native/fuzz/Cargo.lock');
+for (const file of lockfiles) {
   if (/(^|\/)pnpm-lock\.yaml$/.test(file)) {
     for (const line of readFileSync(file, 'utf8').split('\n')) {
       const match = /^  '?((?:@[^/\s']+\/)?[^@\s'/]+)@[^\s']+'?:(?: \{\})?$/.exec(line);

@@ -1,4 +1,6 @@
+import { hasPixels, type ViewVolume } from '../model';
 import { petScale } from './fusion';
+import { nativeRendering } from './nativeRender';
 import { MAX_PROJECTION_HALF, MAX_SLAB_HALF, slabSampling } from './slab';
 import { usesSourceFrames } from './viewState';
 import type { FusionSettings, PixelArray, Series, Vec3, ViewState, VoiLut, Volume } from '../model';
@@ -346,7 +348,7 @@ class SharedSliceRenderer {
     if (!Number.isFinite(view.slice)) throw new Error('Invalid source frame index.');
     return Math.max(0, Math.min(volume.series.dimensions[2] - 1, Math.round(view.slice)));
   }
-  setVisibleViews(views: Array<{ volume: Volume; view: ViewState; fusion?: FusionSettings | null }>): void {
+  setVisibleViews(views: Array<{ volume: ViewVolume; view: ViewState; fusion?: FusionSettings | null }>): void {
     this.visible.clear();
     if (!views.length) {
       for (const [key, cached] of this.textures) this.dropTexture(key, cached);
@@ -354,8 +356,9 @@ class SharedSliceRenderer {
       return;
     }
     for (const { volume, view, fusion } of views) {
+      if (!hasPixels(volume)) continue;
       this.visible.add(this.textureKey(volume, textureKind(volume), this.sourceFrame(volume, view)));
-      if (fusion) this.visible.add(this.textureKey(fusion.volume, textureKind(fusion.volume)));
+      if (fusion && hasPixels(fusion.volume)) this.visible.add(this.textureKey(fusion.volume, textureKind(fusion.volume)));
       // Start linking while the panes lay out and resize; validate before the first draw.
       const { mainKind, sourceFrame, petKind } = this.configuration(volume, view, fusion);
       this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
@@ -469,7 +472,8 @@ class SharedSliceRenderer {
       if (fusion) throw new Error(t('gpu.colorFusion'));
     }
     if (!volume.series.canReconstruct && (view.mode === 'mpr' || (view.mode !== 'source' && (view.plane !== 'axial' || view.oblique?.some(n => n !== 0))))) throw new Error(t('gpu.unverifiedGeometry'));
-    const petKind = fusion ? textureKind(fusion.volume) : undefined;
+    if (fusion && !hasPixels(fusion.volume)) throw new Error(t('gpu.completeVolume'));
+    const petKind = fusion && hasPixels(fusion.volume) ? textureKind(fusion.volume) : undefined;
     if (petKind === 'rgb8') throw new Error(t('gpu.scalarPet'));
     return { sourceFrame, mainKind, petKind };
   }
@@ -484,7 +488,7 @@ class SharedSliceRenderer {
     this.current = program;
     gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
     const pinned = new Set([this.bind(volume, 0, mainKind, sourceFrame)]); gl.uniform1i(this.uniform('uImage'), 0);
-    if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
+    if (fusion && petKind && hasPixels(fusion.volume)) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
     const ratio = target.width / Math.max(1, target.getBoundingClientRect().width || target.clientWidth || target.width);
     const cssWidth = w / ratio, cssHeight = h / ratio;
     const mapping = screenMapping(volume.series, sourceFrame === undefined ? view : { ...view, mode: 'source', slice: sourceFrame }, cssWidth, cssHeight);
@@ -514,7 +518,7 @@ class SharedSliceRenderer {
       gl.uniform1i(this.uniform('uVoiCount'), Math.max(1, lut?.data.length ?? 1));
       gl.uniform1f(this.uniform('uVoiMax'), 2 ** (lut?.bits ?? 16) - 1);
     }
-    if (fusion) {
+    if (fusion && hasPixels(fusion.volume)) {
       gl.uniform3fv(this.uniform('uPetDimensions'), fusion.volume.series.dimensions);
       this.indexMapping('uPet', fusion.volume.series, topLeft, right, down);
       // A PET without SUV is scaled by its own high activity (src/imaging/fusion.ts).
@@ -545,10 +549,12 @@ export function sliceRenderer(): SharedSliceRenderer {
 }
 
 export function prepareSourceProgram(volume: Volume): Promise<void> {
+  if (nativeRendering()) return Promise.resolve();
   try { return sliceRenderer().prepareSource(volume); }
   catch { return Promise.resolve(); } // Loading pixels must still succeed when the viewport cannot use the GPU.
 }
 
-export function sourceFrameOnly(volume: Volume, maxTextureSize = sliceRenderer().info.max3DTextureSize): boolean {
-  return volume.series.dimensions.some(dimension => dimension > maxTextureSize);
+export function sourceFrameOnly(volume: import('../model').ViewVolume, maxTextureSize?: number): boolean {
+  const limit = maxTextureSize ?? sliceRenderer().info.max3DTextureSize;
+  return volume.series.dimensions.some(dimension => dimension > limit);
 }

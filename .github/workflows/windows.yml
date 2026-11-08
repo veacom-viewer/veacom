@@ -17,6 +17,10 @@ on:
         description: Upload the tested unsigned Windows installer
         type: boolean
         default: false
+      benchmark_base:
+        description: Full commit SHA to benchmark against on this runner
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -92,13 +96,10 @@ jobs:
         id: web
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: pnpm run build:web
-      - name: Chromium for the video capture test
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: pnpm exec playwright install chromium
-      # A normal PATH, so the ISO test can start powershell.exe. The command of `pnpm test`, plus a JUnit report for
-      # the evidence (an option after the file pattern would be read as another pattern, so pnpm cannot append it).
       - name: Unit tests
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        env:
+          VEACOM_TEST_CHROME: 'C:\Program Files\Google\Chrome\Application\chrome.exe'
         run: node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit "--test-reporter-destination=$env:EVIDENCE\unit-tests.xml" "tests/**/*.test.ts"
       - name: App-local Visual C++ runtime
         id: crt
@@ -143,6 +144,16 @@ jobs:
           node tools/check-video-encoder.cjs "$env:EVIDENCE\video-encoder"
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node tools/check-video-encoder.cjs "$env:EVIDENCE\video-encoder-no-gpu" --no-gpu
+      - name: Native shared texture in the packaged app
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        run: node tools/check-native-presentation.cjs "$env:PACKAGED_APP"
+
+      - name: Native image pixels and surgical geometry, packaged
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
+        run: node tools/check-native-views.cjs
+
       - name: Packaged DICOM export, linked paging and MPR
         if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
         run: node tools/check-packaged-parity.cjs "$env:PACKAGED_APP" "$env:EVIDENCE\viewer-parity"
@@ -226,9 +237,56 @@ jobs:
         if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Uninstall -Output "$env:EVIDENCE\installed"
 
+      - name: Check out the benchmark baseline
+        if: ${{ !cancelled() && inputs.benchmark_base != '' && steps.packaged.outcome == 'success' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ inputs.benchmark_base }}
+          path: compare-base
+          persist-credentials: false
+      - name: Build the baseline
+        id: baseline
+        if: ${{ !cancelled() && inputs.benchmark_base != '' && steps.packaged.outcome == 'success' }}
+        working-directory: compare-base
+        run: |
+          pnpm install --frozen-lockfile
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm run setup:runtime
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm run build:core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pnpm run build:web
+      - name: Compare displayed frames and memory on the same Windows runner
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' }}
+        run: |
+          $large = Join-Path $env:RUNNER_TEMP 'benchmark-ct-1000'
+          node tools/fixtures/make-smoke-study.mjs $large --pipe-volume
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          foreach ($fixture in @(@($env:STUDY, 'small'), @($large, '1000'))) {
+            node tools/benchmark-native-imaging.cjs "--before=$env:GITHUB_WORKSPACE/compare-base" "--after=$env:GITHUB_WORKSPACE" "--study=$($fixture[0])/S01" "--output=$env:EVIDENCE/benchmark-$($fixture[1]).json" --runs=4 --steps=20
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      - name: Compare equivalent PET sphere measurements
+        if: ${{ !cancelled() && steps.baseline.outcome == 'success' }}
+        run: |
+          $fixture = Join-Path $env:RUNNER_TEMP 'benchmark-pet'
+          node tools/fixtures/make-pet-followup.mjs $fixture
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node --import ./tests/setup.ts tools/benchmark-native-sampling.mjs "$env:GITHUB_WORKSPACE/compare-base" "$env:GITHUB_WORKSPACE" $fixture "$env:EVIDENCE/benchmark-pet.json"
+
       - name: Keep the tested installer
         if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.keep_installer }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-installer-${{ github.sha }}
+          path: release-electron/VEAcom-Electron-*-win-x64-Installer.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Keep the tested Windows installer for this tag
+        if: ${{ success() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: windows-installer-${{ github.sha }}
           path: release-electron/VEAcom-Electron-*-win-x64-Installer.exe

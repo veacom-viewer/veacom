@@ -92,7 +92,7 @@ impl Request {
         let (start, end) = self.split();
         &self.payload[start..end]
     }
-    /// Raw bytes following the JSON, used for a chunk of decoded picture samples.
+    /// Picture samples or a volume mask chunk, following the JSON.
     pub fn data(&self) -> &[u8] {
         &self.payload[self.split().1..]
     }
@@ -161,6 +161,8 @@ enum Lane {
     PicturePoll,
     PictureAnswer,
     Other,
+    #[cfg(any(target_os="macos", windows))]
+    Render,
 }
 #[derive(Clone)]
 struct Pending {
@@ -184,6 +186,8 @@ impl Pending {
             "import" | "removeSeries" => Lane::Catalog,
             "volume" => Lane::Volume,
             "frame" => Lane::Frame,
+            #[cfg(any(target_os="macos", windows))]
+            "renderInfo" | "renderView" | "renderVolume" | "renderPattern" | "renderLayers" => Lane::Render,
             "pictureNext" => Lane::PicturePoll,
             "pictureAnswer" => Lane::PictureAnswer,
             _ => Lane::Other,
@@ -280,7 +284,7 @@ impl WorkQueue {
 #[derive(Default)]
 struct Shared {
     pending: Mutex<HashMap<u32, Pending>>,
-    queues: [WorkQueue; 7],
+    queues: [WorkQueue; Lane::Other as usize + 1 + cfg!(any(target_os = "macos", windows)) as usize],
     stopped: Mutex<bool>,
     stopping: Condvar,
 }
@@ -333,6 +337,8 @@ impl Server {
             (Lane::PictureAnswer, "picture-answer"),
             (Lane::Other, "tools-1"),
             (Lane::Other, "tools-2"),
+            #[cfg(any(target_os="macos",windows))]
+            (Lane::Render, "render"),
         ] {
             let (shared, events, handle) = (shared.clone(), events.clone(), handle.clone());
             server

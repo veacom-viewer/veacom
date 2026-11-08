@@ -1,0 +1,29 @@
+[package]
+name = "veacom-guards-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+anyhow = "1"
+dicom-core = "0.10.1"
+dicom-encoding = "0.10.1"
+dicom-object = { version = "0.10.1", features = ["deflate"] }
+dicom-parser = "0.10.1"
+dicom-transfer-syntax-registry = { version = "0.10.1", default-features = false, features = ["native", "deflate", "charls"] }
+libfuzzer-sys = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.4"
+
+[[bin]]
+name = "dicom"
+path = "fuzz_targets/dicom.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

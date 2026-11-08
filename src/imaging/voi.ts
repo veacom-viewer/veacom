@@ -68,16 +68,17 @@ export interface SphereStatistics {
   volumeMl: number; diameterMm: number;
   /** The highest mean in a 1 cm³ sphere and where that sphere is centred: for a PET in SUV only. */
   peak: { value: number; at: Vec3 } | null;
+  metabolic?: ThresholdVolume | null;
   /** Part of the sphere lies outside the image. */
   clipped: boolean;
   paddingCount: number; invalidCount: number;
 }
 
 /** Whether a volume can be measured in three dimensions: a whole, reconstructable, scalar volume. */
-export function measurableVolume(volume: Volume): boolean {
+export function measurableVolume(volume: import('../model').ViewVolume): boolean {
   const series = volume.series, [nx, ny, nz] = series.dimensions;
   return volume.sourceFrameIndex === undefined && series.components !== 3 && series.canReconstruct && !series.sourceFramesOnly
-    && series.spacingKnown !== false && volume.data.length >= nx * ny * nz;
+    && series.spacingKnown !== false && (volume.data === null || volume.data.length >= nx * ny * nz);
 }
 
 /** Whether a quantity is an SUV (SUVbw, SUL, SUVbsa…), so that SUVpeak applies. */
@@ -292,8 +293,12 @@ function maskOf(series: Series, included: readonly number[], i: Vec3, j: Vec3, k
   for (const p of positions) for (let axis = 0; axis < 3; axis++) { low[axis] = Math.min(low[axis], p[axis]); high[axis] = Math.max(high[axis], p[axis]); }
   const dimensions = [0, 1, 2].map(axis => high[axis] - low[axis] + 1) as Vec3, labels = new Uint8Array(dimensions[0] * dimensions[1] * dimensions[2]);
   for (const p of positions) labels[((p[2] - low[2]) * dimensions[1] + p[1] - low[1]) * dimensions[0] + p[0] - low[0]] = 1;
+  return metabolicMask(series, low as Vec3, dimensions, labels, [i, j, k]);
+}
+
+export function metabolicMask(series: Series, first: Vec3, dimensions: Vec3, labels: Uint8Array, [i, j, k] = voxelAxes(series)): LabelVolume {
   const length = Math.hypot(...k) || 1;
-  return { dimensions, origin: indexToWorld(series, low as Vec3), i, j, k, normal: [k[0] / length, k[1] / length, k[2] / length], labels,
+  return { dimensions, origin: indexToWorld(series, first), i, j, k, normal: [k[0] / length, k[1] / length, k[2] / length], labels,
     segments: [{ segment: 1, label: 'MTV', color: MASK_COLOR, rgb: MASK_RGB }], min: [0, 0, 0], max: [dimensions[0] - 1, dimensions[1] - 1, dimensions[2] - 1] };
 }
 

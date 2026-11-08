@@ -2,8 +2,7 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const {execFileSync} = require('node:child_process');
-const { _electron: electron } = require('playwright');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 (async () => {
   const [exe, fixture, result] = process.argv.slice(2);
   if (!exe || !fixture || !result) throw Error('Usage: check-resource-spikes.cjs <packaged-executable> <synthetic-ct-small> <result.json>');
@@ -11,7 +10,7 @@ const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(),'veacom-spike-'));
   let app;
   try {
-    app = await electron.launch({executablePath:exe,args:[],env:{...process.env,VEACOM_USER_DATA:dir,VEACOM_TELEMETRY_ENVIRONMENT:'lab'},timeout:90000});
+    app = await launchDesktop({executablePath:exe,args:[],env:{...process.env,VEACOM_USER_DATA:dir,VEACOM_TELEMETRY_ENVIRONMENT:'lab'},timeout:90000});
     const page = await app.firstWindow();
     // A click or key press from the computer would be recorded as use, or could answer the consent prompt.
     await ignoreOutsideInput(app);
@@ -23,7 +22,7 @@ const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
     await page.getByTestId('usage-consent').waitFor({state:'detached'});
     await app.evaluate(({dialog}, folder)=>{ dialog.showOpenDialog = async()=>({canceled:false,filePaths:[folder]}); },path.join(fixture,'S01'));
     await page.getByTestId('welcome-open-folder').click();
-    await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().fullVolumeLoaded,undefined,{timeout:90000});
+    await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().seriesReady,undefined,{timeout:90000});
     await page.waitForTimeout(2300); // establish pre-spike CPU and RSS
     const sampleCost=await app.evaluate(({app})=>{
       const samples=[];for(let i=0;i<12;i++){const start=performance.now(); app.getAppMetrics();samples.push(performance.now()-start);}

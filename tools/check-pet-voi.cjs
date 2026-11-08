@@ -17,14 +17,13 @@
 // - in SUL, SULglu (EANM 2025, section 13) follows SUL in the table and the sphere's values: this study's with the
 //   glucose in its file, and its change once the prior's glucose is typed, live and as kept.
 // usage: node tools/check-pet-voi.cjs FOLLOWUP_DIR [OUTPUT_DIR]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const root = path.resolve(process.argv[2]);
@@ -52,7 +51,7 @@ async function main() {
   let desktop, page;
 
   const launch = async (opened = study) => {
-    desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', opened], timeout: 90_000,
+    desktop = await launchDesktop({ args: [path.resolve(__dirname, '..'), '--study', opened], timeout: 90_000,
       env: { ...process.env, VEACOM_USER_DATA: userData, VEACOM_LOCALE: 'en', VEACOM_TELEMETRY_CONSENT: 'denied', VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_TEST_MODE: '1' } });
     page = await desktop.firstWindow();
     // Keep the person at the machine from typing into the window or clicking it, and keep it drawing while covered.
@@ -64,7 +63,7 @@ async function main() {
   };
   const state = () => page.evaluate(() => window.__VEACOM_TEST__.state());
   const settled = async () => {
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
     await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(cell => !cell.dataset.seriesId || cell.dataset.volumeComplete === 'true'), undefined, { timeout: 120_000 });
     await page.waitForTimeout(600);
   };
@@ -448,7 +447,10 @@ async function main() {
     await page.getByTestId('tool-window-presets').click();
     await page.getByTestId('preset-suv7').click();
     const windowLine = index => cells().nth(index).locator('[data-testid="image-overlay"]').textContent();
-    await page.waitForFunction(() => /SUV 0–7/.test(document.querySelectorAll('[data-testid="viewport-cell"]')[1]?.querySelector('[data-testid="image-overlay"]')?.textContent ?? ''));
+    await page.waitForFunction(() => {
+      const panes = [...document.querySelectorAll('[data-testid="viewport-cell"] [data-testid="image-overlay"]')];
+      return panes.length === 4 && panes.every(pane => pane.textContent.includes('SUV 0–7'));
+    });
     for (const index of [0, 1, 2, 3]) assert.match(await windowLine(index), /SUV 0–7/, `Pane ${index + 1} is on the same SUV scale.`);
     await page.getByTestId('tool-window-presets').click();
     await page.getByTestId('preset-suv10').click();

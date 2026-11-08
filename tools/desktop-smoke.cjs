@@ -1,10 +1,9 @@
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const { ClickBudget } = require('./click-budget.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
 // hardware (default): a graphics driver must draw. software: the PC has no usable driver, so drawing must
 // run in software and the app must say so.
@@ -19,7 +18,7 @@ async function main() {
   const started = performance.now();
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-smoke-'));
   const packaged = process.env.VEACOM_SMOKE_EXECUTABLE;
-  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study], env: { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_ENVIRONMENT: 'lab' }, timeout: 90_000 });
+  const desktop = await launchDesktop({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study], env: { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_ENVIRONMENT: 'lab' }, timeout: 90_000 });
   let page;
   const screenshot = async name => {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -33,7 +32,7 @@ async function main() {
     await ignoreOutsideInput(desktop);
     // Each step's actions, counted by the app's usage timings, against tools/click-budgets.json.
     const budget = new ClickBudget(page);
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 90_000 });
     await page.locator('canvas[data-renderer]').first().waitFor({ state: 'visible' });
     const state = await page.evaluate(() => window.__VEACOM_TEST__.state());
     check('CLI study import and full decode', { elapsedMs: performance.now() - started, state });
@@ -71,6 +70,12 @@ async function main() {
 
     await budget.task('measure-length', async () => {
       await page.keyboard.press('l');
+      await page.waitForFunction(() => {
+        const state = window.__VEACOM_TEST__.state(), frame = document.querySelector('canvas[data-slice]');
+        return document.querySelector('[data-testid="tool-measure"]')?.getAttribute('aria-pressed') === 'true'
+          && frame?.dataset.slice === String(state.view.slice)
+          && (!frame.dataset.nativeRevision || frame.dataset.nativePresented === frame.dataset.nativeRevision);
+      });
       await page.mouse.move(bounds.x + bounds.width * .35, bounds.y + bounds.height * .45);
       await page.mouse.down(); await page.mouse.move(bounds.x + bounds.width * .65, bounds.y + bounds.height * .5, { steps: 8 }); await page.mouse.up();
     }, { until: () => page.locator('[data-annotation-id]:not([data-annotation-id="draft"])').first().waitFor() });
@@ -92,14 +97,15 @@ async function main() {
     await budget.task('open-3d', () => page.getByTestId('tool-3d').click(), { until: async () => {
       await page.getByTestId('volume-view').waitFor();
       await page.getByTestId('volume-3d-canvas').waitFor();
-      await page.waitForFunction(() => document.querySelector('[data-testid="volume-3d-canvas"]')?.width > 10);
+      await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="volume-3d-canvas"]')?.dataset.renderer));
     } });
     await screenshot('after-3d.png');
     check('3D surgical view opens');
     const volumeCanvas = await page.getByTestId('volume-3d-canvas').boundingBox();
     const center = [volumeCanvas.x + volumeCanvas.width / 2, volumeCanvas.y + volumeCanvas.height / 2];
     await budget.task('3d-pick', async () => { await page.getByTestId('volume-mode-pick').click(); await page.mouse.click(...center); },
-      { until: () => page.getByTestId('volume-linked-marker').waitFor({ state: 'visible' }) });
+      { until: async () => { await page.waitForFunction(() => Number(document.querySelector('[data-testid="volume-3d-canvas"]')?.dataset.pickSequence) > 0);
+        await page.getByTestId('volume-linked-marker').waitFor({ state: 'visible' }); } });
     const marker = await page.getByTestId('volume-linked-marker').boundingBox();
     assert(marker.x >= volumeCanvas.x && marker.x < volumeCanvas.x + volumeCanvas.width);
     assert(marker.y >= volumeCanvas.y && marker.y < volumeCanvas.y + volumeCanvas.height);

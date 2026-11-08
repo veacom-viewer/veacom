@@ -37,7 +37,7 @@ const grab = (file, r) => ps(`Add-Type -AssemblyName System.Drawing; ${USER32} $
     const page = await desktop.firstWindow();
     page.on('pageerror', error => result.errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') result.errors.push(message.text()); });
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 90_000 });
     const settle = async () => { await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); await page.waitForTimeout(250); };
     const place = async (width, height, zoom = 1) => {
       await desktop.evaluate(({ BrowserWindow }, [w, h, z]) => {

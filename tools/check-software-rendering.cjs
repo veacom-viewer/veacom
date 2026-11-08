@@ -9,12 +9,11 @@
 // result matches --expect: software = image drawn in software with the notice; hardware = image drawn by
 // a graphics driver without the notice. It still writes its evidence when it fails, so it also documents
 // builds that predate the notice.
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 function parse(argv) {
   const split = argv.indexOf('--');
@@ -46,7 +45,7 @@ async function main() {
   const launched = performance.now();
   // VEACOM_ELECTRON runs this source tree on another Electron binary (diagnostics only).
   const executablePath = packaged ?? process.env.VEACOM_ELECTRON;
-  const desktop = await electron.launch({ ...(executablePath ? { executablePath } : {}),
+  const desktop = await launchDesktop({ ...(executablePath ? { executablePath } : {}),
     args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), ...options.switches, '--study', study],
     env: { ...process.env, VEACOM_USER_DATA: userData }, timeout: 90_000 });
   let page;
@@ -58,8 +57,8 @@ async function main() {
     page.on('console', message => { if (['error', 'warning'].includes(message.type())) result.console.push(`${message.type()}: ${message.text()}`); });
     await page.waitForFunction(() => window.__VEACOM_TEST__, undefined, { timeout: 60_000 });
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
-    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 120_000 });
-    observations.fullVolumeLoadedMs = Math.round(performance.now() - launched);
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().seriesReady, undefined, { timeout: 120_000 });
+    observations.seriesReadyMs = Math.round(performance.now() - launched);
     // Wait for the viewport to draw (its canvas reports a renderer). Errors it shows meanwhile are kept: a
     // lost context can recover and draw later, so only an error still there after 30 s means no image.
     const drawn = await page.waitForFunction(() => {

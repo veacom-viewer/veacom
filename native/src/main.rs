@@ -18,7 +18,18 @@ mod media_directory;
 mod import_budget;
 mod input_guard;
 mod measure;
+mod frames;
+mod probe;
+mod plane_region;
 mod sampling;
+mod sphere;
+mod sphere_threshold;
+mod assessment;
+mod imaging_ops;
+#[cfg(test)]
+mod shader_tests;
+#[cfg(any(target_os="macos",windows))]
+mod render;
 mod window;
 mod memory;
 mod model;
@@ -125,6 +136,12 @@ struct Core {
     jobs: Queue,
     frames: Queue,
     samples: Queue,
+    #[cfg(any(target_os="macos",windows))]
+    gpu: Queue,
+    #[cfg(any(target_os="macos",windows))]
+    mesh: Queue,
+    #[cfg(any(target_os="macos",windows))]
+    layer_uploads: Mutex<imaging_ops::LayerUploads>,
     early: Mutex<EarlyImport>,
 }
 type App = Arc<Core>;
@@ -319,7 +336,10 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
                 frame(core, cancelled, &id, index, revision)
             }
             "tags" => series_tags(core, body(call.body)?).and_then(|result| ok(&result)),
-            "sample" => sample_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
+            "sample" => imaging_ops::sample(core, cancelled, body(call.body)?),
+            #[cfg(any(target_os="macos",windows))]
+            "renderInfo" | "renderPattern" | "renderView" | "renderVolume" | "renderLayers" | "renderMesh" =>
+                imaging_ops::render(core, request, call),
             "measure" => measure_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
             "export" => export_series(core, request, body(call.body)?).and_then(|result| ok(&result)),
             "exportEstimate" => estimate_export(core, body(call.body)?).and_then(|result| ok(&result)),
@@ -578,6 +598,11 @@ fn remove_series(core: &App, cancelled: &AtomicBool, request: RemoveRequest) -> 
         }
         sources.len()
     };
+    for id in &request.ids {
+        frames::forget(id);
+        #[cfg(any(target_os="macos",windows))]
+        imaging_ops::forget_series(id);
+    }
     if remaining == 0 {
         core.archives.lock().unwrap().clear();
     }
@@ -622,13 +647,13 @@ fn load_volume(core: &App, id: &str, warming: bool, cancelled: &AtomicBool) -> A
     Ok((volume, series))
 }
 /// Pixels sent from the buffer the volume cache shares, without a copy.
-fn pixel_reply(pixels: Arc<PixelBuffer>, components: u8) -> Reply {
+fn pixel_reply(pixels: Arc<PixelBuffer>, components: u8, revision:u64) -> Reply {
     Reply {
         status: 200,
         headers: vec![
             ("content-type", "application/octet-stream".into()),
             ("cache-control", "no-store".into()),
-            ("x-pixel-type", pixels.type_name().into()),
+            ("x-source-revision",revision.to_string()), ("x-pixel-type", pixels.type_name().into()),
             ("x-components", components.to_string()),
         ],
         body: Box::new(Volume(pixels)),
@@ -637,7 +662,7 @@ fn pixel_reply(pixels: Arc<PixelBuffer>, components: u8) -> Reply {
 fn volume(core: &App, cancelled: &AtomicBool, id: &str, revision: Option<u64>) -> ApiResult<Reply> {
     let (pixels, series) = load_volume(core, id, false, cancelled)?;
     check_revision(&series, revision)?;
-    Ok(pixel_reply(pixels, series.info.components))
+    Ok(pixel_reply(pixels, series.info.components, series.info.source_revision))
 }
 // Decodes a series into the volume cache in the background; the viewer's own volume request then finds it
 // ready, or waits for this decode instead of starting another.
@@ -656,7 +681,6 @@ fn header_value(value: &str) -> bool {
 fn frame(core: &App, cancelled: &AtomicBool, id: &str, index: usize, revision: Option<u64>) -> ApiResult<Reply> {
     let series = source(core, id)?;
     check_revision(&series, revision)?;
-    let components = series.info.components;
     if index >= series.frames.len() {
         return Err(ApiError(404, "Frame index is out of bounds".into()));
     }
@@ -672,9 +696,10 @@ fn frame(core: &App, cancelled: &AtomicBool, id: &str, index: usize, revision: O
     }
     let metadata = series.frames[index].metadata.clone();
     // Each decode reads the whole file. Paging cancels requests by the dozen; holding the turn until the decode ends
-    // keeps one decode at a time instead of one beside every cancelled one.
-    let pixels = decode::decode_frame(&series, index)?;
-    let mut reply = pixel_reply(Arc::new(pixels), components);
+    // keeps one decode at a time instead of one beside every cancelled one. Read from the file, not the shared frame
+    // cache, so a file changed since its import is refused here (file.sourceChanged) rather than shown from memory.
+    let pixels = Arc::new(decode::decode_frame(&series, index)?);
+    let mut reply = pixel_reply(pixels,series.info.components,series.info.source_revision);
     reply.headers.push(("x-source-frame-index", index.to_string()));
     if !metadata.sop_instance_uid.is_empty() {
         if !header_value(&metadata.sop_instance_uid) {
@@ -706,51 +731,6 @@ fn series_tags(core: &App, query: TagsQuery) -> ApiResult<Value> {
     }
     Ok(serde_json::to_value(tags::read_source_tags(frame.source.open()?, &frame.source.path)?).unwrap())
 }
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
-enum SampleOperation {
-    SourceRegion(sampling::Region),
-    Window(window::Window),
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SampleRequest {
-    id: String,
-    source_revision: u64,
-    operation: SampleOperation,
-}
-
-fn sample_series(core: &App, cancelled: &AtomicBool, request: SampleRequest) -> ApiResult<Value> {
-    let _sample = core.samples.turn(cancelled)?;
-    let series = source(core, &request.id)?;
-    let changed = || ApiError(409, "Source series changed".into());
-    if series.info.source_revision != request.source_revision { return Err(changed()); }
-    let frame = match &request.operation {
-        SampleOperation::SourceRegion(region) => {
-            if region.points.len() > 10_000 { return Err(ApiError(400, "Too many region points".into())); }
-            region.plane.single_frame(&series)?
-        }
-        SampleOperation::Window(window) => match &window.frame {
-            Some(frame) => { frame.validate(&series)?; Some(frame.index) }
-            None => None,
-        },
-    };
-    let pixels = if let Some(index) = frame {
-        let _frame = core.frames.turn(cancelled)?;
-        Arc::new(decode::decode_frame(&series, index)?)
-    } else {
-        let (pixels, loaded) = load_volume(core, &request.id, false, cancelled)?;
-        if loaded.info.source_revision != request.source_revision { return Err(changed()); }
-        pixels
-    };
-    let result = match &request.operation {
-        SampleOperation::SourceRegion(region) => serde_json::to_value(sampling::region(&series, &pixels, region)?).unwrap(),
-        SampleOperation::Window(window) => window::calculate(&series, &pixels, window)?,
-    };
-    if source(core, &request.id)?.info.source_revision != request.source_revision { return Err(changed()); }
-    Ok(result)
-}
-
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct MeasureRequest {
@@ -862,6 +842,12 @@ fn new_core(cache_limit: usize) -> App {
         jobs: Queue::new(),
         frames: Queue::new(),
         samples: Queue::new(),
+        #[cfg(any(target_os="macos",windows))]
+        gpu: Queue::new(),
+        #[cfg(any(target_os="macos",windows))]
+        mesh: Queue::new(),
+        #[cfg(any(target_os="macos",windows))]
+        layer_uploads: Mutex::default(),
         early: Mutex::new(EarlyImport::default()),
     })
 }
@@ -881,6 +867,9 @@ fn main() -> anyhow::Result<()> {
     let mut server = pipe::Server::start(input, output, move |request| handle(&serving, request), move || {
         waking.jobs.wake();
         waking.frames.wake();
+        waking.samples.wake();
+        #[cfg(any(target_os="macos",windows))]
+        { waking.gpu.wake(); waking.mesh.wake(); }
         pictures::wake_poll();
     })?;
     // Until the shutdown request, or main closing stdin (it quit or crashed): an engine without its app exits.
@@ -1246,6 +1235,9 @@ mod protocol_tests {
             let server = pipe::Server::start(input, output, move |request| handle(&core, request), move || {
                 waking.jobs.wake();
                 waking.frames.wake();
+        waking.samples.wake();
+        #[cfg(any(target_os="macos",windows))]
+        { waking.gpu.wake(); waking.mesh.wake(); }
             }).unwrap();
             let (kind, _, hello) = pipe::read_message(&mut replies).unwrap();
             assert_eq!(kind, 0);

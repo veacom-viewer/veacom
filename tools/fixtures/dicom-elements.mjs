@@ -3,6 +3,7 @@ const LONG_LENGTH = new Set(['OB', 'OW', 'SQ']);
 export function element(group, item, vr, value) {
   let body;
   if (LONG_LENGTH.has(vr)) body = Buffer.from(value);
+  else if (vr === 'SS') { body = Buffer.alloc(2); body.writeInt16LE(value); }
   else if (vr === 'US') { body = Buffer.alloc(2); body.writeUInt16LE(value); }
   else if (vr === 'UL') { body = Buffer.alloc(4); body.writeUInt32LE(value); }
   else body = Buffer.from(Array.isArray(value) ? value.join('\\') : String(value), 'latin1');

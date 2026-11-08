@@ -1,10 +1,9 @@
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 const repo = path.resolve(__dirname, '..');
 const work = path.resolve(repo, '..', 'work');
@@ -21,7 +20,7 @@ async function run(index) {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-load-profile-'));
   const errors = [], processLog = [];
   const launchedAt = performance.now();
-  const desktop = await electron.launch({ args: [appPath],
+  const desktop = await launchDesktop({ args: [appPath],
     ...(options.executable ? { executablePath: options.executable } : {}),
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
   desktop.process().stderr?.on('data', data => processLog.push(data.toString()));
@@ -134,7 +133,7 @@ async function run(index) {
       };
       document.addEventListener('veacom:frame', event => {
         const state = window.__VEACOM_TEST__.state();
-        proof.frames.push({ at: time(), ...event.detail, dimensions: state.dimensions, fullVolumeLoaded: state.fullVolumeLoaded,
+        proof.frames.push({ at: time(), ...event.detail, dimensions: state.dimensions, fullVolumeLoaded: state.seriesReady,
           renderer: event.target.dataset.renderer });
       });
       const observer = new PerformanceObserver(list => {
@@ -145,8 +144,8 @@ async function run(index) {
       function frame(at) {
         if (previous !== undefined) proof.rafGaps.push({ at, gap: at - previous });
         previous = at;
-        const state = window.__VEACOM_TEST__.state(), key = JSON.stringify([state.dimensions, state.fullVolumeLoaded, state.pendingLoads]);
-        if (key !== priorState) { proof.states.push({ at, dimensions: state.dimensions, fullVolumeLoaded: state.fullVolumeLoaded, pendingLoads: state.pendingLoads }); priorState = key; }
+        const state = window.__VEACOM_TEST__.state(), key = JSON.stringify([state.dimensions, state.seriesReady, state.pendingLoads]);
+        if (key !== priorState) { proof.states.push({ at, dimensions: state.dimensions, fullVolumeLoaded: state.seriesReady, pendingLoads: state.pendingLoads }); priorState = key; }
         if (!proof.stopped) requestAnimationFrame(frame);
       }
       requestAnimationFrame(frame);
@@ -158,7 +157,7 @@ async function run(index) {
       proof.started = performance.now();
       window.__VEACOM_TEST__.importPaths(capabilities).then(() => { proof.importReturned = performance.now(); });
     }, capabilities);
-    await page.waitForFunction(() => window.__VEACOM_LOAD_PROFILE__.frames.some(frame => frame.fullVolumeLoaded && frame.dimensions?.[2] > 1), undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => window.__VEACOM_LOAD_PROFILE__.frames.some(frame => frame.seriesReady && frame.dimensions?.[2] > 1), undefined, { timeout: 120_000 });
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     const proof = await page.evaluate(() => {
       const proof = window.__VEACOM_LOAD_PROFILE__; proof.finish(); delete proof.finish;
@@ -169,7 +168,7 @@ async function run(index) {
     const fullUpload = proof.gpuCalls.find(call => call.method === 'texImage3D' && call.dimensions?.[2] > 1);
     const preview = proof.frames.find(frame => !fullUpload || frame.at < fullUpload.started);
     const full = fullUpload ? proof.frames.find(frame => frame.at >= fullUpload.finished)
-      : proof.frames.find(frame => frame.fullVolumeLoaded && frame.dimensions?.[2] > 1);
+      : proof.frames.find(frame => frame.seriesReady && frame.dimensions?.[2] > 1);
     const fullBody = proof.bodyReads.find(read => read.path.startsWith('/_imaging/volume/'));
     const previewBody = proof.bodyReads.find(read => read.path.startsWith('/_imaging/frame/'));
     const fullRequest = proof.requests.find(request => request.path.startsWith('/_imaging/volume/'));

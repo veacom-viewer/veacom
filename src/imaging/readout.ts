@@ -1,3 +1,5 @@
+import { hasPixels, type ViewVolume } from '../model';
+import { nativeProbe, nativeRay } from './nativeMeasurements';
 // The value under the pointer, shown in an image corner as the reader moves over a pane: the voxel there in the series'
 // own quantity, read as the probe reads it (the nearest voxel), and on a fused image the PET's value at the same point.
 // A PET reads in the SUV chosen under PET values (SUVbw, SUL or SUVbsa) only when it has what that SUV needs; a PET
@@ -34,8 +36,9 @@ export function voxelAt(volume: Volume, view: Pick<ViewState, 'mode' | 'slice'>,
 }
 
 /** A stored value in the series' quantity, with its unit ("3.42 SUL", "35.0 HU", "1234.5 Bq/ml"). */
-export function quantityAt(series: Series, stored: number): string | null {
-  const quantity = quantitativeScale(series), value = stored * quantity.factor;
+export function quantityAt(series: Series, stored: number, normalization = series.suvNormalization): string | null {
+  const quantity = quantitativeScale(normalization === series.suvNormalization ? series : { ...series, suvNormalization: normalization });
+  const value = stored * quantity.factor;
   return Number.isFinite(value) ? quantityText(value, quantity.unit) : null;
 }
 
@@ -52,10 +55,35 @@ export function pointerReadout(volume: Volume, view: ViewState, world: Vec3, fus
   const lines: string[] = [];
   const stored = voxelAt(volume, view, world), own = stored === null ? null : quantityAt(series, stored);
   if (own) lines.push(t('readout.value', { name, value: own }));
-  if (fusion && fusion.volume.series.components !== 3) {
+  if (fusion && hasPixels(fusion.volume) && fusion.volume.series.components !== 3) {
     // The PET's nearest voxel at the same point in the patient, as the fused probe reads it.
     const pet = sampleVolume(fusion.volume, world), text = pet === null || !Number.isFinite(pet) ? null : quantityAt(fusion.volume.series, pet);
     if (text) lines.push(t('readout.value', { name: seriesName(fusion.volume.series), value: text }));
   }
   return lines;
+}
+
+interface PointerSample { series: Series; value: number | null; ray?: boolean }
+
+export function formatPointerSamples(samples: PointerSample[], normalization: Series['suvNormalization']): string[] {
+  return samples.flatMap(({ series, value, ray }) => {
+    const text = value === null ? null : quantityAt(series, value, normalization);
+    return text ? [t(ray ? 'readout.rayMax' : 'readout.value', { name: seriesName(series), value: text })] : [];
+  });
+}
+
+/** Stored values on the displayed frame, including the hottest voxel under a MIP pixel. */
+export async function nativePointerSamples(volume: ViewVolume, view: ViewState, world: Vec3, fusion?: FusionSettings | null): Promise<PointerSample[]> {
+  const series = volume.series;
+  if (series.components === 3) return [];
+  if (isProjection(series, view)) {
+    const hit = await nativeRay(series, view, world, false);
+    return [{ series, value: hit?.value ?? null, ray: true }];
+  }
+  const targets = [{ series, frame: usesSourceFrames(series, view) ? Math.round(view.slice) : undefined }];
+  if (fusion && fusion.volume.series.components !== 3) targets.push({ series: fusion.volume.series, frame: undefined });
+  return Promise.all(targets.map(async ({ series, frame }) => {
+    const { value } = await nativeProbe(series, world, frame);
+    return { series, value };
+  }));
 }

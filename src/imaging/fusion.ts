@@ -109,7 +109,9 @@ export function petAutoLevel(data: PixelArray): number {
 
 /** What a stored PET value is multiplied by before the colour scale: 1 in SUV, the SUV factor, or for a PET without
  * SUV so that its own high activity reads as SUV 5. */
-export function petScale(pet: { series: Series; data: PixelArray }): number {
+export function petScale(pet: { series: Series; data: PixelArray }): number;
+export function petScale(pet: { series: Series; data: PixelArray | null }): number | undefined;
+export function petScale(pet: { series: Series; data: PixelArray | null }): number | undefined {
   // An MR laid over an MR: the top of its own display window reads as the top of the default scale (5), as other viewers
   // colour it, so ordinary tissue stays red and only what is bright turns yellow. A gate of a gated SPECT: the top of the
   // window every gate of its file shares (native/src/ingest.rs, share_gate_windows), so a gate that counted less looks
@@ -119,5 +121,5 @@ export function petScale(pet: { series: Series; data: PixelArray }): number {
     if (Number.isFinite(top) && top > 0) return 5 / top;
   }
   if (petHasSuv(pet.series)) return /^SUV/i.test(pet.series.valueUnit) ? 1 : pet.series.suvFactor;
-  return 5 / petAutoLevel(pet.data);
+  return pet.data ? 5 / petAutoLevel(pet.data) : undefined;
 }

@@ -1,4 +1,4 @@
-import type { Annotation, Plane, Series, Vec3, ViewMode, ViewState, Volume } from '../model';
+import type { Annotation, Plane, Series, Vec3, ViewMode, ViewState, ViewVolume, Volume } from '../model';
 import { getPlaneFrame, isPaddingValue, screenMapping } from './geometry';
 import { t } from '../i18n';
 
@@ -41,13 +41,13 @@ function geometry(series: Series): { forward: Matrix3; inverse: Matrix3 } {
   return { forward: m, inverse };
 }
 
-function validateVolume(volume: Volume, mask?: Uint8Array): void {
+function validateVolume(volume: ViewVolume, mask?: Uint8Array): void {
   if (volume.series.components === 3) throw new Error(t('volume.rgbUnsupported'));
   if (volume.sourceFrameIndex !== undefined) throw new Error(t('volume.completeVolume'));
   const dimensions = volume.series.dimensions;
   const count = dimensions[0] * dimensions[1] * dimensions[2];
   if (!dimensions.every(value => Number.isInteger(value) && value > 0)
-    || !Number.isSafeInteger(count) || count > 0xffffffff || volume.data.length !== count) {
+    || !Number.isSafeInteger(count) || count > 0xffffffff || (volume.data !== null && volume.data.length !== count)) {
     throw new Error(t('volume.dimensionsMismatch'));
   }
   if (mask && mask.length !== count) throw new Error('The removal mask does not match the volume.');
@@ -88,7 +88,7 @@ function validateCrop(volume: Volume, crop: CropBounds): void {
   }
 }
 
-export function fullCrop(volume: Volume): CropBounds {
+export function fullCrop(volume: ViewVolume): CropBounds {
   validateVolume(volume);
   return { min: [0, 0, 0], max: volume.series.dimensions.map(value => value - 1) as Vec3 };
 }
@@ -393,7 +393,7 @@ export interface VoiMask { mask: Uint8Array; crop: CropBounds; insideCount: numb
 type Point2 = [number, number];
 const VOI_POINTS = 128;
 
-function voiFrame(volume: Volume, plane: Plane, mode: ViewMode = 'mpr') {
+function voiFrame(volume: ViewVolume, plane: Plane, mode: ViewMode = 'mpr') {
   if (volume.sourceFrameIndex !== undefined) throw new Error(t('volume.loadComplete'));
   validateVolume(volume);
   const { forward } = geometry(volume.series);
@@ -470,7 +470,7 @@ function resampleOutline(outline: Vec3[], frame: ReturnType<typeof voiFrame>, sl
 }
 
 /** Converts an existing closed measurement into a key on the same patient-space slice. */
-export function annotationToVoiKey(volume: Volume, annotation: Annotation): VoiKey {
+export function annotationToVoiKey(volume: ViewVolume, annotation: Annotation): VoiKey {
   const mode = annotation.mode ?? 'mpr';
   if (annotation.sourceFrame !== undefined && mode !== 'source') throw new Error(t('volume.sourceMode'));
   const slice = mode === 'source' ? annotation.sourceFrame ?? annotation.slice : annotation.slice;
@@ -513,7 +513,7 @@ function alignOutline(reference: Vec3[], other: Vec3[]): Vec3[] {
   return reference.map((_, point) => other[(bestShift + bestDirection * point + VOI_POINTS) % VOI_POINTS]);
 }
 
-function prepareVoi(volume: Volume, selection: VoiSelection) {
+function prepareVoi(volume: ViewVolume, selection: VoiSelection) {
   const mode = selection.mode ?? 'mpr';
   const frame = voiFrame(volume, selection.plane, mode);
   if (!selection.keys.length) throw new Error(t('volume.drawOutline'));
@@ -545,7 +545,7 @@ function outlineAt(prepared: ReturnType<typeof prepareVoi>, slice: number): { ou
 }
 
 /** Beyond either end, returns a carried preview that must be confirmed as a new key. */
-export function interpolateVoiOutline(volume: Volume, selection: VoiSelection, slice: number): { outline: Vec3[]; kind: 'key' | 'between' | 'beyond' } {
+export function interpolateVoiOutline(volume: ViewVolume, selection: VoiSelection, slice: number): { outline: Vec3[]; kind: 'key' | 'between' | 'beyond' } {
   const prepared = prepareVoi(volume, selection);
   if (!Number.isInteger(slice) || slice < 0 || slice >= prepared.frame.slices) throw new Error(t('volume.previewOutside'));
   return outlineAt(prepared, slice);
@@ -563,7 +563,14 @@ function polygonContains(polygon: Point2[], u: number, v: number): boolean {
   return inside;
 }
 
-function* buildVoi(volume: Volume, selection: VoiSelection): Generator<number, VoiMask> {
+function selectionMask(volume: ViewVolume): Uint8Array {
+  if (volume.data) return createPaddingMask({ ...volume, data: volume.data });
+  const voxels = volume.series.dimensions.reduce((a, b) => a * b, 1);
+  if (!Number.isSafeInteger(voxels) || voxels > 512 * 1024 * 1024) throw new Error('Selection mask exceeds 512 MiB.');
+  return new Uint8Array(voxels);
+}
+
+function* buildVoi(volume: ViewVolume, selection: VoiSelection): Generator<number, VoiMask> {
   const prepared = prepareVoi(volume, selection), { keys, frame } = prepared;
   if (keys.length < 2) throw new Error(t('volume.secondSlice'));
   const { forward, inverse } = geometry(volume.series), dimensions = volume.series.dimensions;
@@ -593,7 +600,7 @@ function* buildVoi(volume: Volume, selection: VoiSelection): Generator<number, V
   const scanAxis = [0, 1, 2].filter(axis => Math.abs(sliceSteps[axis]) < 1e-10).sort((a, b) => (high[b] - low[b]) - (high[a] - low[a]))[0] ?? 0;
   const otherAxes = [0, 1, 2].filter(axis => axis !== scanAxis);
   const canScan = Math.abs(sliceSteps[scanAxis]) < 1e-10;
-  const mask = createPaddingMask(volume);
+  const mask = selectionMask(volume);
   for (let i = 0; i < mask.length; i++) if (mask[i] === 0) mask[i] = 1;
   const crop: CropBounds = { min: [...dimensions], max: [-1, -1, -1] };
   let insideCount = 0, rows = 0;
@@ -645,14 +652,14 @@ function* buildVoi(volume: Volume, selection: VoiSelection): Generator<number, V
   return { mask, crop, insideCount };
 }
 
-export function buildVoiMask(volume: Volume, selection: VoiSelection): VoiMask {
+export function buildVoiMask(volume: ViewVolume, selection: VoiSelection): VoiMask {
   const operation = buildVoi(volume, selection);
   let step = operation.next();
   while (!step.done) step = operation.next();
   return step.value;
 }
 
-export async function buildVoiMaskAsync(volume: Volume, selection: VoiSelection,
+export async function buildVoiMaskAsync(volume: ViewVolume, selection: VoiSelection,
   options: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {}): Promise<VoiMask> {
   if (options.signal?.aborted) throw new Error(t('volume.selectionCancelled'));
   options.onProgress?.(0);
@@ -673,7 +680,7 @@ export async function buildVoiMaskAsync(volume: Volume, selection: VoiSelection,
   return step.value;
 }
 
-function* buildVisibleRegion(volume: Volume, view: ViewState, size: [number, number]): Generator<number, VoiMask> {
+function* buildVisibleRegion(volume: ViewVolume, view: ViewState, size: [number, number]): Generator<number, VoiMask> {
   voiFrame(volume, view.plane, view.mode);
   if (!size.every(value => Number.isFinite(value) && value > 0)) throw new Error(t('volume.viewportSize'));
   const mapping = screenMapping(volume.series, view, size[0], size[1]);
@@ -684,7 +691,7 @@ function* buildVisibleRegion(volume: Volume, view: ViewState, size: [number, num
   const pixelOrigin = [mapping.width / 2 + mapping.pan[0] + dot(originOffset, mapping.right) * mapping.pixelsPerMm,
     mapping.height / 2 + mapping.pan[1] + dot(originOffset, mapping.down) * mapping.pixelsPerMm];
   const pixelSteps = columns.map(column => [dot(column, mapping.right) * mapping.pixelsPerMm, dot(column, mapping.down) * mapping.pixelsPerMm]);
-  const mask = createPaddingMask(volume), hasPadding = mask.includes(3);
+  const mask = selectionMask(volume), hasPadding = mask.includes(3);
   if (hasPadding) { for (let i = 0; i < mask.length; i++) if (mask[i] === 0) mask[i] = 1; }
   else mask.fill(1);
   const crop: CropBounds = { min: [nx, ny, nz], max: [-1, -1, -1] };
@@ -730,7 +737,7 @@ function* buildVisibleRegion(volume: Volume, view: ViewState, size: [number, num
 }
 
 /** Selects all depth beneath the current screen rectangle, including oblique views. */
-export async function buildVisibleRegionMaskAsync(volume: Volume, view: ViewState, size: [number, number],
+export async function buildVisibleRegionMaskAsync(volume: ViewVolume, view: ViewState, size: [number, number],
   options: { signal?: AbortSignal; onProgress?: (fraction: number) => void } = {}): Promise<VoiMask> {
   if (options.signal?.aborted) throw new Error(t('volume.visibleCancelled'));
   options.onProgress?.(0);

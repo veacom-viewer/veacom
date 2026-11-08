@@ -98,6 +98,7 @@ function createVideoExporter({ chooseDestination, idleTimeoutMs = 120000, onSave
   };
 
   return {
+    get active() { return Boolean(job); },
     async beginVideo(suggestedName, fps) {
       if (disposed) throw new Error(t('app.closing'));
       if (job || starting) throw new Error(t('video.alreadyRunning'));
@@ -331,7 +332,7 @@ function registerMediaHandlers({ handle, getWindow, exportDicomDirectory, dialog
     cancelIso();
     await videos.reset();
   };
-  return Object.assign(dispose, { reset });
+  return Object.assign(dispose, { reset, isExportingVideo: () => videos.active });
 }
 
 module.exports = { registerMediaHandlers, createVideoExporter, removeFolder, sweepExportLeftovers };

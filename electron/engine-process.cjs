@@ -6,11 +6,11 @@ const { t } = require('./i18n.cjs');
 // The engine runs as this process's child and is reached only through its stdin and stdout (engine-pipe.cjs). A
 // connection is { generation, request(op, body, { signal }) }; request answers with a Response.
 class EngineProcess extends EventEmitter {
-  constructor({ binary, args = [], spawnImpl = spawn, startupTimeoutMs = 30_000,
+  constructor({ binary, args = [], env = process.env, spawnImpl = spawn, startupTimeoutMs = 30_000,
     restartDelaysMs = [250, 1000], shutdownTimeoutMs = 1500, exitTimeoutMs = 5000, killTimeoutMs = 1000,
     stderr = data => process.stderr.write(data) }) {
     super();
-    Object.assign(this, { binary, args, spawnImpl, startupTimeoutMs, restartDelaysMs,
+    Object.assign(this, { binary, args, env, spawnImpl, startupTimeoutMs, restartDelaysMs,
       shutdownTimeoutMs, exitTimeoutMs, killTimeoutMs, stderr });
     this.generation = 0;
     this.restartCount = 0;
@@ -62,7 +62,7 @@ class EngineProcess extends EventEmitter {
         void this.afterFailure(run, reason).then(() => reject(error), reject);
       };
       try {
-        run.child = this.spawnImpl(this.binary, this.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+        run.child = this.spawnImpl(this.binary, this.args, { stdio: ['pipe', 'pipe', 'pipe'], env: this.env, windowsHide: true });
       } catch (error) { fail(error, 'launch-failed'); return; }
       run.timeout = setTimeout(() => fail(new Error(t('engine.startTimeout', { seconds: this.startupTimeoutMs / 1000 })), 'startup-timeout'), this.startupTimeoutMs);
       const broken = (error, reason) => {

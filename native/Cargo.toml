@@ -1,10 +1,19 @@
+[workspace]
+members = ["presenter"]
+default-members = [".", "presenter"]
+resolver = "3"
+
 [package]
 name = "veacom-core"
 version = "0.1.0"
 edition = "2024"
 license = "GPL-3.0-or-later"
 
+[build-dependencies]
+cc = "1"
+
 [dependencies]
+
 anyhow = "1.0"
 chrono = "0.4"
 dicom-core = "0.10.1"
@@ -22,11 +31,24 @@ serde_json = "1.0"
 sha2 = { version = "0.11", default-features = false }
 zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+bytemuck = "1.23"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "wgsl", "metal", "dx12"] }
+pollster = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6.3"
+objc2-metal = { version = "0.3", default-features = false, features = ["MTLTexture", "MTLTypes"] }
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common", "Win32_Foundation", "Win32_Security", "Win32_System_Threading"] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_System_Threading", "Win32_System_Console", "Win32_System_ProcessStatus", "Win32_Storage_FileSystem"] }
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
 
 [profile.release]
 lto = "thin"

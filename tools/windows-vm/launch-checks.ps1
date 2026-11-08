@@ -31,6 +31,8 @@ function Add-Check([string]$StepName, [string[]]$Arguments, [string[]]$Needs, [i
     $script:Steps += $Step
 }
 Add-Check 'video-encoder' @('tools\check-video-encoder.cjs', (Join-Path $Output 'video-encoder')) @('pnpm-install') 5
+Add-Check 'native-texture' @('tools\check-native-presentation.cjs', $Packaged, 'bitmap') $OnPackage 4
+Add-Check 'native-views' @('tools\check-native-views.cjs') $OnPackage 6 $true
 Add-Check 'desktop-smoke' @('tools\desktop-smoke.cjs', $Series, (Join-Path $Output 'desktop-smoke')) $OnPackage 8 $true
 Add-Check 'click-budget' @('tools\check-click-budget.cjs', $Study, (Join-Path $Output 'click-budget')) $OnPackage 12 $true
 Add-Check 'budget-coverage' @('tools\check-budget-coverage.cjs', $Output) $OnPackage 2

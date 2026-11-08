@@ -50,6 +50,7 @@
         "filter": [
           "veacom-core",
           "veacom-core.exe",
+          "libveacom_presenter.dylib",
           "*.dll",
           "windows-runtime-manifest.json"
         ]

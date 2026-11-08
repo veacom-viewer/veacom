@@ -1,4 +1,3 @@
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
@@ -7,7 +6,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const privileged = require('./privileged-imaging.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 const exec = promisify(execFile);
 const repo = path.resolve(__dirname, '..');
@@ -63,7 +62,7 @@ async function main() {
   // Its export goes through the native dialog; a wrong turn to the remembered folder stays off the real Desktop.
   await temporaryExportFolder(profile);
   let desktop;
-  try { desktop = await electron.launch({ args: [repo, '--study', study], env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 }); }
+  try { desktop = await launchDesktop({ args: [repo, '--study', study], env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 }); }
   catch (error) { await fs.rm(profile, { recursive: true, force: true }); throw error; }
   const page = await desktop.firstWindow();
   // Input from the computer would land in the drawn regions, the series choices and the assessment's fields.
@@ -88,7 +87,7 @@ async function main() {
     await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), id);
     await page.waitForFunction(({ id, expectedFrames }) => {
       const state = window.__VEACOM_TEST__.state();
-      return state.activeSeriesId === id && state.fullVolumeLoaded && (!expectedFrames || state.dimensions[2] === expectedFrames);
+      return state.activeSeriesId === id && state.seriesReady && (!expectedFrames || state.dimensions[2] === expectedFrames);
     }, { id, expectedFrames }, { timeout: 60_000 });
     await page.waitForFunction(id => document.querySelector(`canvas[data-series-id="${id}"]`)?.dataset.renderer, id);
   };
@@ -122,7 +121,7 @@ async function main() {
     throw new Skip('the MR pre-diagnosis is switched off');
   };
   try {
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 90_000 });
     const originals = await series();
     const ct = originals.find(item => item.modality === 'CT');
     const pet = originals.find(item => item.modality === 'PT');

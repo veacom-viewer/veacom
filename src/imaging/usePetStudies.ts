@@ -2,16 +2,19 @@
 // and the lesion table. Put back on a PET series when it is loaded again, and saved whenever they change. A series is
 // saved only after whatever was kept for it has been put back, so the first render after an import cannot overwrite it.
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import type { Annotation, Series, Volume } from '../model';
+import { hasPixels, type Annotation, type Series, type ViewVolume as Volume } from '../model';
 import { patientDigest, PET_STUDIES_STORAGE, priorRecord, readPetStudies, REFERENCE_ROLES, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withStudyGlucose,
   type PetSeriesRecord, type PetStudyRecords, type StoredLesion } from '../domain/petStudies';
 import { sliceAtWorld } from './geometry';
-import { isLesion, lesionValues, nameLesions, seriesRatios } from './lesions';
+import { bodyWeight, isLesion, lesionValues, measuredValues, nameLesions, seriesRatios } from './lesions';
 import { comparisonTracer } from './petTracer';
 import { plausibleGlucose } from './glucose';
 import { currentDeauville } from './deauvilleReading';
-import { LIVER_REFERENCE_RADIUS_MM, measurableVolume, sphereOf, spherePoints } from './voi';
+import { LIVER_REFERENCE_RADIUS_MM, measurableVolume, sphereOf, spherePoints, type SphereStatistics } from './voi';
 
+import { resolveSphere } from './useMeasuredSpheres';
+
+type Results = ReadonlyMap<Annotation, SphereStatistics | null>;
 type Annotations = Record<string, Annotation[]>;
 interface Keys {
   study: string; series: string; patient?: string; date: string;
@@ -51,7 +54,7 @@ export function previousMeasurements(records: PetStudyRecords, key: Keys) {
 
 /** What a series' measurements keep: its reference spheres, and its lesions with their values (from `volume`, the
  * series' whole volume). Null while lesions cannot be measured yet: the volume is still loading. */
-export function seriesRecord(annotations: readonly Annotation[], series: Series, volume: Volume | undefined): PetSeriesRecord | null {
+export function seriesRecord(annotations: readonly Annotation[], series: Series, volume: Volume | undefined, bw?: Results, display?: Results): PetSeriesRecord | null {
   const record: PetSeriesRecord = { references: {} };
   const acquisition = storedAcquisition(series.petAcquisition);
   if (acquisition) record.acquisition = acquisition;
@@ -64,12 +67,12 @@ export function seriesRecord(annotations: readonly Annotation[], series: Series,
   if (lesions.length) {
     if (!volume || !measurableVolume(volume)) return null;
     record.lesions = lesions.map(item => {
-      const sphere = sphereOf(item)!, values = lesionValues(item, volume), lesion: StoredLesion = { id: item.id, name: item.label!, center: sphere.center, radius: sphere.radius };
+      const sphere = sphereOf(item)!, values = bw ? measuredValues(bw.get(item)) : hasPixels(volume) ? lesionValues(item, volume) : null, lesion: StoredLesion = { id: item.id, name: item.label!, center: sphere.center, radius: sphere.radius };
       if (item.threshold) lesion.threshold = item.threshold;
       if (item.regionSeeds?.length) lesion.regionSeeds = item.regionSeeds;
       if (item.priorLesionId) lesion.priorLesionId = item.priorLesionId;
       if (item.fdgLymphoma) lesion.fdgLymphoma = true;
-      const score = currentDeauville(item, annotations, volume);
+      const score = currentDeauville(item, annotations, volume, display && (drawing => display.get(drawing) ?? null));
       if (score !== undefined) { lesion.deauville = score; lesion.deauvilleBasis = item.deauvilleBasis; }
       if (values) lesion.values = values;
       return lesion;
@@ -77,6 +80,14 @@ export function seriesRecord(annotations: readonly Annotation[], series: Series,
     Object.assign(record, seriesRatios(series));
   }
   return record;
+}
+
+async function measuredRecord(drawings: readonly Annotation[], series: Series, volume?: Volume) {
+  if (!volume || !measurableVolume(volume) || !drawings.some(item => isLesion(item) && item.label)) return seriesRecord(drawings, series, volume);
+  const spheres = drawings.filter(item => item.type === 'sphere' && sphereOf(item));
+  const read = (unit: NonNullable<Series['suvNormalization']>) => Promise.all(spheres.map(async item => [item, await resolveSphere(item, volume, unit)] as const)).then(values => new Map(values));
+  const [bw, display] = await Promise.all([bodyWeight(series) ? read('bw') : new Map(), read(volume.series.suvNormalization ?? 'bw')]);
+  return seriesRecord(drawings, series, volume, bw, display);
 }
 
 /** The kept reference spheres and lesions as measurements on `series`. */
@@ -178,29 +189,47 @@ export function usePetRecords(series: readonly Series[], setAnnotations: Dispatc
 export function usePetStudies(series: readonly Series[], annotations: Annotations, setAnnotations: Dispatch<SetStateAction<Annotations>>,
   volumes: ReadonlyMap<string, Volume>, store: ReturnType<typeof usePetRecords>) {
   const { keys, saved, records, save, saveFailed } = store;
+  // An older record the reader restored moves to the series' own key with its next save, once its lesions are measured.
+  const migrations = useRef(new Map<string, { study: string; series: string }>());
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set());
 
   useEffect(() => {
-    let records: PetStudyRecords | null = null, changed = false;
-    const pending = new Map<string, PetSeriesRecord>();
+    let live = true;
+    const markFailure = (id: string, value: boolean) => setFailed(current => {
+      if (current.has(id) === value) return current;
+      const next = new Set(current);
+      if (value) next.add(id); else next.delete(id);
+      return next;
+    });
     for (const item of series) {
       const key = keys.get(item.id);
-      // Only a series whose measurements exist in this session: one restored to a moment before it was loaded (Undo)
-      // has none, and must not wipe what was kept.
       if (!key || !Object.hasOwn(annotations, item.id)) continue;
-      const record = seriesRecord(annotations[item.id], item, volumes.get(item.id));
-      if (!record || sameSeriesRecord(record, saved.current.get(item.id))) continue;
-      if (!records) records = readRecords();
-      if (!records) { save(null); return; }
-      pending.set(item.id, record);
-      const previous = records[key.study]?.series[key.series];
-      const updated = previous?.limitedView ? { ...record, limitedView: true as const } : record;
-      if (sameSeriesRecord(updated, previous)) continue;
-      records = withPetSeries(records, key.study, key.series, updated, Date.now(), key);
-      changed = true;
+      void measuredRecord(annotations[item.id], item, volumes.get(item.id)).then(record => {
+        if (!live || !record) return;
+        const legacy = migrations.current.get(item.id);
+        if (legacy || !sameSeriesRecord(record, saved.current.get(item.id))) {
+          const current = readRecords();
+          if (!current) { markFailure(item.id, true); return; }
+          const previous = current[key.study]?.series[key.series];
+          const previousStudy = legacy ? current[legacy.study] : undefined, old = legacy ? previousStudy?.series[legacy.series] : undefined;
+          const updated = previous?.limitedView || old?.limitedView ? { ...record, limitedView: true as const } : record;
+          if (legacy || !sameSeriesRecord(updated, previous)) {
+            let next = legacy ? withPetSeries(current, legacy.study, legacy.series, null, Date.now()) : current;
+            next = withPetSeries(next, key.study, key.series, updated, Date.now(), key);
+            if (next[key.study]?.glucose === undefined && previousStudy?.glucose !== undefined) {
+              next = withStudyGlucose(next, key.study, previousStudy.glucose, Date.now(), key);
+            }
+            if (!save(next)) { markFailure(item.id, true); return; }
+          }
+          saved.current.set(item.id, record);
+          if (legacy) migrations.current.delete(item.id);
+        }
+        markFailure(item.id, false);
+      }).catch(() => { if (live) markFailure(item.id, true); });
     }
-    if (changed && !save(records)) return;
-    for (const [id, record] of pending) saved.current.set(id, record);
-  }, [annotations, series, volumes, keys, save, saved]);
+    return () => { live = false; };
+  }, [annotations, series, volumes, keys, saved, save, attempt]);
 
   const keptPrior = (item: Series, live: Series | null) => {
     const key = keys.get(item.id), tracer = comparisonTracer(item.petAcquisition);
@@ -222,19 +251,9 @@ export function usePetStudies(series: readonly Series[], annotations: Annotation
     if (!current) { save(null); return; }
     const legacy = legacyFor(item, current);
     if (!key || !legacy) return;
-    const previousStudy = current[legacy.study], old = previousStudy.series[legacy.series];
-    const restored = keptAnnotations(old, item);
-    const merged = mergeRestored(annotations[item.id] ?? [], restored);
-    const record = seriesRecord(merged, item, volumes.get(item.id));
-    if (!record) return;
-    if (old.limitedView || current[key.study]?.series[key.series]?.limitedView) record.limitedView = true;
-    let next = withPetSeries(current, legacy.study, legacy.series, null, Date.now());
-    next = withPetSeries(next, key.study, key.series, record, Date.now(), key);
-    if (next[key.study]?.glucose === undefined && previousStudy.glucose !== undefined) {
-      next = withStudyGlucose(next, key.study, previousStudy.glucose, Date.now(), key);
-    }
-    if (!save(next)) return;
+    const restored = keptAnnotations(current[legacy.study].series[legacy.series], item);
+    migrations.current.set(item.id, legacy);
     setAnnotations(current => ({ ...current, [item.id]: mergeRestored(current[item.id] ?? [], restored) }));
   };
-  return { keptPrior, hasLegacy, restoreLegacy, saveFailed };
+  return { keptPrior, hasLegacy, restoreLegacy, retry: () => setAttempt(n => n + 1), saveFailed: saveFailed || series.some(item => failed.has(item.id)) };
 }

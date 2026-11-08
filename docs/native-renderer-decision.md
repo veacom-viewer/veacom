@@ -1,5 +1,12 @@
 # Native renderer decision
 
+The desktop viewer now renders source slices, MPR, PET fusion and surgical 3D in Rust. It uses Metal on macOS and D3D12 on Windows. The engine shares a 64 MiB voxel tile buffer across those views. React handles input, controls and overlays. The browser and Linux use the WebGL renderer.
+
+The packaged native-view check exercises source padding, tile boundaries, oblique planes, slabs, fusion, a 2,051-frame stack, 3D thresholding, surgical selection and STL coordinates. It also checks that these operations make zero frontend whole-volume requests. Run `node tools/check-native-views.cjs` on a supported desktop after building the engine and web app.
+
+## Original design review
+
+
 Reviewed 3 November 2026 against the original request attachment and the current migration checkout. Read-only review; no new benchmark or cloud run. The user asks for the best viewer with the surgeon's functions and familiar interface preserved. The pasted Claude discussion is context, not an architecture specification.
 
 **Recommendation: keep Electron for controls; make a native Rust engine own imaging state, exact source data, decoding, measurements, GPU residency and rendering. Use wgpu over Metal/D3D12, software-managed volume bricks, and a small platform presentation bridge. Qualify that bridge on Windows and Mac before committing to its interface.** This recommendation rests on data ownership, scheduling and correctness, not migration effort or the language used to write shaders.

@@ -1,6 +1,6 @@
 import { studyKey } from './patient';
 import type { Annotation, Series, Vec3, Volume } from '../model';
-import { annotationSourceIndex, roiStatistics } from '../imaging/annotations';
+import { annotationSourceIndex, roiStatistics, type RoiStatistics } from '../imaging/annotations';
 import { add, sub, scale, dot, cross, normalize, worldToIndexMatrix, sourceFrameSeries, isPaddingValue } from '../imaging/geometry';
 import { getLocale, t } from '../i18n';
 
@@ -361,6 +361,8 @@ export function regionPoints(outline: Vec3[]): Vec3[] {
   return points.length ? points : outline;
 }
 interface SamplePointSet { points: Vec3[]; sourceFrame?: number; }
+export type StudyVolume = Pick<Volume, 'series' | 'sourceFrameIndex'>;
+export type SampleTask = { seriesId: string; mode: 'source' | 'derived'; annotations: Annotation[] };
 function samplePointSets(volume: Volume, sets: SamplePointSet[]): Sample | null {
   const total = sets.reduce((count, set) => count + set.points.length, 0);
   if (!total || volume.series.components === 3) return null;
@@ -399,7 +401,9 @@ export function samplePoints(volume: Volume, points: Vec3[], sourceFrame?: numbe
 }
 
 function sourceRoiSamples(volume: Volume, annotations: Annotation[]): Sample | null {
-  const statistics = annotations.map(annotation => roiStatistics(annotation, volume));
+  return combineSourceRegions(annotations.map(annotation => roiStatistics(annotation, volume)));
+}
+export function combineSourceRegions(statistics: (RoiStatistics | null)[]): Sample | null {
   // A clipped source outline has no trustworthy total voxel count outside the image.
   if (statistics.some(stats => !stats || stats.clipped)) return null;
   const valid = statistics.filter(stats => stats !== null);
@@ -431,12 +435,12 @@ export const median = (values: number[]): number | null => {
   const ordered = [...values].sort((a, b) => a - b), mid = Math.floor(ordered.length / 2);
   return ordered.length % 2 ? ordered[mid] : (ordered[mid - 1] + ordered[mid]) / 2;
 };
-export function measureStudy(volumes: Volume[], marks: RoiMark[], sequences: Record<string, SequenceChoice>, translate = t): Measurement {
+export function* studySamples(volumes: StudyVolume[], marks: RoiMark[], sequences: Record<string, SequenceChoice>, translate = t): Generator<SampleTask, Measurement, Sample | null> {
   const readings: Reading[] = [], warnings: string[] = [], blockers: string[] = [];
   const byId = new Map(volumes.map(v => [v.series.id, v]));
   const filled = marks.map(mark => ({ ...mark, points: regionPoints(annotationOutline(mark.annotation)),
     diffusion: isDiffusion(sequences[mark.seriesId]?.role ?? null) })).filter(mark => mark.points.length && byId.has(mark.seriesId));
-  function sampleMarks(volume: Volume, kind: RoiMark['kind'], diffusionSeries: boolean): Sample | null {
+  function* sampleMarks(volume: StudyVolume, kind: RoiMark['kind'], diffusionSeries: boolean): Generator<SampleTask, Sample | null, Sample | null> {
     const relevant = filled.filter(m => m.kind === kind && sharesCoordinates(byId.get(m.seriesId)!.series, volume.series));
     const directSource = (mark: typeof filled[number]) => mark.seriesId === volume.series.id && mark.annotation.mode === 'source';
     const groups = new Map<string, typeof relevant>();
@@ -446,16 +450,19 @@ export function measureStudy(volumes: Volume[], marks: RoiMark[], sequences: Rec
     }
     const ordered = [...groups.values()].sort((a, b) => Number(a[0].diffusion !== diffusionSeries) - Number(b[0].diffusion !== diffusionSeries)
       || Math.max(...b.map(m => m.order)) - Math.max(...a.map(m => m.order)));
-    const pointSet = (mark: typeof filled[number]): SamplePointSet => ({ points: mark.points,
-      sourceFrame: mark.seriesId === volume.series.id && (mark.annotation.mode === 'source' || mark.annotation.sourceFrame !== undefined)
-        ? mark.annotation.sourceFrame ?? mark.annotation.slice : undefined });
+    const task = (group: typeof relevant): SampleTask => ({ seriesId: volume.series.id,
+      mode: directSource(group[0]) ? 'source' : 'derived', annotations: group.map(mark => {
+        const item = mark.annotation;
+        // A mark drawn on another series is sampled in patient space on the target volume.
+        return mark.seriesId === volume.series.id ? item : { ...item, mode: 'mpr', sourceFrame: undefined };
+      }) });
     for (const group of ordered) {
-      const result = directSource(group[0]) ? sourceRoiSamples(volume, group.map(mark => mark.annotation)) : samplePointSets(volume, group.map(pointSet));
+      const result = yield task(group);
       if (result) return result;
     }
     relevant.sort((a, b) => Number(a.diffusion !== diffusionSeries) - Number(b.diffusion !== diffusionSeries) || b.order - a.order);
     for (const mark of relevant) {
-      const result = directSource(mark) ? sourceRoiSamples(volume, [mark.annotation]) : samplePointSets(volume, [pointSet(mark)]);
+      const result = yield task([mark]);
       if (result) return result;
     }
     return null;
@@ -465,7 +472,8 @@ export function measureStudy(volumes: Volume[], marks: RoiMark[], sequences: Rec
     if (!selection.role || volume.series.components === 3) continue;
     if (!volume.series.frameOfReferenceUid && filled.some(m => m.seriesId !== volume.series.id)) warnings.push(translate('clinical.warning.noFrame'));
     if (filled.some(m => m.seriesId !== volume.series.id && byId.get(m.seriesId)?.series.frameOfReferenceUid && volume.series.frameOfReferenceUid && byId.get(m.seriesId)?.series.frameOfReferenceUid !== volume.series.frameOfReferenceUid)) warnings.push(translate('clinical.warning.differentFrames'));
-    const lesion = sampleMarks(volume, 'lesion', isDiffusion(selection.role)), reference = sampleMarks(volume, 'reference', isDiffusion(selection.role));
+    const lesion = yield* sampleMarks(volume, 'lesion', isDiffusion(selection.role));
+    const reference = yield* sampleMarks(volume, 'reference', isDiffusion(selection.role));
     const ratio = lesion && reference && reference.mean > 0 ? lesion.mean / reference.mean : null;
     const partial: string[] = [];
     for (const [label, sample] of [[translate('clinical.lesionRoi'), lesion], [translate('clinical.referenceRoi'), reference]] as const) if (sample && sample.coverage < 1) {
@@ -517,6 +525,18 @@ export function measureStudy(volumes: Volume[], marks: RoiMark[], sequences: Rec
   }
   return { readings, findings: { t1: level(t1), t2: level(t2), kontrast: enhancement(t1, median(ratios('t1c'))), dwi: diff.finding },
     diffusionReason: diff.reason, blockers: [...new Set(blockers)], warnings: [...new Set(warnings)] };
+}
+export function measureStudy(volumes: Volume[], marks: RoiMark[], sequences: Record<string, SequenceChoice>, translate = t): Measurement {
+  const samples = studySamples(volumes, marks, sequences, translate);
+  let step = samples.next();
+  while (!step.done) {
+    const { seriesId, mode, annotations } = step.value;
+    const volume = volumes.find(v => v.series.id === seriesId)!;
+    const result = mode === 'source' ? sourceRoiSamples(volume, annotations) : samplePointSets(volume,
+      annotations.map(item => ({ points: regionPoints(annotationOutline(item)), sourceFrame: item.sourceFrame })));
+    step = samples.next(result);
+  }
+  return step.value;
 }
 export function assessmentSummary(input: { region: string; patient: Patient; findings: Findings; measurement: Measurement; ranked: RankedCandidate[]; note: string; manualFeatures?: Feature[]; lesionSlices?: number }): string {
   const { region, patient, findings, measurement, ranked, note } = input;

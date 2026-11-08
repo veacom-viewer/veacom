@@ -38,9 +38,10 @@ jobs:
       - name: Check for manual React memoization
         run: node tools/check-react-memo.mjs
       - run: pnpm run setup:runtime
-      - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
+        env:
+          VEACOM_TEST_CHROME: /usr/bin/google-chrome
       - run: pnpm run build:web
 
   engine:
@@ -68,6 +69,36 @@ jobs:
       - name: Clippy (advisory until the imported baseline is clean)
         continue-on-error: true
         run: cargo clippy --release --locked -- -D warnings
+
+  fuzz-input:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly-2026-11-07 --profile minimal
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0
+        with:
+          workspaces: native/fuzz
+          cache-bin: true
+          key: "0.13.2"
+      - name: Install the pinned fuzzer if it is absent from the cache
+        run: |
+          if [[ "$(cargo fuzz --version 2>/dev/null || true)" != "cargo-fuzz 0.13.2" ]]; then
+            cargo install --locked cargo-fuzz --version 0.13.2
+          fi
+      - run: node fuzz/seeds.mjs fuzz/corpus/dicom
+      - run: cargo +nightly-2026-11-07 fuzz run dicom -- -runs=30000 -max_len=4096 -timeout=5
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: failure()
+        with:
+          name: failing-dicom-input
+          path: native/fuzz/artifacts/
+          if-no-files-found: ignore
 
   secrets:
     runs-on: ubuntu-24.04
@@ -148,6 +179,9 @@ jobs:
       - name: Interface
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-interface.cjs "$STUDY/S01" "$EVIDENCE/interface"
+      - name: Native sampling against known pixels
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node --import ./tests/setup.ts tools/check-native-sampling.mjs
       - name: PET quantification on a synthetic follow-up
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
@@ -229,7 +263,6 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: |
           pnpm --dir packaging install --frozen-lockfile
-          pnpm exec playwright install ffmpeg
           node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac --dir --publish never -c.forceCodeSigning=false
           apps=(release-electron/mac*/"VEAcom Electron.app/Contents/MacOS/VEAcom Electron")
           test "${#apps[@]}" = 1 && test -f "${apps[0]}"

@@ -4,14 +4,13 @@
 // 3 s later, the renderer and engine 20 s later and after paging through 100 slices, and their peaks.
 // macOS reports physical footprint (Activity Monitor's Memory column), Windows private bytes (Task
 // Manager's Memory column) with peak working sets, Linux resident size with its peak.
-const { _electron: electron } = require('playwright');
 const { execFileSync } = require('node:child_process');
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const equal = argument.indexOf('='); return [argument.slice(2, equal), argument.slice(equal + 1)];
@@ -93,14 +92,14 @@ function buildHashes(runtime, entryUrl) {
 async function run(index) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'veacom-memory-'));
   const started = performance.now();
-  const desktop = await electron.launch({ args: [appPath, '--study', study], ...(options.executable ? { executablePath: options.executable } : {}),
+  const desktop = await launchDesktop({ args: [appPath, '--study', study], ...(options.executable ? { executablePath: options.executable } : {}),
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 120_000 });
   try {
     const page = await desktop.firstWindow();
     // Real input from the computer would change what is measured; the window shows without taking it.
     await ignoreOutsideInput(desktop);
     await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.getAttribute('data-ready') === 'true', undefined, { timeout: 120_000 });
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 180_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 180_000 });
     const loadedMs = Math.round(performance.now() - started);
     // Electron's main process starts the engine. On Windows that is not the process Playwright launched.
     const runtime = await desktop.evaluate(({ app }) => ({

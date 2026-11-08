@@ -7,12 +7,11 @@
 // whose image has a step-shaped VOI LUT and no window: it must display only black and white. --sigmoid
 // names a study whose stored window has VOI LUT Function SIGMOID (tools/make-display-fixtures.py makes both).
 // Set VEACOM_SMOKE_EXECUTABLE to check a packaged build; VEACOM_CORE_PATH picks the core.
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 const positional = process.argv.slice(2).filter(value => !value.startsWith('--'));
 const [windowStudy, segmentationStudy] = positional.slice(0, 2).map(value => value && path.resolve(value));
@@ -28,7 +27,7 @@ const executablePath = process.env.VEACOM_SMOKE_EXECUTABLE;
 async function main() {
   await fs.mkdir(output, { recursive: true });
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-window-segmentation-'));
-  const desktop = await electron.launch({ ...(executablePath ? { executablePath } : {}),
+  const desktop = await launchDesktop({ ...(executablePath ? { executablePath } : {}),
     args: executablePath ? [] : [path.resolve(__dirname, '..')],
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
   const checks = [], errors = [];
@@ -43,7 +42,7 @@ async function main() {
     // The study's first image series replaces the one shown before and loads completely.
     await page.waitForFunction(previous => {
       const current = window.__VEACOM_TEST__.state();
-      return current.activeSeriesId !== previous && current.fullVolumeLoaded && current.displayedView;
+      return current.activeSeriesId !== previous && current.seriesReady && current.displayedView;
     }, previous, { timeout: 90_000 });
     await settled();
   };

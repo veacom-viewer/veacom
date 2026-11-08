@@ -2,11 +2,12 @@
 // each lesion also gives SULglu under its SUL values (imaging/glucose.ts). What limits the comparison with the prior
 // (imaging/petComparison.ts) marks every change and is said under the table.
 import { Fragment } from 'react';
-import type { Annotation, Volume } from '../model';
+import type { Annotation, ViewVolume as Volume } from '../model';
 import type { PriorLesions } from '../imaging/priorLesions';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { quantitativeScale } from '../imaging/annotations';
-import { isLesion, lesionValues, percentChange, percentText } from '../imaging/lesions';
+import { isLesion, measuredValues, percentChange, percentText } from '../imaging/lesions';
+import { useMeasuredSpheres } from '../imaging/useMeasuredSpheres';
 import { isSuv, measurableVolume } from '../imaging/voi';
 import { sulGlu, sulGluGlucose, type StudyGlucose } from '../imaging/glucose';
 import { dicomDate, general } from '../ui/overlayCorners';
@@ -25,8 +26,9 @@ function Cell({ now, before, digits, caution }: { now: number | undefined; befor
       && <span className="change-caution" role="img" aria-label={caution} data-tooltip={caution} data-caution><TriangleAlert size={11} /></span>}</small> : null}</td>;
 }
 
-export function LesionTable({ annotations, volume, prior, onMatch, saveFailed, cautions, cautionKey }: { annotations: readonly Annotation[]; volume: Volume | undefined; prior: PriorLesions | null; onMatch: (seriesId: string, id: string, priorId: string | undefined) => void; saveFailed: boolean; cautions: readonly string[]; cautionKey: string }) {
+export function LesionTable({ annotations, volume, prior, onMatch, saveFailed, onRetry, cautions, cautionKey }: { annotations: readonly Annotation[]; volume: Volume | undefined; prior: PriorLesions | null; onMatch: (seriesId: string, id: string, priorId: string | undefined) => void; saveFailed: boolean; onRetry: () => void; cautions: readonly string[]; cautionKey: string }) {
   const { t } = useTranslation();
+  const measured = useMeasuredSpheres(annotations, volume);
   if (!volume || volume.series.modality !== 'PT' || !measurableVolume(volume)) return null;
   const quantity = quantitativeScale(volume.series), lesions = annotations.filter(item => isLesion(item) && item.label);
   if (!isSuv(quantity.unit) || !lesions.length) return null;
@@ -40,7 +42,7 @@ export function LesionTable({ annotations, volume, prior, onMatch, saveFailed, c
       <thead><tr><th scope="col">{t('lesion.lesion')}</th><th scope="col">{t('lesion.max')}</th><th scope="col">{t('lesion.peak')}</th>
         <th scope="col">{t('lesion.mtv')}</th><th scope="col">{t('lesion.tlg')}</th><th scope="col">{t('lesion.score')}</th></tr></thead>
       <tbody>{lesions.map(lesion => {
-        const values = lesionValues(lesion, volume, quantity);
+        const values = measuredValues(measured.get(lesion)?.result);
         const matched = prior?.lesions.find(item => item.id === lesion.priorLesionId);
         const before = matched?.values, sameThreshold = !!lesion.threshold && matched?.threshold === lesion.threshold;
         return <Fragment key={lesion.id}><tr data-lesion={lesion.label}>
@@ -54,7 +56,7 @@ export function LesionTable({ annotations, volume, prior, onMatch, saveFailed, c
           <Cell now={values?.peak} before={before?.peak} digits={2} caution={caution} />
           <Cell now={values?.mtv} before={sameThreshold ? before?.mtv : undefined} digits={values?.mtv !== undefined && values.mtv < 10 ? 2 : 1} caution={caution} />
           <Cell now={values?.tlg} before={sameThreshold ? before?.tlg : undefined} digits={1} caution={caution} />
-          <td>{currentDeauville(lesion, annotations, volume) ?? '—'}</td>
+          <td>{currentDeauville(lesion, annotations, volume, item => measured.get(item)?.result ?? null) ?? '—'}</td>
         </tr>
         {glucose && <tr className="lesion-sulglu" data-lesion-sulglu={lesion.label}>
           <th scope="row">{t('lesion.sulGlu')}</th>
@@ -73,5 +75,6 @@ export function LesionTable({ annotations, volume, prior, onMatch, saveFailed, c
     {caution && <WarningBox title={t('pet.compare')} className="lesion-cautions" testId="lesion-cautions" dismissKey={cautionKey}>
       {cautions.map(text => <p key={text}>{text}</p>)}</WarningBox>}
     <p className="field-help">{t(saveFailed ? 'lesion.saveFailed' : 'lesion.kept')}</p>
+    {saveFailed && <button type="button" className="secondary-button compact" data-action="pet-retry-save" onClick={onRetry}>{t('lesion.retrySave')}</button>}
   </section>;
 }

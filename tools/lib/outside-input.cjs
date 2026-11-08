@@ -9,6 +9,14 @@
 // Windows. The Windows checks run only before a release, on the hosted job (nobody at it) and the VM, where
 // tools/windows-vm/ui-windows-checks.cjs needs real input.
 
+const { _electron } = require('playwright');
+
+/** Tests own their windows and profile. macOS otherwise waits for a person to dismiss its restoration dialog after a crash probe. */
+function launchDesktop(options) {
+  if (process.platform !== 'darwin') return _electron.launch(options);
+  return _electron.launch({ ...options, args: [...(options.args ?? []), '-ApplePersistenceIgnoreState', 'YES'] });
+}
+
 /**
  * Makes the application window ignore real input for the rest of the check. Call it straight after `firstWindow()`:
  * electron/main.cjs creates the window hidden and shows it on `ready-to-show`, and this makes that `show()` leave the
@@ -38,4 +46,4 @@ async function ignoreOutsideInput(desktop) {
   });
 }
 
-module.exports = { ignoreOutsideInput };
+module.exports = { ignoreOutsideInput, launchDesktop };

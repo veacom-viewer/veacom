@@ -3,12 +3,11 @@
 // ray), read as a probe reads it and drawn without drawing the image again; it follows PET values (SUL) and the overlay
 // switch. Then the PET acquisition panel in the inspector's Findings: tracer, activity, times, uptake, patient, glucose.
 // usage: node tools/check-pet-reading.cjs PETCT_STUDY [OUTPUT_DIR]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -18,7 +17,7 @@ async function main() {
   assert(manifest.pet, 'The study records its tracer fields (tools/fixtures/make-petct-study.mjs).');
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-pet-reading-'));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study], timeout: 90_000,
+  const desktop = await launchDesktop({ args: [path.resolve(__dirname, '..'), '--study', study], timeout: 90_000,
     env: { ...process.env, VEACOM_USER_DATA: userData, VEACOM_LOCALE: 'en', VEACOM_TELEMETRY_CONSENT: 'denied', VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_TEST_MODE: '1' } });
   const errors = [], checks = [];
   let page;
@@ -30,7 +29,7 @@ async function main() {
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1440, 900));
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
-    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady && window.__VEACOM_TEST__.state().pendingLoads === 0, undefined, { timeout: 120_000 });
     await page.waitForFunction(() => [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(cell => !cell.dataset.seriesId || cell.dataset.volumeComplete === 'true'), undefined, { timeout: 120_000 });
     await page.waitForTimeout(600);
     const shot = name => page.screenshot({ path: path.join(output, `${name}.png`) });
@@ -50,12 +49,16 @@ async function main() {
     /** Moves the pointer to (x, y) and waits for pane `index` to show lines matching `pattern`. */
     const hover = async (index, [x, y], pattern) => {
       await page.mouse.move(x, y, { steps: 2 });
-      for (let tries = 0; tries < 50; tries++) {
-        const shown = await lines(index);
-        if (pattern.test(shown.join('\n'))) return shown;
-        await page.waitForTimeout(50);
+      try {
+        await page.waitForFunction(({ index, source }) => {
+          const cell = document.querySelectorAll('[data-testid="viewport-cell"]')[index];
+          const text = [...cell.querySelectorAll('[data-testid="pointer-readout"] text')].map(node => node.textContent).join('\n');
+          return new RegExp(source).test(text);
+        }, { index, source: pattern.source }, { timeout: 15_000 });
+      } catch (cause) {
+        throw new Error(`Pane ${index + 1} shows ${JSON.stringify(await lines(index))}, expected ${pattern}`, { cause });
       }
-      throw new Error(`Pane ${index + 1} shows ${JSON.stringify(await lines(index))}, not ${pattern}`);
+      return lines(index);
     };
     const number = line => Number(/(-?\d+\.\d+) /.exec(line)[1]);
 

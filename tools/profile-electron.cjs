@@ -1,13 +1,12 @@
 // Built-app startup resources, process-tree RSS, and repeated 2D slice updates.
 // node tools/profile-electron.cjs --study=PATH --output=FILE.json [--runs=3] [--app=PATH]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const assert = require('node:assert/strict');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const exec = promisify(execFile);
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
@@ -42,7 +41,7 @@ async function run(index, withStudy) {
   let desktop;
   const started = performance.now();
   try {
-    desktop = await electron.launch({ args: [repo, ...(withStudy ? ['--study', study] : [])],
+    desktop = await launchDesktop({ args: [repo, ...(withStudy ? ['--study', study] : [])],
       env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
     const page = await desktop.firstWindow();
     // Real input from the computer would change what is measured; the window shows without taking it.
@@ -51,7 +50,7 @@ async function run(index, withStudy) {
     page.on('pageerror', error => errors.push(error.message));
     await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.getAttribute('data-ready') === 'true');
     const readyMs = performance.now() - started;
-    if (withStudy) await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    if (withStudy) await page.waitForFunction(() => window.__VEACOM_TEST__?.state().seriesReady, undefined, { timeout: 90_000 });
     const loadedMs = withStudy ? performance.now() - started : null;
     await page.waitForLoadState('networkidle');
     await page.evaluate(() => document.fonts.ready);

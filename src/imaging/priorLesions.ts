@@ -1,9 +1,9 @@
-import type { Annotation, Series, Volume } from '../model';
+import { hasPixels, type Annotation, type Series, type ViewVolume as Volume } from '../model';
 import type { KeptPrior, LesionValues } from '../domain/petStudies';
 import { studyGlucose, type StudyGlucose } from './glucose';
 import { petTracer } from './petTracer';
-import { bodyWeight, isLesion, lesionValues, valuesIn } from './lesions';
-import { measurableVolume } from './voi';
+import { bodyWeight, isLesion, lesionValues, measuredValues, valuesIn } from './lesions';
+import { measurableVolume, type SphereStatistics } from './voi';
 import { quantitativeScale } from './annotations';
 
 export interface PriorLesion { id: string; name: string; threshold?: Annotation['threshold']; values?: LesionValues }
@@ -11,7 +11,7 @@ export interface PriorLesion { id: string; name: string; threshold?: Annotation[
 export interface PriorLesions { date: string; kept: boolean; lesions: PriorLesion[]; glucose: StudyGlucose | null }
 
 export function priorLesions(prior: Series | null, annotations: Readonly<Record<string, Annotation[]>>, volumes: ReadonlyMap<string, Volume>,
-  kept: KeptPrior | null, unit: string): PriorLesions | null {
+  kept: KeptPrior | null, unit: string, lookup?: (item: Annotation) => SphereStatistics | null): PriorLesions | null {
   const volume = prior && volumes.get(prior.id);
   if (prior && volume && measurableVolume(volume)) {
     const displayed = quantitativeScale(volume.series);
@@ -20,7 +20,7 @@ export function priorLesions(prior: Series | null, annotations: Readonly<Record<
       : factor && Number.isFinite(factor) && factor > 0 ? { factor, unit } : null;
     const lesions = (annotations[prior.id] ?? []).filter(item => isLesion(item) && item.label)
       .map(item => ({ id: item.id, name: item.label!, threshold: item.threshold,
-        values: quantity ? lesionValues(item, volume, quantity) ?? undefined : undefined }));
+        values: lookup ? measuredValues(lookup(item)) ?? undefined : quantity && hasPixels(volume) ? lesionValues(item, volume, quantity) ?? undefined : undefined }));
     const glucose = petTracer(volume.series.petAcquisition) === 'fdg' ? studyGlucose(volume.series.petAcquisition, volume.series.typedGlucose) : null;
     if (lesions.length) return { date: prior.studyDate, kept: false, lesions, glucose };
   }

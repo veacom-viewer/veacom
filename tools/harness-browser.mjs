@@ -5,8 +5,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium, _electron as electron } from 'playwright';
-import { ignoreOutsideInput } from './lib/outside-input.cjs';
+import { chromium } from 'playwright';
+import { ignoreOutsideInput, launchDesktop } from './lib/outside-input.cjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -17,7 +17,7 @@ export async function launchHarness({ width = 640, height = 640 } = {}) {
     // Under Xvfb the window can count as hidden, and Chromium then stops its animation frames, which every check waits
     // for. Like the desktop checks, the window takes neither the focus nor the real mouse (lib/outside-input.cjs): a
     // check's input comes through Playwright, and a stray move by whoever uses the computer ends a held drag.
-    const app = await electron.launch({ args: [root, '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-background-timer-throttling'], timeout: 90_000,
+    const app = await launchDesktop({ args: [root, '--disable-renderer-backgrounding', '--disable-backgrounding-occluded-windows', '--disable-background-timer-throttling'], timeout: 90_000,
       env: { ...process.env, VEACOM_DEV_URL: process.env.VEACOM_TEST_URL ?? 'http://127.0.0.1:5188/tools/viewport-check.html', VEACOM_USER_DATA: userData } });
     const page = await app.firstWindow();
     // Shielded before its first page had loaded, the window sometimes never finished the check's own navigation (macOS,

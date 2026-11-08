@@ -8,6 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
+import { hasPixels } from './model';
 import { importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
@@ -20,6 +21,7 @@ import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
+import { nativeRendering } from './imaging/nativeRender';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
 import { patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
@@ -35,6 +37,7 @@ import { obliqueAngle } from './imaging/oblique';
 import { sphereOf } from './imaging/voi';
 import { clearEditedScores } from './imaging/deauvilleReading';
 import { SphereDetails } from './components/SphereDetails';
+import { useMeasuredSpheres } from './imaging/useMeasuredSpheres';
 import { usePetRecords, usePetStudies } from './imaging/usePetStudies';
 import { WarningBox } from './components/WarningBox';
 import { compared, comparisonFlags, comparisonKey, comparisonText, keptCompared, type PetPrior } from './imaging/petComparison';
@@ -43,7 +46,7 @@ import { LesionTable } from './components/LesionTable';
 import { PetReportCopy } from './components/PetReportCopy';
 import { priorLesions } from './imaging/priorLesions';
 import { useAnnotationSummary } from './imaging/useAnnotationSummary';
-import type { Annotation, FusionSettings, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewState, Volume, WheelAction } from './model';
+import type { Annotation, FusionSettings, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewState, ViewVolume as Volume, WheelAction } from './model';
 import { chooseLocale, errorMessage, LOCALES, t, type MessageKey, type MessageParams } from './i18n';
 import { useTranslation } from './i18n/react';
 import { warningTexts } from './i18n/core';
@@ -236,7 +239,7 @@ type Decoration = { scale: number | undefined; units: Settings['measurementUnits
 const sameDecoration = (a: Decoration, b: Decoration) => a.scale === b.scale && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
 function decorateVolume(volume: Volume, { scale, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
   let sourceFramesOnly = false;
-  try { sourceFramesOnly = sourceFrameOnly(volume); } catch { /* The viewport reports an unavailable GPU. */ }
+  try { sourceFramesOnly = !nativeRendering() && sourceFrameOnly(volume); } catch { /* The viewport reports an unavailable GPU. */ }
   return { ...volume, series: { ...volume.series, sourceFramesOnly, measurementScale: scale, measurementUnits, suvNormalization, typedGlucose: glucose } };
 }
 
@@ -317,7 +320,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         : <button type="button" aria-label={`${t('viewport.maximize')} · ${index + 1}`} data-tooltip={t('viewport.maximize')} data-testid="viewport-maximize" onClick={() => onMaximize(slot.id)}><Maximize2 size={14} /></button>}
     </header>
     <div className="viewport-content">
-      {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
+      {volume ? <Viewport key={JSON.stringify([volume.series.id, volume.series.engineGeneration, volume.series.sourceRevision])} paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
         mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
@@ -643,8 +646,14 @@ export default function App() {
   const cautions = petPrior ? comparisonFlags(currentPet, petPrior.acquisition, limitedView).map(flag =>
     ({ flag, text: comparisonText(flag, currentPet, petPrior, limitedView, t) })) : [];
   const cautionKey = acquisitionPet && petPrior ? comparisonKey(acquisitionPet.id, petPrior, currentPet, limitedView) : '';
-  const lesionPrior = activeSeries?.modality === 'PT' && activeVolume
-    ? priorLesions(priorPet, annotations, displayVolumes, keptPet, quantitativeScale(activeVolume.series).unit) : null;
+  const priorUnit = activeVolume && quantitativeScale(activeVolume.series).unit;
+  const priorResults = useMeasuredSpheres(priorPet ? annotations[priorPet.id] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS,
+    priorPet ? displayVolumes.get(priorPet.id) : undefined, priorUnit === 'SUL' ? 'lbm' : priorUnit === 'SUVbsa' ? 'bsa' : 'bw');
+  const lesionPrior = activeSeries?.modality === 'PT' && priorUnit
+    ? priorLesions(priorPet, annotations, displayVolumes, keptPet, priorUnit, item => {
+      const result = priorResults.get(item)?.result;
+      return result?.unit === priorUnit ? result : null;
+    }) : null;
   // MR over MR: the MR series shown in the other panes that the active MR can be fused with.
   const mrActive = activeSeries?.modality === 'MR';
   const mrBeside = !activeSeries || activeSeries.modality !== 'MR' ? [] : slots.flatMap(slot => {
@@ -678,7 +687,7 @@ export default function App() {
       return [{ volume, view: renderedView(volume, slot.view), fusion: fused }];
     });
     try {
-      if (visible.length) sliceRenderer().setVisibleViews(visible);
+      if (visible.length && !nativeRendering()) sliceRenderer().setVisibleViews(visible);
       else clearSliceTextureCache();
     } catch { /* Each viewport reports GPU errors. */ }
   }, [slots, volumeForSlot, fusion]);
@@ -689,6 +698,13 @@ export default function App() {
   useEffect(() => {
     let disposed = false;
     const inspect = async () => {
+      if (nativeRendering()) {
+        try {
+          const info = await window.veacom!.rendererInfo();
+          if (!disposed) { setGraphicsError(null); setGraphics(info); }
+        } catch (error) { if (!disposed) { setGraphics(null); setGraphicsError(error); } }
+        return;
+      }
       let info: RendererInfo;
       try { info = sliceRenderer().info; }
       catch (error) { if (!disposed) { setGraphics(null); setGraphicsError(error); } return; }
@@ -802,13 +818,21 @@ export default function App() {
     volumeAccess.current.set(item.id, ++accessClock.current);
     const cached = volumesRef.current.get(item.id);
     if (cached && fullyLoaded.current.has(item.id)) return Promise.resolve(cached);
+    if (nativeRendering() && item.sourceRevision && !item.segmentation) {
+      const resident: Volume = { series: item, data: null };
+      fullyLoaded.current.add(item.id);
+      const next = new Map(volumesRef.current);
+      next.set(item.id, resident);
+      publishVolumes(next);
+      return Promise.resolve(resident);
+    }
     const existing = pending.current.get(item.id); if (existing) return existing;
     const generation = volumeGenerations.current.get(item.id) ?? 0;
     const isCurrent = () => generation === (volumeGenerations.current.get(item.id) ?? 0);
     const storeVolume = (volume: Volume) => {
       const next = new Map(volumesRef.current); next.set(item.id, volume);
       publishVolumes(next);
-      keepThumbnail(volume);
+      if (hasPixels(volume)) keepThumbnail(volume);
     };
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
@@ -1386,7 +1410,7 @@ export default function App() {
     const request = ++fusionRequest.current;
     void acquireVolume(pet).then(volume => {
       if (request !== fusionRequest.current || !mounted.current) return;
-      if (sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
+      if (!nativeRendering() && sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
       setFusionId(pet.id);
       if (fusionDeviceModeRef.current && pet.modality === 'PT') applyDeviceLook(pet, slotId);
       else if (fusionDeviceModeRef.current && pet.modality === 'NM') {
@@ -1738,7 +1762,7 @@ export default function App() {
       && displayVolumesRef.current.get(activeVolume.series.id)?.series.sourceRevision === activeVolume.series.sourceRevision;
     try {
       const range = activeVolume.series.sourceRevision ? await measureWindow(activeVolume.series, view, automatic)
-        : (automatic ? autoWindow : fullRangeWindow)(activeVolume, usesSourceFrames(activeVolume.series, view) ? view.slice : undefined);
+        : hasPixels(activeVolume) ? (automatic ? autoWindow : fullRangeWindow)(activeVolume, usesSourceFrames(activeVolume.series, view) ? view.slice : undefined) : null;
       if (!range || !current()) return;
       if (automatic) autoWindows.current.set(id, `${Math.round(range.windowWidth)}/${Math.round(range.windowCenter)}`);
       updateView(id, range);
@@ -1841,9 +1865,11 @@ export default function App() {
 
   const testState = useEffectEvent(() => ({
     activeSeriesId: activeSlot?.seriesId ?? null, dimensions: activeVolume?.series.dimensions ?? null,
-    fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
+    nativeResident: activeVolume?.data === null,
+    fullVolumeLoaded: Boolean(activeVolume?.data && activeVolume.sourceFrameIndex === undefined),
+    seriesReady: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
     sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume && activeSlot ? renderedView(activeVolume, activeSlot.view) : null,
-    sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
+    sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + (volume.data?.byteLength ?? 0), 0),
     series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
       ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
       // For the gated SPECT check: each gate's phase and where its slices lie.
@@ -2294,7 +2320,7 @@ export default function App() {
           }}><Trash2 size={15} /></button>}</div>
           {activeSeries && petStudies.hasLegacy(activeSeries) && <button type="button" data-action="sphere-restore-references" className="secondary-button" onClick={() => petStudies.restoreLegacy(activeSeries)}>{t('sphere.restoreLegacy')}</button>}
           {activeSeries?.modality === 'PT' && <LesionTable annotations={activeAnnotations} volume={activeVolume}
-            prior={lesionPrior} saveFailed={petStudies.saveFailed} onMatch={matchPriorLesion} cautions={cautions.map(item => item.text)} cautionKey={cautionKey} />}
+            prior={lesionPrior} saveFailed={petStudies.saveFailed} onRetry={petStudies.retry} onMatch={matchPriorLesion} cautions={cautions.map(item => item.text)} cautionKey={cautionKey} />}
           {/* Waits while the PET loads: in flight, or a preview frame with no error. */}
           {activeSeries?.modality === 'PT' && <PetReportCopy series={activeVolume?.series ?? activeSeries} volume={activeVolume} annotations={activeAnnotations}
             loading={loadingIds.has(activeSeries.id) || (!loadErrors[activeSeries.id] && (!activeVolume || activeVolume.sourceFrameIndex !== undefined))}

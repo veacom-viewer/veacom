@@ -7,13 +7,12 @@
 // VEACOM_RECORD_BUDGETS=1 writes the counts observed as the new budgets. Events stay on this computer
 // unless the collector is configured: for a lab baseline in ClickHouse, run through
 // telemetry/with-collector.sh with VEACOM_TELEMETRY_ENVIRONMENT=lab (telemetry/TELEMETRY.md).
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { ClickBudget } = require('./click-budget.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 
 // Only synthetic, fingerprinted fixtures can enter this lab run or supply its label.
@@ -28,11 +27,12 @@ async function main() {
   const env = { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_CONSENT: process.env.VEACOM_TELEMETRY_CONSENT || 'granted' };
   if (env.VEACOM_TELEMETRY_ENVIRONMENT === 'lab') { env.VEACOM_TELEMETRY_STUDY_NAME ||= name; env.VEACOM_TELEMETRY_SCENARIO ||= 'click-budget'; }
   const packaged = process.env.VEACOM_SMOKE_EXECUTABLE;
-  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study], env, timeout: 90_000 });
+  const desktop = await launchDesktop({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study], env, timeout: 90_000 });
   const errors = [];
-  let page, budget;
+  let page, budget, shutdown;
   try {
     page = await desktop.firstWindow();
+    page.setDefaultTimeout(30_000);
     // Input from the computer would count as actions and fail the budgets.
     await ignoreOutsideInput(desktop);
     page.on('pageerror', error => errors.push(error.message));
@@ -49,6 +49,7 @@ async function main() {
     };
     const ui = {
       async scrollToMiddle() {
+        console.log('Scrolling the active canvas to its middle frame');
         const [x, y] = await canvasCenter();
         await page.mouse.move(x, y);
         const count = (await state()).dimensions?.[2] ?? 1, target = Math.floor((count - 1) / 2);
@@ -56,7 +57,7 @@ async function main() {
           for (let tick = 0; tick < 10; tick++) { await page.mouse.wheel(0, 100); await page.waitForTimeout(8); }
         }
       },
-      async preset(key) { await page.getByTestId('tool-window-presets').click(); await page.getByTestId(`preset-${key}`).click(); },
+      async preset(key) { console.log('Choosing window preset', key); await page.getByTestId('tool-window-presets').click(); await page.getByTestId(`preset-${key}`).click(); },
       async pickSeries(pattern) {
         const target = (await state()).series.find(item => !item.segmentation && pattern.test(item.description));
         if (!target) throw new Error(`No series matching ${pattern}`);
@@ -88,7 +89,7 @@ async function main() {
     const fromOpen = (await budget.events()).filter(event => event.name === 'ux.action' && event.trace === studyStart.trace);
     budget.count(`kept-view:${name}`, fromOpen, Math.round((await page.evaluate(() => performance.timeOrigin + performance.now())) - studyStart.start));
     await page.waitForTimeout(4000);
-    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().seriesReady, undefined, { timeout: 90_000 });
 
     if (await enabled('tool-window-presets')) await budget.task('window-preset', () => ui.preset('thorax'));
 
@@ -141,6 +142,11 @@ async function main() {
       await page.locator('[data-action="export-kind"][data-kind="video"]').click();
       await page.getByTestId('export-submit').click();
     }, { until: () => usageEvent('ux.milestone', 'export-video-done') });
+    const receipt = await page.evaluate(() => ({
+      result: window.__VEACOM_TEST__.usage().findLast(event => event.attributes['veacom.action'] === 'export-video-done')?.attributes['veacom.result'],
+      notice: document.querySelector('[data-testid="notice"]')?.textContent,
+    }));
+    if (receipt.result !== 'ok') throw new Error(`Video export returned ${receipt.result}: ${receipt.notice}`);
     // The app's own encoder, in the app's own page, wrote a real MP4.
     const videos = (await fs.readdir(exports)).filter(file => file.endsWith('.mp4'));
     if (videos.length !== 1) throw new Error(`The video export should write one MP4 into the export folder, found ${videos.length}.`);
@@ -172,7 +178,7 @@ async function main() {
       if (images.length > 1) {
         const activeId = (await state()).activeSeriesId, other = images.find(item => item.id !== activeId);
         await budget.task('series-pick', () => page.locator(`[data-testid="series-${other.id}"]`).click(),
-          { until: () => page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, other.id, { timeout: 90_000 }) });
+          { until: () => page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().seriesReady, other.id, { timeout: 90_000 }) });
       }
 
       // The assessment, on the MR (shown again first if the pick above went to the CT).
@@ -180,7 +186,7 @@ async function main() {
       if (!mr) throw new Error('The generated MR study did not open.');
       if ((await state()).activeSeriesId !== mr.id) {
         await page.locator(`[data-testid="series-${mr.id}"]`).click();
-        await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, mr.id, { timeout: 90_000 });
+        await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().seriesReady, mr.id, { timeout: 90_000 });
       }
       const assessment = page.getByTestId('tool-assessment');
       if (await assessment.getAttribute('aria-disabled') === 'true') {
@@ -200,9 +206,20 @@ async function main() {
     await fs.writeFile(path.join(output, `${name}.json`), JSON.stringify({ study: name, platform: process.platform, results: budget.results }, null, 2));
     budget.assert();
   } catch (error) {
-    if (page) await page.screenshot({ path: path.join(output, `${name}-failure.png`) }).catch(() => {});
+    shutdown = setTimeout(() => desktop.process().kill('SIGKILL'), 8000);
+    console.error(error);
     if (budget) await fs.writeFile(path.join(output, `${name}.json`), JSON.stringify({ study: name, error: error.stack, results: budget.results, errors }, null, 2)).catch(() => {});
+    if (page) await page.screenshot({ path: path.join(output, `${name}-failure.png`), timeout: 3000 }).catch(() => {});
+    console.error('Viewport at failure', await page?.evaluate(() => ({
+      series: window.__VEACOM_TEST__?.state().activeSeriesId,
+      panes: Array.from(document.querySelectorAll('[data-testid="viewport-cell"]'), p => ({ className:p.className, series:p.dataset.seriesId, text:p.innerText.slice(-500) })),
+      frames: Array.from(document.querySelectorAll('canvas[data-renderer]'), c => ({ ...c.dataset })),
+    })).catch(() => null), errors);
     throw error;
-  } finally { await desktop.close(); await fs.rm(userData, { recursive: true, force: true }); }
+  } finally {
+    shutdown ??= setTimeout(() => desktop.process().kill('SIGKILL'), 8000);
+    try { await desktop.close(); }
+    finally { clearTimeout(shutdown); await fs.rm(userData, { recursive: true, force: true, maxRetries: 4 }); }
+  }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

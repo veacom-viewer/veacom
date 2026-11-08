@@ -1,19 +1,24 @@
+import { hasPixels } from '../model';
+import { nativeRay } from '../imaging/nativeMeasurements';
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { Annotation, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
-import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
+import { measurementSpace, shownOnView, storedUnit } from '../imaging/annotations';
 import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
-import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
+import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
 import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
-import { pointerReadout } from '../imaging/readout';
+import { formatPointerSamples, nativePointerSamples, pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
 import { wheelSliceSteps } from '../imaging/interaction';
 import { pagesBackwards } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
+import { drawNativeView, nativeRendering } from '../imaging/nativeRender';
+import { isSoftwareRenderer } from '../imaging/rendererInfo';
+import { useMeasuredSpheres } from '../imaging/useMeasuredSpheres';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
 import { wrapLabel } from '../ui/navigation';
 import { twoPointWorld } from '../ui/measureGesture';
@@ -75,15 +80,6 @@ const pointString = (points: Point2[]) => points.map(p => p.join(',')).join(' ')
 const LABEL_CHARACTERS = 30, LABEL_LINE = 15, LABEL_PADDING = 5;
 const NO_BOXES: readonly Box[] = [];
 const NO_ANNOTATIONS: Annotation[] = [];
-// The fused PET's values under each drawing, kept per drawing, PET and chosen SUV (a drawing that changes is a new object).
-const petCache = new WeakMap<Annotation, { volume: Volume; locale: string; text: string }>();
-function petLine(annotation: Annotation, pet: Volume, locale: string): string {
-  const cached = petCache.get(annotation);
-  if (cached && cached.volume === pet && cached.locale === locale) return cached.text;
-  const text = fusedPetSummary(annotation, pet);
-  petCache.set(annotation, { volume: pet, locale, text });
-  return text;
-}
 /** Turkish writes the percent sign first (%100). */
 const percent = (value: number, locale: string) => locale === 'tr' ? `%${value}` : `${value}%`;
 function fitCorners(lines: CornerLine[], width: number, family: string) {
@@ -198,20 +194,18 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }
 
 
-function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number) {
-  const renderer = sliceRenderer();
-  const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion);
-  canvas.dataset.renderer = renderer.info.renderer;
-  canvas.dataset.softwareRenderer = String(renderer.info.software);
+function frameDisplayed(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number, milliseconds: number, native: boolean) {
   canvas.dataset.slice = String(displayed.slice);
   canvas.dataset.mode = displayed.mode ?? 'mpr';
   canvas.dataset.requestedSlice = String(requestedSlice);
   canvas.dataset.plane = displayed.plane;
+  canvas.dataset.zoom = String(displayed.zoom);
   canvas.dataset.seriesId = current.volume.series.id;
+  canvas.dataset.engineGeneration = String(current.volume.series.engineGeneration ?? 0);
   current.onFrame?.(milliseconds);
   canvas.dispatchEvent(new CustomEvent('veacom:frame', { bubbles: true, detail: {
     seriesId: current.volume.series.id, slice: displayed.slice, plane: displayed.plane, mode: displayed.mode ?? 'mpr',
-    renderSubmitMs: milliseconds, finishedAt: performance.now(), measurementKind: 'cpu-render-submit-and-composite',
+    renderSubmitMs: milliseconds, finishedAt: performance.now(), measurementKind: native ? 'native-frame-delivered' : 'cpu-render-submit-and-composite',
   } }));
 }
 
@@ -290,14 +284,41 @@ export function Viewport(props: ViewportProps) {
   // The value under a hovering mouse or pen, in the corner (imaging/readout.ts): read again as the pointer moves and
   // whenever the image under it changes (paging, panning, a linked pane), without drawing the image again.
   const hover = useRef<Point2 | null>(null), readout = useRef<ReadoutSetter | null>(null);
+  const presented = useRef<{ view: ViewState; props: ViewportProps } | null>(null);
+  const readState = useRef({ key: '', revision: 0, busy: false, pending: undefined as (() => Promise<void>) | undefined,
+    samples: null as Awaited<ReturnType<typeof nativePointerSamples>> | null });
   const updateReadout = () => {
-    const set = readout.current, at = hover.current, current = latest.current, [width, height] = size.current;
-    if (!set) return;
-    if (!at || at[0] < 0 || at[1] < 0 || at[0] > width || at[1] > height) { set([]); return; }
-    try {
-      const view = renderedView(current.volume, liveView.current);
-      set(pointerReadout(current.volume, view, screenToWorld(screenMapping(current.volume.series, view, width, height), ...at), current.fusion));
-    } catch { set([]); }
+    const set = readout.current, at = hover.current, [width, height] = size.current;
+    const state = readState.current;
+    const native = nativeRendering();
+    const current = native ? presented.current?.props : latest.current;
+    const view = native ? presented.current?.view : renderedView(latest.current.volume, liveView.current);
+    if (!set || !current || !view || !at || at[0] < 0 || at[1] < 0 || at[0] > width || at[1] > height) {
+      state.key = ''; state.samples = null; state.revision++; state.pending = undefined; set?.([]); return;
+    }
+    const world = screenToWorld(screenMapping(current.volume.series, view, width, height), ...at);
+    if (!native && hasPixels(current.volume)) { set(pointerReadout(current.volume, view, world, current.fusion)); return; }
+    const series = current.volume.series, fused = current.fusion?.volume.series;
+    // Units follow the reader's current setting while coordinates and source identity follow the displayed frame.
+    const show = (samples: Awaited<ReturnType<typeof nativePointerSamples>>) => set(formatPointerSamples(samples, latest.current.volume.series.suvNormalization));
+    const key = JSON.stringify([world, view.slice, view.mode, view.plane, view.oblique, view.projection,
+      series.id, series.engineGeneration, series.sourceRevision,
+      fused?.id, fused?.engineGeneration, fused?.sourceRevision]);
+    if (key === state.key) { if (state.samples) show(state.samples); return; }
+    state.key = key; state.samples = null; set([]);
+    const revision = ++state.revision;
+    state.pending = async () => {
+      try {
+        const samples = await nativePointerSamples(current.volume, view, world, current.fusion);
+        if (revision === state.revision && canvas.current?.isConnected) { state.samples = samples; show(samples); }
+      } catch { if (revision === state.revision) set([]); }
+    };
+    if (state.busy) return;
+    state.busy = true;
+    void (async () => {
+      try { while (state.pending) { const run = state.pending; state.pending = undefined; await run(); } }
+      finally { state.busy = false; }
+    })();
   };
   const queue = (render = true) => {
     if (render) renderNeeded.current = true;
@@ -313,16 +334,44 @@ export function Viewport(props: ViewportProps) {
           // Changing the bitmap size clears it. Resize and paint in the same frame.
           const dpr = window.devicePixelRatio || 1;
           const width = Math.max(1, Math.round(size.current[0] * dpr)), height = Math.max(1, Math.round(size.current[1] * dpr));
-          if (canvas.current.width !== width) canvas.current.width = width;
-          if (canvas.current.height !== height) canvas.current.height = height;
-          paintSlice(canvas.current, current, displayed, liveView.current.slice);
-          if (errorLive.current) { errorLive.current = null; setError(null); }
+          const target = canvas.current, requested = liveView.current.slice;
+          if (nativeRendering()) {
+            const started = performance.now();
+            const last = presented.current?.props.volume.series, series = current.volume.series;
+            if (last && (last.id !== series.id || last.sourceRevision !== series.sourceRevision || last.engineGeneration !== series.engineGeneration)) {
+              target.getContext('2d')?.clearRect(0, 0, target.width, target.height);
+              delete target.dataset.seriesId;
+              delete target.dataset.slice;
+              presented.current = null;
+            }
+            void drawNativeView(target, current.volume, displayed, current.fusion, width, height).then(result => {
+              if (!result || canvas.current !== target || latest.current.volume !== current.volume) return;
+              target.dataset.renderer = result.adapter; target.dataset.softwareRenderer = String(isSoftwareRenderer(result.adapter));
+              target.dataset.renderBackend = 'native-wgpu'; target.dataset.gpuCompleteMs = String(result.gpuCompleteMs);
+              presented.current = { view: displayed, props: current };
+              frameDisplayed(target,current,displayed,requested,performance.now()-started,true);
+              updateReadout();
+              setOverlayView(displayed);
+              if (errorLive.current) { errorLive.current = null; setError(null); }
+            }).catch(e => {
+              if (canvas.current !== target || latest.current.volume !== current.volume) return;
+              const message = e instanceof Error ? e.message : t('viewport.renderFailed');
+              if (message !== errorLive.current) { errorLive.current = message; setError(message); }
+            });
+          } else if (hasPixels(current.volume)) {
+            if (target.width !== width) target.width = width;
+            if (target.height !== height) target.height = height;
+            const renderer=sliceRenderer(), ms=renderer.render(target,current.volume,displayed,current.fusion);
+            target.dataset.renderer=renderer.info.renderer; target.dataset.softwareRenderer=String(renderer.info.software);
+            frameDisplayed(target,current,displayed,requested,ms,false);
+            if (errorLive.current) { errorLive.current = null; setError(null); }
+          }
         } catch (e) {
           const message = e instanceof Error ? e.message : t('viewport.renderFailed');
           if (message !== errorLive.current) { errorLive.current = message; setError(message); }
         }
       }
-      setOverlayView(displayed);
+      if (!nativeRendering()) setOverlayView(displayed);
       updateReadout();
       setDraft(draftLive.current);
       setDraftHint(twoClick.current ? 'viewport.clickEnd' : construction.current.length ? (constructionTool.current === 'polygon' ? 'viewport.traceRegion' : 'viewport.clickPoints') : null);
@@ -353,12 +402,25 @@ export function Viewport(props: ViewportProps) {
     if (geometryChanged) { size.current = [width, height]; setDimensions(size.current); }
     queue();
   };
-  const mappingNow = () => screenMapping(latest.current.volume.series, renderedView(latest.current.volume, liveView.current), ...size.current);
+  const visibleView = () => nativeRendering() && presented.current ? presented.current.view : renderedView(latest.current.volume, liveView.current);
+  const mappingNow = () => screenMapping(latest.current.volume.series, visibleView(), ...size.current);
   const pointAt = (x: number, y: number) => screenToWorld(mappingNow(), x, y);
   /** The pane shows a whole-volume MIP: clicks go to what made a pixel bright, and measuring tools only pick points. */
-  const projectedNow = () => isProjection(latest.current.volume.series, renderedView(latest.current.volume, liveView.current));
+  const projectedNow = () => isProjection(latest.current.volume.series, visibleView());
   /** Where a pick at (x, y) puts the crosshair: the point there, or on a MIP the hottest voxel along that ray. */
-  const pickAt = (x: number, y: number) => projectedNow() ? hottestAlongRay(latest.current.volume, renderedView(latest.current.volume, liveView.current), pointAt(x, y)) : pointAt(x, y);
+  const pickRevision = useRef(0);
+  const pickAt = (x: number, y: number) => {
+    const volume = latest.current.volume, point = pointAt(x, y), view = visibleView();
+    const revision = ++pickRevision.current;
+    if (!projectedNow()) { pendingCrosshair.current = point; queue(false); return; }
+    if (hasPixels(volume)) {
+      pendingCrosshair.current = hottestAlongRay(volume, view, point); queue(false); return;
+    }
+    const shown = presented.current;
+    void nativeRay(volume.series, view, point, true).then(hit => {
+      if (revision === pickRevision.current && shown === presented.current && canvas.current?.isConnected) latest.current.onCrosshairChange(hit?.point ?? point);
+    }).catch(() => {});
+  };
   const local = (event: { clientX: number; clientY: number }): Point2 => {
     const bounds = container.current!.getBoundingClientRect(); measurePane(bounds); return [event.clientX - bounds.left, event.clientY - bounds.top];
   };
@@ -427,7 +489,7 @@ export function Viewport(props: ViewportProps) {
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
   }, [props, queue, syncInteractionContext, cancelGesture]);
   const refreshReadout = useEffectEvent(updateReadout);
-  useEffect(() => { refreshReadout(); }, [props.showOverlay, locale]);
+  useEffect(() => { refreshReadout(); }, [props.showOverlay, props.volume.series.suvNormalization, locale]);
   const resizePane = useEffectEvent((element: HTMLElement) => measurePane(element.getBoundingClientRect()));
   const restore = useEffectEvent(() => queue());
   const wheel = useEffectEvent((event: WheelEvent) => {
@@ -475,6 +537,7 @@ export function Viewport(props: ViewportProps) {
   }, []);
 
   const pointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (nativeRendering() && !presented.current) return;
     if ((event.target as HTMLElement).closest('input,button,textarea')) return;
     // A measurement picked in the list but not shown yet is no longer waited for once the reader acts here.
     setPicked(null);
@@ -537,7 +600,16 @@ export function Viewport(props: ViewportProps) {
       gesture.current = usage.begin('fusion-drag', input === 'touch' ? 'touch' : 'drag');
       return;
     }
-    if ((annotationTools.has(mode) || mode === 'crosshair') && latest.current.volume.sourceFrameIndex !== undefined && latest.current.volume.sourceFrameIndex !== liveView.current.slice) return;
+    if (annotationTools.has(mode) || mode === 'crosshair') {
+      const volume = latest.current.volume;
+      if (volume.sourceFrameIndex !== undefined && volume.sourceFrameIndex !== liveView.current.slice) return;
+      if (nativeRendering()) {
+        const shown = presented.current;
+        if (!shown || shown.props.volume.series.id !== volume.series.id || shown.props.volume.series.sourceRevision !== volume.series.sourceRevision
+            || shown.props.volume.series.engineGeneration !== volume.series.engineGeneration
+            || !sameContext(interactionContext(shown.props.volume, shown.view), interactionContext(volume, liveView.current))) return;
+      }
+    }
     // A press on a measurement (a handle, its label or its line) takes hold of it whatever the tool, as in VEAcom
     // Next; not while one is drawn point by point or waits for its second click.
     const screenCurrent = samePlacement(overlayView, renderedView(props.volume, liveView.current));
@@ -589,7 +661,7 @@ export function Viewport(props: ViewportProps) {
     event.currentTarget.setPointerCapture(event.pointerId);
     if (event.detail <= 1) gesture.current = usage.begin(annotationTools.has(mode) ? `draw-${mode}` : `drag-${mode}`, input === 'touch' ? 'touch' : 'drag');
     drag.current = { mode, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
-    if (mode === 'crosshair') { pendingCrosshair.current = pickAt(...start); queue(false); }
+    if (mode === 'crosshair') { pickAt(...start); }
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     syncInteractionContext(latest.current.volume, liveView.current);
@@ -672,7 +744,7 @@ export function Viewport(props: ViewportProps) {
       const turned = angle(point) - angle(active.start);
       changeView({ rotation: ((initial.rotation + turned) % 360 + 360) % 360 });
     } else if (active.mode === 'crosshair') {
-      pendingCrosshair.current = pickAt(...point); queue(false);
+      pickAt(...point);
     } else if (annotationTools.has(active.mode)) {
       // Dragging on the second press makes an ordinary measurement and drops the pending first click.
       const first = twoClick.current;
@@ -721,7 +793,7 @@ export function Viewport(props: ViewportProps) {
     drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     // A still left click on a MIP goes there whatever the tool: the linked panes go to the hottest voxel along that ray.
-    if (!active.moved && !active.edge && event.button === 0 && active.mode !== 'crosshair' && projectedNow()) { latest.current.onCrosshairChange?.(pickAt(...active.start)); return; }
+    if (!active.moved && !active.edge && event.button === 0 && active.mode !== 'crosshair' && projectedNow()) { pickAt(...active.start); return; }
     // With 3D open, a still left click marks the point there too (the toolbar waits while 3D is open).
     if (!active.moved && !active.edge && event.button === 0 && latest.current.clickPicksPoint && !annotationTools.has(active.mode) && active.mode !== 'crosshair') {
       latest.current.onCrosshairChange?.(active.startWorld); return;
@@ -796,6 +868,8 @@ export function Viewport(props: ViewportProps) {
     container.current?.querySelector(`[data-annotation-id="${CSS.escape(picked)}"]`)?.animate(GLOW, { duration: 600, iterations: 2 });
   }, [picked, pickedOnScreen]);
   const movingSphere = edited?.type === 'sphere' && visibleAnnotations.some(item => item.id === edited.id && item.points !== edited.points) ? edited : null;
+  const spheres = useMeasuredSpheres(props.annotations, props.volume);
+  const fusionSummaries = useAnnotationSummaries(movingSphere ? visibleAnnotations : shownAnnotations, props.fusion?.volume, true);
   const summaries = useAnnotationSummaries(movingSphere ? visibleAnnotations : shownAnnotations, props.volume);
   // A sphere marked as a reference says which; one with a confirmed Deauville score gives it.
   const named = summaries.map((label, index) => {
@@ -803,13 +877,13 @@ export function Viewport(props: ViewportProps) {
     if (movingSphere?.id === annotation.id) return t('sphere.diameter', { value: ((sphereOf(annotation)?.radius ?? 0) * 2).toFixed(1) });
     if (annotation.type !== 'sphere' || !label) return label;
     const role = annotation.role ? `${t(annotation.role === 'liver' ? 'sphere.liverLabel' : 'sphere.bloodPoolLabel')} · ` : annotation.label ? `${annotation.label} · ` : '';
-    const score = movingSphere?.role ? undefined : currentDeauville(annotation, props.annotations, props.volume);
+    const score = movingSphere?.role ? undefined : currentDeauville(annotation, props.annotations, props.volume, item => spheres.get(item)?.result ?? null);
     return `${role}${label}${score !== undefined ? ` · ${t('deauville.label', { score })}` : ''}`;
   });
   // With a PET fused over the image, a region or a probe also gives the PET's value there.
   const labels = props.fusion ? named.map((label, index) => {
     if (movingSphere?.id === shownAnnotations[index].id) return label;
-    const pet = petLine(shownAnnotations[index], props.fusion!.volume, locale);
+    const pet = fusionSummaries[index];
     return pet && label ? `${label}\n${pet}` : label;
   }) : named;
   // Where each measurement shows here: a sphere as the circle this plane cuts from it (dashed off its centre and on a
@@ -821,7 +895,7 @@ export function Viewport(props: ViewportProps) {
   });
   const peakSections = projected || movingSphere || props.volume.series.modality !== 'PT' ? [] : shownAnnotations.flatMap(item => {
     if (item.type !== 'sphere' || item.role || (selected && selected !== item.id)) return [];
-    const peak = sphereStatisticsFor(item, props.volume, quantitativeScale(props.volume.series))?.peak;
+    const peak = spheres.get(item)?.result?.peak;
     const section = peak && sphereSection({ center: peak.at, radius: PEAK_RADIUS_MM }, frame);
     if (!section) return [];
     const [x, y] = worldToScreen(mapping, section.center);
@@ -830,7 +904,7 @@ export function Viewport(props: ViewportProps) {
   // A sphere with a metabolic volume shows the voxels it counts, cut by this plane (not on a MIP, which has no plane).
   const metabolicFrames = projected || movingSphere ? [] : shownAnnotations.flatMap(annotation => {
     if (annotation.type !== 'sphere' || !annotation.threshold) return [];
-    const mask = thresholdVolumeFor(annotation, props.volume, quantitativeScale(props.volume.series))?.mask;
+    const mask = spheres.get(annotation)?.result?.metabolic?.mask;
     return mask ? planeOutlines(mask, frame).map(item => ({ id: annotation.id, frame: item })) : [];
   });
   const segmentationFrames = (props.segmentations ?? []).flatMap(overlay =>

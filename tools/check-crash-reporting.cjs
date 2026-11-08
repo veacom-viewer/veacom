@@ -9,11 +9,10 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
-const { _electron: electron } = require('playwright');
 const { ENDPOINT } = require('../electron/crash-reports.cjs');
 const { validReport } = require('../electron/crash-schema.cjs');
 const { createServer } = require('../telemetry/crashes/server.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const root = path.resolve(__dirname,'..');
 const sentinel = 'SYNTHETIC_PRIVATE_STUDY';
 async function waitFor(read, description, timeout = 20000) {
@@ -72,7 +71,7 @@ async function main() {
     // A live packaged check must exercise the binary inside the package.
     if (executablePath) delete env.VEACOM_CORE_PATH;
     async function launch() {
-      desktop = await electron.launch({ cwd:root, executablePath:executablePath || require('electron'),
+      desktop = await launchDesktop({ cwd:root, executablePath:executablePath || require('electron'),
         args:executablePath ? [] : [root], env, timeout:60000 });
       const page = await desktop.firstWindow(); await ignoreOutsideInput(desktop);
       await page.waitForFunction(async()=>(await window.veacom?.getCoreState())?.status === 'ready');

@@ -47,6 +47,16 @@ try {
         $Result.steps += $Entry
         Save-Json $Summary $Result
     }
+    if (Get-Field $Config 'RequireGpu' $false) {
+        $Since = [DateTimeOffset]::Parse($Result.started).LocalDateTime
+        $Resets = @(Get-WinEvent -FilterHashtable @{LogName='System'; ProviderName='Display'; Id=4101; StartTime=$Since} -ErrorAction SilentlyContinue)
+        $Driver = [ordered]@{ name='gpu-driver'; status='passed'; started=$Result.started; finished=[DateTimeOffset]::UtcNow.ToString('o') }
+        if ($Resets.Count) {
+            $Driver.status = 'failed'
+            $Driver.error = "Windows recorded $($Resets.Count) display driver resets during the GPU checks."
+        }
+        $Result.steps += $Driver
+    }
     $Result.status = if (@($Result.steps | Where-Object { $_.status -eq 'failed' }).Count) { 'failed' } else { 'passed' }
 } catch { $Result.status = 'failed'; $Result.error = $_.Exception.Message; throw }
 finally {

@@ -1,18 +1,17 @@
 // node tools/check-gpu-startup.cjs SYNTHETIC_STUDY OUTPUT.json
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   assert(process.argv[2] && process.argv[3], 'Pass a synthetic study folder and output JSON path.');
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-gpu-startup-'));
   let desktop;
   try {
-    desktop = await electron.launch({ args: [path.resolve(__dirname, '..')],
+    desktop = await launchDesktop({ args: [path.resolve(__dirname, '..')],
       env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
     const page = await desktop.firstWindow(), errors = [], checks = [];
     // A click or key press from the computer would change the panes this check counts.
@@ -20,6 +19,8 @@ async function main() {
     page.setDefaultTimeout(10_000);
     page.on('pageerror', error => errors.push(error.message));
     await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.getAttribute('data-ready') === 'true');
+    const native = await page.evaluate(() => window.veacom.nativeRendering);
+    const gate = native ? await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('render')) : null;
     await page.evaluate(() => {
       const proof = window.__gpuStartup = { hold: true, polls: 0, frames: [] };
       const original = WebGL2RenderingContext.prototype.getProgramParameter;
@@ -30,9 +31,10 @@ async function main() {
       document.addEventListener('veacom:frame', event => proof.frames.push(event.detail.seriesId));
     });
     await privileged.importPaths(desktop, page, [path.resolve(process.argv[2])]);
-    await page.waitForFunction(() => window.__gpuStartup.polls > 0);
+    if (native) await desktop.evaluate(({ app }, id) => app.__VEACOM_PRIVILEGED_TEST__.waitForHeldPixelRequest(id), gate);
+    else await page.waitForFunction(() => window.__gpuStartup.polls > 0);
     assert.equal(await page.locator('canvas[data-renderer]').count(), 0);
-    checks.push('Pixel publication waits for shader readiness.');
+    checks.push(native ? 'Pixel publication waits for the native producer.' : 'Pixel publication waits for shader readiness.');
     await page.getByTestId('tool-layout').click();
     await page.locator('[data-layout="1x2"]').click();
     await page.waitForFunction(() => document.querySelectorAll('[data-testid="viewport-cell"]').length === 2);
@@ -44,6 +46,7 @@ async function main() {
     assert.equal(await page.evaluate(() => window.__gpuStartup.frames.length), 0);
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().activeSeriesId === null);
+    if (native) await desktop.evaluate(({ app }, id) => app.__VEACOM_PRIVILEGED_TEST__.releasePixelRequests(id), gate);
     await page.evaluate(() => { window.__gpuStartup.hold = false; });
     await page.waitForFunction(() => {
       const state = window.__VEACOM_TEST__.state(); return state.loadedSeriesIds.length === 1 && state.pendingLoads === 0;

@@ -4,7 +4,7 @@
 import type { Annotation, Series, Volume } from '../model';
 import type { LesionValues, PetSeriesRecord } from '../domain/petStudies';
 import { bodyWeightFactor } from './quantity';
-import { sphereStatisticsFor, thresholdVolumeFor, type Quantity } from './voi';
+import { sphereStatisticsFor, thresholdVolumeFor, type Quantity, type SphereStatistics } from './voi';
 
 export const isLesion = (annotation: Annotation) => annotation.type === 'sphere' && !annotation.role;
 const NUMBERED = /^L(\d+)$/;
@@ -29,9 +29,14 @@ export function lesionValues(annotation: Annotation, volume: Volume, quantity = 
   if (!quantity) return null;
   const stats = sphereStatisticsFor(annotation, volume, quantity);
   if (!stats) return null;
+  return measuredValues({ ...stats, metabolic: annotation.threshold ? thresholdVolumeFor(annotation, volume, quantity) : null });
+}
+
+export function measuredValues(stats: SphereStatistics | null | undefined): LesionValues | null {
+  if (!stats) return null;
   const values: LesionValues = { max: stats.max, mean: stats.mean };
   if (stats.peak) values.peak = stats.peak.value;
-  const metabolic = annotation.threshold ? thresholdVolumeFor(annotation, volume, quantity) : null;
+  const metabolic = stats.metabolic;
   if (metabolic && !metabolic.selectionRequired) { values.mtv = metabolic.mtvMl; if (metabolic.tlg !== undefined) values.tlg = metabolic.tlg; }
   return values;
 }

@@ -1,10 +1,9 @@
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 async function main() {
   const repo = path.resolve(__dirname, '..');
@@ -18,7 +17,7 @@ async function main() {
   await temporaryExportFolder(path.join(temporary,'settings'));
   const env = { ...process.env, VEACOM_USER_DATA:path.join(temporary,'settings') };
   delete env.VEACOM_TEST_MODE;
-  const desktop = await electron.launch({ args:[repo,'--study',study], env, timeout:90000 });
+  const desktop = await launchDesktop({ args:[repo,'--study',study], env, timeout:90000 });
   const checks=[],errors=[]; let page;
   const check=(name,detail)=>{checks.push({name,passed:true,detail});console.log(`PASS ${name}`);};
   // A step that waits on another window fails with its reason instead of waiting for ever.
@@ -29,7 +28,7 @@ async function main() {
     // from the person at the machine would let the unprompted request below open it, and the check would wait on a
     // window nobody closes. So, except on Windows, the window takes no real mouse or keyboard input (tools/lib/outside-input.cjs).
     await ignoreOutsideInput(desktop);
-    await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().fullVolumeLoaded,undefined,{timeout:90000});
+    await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().seriesReady,undefined,{timeout:90000});
     const state=await page.evaluate(()=>window.__VEACOM_TEST__.state());
     check('Authorized CLI study loads through opaque streamed pixels',state.dimensions);
     assert.equal(await desktop.evaluate(({app})=>Boolean(app.__VEACOM_PRIVILEGED_TEST__)),false);
@@ -100,7 +99,7 @@ async function main() {
     const capabilities=await page.evaluate(()=>window.veacom.openPaths('folder'));
     assert(capabilities.length);assert(capabilities.every(value=>value.startsWith('import:')&&!value.includes(study)));
     await page.evaluate(caps=>window.__VEACOM_TEST__.importPaths(caps),capabilities);
-    await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    await page.waitForFunction(()=>window.__VEACOM_TEST__.state().seriesReady);
     const reused=await page.evaluate(async caps=>{try{await window.veacom.importSelected(caps);return 'accepted';}catch(error){return error.message;}},capabilities);
     assert.notEqual(reused,'accepted');check('Native picker returns one-use import capabilities');
     const files=(await fs.readdir(study)).filter(name=>name.endsWith('.dcm'));

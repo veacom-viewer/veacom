@@ -295,16 +295,19 @@ export async function exportViewportVideo(options: ViewportVideoOptions): Promis
     await document.fonts.ready;
     onProgress?.(0, total);
     let pixels: Uint8Array | null = null;
+    const captureOptions = { ...options };
     for (let step = 0; step < total; step++) {
       const slice = options.descending ? end - step : start + step;
       checkAbort(signal);
       await setSlice(slice);
       await waitForSlice(viewport, slice, signal, options.seriesId);
-      const canvas = await captureViewportCanvas(viewport, options, { slice, seriesId: options.seriesId });
+      const canvas = await captureViewportCanvas(viewport, captureOptions, { slice, seriesId: options.seriesId });
       checkAbort(signal);
       const frameWidth = canvas.width + canvas.width % 2, frameHeight = canvas.height + canvas.height % 2;
       if (!encoder) {
         width = frameWidth; height = frameHeight;
+        // Keep one MP4 size when the viewer shows or dismisses a notice during export.
+        captureOptions.outputSize ??= { width: canvas.width, height: canvas.height };
         encoder = await openEncoder(width, height, fps, output, () => fail(encodingFailed()));
         pixels = new Uint8Array(width * height * 3 / 2);
       } else if (frameWidth !== width || frameHeight !== height) throw videoError('video.sizeChanged', 'Keep the viewport size unchanged while exporting.');

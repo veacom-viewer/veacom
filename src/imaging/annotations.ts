@@ -1,7 +1,8 @@
+import { hasPixels, type ViewVolume } from '../model';
 import type { Annotation, Series, Vec3, ViewState, Volume } from '../model';
 import { getPlaneFrame, indexToWorld, isPaddingValue, isProjection, sampleVolume, sourceFrameSeries, worldToIndex, type PlaneFrame } from './geometry';
 import { usesSourceFrames } from './viewState';
-import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableVolume, sphereOf, sphereSection, sphereSulGlu, sphereStatisticsFor, thresholdVolumeFor } from './voi';
+import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableVolume, sphereOf, sphereSection, sphereSulGlu, sphereStatisticsFor, thresholdVolumeFor, type SphereStatistics } from './voi';
 import { t } from '../i18n';
 import { isEmission, overlayKind, petHasSuv } from './emission';
 import { sulGluGlucose } from './glucose';
@@ -242,13 +243,13 @@ export function voxelPlane(points: Vec3[], series: Series): { axis: number; inde
   }
 }
 
-function annotationSourceFrame(annotation: Annotation, volume: Volume, requirePixels = true): { series: Series; offset: number } | null {
+function annotationSourceFrame(annotation: Annotation, volume: ViewVolume, requirePixels = true): { series: Series; offset: number } | null {
   const index = annotationSourceIndex(annotation, volume.series);
   if (index === null) return null;
   if (requirePixels && volume.sourceFrameIndex !== undefined && volume.sourceFrameIndex !== index) return null;
   const frameLength = volume.series.dimensions[0] * volume.series.dimensions[1];
   const offset = volume.sourceFrameIndex === undefined ? index * frameLength : 0;
-  if (requirePixels && offset + frameLength > volume.data.length) return null;
+  if (requirePixels && (!volume.data || offset + frameLength > volume.data.length)) return null;
   return { series: sourceFrameSeries(volume.series, index), offset };
 }
 
@@ -453,15 +454,17 @@ export function formatRoiStatistics(stats: RoiStatistics): string {
 }
 
 /** What a sphere VOI measures in `volume`, or why it measures nothing yet. */
-export function sphereSummary(annotation: Annotation, volume: Volume): string {
+export function sphereSummary(annotation: Annotation, volume: ViewVolume, measured?: SphereStatistics | null): string {
   const sphere = sphereOf(annotation);
   if (!sphere) return t('annotation.invalidMeasurement');
   if (!measurableVolume(volume)) return t(volume.sourceFrameIndex !== undefined && volume.series.canReconstruct ? 'sphere.wholeVolume' : 'sphere.notMeasurable');
-  const quantity = quantitativeScale(volume.series), stats = sphereStatisticsFor(annotation, volume, quantity);
-  return stats ? formatSphereStatistics(stats, annotation.threshold ? thresholdVolumeFor(annotation, volume, quantity) : null, sulGluGlucose(volume.series, quantity.unit)) : t('sphere.noVoxels');
+  const quantity = quantitativeScale(volume.series);
+  const stats = measured === undefined && hasPixels(volume) ? sphereStatisticsFor(annotation, volume, quantity) : measured;
+  const metabolic = measured === undefined && hasPixels(volume) && annotation.threshold ? thresholdVolumeFor(annotation, volume, quantity) : measured?.metabolic;
+  return stats ? formatSphereStatistics(stats, metabolic, sulGluGlucose(volume.series, quantity.unit)) : t('sphere.noVoxels');
 }
 
-export function annotationSummary(annotation: Annotation, volume: Volume): string {
+export function annotationSummary(annotation: Annotation, volume: ViewVolume): string {
   if (annotation.type === 'sphere') return sphereSummary(annotation, volume);
   const points = annotation.points;
   const needsPixels = ['probe', 'rectangle', 'ellipse', 'polygon'].includes(annotation.type);
@@ -488,7 +491,8 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
     const length = polylineLengthMm(measurePoints);
     return length == null ? '' : `${format(length * measurement.scale)} ${measurement.unit}`;
   }
-  if (annotation.type === 'probe' && points.length) {
+  if (needsPixels && !hasPixels(volume)) return t('annotation.sourceUnavailable');
+  if (annotation.type === 'probe' && points.length && hasPixels(volume)) {
     if (series.components === 3) return t('annotation.noScalar');
     let value: number | null;
     if (source) {
@@ -508,7 +512,7 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
     const converted = value * quantity.factor;
     return Number.isFinite(converted) ? quantityText(converted, quantity.unit) : t('annotation.quantityUnavailable');
   }
-  if (['rectangle', 'ellipse', 'polygon'].includes(annotation.type)) {
+  if (hasPixels(volume) && ['rectangle', 'ellipse', 'polygon'].includes(annotation.type)) {
     const stats = roiStatistics(annotation, volume);
     if (!stats) return points.length >= 3 ? t('annotation.noRoiSamples') : '';
     return formatRoiStatistics(stats);
@@ -519,18 +523,18 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
 /** What a PET (or SPECT) fused over the image gives at a probe or inside a region drawn on it, where the drawing lies in
  * the patient: the value of the PET voxel at the probe, or the maximum and mean of the PET voxels the region covers on
  * the drawing's plane (its hottest voxel, as SUVmax is read). Empty for other drawings. */
-export function fusedPetSummary(annotation: Annotation, pet: Volume): string {
+export function fusedPetSummary(annotation: Annotation, pet: ViewVolume, measured?: SphereStatistics | null): string {
   if (pet.series.components === 3 || !annotation.points.length) return '';
   const quantity = quantitativeScale(pet.series), digits = quantityDigits(quantity.unit);
   const modality = overlayKind(pet.series);
-  if (annotation.type === 'probe') {
+  if (annotation.type === 'probe' && hasPixels(pet)) {
     const sampled = sampleVolume(pet, annotation.points[0]);
     const value = sampled == null ? NaN : sampled * quantity.factor;
     return Number.isFinite(value) ? t('roi.petValue', { modality, value: format(value, digits), unit: quantity.unit }) : '';
   }
   if (annotation.type === 'sphere') {
     // A sphere drawn on the CT measures the PET's own voxels inside it, as one drawn on the PET does.
-    const sphere = sphereOf(annotation), stats = sphere && measurableVolume(pet) ? sphereStatisticsFor(annotation, pet, quantity) : null;
+    const sphere = sphereOf(annotation), stats = measured !== undefined ? measured : sphere && hasPixels(pet) && measurableVolume(pet) ? sphereStatisticsFor(annotation, pet, quantity) : null;
     if (!stats) return '';
     const values = { modality, unit: stats.unit, max: formatSphereValue(stats.max, digits), mean: formatSphereValue(stats.mean, digits) };
     const line = stats.peak
@@ -539,11 +543,15 @@ export function fusedPetSummary(annotation: Annotation, pet: Volume): string {
     const corrected = sphereSulGlu(stats, sulGluGlucose(pet.series, quantity.unit));
     return corrected ? `${line} · ${corrected}` : line;
   }
-  if (!['rectangle', 'ellipse', 'polygon'].includes(annotation.type)) return '';
+  if (!hasPixels(pet) || !['rectangle', 'ellipse', 'polygon'].includes(annotation.type)) return '';
   // The PET is read on the drawing's own plane, whichever slices of the image it was drawn on.
   const stats = roiStatistics({ ...annotation, mode: 'mpr' }, pet, 50_000);
   if (!stats) return '';
-  // A region too large to scan voxel by voxel falls back to interpolated samples, and says so.
+  return formatFusedRegion(stats, pet.series);
+}
+
+export function formatFusedRegion(stats: RoiStatistics, series: Series): string {
+  const modality = overlayKind(series), digits = quantityDigits(stats.unit);
   return t(stats.sampling === 'derived-interpolated' ? 'roi.petRegionSampled' : 'roi.petRegion',
     { modality, unit: stats.unit, max: format(stats.max, digits), mean: format(stats.mean, digits) });
 }

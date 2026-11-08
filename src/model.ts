@@ -141,11 +141,14 @@ export interface LabelVolume {
   min: Vec3; max: Vec3;
 }
 export interface SegmentationOverlay { id: string; series: Series; frames: MaskFrame[]; labels: LabelVolume | null }
-export interface Volume {
-  series: Series; data: PixelArray;
+/** Null data identifies a series whose exact voxels are resident in the native engine. */
+export interface ViewVolume {
+  series: Series; data: PixelArray | null;
   /** When present, data contains only this acquired frame; series metadata remains complete. */
   sourceFrameIndex?: number;
 }
+export interface Volume extends ViewVolume { data: PixelArray }
+export function hasPixels(volume: ViewVolume): volume is Volume { return volume.data !== null; }
 export interface Annotation {
   id: string; type: Tool; points: Vec3[]; plane: Plane; slice: number;
   label?: string; color?: string;
@@ -169,6 +172,9 @@ export interface Annotation {
   regionSeeds?: number[];
 }
 export type WheelAction = 'scroll' | 'zoom' | 'rotate' | 'none';
+/** How the windowed grey is drawn: straight, or bent up by a square root or a logarithm (src/imaging/viewState.ts,
+ * `curveGrey`) to show faint uptake beside hot spots. Display only: values, regions and the window stay as they are. */
+export type DisplayCurve = 'linear' | 'sqrt' | 'log';
 export interface ViewState {
   plane: Plane; slice: number; windowCenter: number; windowWidth: number;
   zoom: number; pan: [number, number]; rotation: number; flipX: boolean; flipY: boolean;
@@ -179,6 +185,8 @@ export interface ViewState {
    * turn, in steps of 10° (geometry.PROJECTION_STEPS). */
   projection?: 'mip';
   palette?: 'gray' | 'hot' | 'ge' | 'rainbow';
+  /** The display curve on the windowed grey, before inversion and palette; unset is linear. */
+  curve?: DisplayCurve;
   mode?: ViewMode;
   windowMode?: 'dicom' | 'manual';
   /** Paired planar views use the same linear window even when the frames specify different VOI curves. */
@@ -188,11 +196,11 @@ export interface ViewState {
   /** Set by `resolveView` from the displayed source frame: the curve its window follows, manual changes included. */
   voiFunction?: VoiFunction;
 }
-export interface FusionSettings { volume: Volume; opacity: number; upperSuv: number; palette: 'hot' | 'ge' | 'rainbow' | 'hot_metal' | 'red_yellow';
+export interface FusionSettings { volume: ViewVolume; opacity: number; upperSuv: number; palette: 'hot' | 'ge' | 'rainbow' | 'hot_metal' | 'red_yellow';
   /** uptake: low uptake fades out (as before); classic: the same share everywhere in the PET, as scanners draw it. */
   blend: 'uptake' | 'classic'; }
 export interface ViewportProps {
-  volume: Volume; view: ViewState; tool: Tool; annotations: Annotation[];
+  volume: ViewVolume; view: ViewState; tool: Tool; annotations: Annotation[];
   active: boolean; crosshair: Vec3 | null; fusion?: FusionSettings | null;
   referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string }>;
   /** A still left click sets the linked point (while 3D is open beside the panes). */
@@ -223,7 +231,7 @@ export interface ViewportProps {
   paneNumber?: number;
 }
 export interface VolumeViewProps {
-  volume: Volume; crosshair: Vec3 | null;
+  volume: ViewVolume; crosshair: Vec3 | null;
   annotations?: Annotation[];
   initialView?: ViewState;
   viewportSize?: [number, number];
@@ -250,6 +258,12 @@ export interface UpdateStatus {
   canDownload: boolean; canInstall: boolean; sourceBuild: boolean; signature?: string; checkedAt?: string;
 }
 export interface DesktopBridge {
+  nativeRendering?: boolean;
+  renderView(target:string, revision:number, generation:number, body:import('./imaging/nativeRender').NativeView):Promise<import('./imaging/nativeRender').NativeFrame>;
+  surfaceMesh(id:string, generation:number, revision:number, target:string, body:{layerRevision:number;threshold:number;crop:import('./imaging/volume3d').CropBounds} | null):Promise<ArrayBuffer | void>;
+  renderVolume(target:string, revision:number, generation:number, body:import('./imaging/nativeVolume').NativeScene):Promise<import('./imaging/nativeRender').NativeFrame>;
+  volumeLayers(id:string, revision:number, generation:number, target:string, version:number, bytes:Uint8Array):Promise<void>;
+  rendererInfo():Promise<{renderer:string; software:boolean}>;
   /** The saved interface language, passed by the main process ('tr' or 'en'). */
   locale?: string;
   /** Saves the interface language for the main process's own text and the next start. */
@@ -270,10 +284,10 @@ export interface DesktopBridge {
   /** Stops the DICOM, USB or folder export under way. */
   cancelExport?: () => Promise<void>;
   /** The tags of the file holding frame `frame` (the slice shown), or of the series' first frame. */
-  measure(id: string, generation: number, revision: number, operation: import('./imaging/nativeMeasurements').SamplingOperation): Promise<unknown>;
   getTags(seriesId: string, generation: number, frame?: number, revision?: number): Promise<Record<string, unknown>[]>;
   removeSeries(ids: string[], generation: number): Promise<{ removed: number; remaining?: number }>;
-  getPixels(request: { seriesId: string; generation: number; index?: number; revision?: number }): Promise<{ url: string; generation: number }>;
+  measure(id: string, generation: number, revision: number, operation: import('./imaging/nativeMeasurements').SamplingOperation): Promise<unknown>;
+  getPixels(request: { seriesId: string; generation: number; sourceRevision?: number; index?: number; revision?: number }): Promise<{ url: string; generation: number }>;
   openPaths: (kind: 'files' | 'folder' | 'archive') => Promise<string[]>;
   /** The import window, in a view of its own that this page cannot reach (electron/import-view.cjs): import capabilities
    *  for what the user opened there, none if they closed it. `disc` starts at a disc drive. */

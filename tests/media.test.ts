@@ -38,12 +38,15 @@ describe('video file writing', () => {
   it('writes the samples in order and replaces an existing file only when finished', async () => {
     const { exporter, destination, directory } = await fixture();
     await writeFile(destination, 'existing file is replaced only after writing succeeds');
+    assert.equal(exporter.active, false);
     const { id } = await exporter.beginVideo('study', 10);
+    assert.equal(exporter.active, true);
     await exporter.configureVideo(id, settings);
     await exporter.appendVideo(id, sample(0x65, 1, 2), true);
     await exporter.appendVideo(id, sample(0x41, 3), false);
     assert.ok((await readFile(destination, 'utf8')).includes('existing file'));
     assert.equal(await exporter.finishVideo(id), destination);
+    assert.equal(exporter.active, false);
     const file = await readFile(destination);
     assert.equal(file.subarray(4, 8).toString(), 'ftyp');
     assert.deepEqual(file.subarray(file.length - 13), Buffer.concat([sample(0x65, 1, 2), sample(0x41, 3)]));
@@ -239,7 +242,7 @@ describe('RGB to limited-range video levels', () => {
 const chrome = process.env.VEACOM_TEST_CHROME ?? (process.platform === 'darwin'
   ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : chromium.executablePath());
 
-it('captures presented slice pixels and SVG overlays, restores the slice and cancels failed exports', { skip: !existsSync(chrome), timeout: 20000 }, async () => {
+it('captures presented slice pixels and SVG overlays, restores the slice and cancels failed exports', { skip: !process.env.VEACOM_TEST_CHROME && !existsSync(chrome), timeout: 20000 }, async () => {
   const source = await readFile(new URL('../src/export-video.ts', import.meta.url), 'utf8');
   const javascript = stripTypeScriptTypes(source);
   const browser = await chromium.launch({ executablePath: chrome, headless: true });
@@ -364,7 +367,13 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       const output = document.createElement('canvas'); output.width = bitmap.width; output.height = bitmap.height;
       const context = output.getContext('2d')!; context.drawImage(bitmap, 0, 0); bitmap.close();
       const resizedPixels = [...context.getImageData(8, 32, 1, 1).data, ...context.getImageData(35, 5, 1, 1).data];
-      return { destination, restoredAfterSuccess, restoredAfterError, failure, cancelled, captured: firstFrames, firstMeta, firstWritten,
+      frames.length = 0;
+      await exportViewportVideo({ ...options, setSlice: (slice: number) => {
+        viewport.style.height = slice === 1 ? '48px' : '64px';
+        setSlice(slice);
+      } });
+      const videoSizes = frames.map(frame => [frame.width, frame.height]);
+      return { destination, restoredAfterSuccess, restoredAfterError, failure, cancelled, captured: firstFrames, firstMeta, firstWritten, videoSizes,
         configured: firstConfigured && { width: firstConfigured.width, height: firstConfigured.height, description: [...new Uint8Array(firstConfigured.description)] },
         progress: progress.slice(0, 4), rangeFrames, dropFailure, cancelledAfterDrop, configFailure, cancelledAfterConfig, fellBack, fallbackStarts, noEncoder, noEncoderTried, cancelledAfterNoEncoder, odd, resizedDimensions: [output.width, output.height], resizedPixels };
     }, javascript);
@@ -399,6 +408,7 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
     assert.equal(result.cancelled, true);
     assert.deepEqual(result.rangeFrames, [[173, 42, 26, 235]]);
     assert.deepEqual(result.resizedDimensions, [128, 64]);
+    assert.deepEqual(result.videoSizes, [[64, 64], [64, 64], [64, 64]]);
     assert.deepEqual(result.resizedPixels, [0, 0, 0, 255, 255, 0, 0, 255]);
   } finally { await browser.close(); }
 });

@@ -4,7 +4,6 @@
 // beside it never starts the decoder.
 //
 //   node tools/check-pictures.cjs <a DICOM series folder, such as ct-small/S01> <output folder>
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const { createHash } = require('node:crypto');
 const os = require('node:os');
@@ -12,7 +11,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const { encodePng } = require('./lib/png.cjs');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const { EngineProcess } = require('../electron/engine-process.cjs');
 
 const png = (width, height, rgb) => {
@@ -82,7 +81,7 @@ async function main() {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-pictures-'));
   const checks = [], errors = [], timings = {};
   const check = (name, detail) => { checks.push({ name, passed: true, detail }); console.log(`PASS ${name}`); };
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..')], chromiumSandbox: true,
+  const desktop = await launchDesktop({ args: [path.resolve(__dirname, '..')], chromiumSandbox: true,
     env: { ...process.env, VEACOM_USER_DATA: path.join(temporary, 'profile'), VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
   let page;
   try {
@@ -162,7 +161,7 @@ async function main() {
 
     started = performance.now();
     await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), named.PNG.id);
-    await page.waitForFunction(id => { const state = window.__VEACOM_TEST__.state(); return state.activeSeriesId === id && state.fullVolumeLoaded; }, named.PNG.id, { timeout: 30_000 });
+    await page.waitForFunction(id => { const state = window.__VEACOM_TEST__.state(); return state.activeSeriesId === id && state.seriesReady; }, named.PNG.id, { timeout: 30_000 });
     timings.openMs = performance.now() - started;
     await page.screenshot({ path: path.join(output, 'pictures.png') });
     check('The viewer opens a picture series', await page.evaluate(() => window.__VEACOM_TEST__.state().dimensions));

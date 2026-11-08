@@ -1,9 +1,8 @@
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 
 const fixtureRoot = path.resolve(process.argv[2]);
 const output = path.resolve(process.argv[3]);
@@ -15,11 +14,11 @@ async function main() {
   await fs.mkdir(output, { recursive: true });
   const fixtures = JSON.parse(await fs.readFile(path.join(fixtureRoot, 'expected.json'), 'utf8'));
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-source-audit-'));
-  const desktop = await electron.launch({ ...(executablePath ? { executablePath } : {}),
+  const desktop = await launchDesktop({ ...(executablePath ? { executablePath } : {}),
     args: executablePath ? [] : [path.resolve(__dirname, '..')],
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90000 });
   const checks = [], errors = [];
-  let page, releaseVolume, releaseFrame;
+  let page, releaseVolume, releaseFrame, native;
   const check = (name, detail) => { checks.push({ name, passed: true, detail }); console.log(`PASS ${name}`); };
   const importStudy = async study => {
     const capabilities = before ? [study] : await desktop.evaluate(({ app }, paths) => app.__VEACOM_PRIVILEGED_TEST__.authorizeImportPaths(paths), [study]);
@@ -45,6 +44,7 @@ async function main() {
     await ignoreOutsideInput(desktop);
     page.on('pageerror', error => errors.push(error.message));
     await page.waitForFunction(() => window.__VEACOM_TEST__);
+    native = await page.evaluate(() => window.veacom?.nativeRendering === true);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
     if (!before) {
       const gate = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('volume'));
@@ -54,7 +54,7 @@ async function main() {
     await page.locator('canvas[data-renderer]').first().waitFor();
     if (!before) {
       await page.waitForFunction(() => document.querySelector('canvas[data-slice]')?.dataset.slice === '0');
-      const frameGate = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('frame', 4));
+      const frameGate = await desktop.evaluate(({ app }, kind) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests(kind, 4), native ? 'render' : 'frame');
       releaseFrame = () => desktop.evaluate(({ app }, gate) => app.__VEACOM_PRIVILEGED_TEST__.releasePixelRequests(gate), frameGate);
       await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: 4 }));
       await desktop.evaluate(({ app }, gate) => app.__VEACOM_PRIVILEGED_TEST__.waitForHeldPixelRequest(gate), frameGate);
@@ -69,6 +69,11 @@ async function main() {
       await releaseFrame();
       await frame(4);
       const state = await page.evaluate(() => window.__VEACOM_TEST__.state());
+      if (native) {
+        assert.equal(state.nativeResident, true);
+        const counts = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.pixelRequestCounts());
+        assert.equal(counts.volume ?? 0, 0, 'Native browsing must not request a whole volume');
+      }
       assert.equal(state.fullVolumeLoaded, false);
       assert.equal(state.view.mode, 'source');
       const sample = await pixels(), truth = fixtures.regular.frames[4];
@@ -77,12 +82,12 @@ async function main() {
       await page.screenshot({ path: path.join(output, 'progressive-source-frame.png') });
       await releaseVolume();
     }
-    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 90000 });
+    await page.waitForFunction(() => (window.__VEACOM_TEST__.state().seriesReady ?? window.__VEACOM_TEST__.state().fullVolumeLoaded), undefined, { timeout: 90000 });
 
     for (const [caseName, fixture] of Object.entries(fixtures)) {
       if (caseName !== 'regular') {
         await importStudy(fixture.path);
-        await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
+        await page.waitForFunction(() => (window.__VEACOM_TEST__.state().seriesReady ?? window.__VEACOM_TEST__.state().fullVolumeLoaded));
       }
       const imported = (await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.coreRequest('series'))).json;
       const metadata = imported.series.find(item => item.uid === fixture.seriesUid);

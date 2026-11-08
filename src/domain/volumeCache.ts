@@ -1,4 +1,4 @@
-import type { Volume } from '../model';
+import type { ViewVolume as Volume } from '../model';
 
 export const INACTIVE_VOLUME_BUDGET = 512 * 1024 * 1024;
 
@@ -13,7 +13,7 @@ export function trimInactiveVolumes(
   const inactive: string[] = [];
   for (const [id, volume] of volumes) {
     if (pinned.has(id)) continue;
-    inactiveBytes += volume.data.byteLength;
+    inactiveBytes += (volume.data?.byteLength ?? 0);
     inactive.push(id);
   }
   if (inactiveBytes <= budget) return { volumes, evicted: [] };
@@ -23,7 +23,7 @@ export function trimInactiveVolumes(
   const evicted: string[] = [];
   for (const id of inactive) {
     if (inactiveBytes <= budget) break;
-    inactiveBytes -= next.get(id)!.data.byteLength;
+    inactiveBytes -= (next.get(id)?.data?.byteLength ?? 0);
     next.delete(id);
     evicted.push(id);
   }

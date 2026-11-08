@@ -1,8 +1,9 @@
-import type { Annotation, ReferenceRole, Volume } from '../model';
+import { hasPixels } from '../model';
+import type { Annotation, ReferenceRole, ViewVolume as Volume } from '../model';
 import { quantitativeScale } from './annotations';
 import { suggestDeauville, type References, type Suggestion, type SuggestionProblem } from './deauville';
 import { petTracer } from './petTracer';
-import { isSuv, LIVER_REFERENCE_RADIUS_MM, sphereOf, sphereStatisticsFor } from './voi';
+import { isSuv, LIVER_REFERENCE_RADIUS_MM, sphereOf, sphereStatisticsFor, type SphereStatistics } from './voi';
 
 export function canAssessLymphoma(volume: Volume): boolean {
   const tracer = petTracer(volume.series.petAcquisition);
@@ -15,13 +16,13 @@ type Reading = { problem: SuggestionProblem | 'context' | 'coverage' } | {
   suggestion: Suggestion; lesion: number; references: References; unit: string; basis: string;
 };
 
-export function deauvilleReading(lesion: Annotation, annotations: readonly Annotation[], volume: Volume): Reading {
+export function deauvilleReading(lesion: Annotation, annotations: readonly Annotation[], volume: Volume, lookup?: (item: Annotation) => SphereStatistics | null): Reading {
   if (!lesion.fdgLymphoma || lesion.role || !canAssessLymphoma(volume)) return { problem: 'context' };
   const liver = reference(annotations, 'liver'), pool = reference(annotations, 'bloodPool');
   if (!liver || !pool) return { problem: 'missing' };
   const quantity = quantitativeScale(volume.series);
   const measured = [lesion, liver, pool].map(item => {
-    const sphere = sphereOf(item), stats = sphereStatisticsFor(item, volume, quantity);
+    const sphere = sphereOf(item), stats = lookup ? lookup(item) : hasPixels(volume) ? sphereStatisticsFor(item, volume, quantity) : null;
     if (!sphere || !stats || stats.clipped || stats.invalidCount || stats.paddingCount) return null;
     if (item.role === 'liver' && Math.abs(sphere.radius - LIVER_REFERENCE_RADIUS_MM) > 1e-5) return null;
     return { id: item.id, ...sphere, max: stats.max };
@@ -34,9 +35,9 @@ export function deauvilleReading(lesion: Annotation, annotations: readonly Annot
   return { suggestion, lesion: focus.max, references, unit: quantity.unit, basis: JSON.stringify([volume.series.id, quantity.unit, ...measured]) };
 }
 
-export function currentDeauville(lesion: Annotation, annotations: readonly Annotation[], volume: Volume) {
+export function currentDeauville(lesion: Annotation, annotations: readonly Annotation[], volume: Volume, lookup?: (item: Annotation) => SphereStatistics | null) {
   if (lesion.deauville === undefined || !lesion.deauvilleBasis) return undefined;
-  const reading = deauvilleReading(lesion, annotations, volume);
+  const reading = deauvilleReading(lesion, annotations, volume, lookup);
   return 'basis' in reading && reading.basis === lesion.deauvilleBasis ? lesion.deauville : undefined;
 }
 

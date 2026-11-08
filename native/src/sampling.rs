@@ -31,6 +31,12 @@ impl Grid {
             inverse: inverse(matrix).ok_or_else(|| anyhow::anyhow!("Invalid image geometry"))?,
         })
     }
+    pub fn world(&self, index: VoxelPoint) -> PatientPoint {
+        PatientPoint(std::array::from_fn(|a| {
+            self.origin[a] + (0..3).map(|i| index.0[i] * self.axes[i][a]).sum::<f64>()
+        }))
+    }
+
     pub fn index(&self, world: PatientPoint) -> VoxelPoint {
         VoxelPoint(multiply(self.inverse, sub(world.0, self.origin)))
     }

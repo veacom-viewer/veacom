@@ -1,5 +1,4 @@
 // node tools/profile-workspace.cjs --ct=PATH --mr=PATH --output=FILE.json [--app=PATH] [--change-units=true] [--change-tool=true] [--check-release=true] [--heap=FILE]
-const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
@@ -8,7 +7,7 @@ const assert = require('node:assert/strict');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const privileged = require('./privileged-imaging.cjs');
-const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { ignoreOutsideInput, launchDesktop } = require('./lib/outside-input.cjs');
 const exec = promisify(execFile);
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const equal = argument.indexOf('='); return [argument.slice(2, equal), argument.slice(equal + 1)];
@@ -21,7 +20,7 @@ async function main() {
   const snapshots = [], errors = [];
   let desktop;
   try {
-    desktop = await electron.launch({ args: [repo], env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
+    desktop = await launchDesktop({ args: [repo], env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
     const page = await desktop.firstWindow();
     // Real input from the computer would change what is measured; the window shows without taking it.
     await ignoreOutsideInput(desktop);
@@ -96,13 +95,13 @@ async function main() {
       await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), id);
       await page.waitForFunction(id => {
         const state = window.__VEACOM_TEST__.state();
-        return state.activeSeriesId === id && state.fullVolumeLoaded && document.querySelector('canvas[data-series-id]')?.getAttribute('data-series-id') === id;
+        return state.activeSeriesId === id && state.seriesReady && document.querySelector('canvas[data-series-id]')?.getAttribute('data-series-id') === id;
       }, id, { timeout: 90_000 });
       await settle();
     };
     const importStudy = async folder => {
       await privileged.importPaths(desktop, page, [path.resolve(folder)]);
-      await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
+      await page.waitForFunction(() => window.__VEACOM_TEST__.state().seriesReady, undefined, { timeout: 90_000 });
       await settle();
     };
     const fingerprint = async () => crypto.createHash('sha256').update(await page.locator('canvas[data-renderer]').first().evaluate(canvas => canvas.toDataURL())).digest('hex');
