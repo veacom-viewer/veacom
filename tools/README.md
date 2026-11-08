@@ -157,6 +157,41 @@ node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
 
+## PET validation against the vendor workstation
+
+`pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET
+numbers with the scanner vendor's workstation on real, anonymised studies. Given a folder of studies and a JSON file of
+sphere centres and radii per study, it:
+
+- opens each study in the desktop app with a fresh profile, as `check-pet-voi.cjs` does, and finds its PET;
+- draws each sphere on the PET's axial slices, one at a time, where the file says, and checks it against where VEAcom
+  kept it;
+- gives each its role: liver reference (3 cm across), blood pool reference, or lesion at 41% of its SUVmax for MTV;
+- writes what VEAcom shows in SUVbw and, with height and sex, SUL (`readings.csv`), and the SUV factors with what they
+  come from (`factors.csv`);
+- given the vendor's readings (`--vendor`), writes them side by side (`comparison.csv`). It flags SUVmax beyond 1%,
+  SUVpeak beyond 5%, and any difference in the SUV factor or its parameters, and notes the likely cause;
+- records the commit, the build's fingerprints and the inputs in `run.json`.
+
+Real studies, both JSON files and the output stay outside the repository. The tool checks symlink targets, including
+the parent of a new output directory. Its window ignores the computer's own input on macOS and Linux. It exits
+unsuccessfully when a value is beyond its limit or missing. `make-pet-validation-inputs.mjs` writes both JSON files
+for the synthetic follow-up. CI and `tools/verify.sh` compare all expected readings at display precision, including
+reference means, MTV and TLG. They also exercise raw Bq/ml, stored lean-body-mass SUV and injection times using PET
+series derived from the same fixture. The desktop kit has not run on Windows.
+
+```sh
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/fixtures/make-pet-validation-inputs.mjs /tmp/pet-followup
+node tools/pet-validation.cjs /tmp/pet-followup /tmp/pet-followup/pet-validation-spheres.json test-results/pet-validation --vendor /tmp/pet-followup/pet-validation-expected.json
+```
+
+On real studies, with `--screenshots` for a picture of each sphere (patient details hidden):
+
+```sh
+node tools/pet-validation.cjs ~/pet-validation/studies ~/pet-validation/spheres.json ~/pet-validation/results --vendor ~/pet-validation/vendor.json
+```
+
 ## PET quantification
 
 `check-pet-voi.cjs` opens the current study of the synthetic follow-up from `fixtures/make-pet-followup.mjs`. That
