@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { Copy } from './icons';
 import { petReport, petReportText, type PetReportInput } from '../imaging/petReport';
+import { useMeasuredSpheres } from '../imaging/useMeasuredSpheres';
 import { useTranslation } from '../i18n/react';
 import { copyText } from '../ui/clipboard';
 
@@ -11,7 +12,10 @@ import { copyText } from '../ui/clipboard';
 export function PetReportCopy({ loading, ...input }: PetReportInput & { loading: boolean }) {
   const { locale, t } = useTranslation();
   const [last, setLast] = useState<{ text: string; copied: boolean; attempt: number } | null>(null);
-  const text = loading ? null : petReportText(petReport(input), locale);
+  // The lesion table's values: the report waits while the engine measures a sphere.
+  const spheres = useMeasuredSpheres(input.annotations, input.volume);
+  const busy = loading || [...spheres.values()].some(entry => entry.state === 'idle' || entry.state === 'pending');
+  const text = busy ? null : petReportText(petReport({ ...input, measured: sphere => spheres.get(sphere)?.result }), locale);
   const copy = async () => {
     if (text === null) return;
     const attempt = (last?.attempt ?? 0) + 1;
@@ -20,7 +24,7 @@ export function PetReportCopy({ loading, ...input }: PetReportInput & { loading:
   // "Copied", or why not, stands until the text would change.
   const shown = last && last.text === text ? last : null;
   return <div className="pet-report-copy">
-    <button type="button" className="primary-button compact" data-action="pet-report-copy" aria-disabled={loading || undefined}
+    <button type="button" className="primary-button compact" data-action="pet-report-copy" aria-disabled={busy || undefined}
       aria-describedby={shown && !shown.copied ? 'pet-report-error' : undefined}
       data-tooltip={loading ? t('sphere.wholeVolume') : undefined} onClick={() => void copy()}>
       <Copy size={14} />{shown?.copied ? t('report.copied') : t('report.copy')}</button>

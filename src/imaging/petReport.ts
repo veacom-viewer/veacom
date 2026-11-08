@@ -5,7 +5,7 @@
 // comparability cautions. Numbers are written as the lesion table and the panel write them, each with its unit, and with
 // what limits them: a sphere partly outside the image, voxels left out, a contour waiting for its regions. A value is
 // called SUV only when the engine calibrated the PET in SUV; a PET it refused gives its technique and says why.
-import type { Annotation, DeauvilleScore, PetAcquisition, ReferenceRole, Series, Volume } from '../model';
+import { hasPixels, type Annotation, type DeauvilleScore, type PetAcquisition, type ReferenceRole, type Series, type ViewVolume } from '../model';
 import type { LesionValues } from '../domain/petStudies';
 import { translate, type Locale, type MessageKey, type MessageParams } from '../i18n';
 import { coreText, type CoreNote } from '../i18n/core';
@@ -14,7 +14,7 @@ import { quantitativeScale } from './annotations';
 import { petHasSuv } from './emission';
 import { currentDeauville } from './deauvilleReading';
 import { studyGlucose, sulGlu, sulGluGlucose, type StudyGlucose } from './glucose';
-import { isLesion, lesionValues, percentChange, percentText } from './lesions';
+import { isLesion, lesionValues, measuredValues, percentChange, percentText } from './lesions';
 import { flagText, petFlags, petRows, withTypedGlucose, type PetFlag, type PetRow } from './petAcquisition';
 import { comparisonFlags, comparisonText, type Compared, type ComparisonFlag, type PetPrior } from './petComparison';
 import type { PriorLesions } from './priorLesions';
@@ -23,8 +23,11 @@ import { isSuv, measurableVolume, peakName, sphereStatisticsFor, thresholdVolume
 export interface PetReportInput {
   /** The PET: its volume's series when it has one, which carries the PET values setting. */
   series: Series;
-  volume: Volume | undefined;
+  volume: ViewVolume | undefined;
   annotations: readonly Annotation[];
+  /** Each sphere's statistics in the report's unit as the lesion table reads them (src/imaging/useMeasuredSpheres.ts),
+   * so the two agree. Without it they are measured here, from the volume's pixels. */
+  measured?: (sphere: Annotation) => SphereStatistics | null | undefined;
   /** The glucose the reader typed for its study, in mmol/l, used when its files record none. */
   typedGlucose?: number;
   /** Its prior's lesions, as the lesion table reads them. */
@@ -91,10 +94,10 @@ const coverageOf = (stats: SphereStatistics | null): Coverage | undefined => sta
   ? { clipped: stats.clipped, padding: stats.paddingCount, invalid: stats.invalidCount } : undefined;
 
 /** What the report says, read from the PET's measurements as the lesion table and the acquisition panel read them. */
-export function petReport({ series, volume, annotations, typedGlucose, lesionPrior, comparison }: PetReportInput): PetReport {
+export function petReport({ series, volume, annotations, typedGlucose, lesionPrior, comparison, measured: lookup }: PetReportInput): PetReport {
   const shown = volume?.series ?? series, quantity = quantitativeScale(shown), suv = isSuv(quantity.unit) && petHasSuv(shown);
-  const measured = volume && measurableVolume(volume) ? volume : null;
-  const statistics = (sphere: Annotation) => measured ? sphereStatisticsFor(sphere, measured, quantity) : null;
+  const measured = volume && measurableVolume(volume) ? volume : null, pixels = measured && hasPixels(measured) ? measured : null;
+  const statistics = (sphere: Annotation) => !measured ? null : lookup ? lookup(sphere) ?? null : pixels && sphereStatisticsFor(sphere, pixels, quantity);
   const glucose = suv ? sulGluGlucose(shown, quantity.unit) : null, priorGlucose = lesionPrior?.glucose ?? null;
   const corrected = (value: number | undefined, at: StudyGlucose | null) => value === undefined || !at ? undefined : sulGlu(value, at);
   const references: ReportReference[] = suv ? (['liver', 'bloodPool'] as const).flatMap(role => {
@@ -103,7 +106,7 @@ export function petReport({ series, volume, annotations, typedGlucose, lesionPri
     return sphere ? [stats ? { role, max: stats.max, mean: stats.mean, ...(coverage ? { coverage } : {}) } : { role }] : [];
   }) : [];
   const lesions = suv ? annotations.filter(item => isLesion(item) && item.label).map(lesion => {
-    const values = measured ? lesionValues(lesion, measured, quantity) : null;
+    const values = !measured ? null : lookup ? measuredValues(lookup(lesion)) : pixels && lesionValues(lesion, pixels, quantity);
     const matched = lesionPrior?.lesions.find(item => item.id === lesion.priorLesionId);
     const before = matched?.values, sameThreshold = !!lesion.threshold && matched?.threshold === lesion.threshold;
     const item: ReportLesion = { name: lesion.label!, values, changes: told({ max: change(values?.max, before?.max), peak: change(values?.peak, before?.peak),
@@ -112,7 +115,8 @@ export function petReport({ series, volume, annotations, typedGlucose, lesionPri
     if (coverage) item.coverage = coverage;
     if (lesion.threshold) {
       item.threshold = lesion.threshold;
-      if (measured && values && values.mtv === undefined) item.contour = thresholdVolumeFor(lesion, measured, quantity)?.selectionRequired ? 'regions' : 'unavailable';
+      const metabolic = lookup ? lookup(lesion)?.metabolic : pixels && thresholdVolumeFor(lesion, pixels, quantity);
+      if (measured && values && values.mtv === undefined) item.contour = metabolic?.selectionRequired ? 'regions' : 'unavailable';
     }
     if (matched) item.prior = { name: matched.name, measured: !!before, differentThreshold: !!lesion.threshold && !!matched.threshold && !sameThreshold };
     if (glucose && values) {
@@ -120,7 +124,7 @@ export function petReport({ series, volume, annotations, typedGlucose, lesionPri
       item.sulGlu = { max: sulGlu(values.max, glucose), ...(peak === undefined ? {} : { peak }),
         changes: told({ max: change(sulGlu(values.max, glucose), corrected(before?.max, priorGlucose)), peak: change(peak, corrected(before?.peak, priorGlucose)) }) };
     }
-    const score = measured ? currentDeauville(lesion, annotations, measured) : undefined;
+    const score = measured ? currentDeauville(lesion, annotations, measured, lookup && (item => lookup(item) ?? null)) : undefined;
     if (score !== undefined) item.deauville = score;
     return item;
   }) : [];
