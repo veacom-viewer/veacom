@@ -1,0 +1,31 @@
+{
+  "comment": "Actions each canonical task takes today (tools/click-budget.cjs). A desktop check fails when a task needs more; when it needs fewer, lower the number here. VEACOM_RECORD_BUDGETS=1 rewrites them from a run.",
+  "tasks": {
+    "3d-pick": 2,
+    "actions-before-input": 0,
+    "burr": 3,
+    "burr-undo": 1,
+    "checklist-close": 1,
+    "checklist-open": 1,
+    "close-3d": 1,
+    "export-video": 3,
+    "language-switch": 2,
+    "measure-length": 2,
+    "measure-length-clicks": 3,
+    "measurement-go": 1,
+    "mpr": 1,
+    "mpr-restore": 1,
+    "open-3d": 1,
+    "open-folder": 2,
+    "open-to-first-image": 0,
+    "series-pick": 1,
+    "undo": 1,
+    "undo-redo": 2,
+    "usage-consent-answer": 1,
+    "usage-setting": 1,
+    "wheel-scroll": 1,
+    "window-drag": 2,
+    "window-preset": 2,
+    "kept-view:ct-small": 3
+  }
+}

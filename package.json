@@ -1,0 +1,90 @@
+{
+  "name": "veacom-desktop",
+  "version": "0.1.0-beta.1",
+  "private": true,
+  "license": "GPL-3.0-or-later",
+  "veacomPublicUpdates": false,
+  "description": "VEAcom imaging workspace",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite --host 127.0.0.1",
+    "build:core": "cargo build --release --locked --manifest-path native/Cargo.toml",
+    "build:web": "tsc --noEmit && vite build",
+    "build": "pnpm run setup:runtime && pnpm run build:core && pnpm run build:web",
+    "start": "node scripts/setup-runtime.cjs && electron .",
+    "test": "node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec \"tests/**/*.test.ts\"",
+    "test:core": "cargo test --locked --manifest-path native/Cargo.toml",
+    "package": "pnpm run build && pnpm --dir packaging install --frozen-lockfile && node packaging/node_modules/electron-builder/cli.js --dir",
+    "setup:runtime": "node scripts/setup-runtime.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "electron": "45.2.3",
+    "oxc-transform-react": "0.156.0",
+    "playwright": "^1.58.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "three": "0.187.0",
+    "typescript": "^7.0.2",
+    "vite": "8.3.5"
+  },
+  "build": {
+    "appId": "com.veacom.viewer",
+    "productName": "VEAcom",
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "LICENSE",
+        "to": "LICENSE"
+      },
+      {
+        "from": "native/target/release",
+        "to": "native",
+        "filter": [
+          "veacom-core",
+          "veacom-core.exe",
+          "*.dll",
+          "windows-runtime-manifest.json"
+        ]
+      },
+      {
+        "from": "native/THIRD_PARTY_NOTICES.txt",
+        "to": "THIRD_PARTY_NOTICES.txt"
+      }
+    ],
+    "mac": {
+      "target": [
+        "dir"
+      ],
+      "category": "public.app-category.medical",
+      "icon": "public/icons/veacom.icns"
+    },
+    "win": {
+      "target": [
+        "dir"
+      ],
+      "icon": "public/icons/veacom.ico"
+    },
+    "directories": {
+      "output": "release"
+    },
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "grantFileProtocolExtraPrivileges": false,
+      "resetAdHocDarwinSignature": true
+    }
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=26.13.0 <27"
+  },
+  "packageManager": "pnpm@12.18.0"
+}

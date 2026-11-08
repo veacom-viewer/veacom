@@ -1,0 +1,23 @@
+/* Feedback dialog (tokens from theme.css), laid out like the update dialog. */
+.feedback-dialog {
+  width: 480px; max-width: calc(100vw - 32px); max-height: calc(100vh - 40px); margin: auto; padding: 0; overflow: auto;
+  border: 1px solid var(--line-strong); border-radius: 12px; background: var(--bg-panel); color: var(--text); box-shadow: var(--shadow-dialog);
+  font: 13px/1.5 var(--font-ui);
+}
+.feedback-dialog::backdrop { background: rgba(4, 6, 9, .72); }
+.feedback-dialog > header { display: flex; align-items: center; gap: 8px; padding: 14px 16px; border-bottom: 1px solid var(--line-subtle); color: var(--text-secondary); }
+.feedback-dialog h2 { flex: 1; margin: 0; color: var(--text-strong); font-size: var(--text-xl); font-weight: 600; }
+.feedback-close { display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.feedback-close:hover:enabled { background: var(--bg-hover); color: var(--text-strong); }
+.feedback-content { display: flex; flex-direction: column; gap: 14px; padding: 16px; }
+.feedback-kinds { display: flex; gap: 18px; }
+.feedback-kind, .feedback-check { display: flex; align-items: center; gap: 8px; color: var(--text); font-size: var(--text-md); cursor: pointer; }
+.feedback-field { display: flex; flex-direction: column; gap: 6px; color: var(--text-secondary); font-size: var(--text-md); }
+.feedback-field textarea, .feedback-field input { width: 100%; padding: 8px 10px; border: 1px solid var(--line-control); border-radius: var(--radius); background: var(--bg-input); color: var(--text-strong); font: inherit; resize: vertical; }
+.feedback-field textarea:focus, .feedback-field input:focus { border-color: var(--accent); outline: none; }
+.feedback-field input[aria-invalid=true] { border-color: var(--danger); }
+.feedback-field small { color: var(--text-tertiary); font-size: var(--text-sm); }
+.feedback-privacy { margin: 0; padding: 8px 10px; border: 1px solid var(--warning-line); border-radius: var(--radius); background: var(--warning-bg); color: var(--warning); font-size: var(--text-md); }
+.feedback-error { margin: 0; padding: 10px 12px; border: 1px solid var(--danger-line); border-radius: var(--radius); background: var(--danger-bg); color: #ffd7d4; font-size: var(--text-md); }
+.feedback-content footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 2px; }
+.feedback-content footer .primary-button { display: inline-flex; align-items: center; gap: 6px; }

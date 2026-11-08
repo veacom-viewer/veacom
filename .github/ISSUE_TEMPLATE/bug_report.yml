@@ -1,0 +1,32 @@
+name: Bug report
+description: Report a problem using synthetic data only.
+body:
+  - type: markdown
+    attributes:
+      value: Do not include patient data, clinical screenshots, credentials, or telemetry endpoints. Use generated synthetic images.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit, OS, and GPU
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Synthetic reproduction
+      description: Give the generator, fixture, and exact steps.
+    validations:
+      required: true
+  - type: textarea
+    id: behaviour
+    attributes:
+      label: Expected and actual behaviour
+    validations:
+      required: true
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Data check
+      options:
+        - label: This report and its attachments contain only synthetic data and no credentials.
+          required: true

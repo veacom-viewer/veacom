@@ -1,0 +1,17 @@
+name: Feature request
+description: Describe a workflow to improve.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or workflow
+      description: Explain who needs this and what they are trying to do. Do not include patient data.
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Proposed behaviour and acceptance checks
+      description: Include keyboard access and imaging-correctness expectations where relevant.
+    validations:
+      required: true

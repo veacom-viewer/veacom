@@ -1,0 +1,82 @@
+# The OpenTelemetry Collector on Cloud Run: the one address VEAcom and the speed kit send to.
+#
+# It takes OTLP over HTTP with the ingest token, keeps only the attributes listed below
+# (anything else is dropped, and long strings are cut: a second guard, after the app's own,
+# against free text such as a series description or a file path), and writes everything to
+# ClickHouse and, raw, to Pub/Sub, which archives it to Cloud Storage.
+# Traces and metrics only: there is no logs pipeline, as log lines are free text.
+
+extensions:
+  bearertokenauth:
+    token: ${env:INGEST_TOKEN}
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:8080  # Cloud Run's port
+        auth:
+          authenticator: bearertokenauth
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+    spike_limit_percentage: 20
+  transform/allowlist:
+    error_mode: ignore
+    trace_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(attributes, ["service.name", "service.version", "deployment.environment", "os.type", "os.version", "host.arch", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "veacom.install_id", "veacom.machine.label", "veacom.machine.cpu", "veacom.machine.cores", "veacom.machine.ram_gb", "veacom.machine.gpu", "veacom.machine.gpu_driver", "veacom.machine.renderer", "veacom.machine.software_renderer", "veacom.machine.screen", "veacom.machine.screen_hz", "veacom.machine.device_pixel_ratio", "veacom.machine.power", "veacom.commit"])'
+          - truncate_all(attributes, 100)
+      - context: span
+        statements:
+          # Speed data, then usage timings (one span per user action; electron/usage-schema.json).
+          - 'keep_keys(attributes, ["veacom.study.name", "veacom.study.modality", "veacom.study.series", "veacom.study.slices", "veacom.study.matrix", "veacom.study.mb", "veacom.study.syntax", "veacom.study.source", "veacom.scenario", "veacom.trigger", "veacom.window", "veacom.layout", "veacom.run", "veacom.valid", "veacom.result", "veacom.error_kind", "veacom.frames", "veacom.value_ms", "veacom.slice", "veacom.colour_window", "veacom.action", "veacom.input", "veacom.seq", "veacom.t_ms", "veacom.changed", "veacom.hover_ms", "veacom.steps", "veacom.surface", "veacom.plane", "veacom.tool", "veacom.modality", "veacom.wl", "veacom.zoom", "veacom.series_index", "veacom.slice_pct", "veacom.session", "veacom.perf.role", "veacom.perf.signal", "veacom.perf.cpu_pct", "veacom.perf.ram_mib", "veacom.perf.ram_rise_mib", "veacom.perf.process_hwm_mib", "veacom.perf.samples", "veacom.perf.cpu_hot_ms", "veacom.perf.peak_offset_ms"])'
+          - truncate_all(attributes, 100)
+      - context: spanevent
+        statements:
+          - 'keep_keys(attributes, ["veacom.slice", "veacom.colour_window", "veacom.value_ms"])'
+    metric_statements:
+      - context: resource
+        statements:
+          - 'keep_keys(attributes, ["service.name", "service.version", "deployment.environment", "os.type", "os.version", "host.arch", "telemetry.sdk.name", "telemetry.sdk.language", "telemetry.sdk.version", "veacom.install_id", "veacom.machine.label", "veacom.machine.cpu", "veacom.machine.cores", "veacom.machine.ram_gb", "veacom.machine.gpu", "veacom.machine.gpu_driver", "veacom.machine.renderer", "veacom.machine.software_renderer", "veacom.machine.screen", "veacom.machine.screen_hz", "veacom.machine.device_pixel_ratio", "veacom.machine.power", "veacom.commit"])'
+          - truncate_all(attributes, 100)
+      - context: datapoint
+        statements:
+          - 'keep_keys(attributes, ["veacom.study.name", "veacom.study.modality", "veacom.study.slices", "veacom.study.syntax", "veacom.study.source", "veacom.scenario", "veacom.window", "veacom.layout", "veacom.valid"])'
+          - truncate_all(attributes, 100)
+  batch:
+    timeout: 5s
+    send_batch_size: 1000
+
+exporters:
+  clickhouse:
+    endpoint: tcp://10.10.0.2:9000?dial_timeout=10s
+    database: otel
+    username: collector
+    password: ${env:CH_PASSWORD}
+    create_schema: ${env:CREATE_SCHEMA}  # true only for the first start (telemetry/gcp/05-collector.sh)
+    ttl: 0  # kept for good: the archive in Cloud Storage is the long-term copy as well
+    timeout: 10s
+    retry_on_failure:
+      enabled: true
+  googlecloudpubsub:
+    project: veacom-platform
+    topic: projects/veacom-platform/topics/telemetry-raw
+    compression: gzip
+
+service:
+  extensions: [bearertokenauth, health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/allowlist, batch]
+      exporters: [clickhouse, googlecloudpubsub]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, transform/allowlist, batch]
+      exporters: [clickhouse, googlecloudpubsub]

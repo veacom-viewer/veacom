@@ -1,0 +1,19 @@
+# electron-builder installs here, apart from the root, so a root install on a laptop or in Linux CI never fetches
+# it. Only packaging installs it: pnpm --dir packaging install --frozen-lockfile, then, from the repository root,
+# node packaging/node_modules/electron-builder/cli.js. It packages the root app with the root package.json `build`
+# config or electron-builder.release.cjs, as before.
+
+# The root's supply-chain policy, explained in ../pnpm-workspace.yaml. This workspace inherits none of it.
+minimumReleaseAge: 4320
+minimumReleaseAgeIgnoreMissingTime: false
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+strictDepBuilds: true
+
+overrides:
+  # GHSA-g3hv-75wg-m249 is fixed from minimatch 11.0.1.
+  '@electron/universal>minimatch': 11.0.4
+  'app-builder-lib>minimatch': 11.0.4
+  # The installers are NSIS. app-builder-lib's Squirrel.Windows peer would otherwise be installed automatically: ten
+  # packages, electron-winstaller and its install script among them.
+  electron-builder-squirrel-windows: '-'

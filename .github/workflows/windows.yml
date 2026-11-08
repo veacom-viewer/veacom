@@ -1,0 +1,231 @@
+name: Windows
+
+# Builds, tests, packages and installs the app on a GitHub-hosted Windows runner, and runs the desktop checks
+# that need no graphics driver: the runner has no GPU, so Chromium draws through WARP, as on a PC without a
+# driver. It runs once when a pull request gets the `windows` label, not on every push: to test a later push,
+# remove the label and add it again, or run the workflow by hand on the branch. Release tags run it too. The
+# Tesla T4 checks stay on the Windows VM (tools/windows-vm/README.md). Standard runners cost nothing on a
+# public repository; on a private one, Windows minutes count double against the plan's allowance.
+on:
+  pull_request:
+    types: [labeled]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'windows'
+    runs-on: windows-2022
+    timeout-minutes: 75
+    concurrency:
+      group: windows-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      CI: 'true'
+      VEACOM_CRASH_ENVIRONMENT: lab
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      PACKAGED_APP: ${{ github.workspace }}\release-electron\win-unpacked\VEAcom Electron.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            packaging/pnpm-lock.yaml
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native
+
+      - name: Record the machine
+        run: |
+          $evidence = Join-Path $env:RUNNER_TEMP 'evidence'
+          New-Item -ItemType Directory -Force $evidence | Out-Null
+          "EVIDENCE=$evidence" >> $env:GITHUB_ENV
+          "STUDY=$(Join-Path $env:RUNNER_TEMP 'smoke-study')" >> $env:GITHUB_ENV
+          $os = Get-CimInstance Win32_OperatingSystem
+          $lines = @("commit ${{ github.event.pull_request.head.sha || github.sha }} (tested as ${{ github.sha }})", "$($os.Caption) $($os.Version)", "node $(node --version)")
+          $lines += @(Get-CimInstance Win32_VideoController | ForEach-Object { "display $($_.Name), driver $($_.DriverVersion), $($_.CurrentHorizontalResolution)x$($_.CurrentVerticalResolution)" })
+          $lines | Tee-Object (Join-Path $evidence 'machine.txt')
+
+      - name: Install
+        id: install
+        run: pnpm install --frozen-lockfile
+      - name: Desktop runtimes
+        id: runtime
+        run: pnpm run setup:runtime
+      - name: Engine release build
+        id: engine
+        if: ${{ !cancelled() }}
+        run: cargo build --release --locked --manifest-path native/Cargo.toml
+      - name: Engine pipes, 500 MiB transfer and crash recovery
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
+        run: node tools/check-engine-pipe.cjs
+      - name: Engine DLL dependencies
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $dumpbin = & $vswhere -latest -products '*' -find 'VC\Tools\MSVC\**\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (!$dumpbin) { throw 'dumpbin.exe was not found.' }
+          & $dumpbin /dependents native\target\release\veacom-core.exe | Tee-Object (Join-Path $env:EVIDENCE 'engine-dependents.txt')
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Engine tests
+        if: ${{ !cancelled() }}
+        run: cargo test --release --locked --manifest-path native/Cargo.toml
+      - name: Web build
+        id: web
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm run build:web
+      - name: Chromium for the video capture test
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: pnpm exec playwright install chromium
+      # A normal PATH, so the ISO test can start powershell.exe. The command of `pnpm test`, plus a JUnit report for
+      # the evidence (an option after the file pattern would be read as another pattern, so pnpm cannot append it).
+      - name: Unit tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=junit "--test-reporter-destination=$env:EVIDENCE\unit-tests.xml" "tests/**/*.test.ts"
+      - name: App-local Visual C++ runtime
+        id: crt
+        if: ${{ !cancelled() && steps.engine.outcome == 'success' }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\windows-runtime.ps1 -TargetDirectory "$env:GITHUB_WORKSPACE\native\target\release"
+      # electron-builder installs apart from the root (packaging/pnpm-workspace.yaml) and packages the root app.
+      - name: Install electron-builder
+        id: builder
+        if: ${{ !cancelled() }}
+        run: pnpm --dir packaging install --frozen-lockfile
+      - name: Package
+        id: package
+        if: ${{ !cancelled() && steps.builder.outcome == 'success' && steps.runtime.outcome == 'success' && steps.web.outcome == 'success' && steps.crt.outcome == 'success' }}
+        run: node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win --x64 --dir --publish never '-c.forceCodeSigning=false'
+      - name: Packaged engine and runtime
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Package -Output "$env:EVIDENCE\package"
+      - name: Installer
+        id: installer
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win nsis --x64 --prepackaged release-electron\win-unpacked --publish never '-c.forceCodeSigning=false'
+
+      - name: Synthetic study
+        id: study
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node tools/fixtures/make-smoke-study.mjs "$env:STUDY"
+      - name: Packaged app ready
+        id: packaged
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.study.outcome == 'success' }}
+        run: if (!(Test-Path -LiteralPath $env:PACKAGED_APP -PathType Leaf)) { throw "No packaged app at $env:PACKAGED_APP" }
+      - name: Source app ready
+        id: source
+        if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.engine.outcome == 'success' && steps.web.outcome == 'success' && steps.study.outcome == 'success' }}
+        run: if (!(Test-Path -LiteralPath native\target\release\veacom-core.exe -PathType Leaf)) { throw 'No engine build' }
+      - name: Crash reports with usage off
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: node tools/check-crash-reporting.cjs "$env:EVIDENCE\crash-reports.json"
+
+      - name: Video encoder without a GPU
+        if: ${{ !cancelled() && steps.install.outcome == 'success' && hashFiles('tools/check-video-encoder.cjs') != '' }}
+        run: |
+          node tools/check-video-encoder.cjs "$env:EVIDENCE\video-encoder"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          node tools/check-video-encoder.cjs "$env:EVIDENCE\video-encoder-no-gpu" --no-gpu
+      - name: Packaged DICOM export, linked paging and MPR
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        run: node tools/check-packaged-parity.cjs "$env:PACKAGED_APP" "$env:EVIDENCE\viewer-parity"
+
+      - name: Desktop smoke, packaged, software drawing
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
+          VEACOM_SMOKE_RENDERER: software
+        run: node tools/desktop-smoke.cjs "$env:STUDY\S01" "$env:EVIDENCE\desktop-smoke"
+      - name: Software drawing reported, packaged
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
+        run: node tools/check-software-rendering.cjs "$env:STUDY\S01" "$env:EVIDENCE\software-rendering" --expect software
+      - name: Padding pixels on WARP, packaged
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
+        run: node tools/check-padding-gpu.mjs "$env:EVIDENCE\padding" warp
+      - name: File drop, packaged
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        run: node tools/check-file-drop.cjs --study "$env:STUDY\S01" --output "$env:EVIDENCE\file-drop" --app "$env:PACKAGED_APP"
+      - name: Security boundary
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: node tools/check-security-boundary.cjs "$env:STUDY\S01" "$env:EVIDENCE\security-boundary"
+      - name: Pictures decoded in a sandboxed renderer
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: node tools/check-pictures.cjs "$env:STUDY\S01" "$env:EVIDENCE\pictures"
+      - name: Interface
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: node tools/check-interface.cjs "$env:STUDY\S01" "$env:EVIDENCE\interface"
+      - name: PET quantification on a synthetic follow-up
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-pet-followup.mjs "$env:RUNNER_TEMP\pet-followup"
+          node tools/check-pet-voi.cjs "$env:RUNNER_TEMP\pet-followup" "$env:EVIDENCE\pet-voi"
+      - name: Arrangements on a synthetic PET/CT
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$env:RUNNER_TEMP\petct-study"
+          node tools/check-arrangements.cjs "$env:RUNNER_TEMP\petct-study" "$env:EVIDENCE\arrangements"
+      - name: PET reading kit on a synthetic PET/CT
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$env:RUNNER_TEMP\petct-reading"
+          node tools/check-pet-reading.cjs "$env:RUNNER_TEMP\petct-reading" "$env:EVIDENCE\pet-reading"
+      - name: Gamma camera studies, synthetic SPECT/CT and whole body
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-nm-study.mjs "$env:RUNNER_TEMP\nm-study"
+          node tools/check-gamma-camera.cjs "$env:RUNNER_TEMP\nm-study" "$env:EVIDENCE\gamma-camera"
+      - name: GPU startup on WARP
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: node tools/check-gpu-startup.cjs "$env:STUDY\S01" "$env:EVIDENCE\gpu-startup.json"
+      # Window chrome with real mouse input (tools/windows-vm/ui-windows-checks.cjs) runs on the VM only: it places
+      # the window at up to 1200 x 720 at 150 % zoom, and this runner's 1024 x 768 screen leaves Help's close button
+      # off-screen, so a real click cannot reach it.
+
+      - name: Silent install
+        id: installed
+        if: ${{ !cancelled() && steps.installer.outcome == 'success' && steps.study.outcome == 'success' }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Install -Output "$env:EVIDENCE\installed"
+      - name: Installed DICOM export, linked paging and MPR
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
+        env:
+          INSTALLED_APP: ${{ steps.installed.outputs.executable }}
+        run: node tools/check-packaged-parity.cjs "$env:INSTALLED_APP" "$env:EVIDENCE\installed\viewer-parity"
+      - name: Desktop smoke, installed
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ steps.installed.outputs.executable }}
+          VEACOM_SMOKE_RENDERER: software
+        run: node tools/desktop-smoke.cjs "$env:STUDY\S01" "$env:EVIDENCE\installed\desktop-smoke"
+      - name: File drop, installed
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
+        env:
+          INSTALLED_APP: ${{ steps.installed.outputs.executable }}
+        run: node tools/check-file-drop.cjs --study "$env:STUDY\S01" --output "$env:EVIDENCE\installed\file-drop" --app "$env:INSTALLED_APP"
+      - name: Silent uninstall
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Uninstall -Output "$env:EVIDENCE\installed"
+
+      - name: Keep the evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-${{ github.run_id }}
+          path: ${{ runner.temp }}/evidence
+          if-no-files-found: warn
+          retention-days: 7

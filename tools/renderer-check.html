@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>VEAcom GPU renderer checks</title>
+<style>body{font:14px/1.5 monospace;background:#111;color:#eee;padding:24px}pre{white-space:pre-wrap}h1{font-size:20px}</style>
+<h1>VEAcom GPU renderer checks</h1>
+<pre id="result">Running actual WebGL texture and pixel checks…</pre>
+<script type="module">
+import { verifySliceRenderer } from './verify-slice-renderer.mjs';
+import { verifySourceGpu } from '../tests/source-renderer.browser.mjs';
+import { verifyShaderSetup } from '../tests/shader-setup.browser.mjs';
+try {
+  if (new URLSearchParams(location.search).has('no-parallel')) {
+    const original = WebGL2RenderingContext.prototype.getExtension;
+    WebGL2RenderingContext.prototype.getExtension = function (name) {
+      return name === 'KHR_parallel_shader_compile' ? null : original.call(this, name);
+    };
+  }
+  const setup = await verifyShaderSetup();
+  const legacy = verifySliceRenderer(), source = verifySourceGpu();
+  const result = { passed: setup.passed && legacy.passed && source.passed, renderer: legacy.renderer,
+    checks: setup.checks + legacy.checks + source.checks, failures: [...setup.failures, ...legacy.failures, ...source.failures],
+    results: [...setup.results, ...legacy.results, ...source.results], suites: { shaderSetup: setup.checks, mprAndFusion: legacy.checks, acquiredFrames: source.checks } };
+  window.rendererCheckResult = result;
+  document.querySelector('#result').textContent = JSON.stringify(result, null, 2);
+  document.title = `${result.passed ? 'PASS' : 'FAIL'} · VEAcom GPU renderer checks`;
+} catch (error) {
+  window.rendererCheckResult = { passed: false, error: String(error.stack || error) };
+  document.querySelector('#result').textContent = JSON.stringify(window.rendererCheckResult, null, 2);
+  document.title = 'FAIL · VEAcom GPU renderer checks';
+}
+</script>
+</html>

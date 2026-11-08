@@ -1,0 +1,256 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      release_candidate:
+        description: Run the paid-in-minutes macOS smoke job for this release candidate
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: node tools/check-repository.mjs
+      - run: pwsh -NoProfile -File tools/check-powershell.ps1
+      - run: bash tools/windows-vm/check-vm-sh.sh
+      - run: pnpm install --frozen-lockfile
+      - name: Check for manual React memoization
+        run: node tools/check-react-memo.mjs
+      - run: pnpm run setup:runtime
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm exec tsc --noEmit
+      - run: pnpm test
+      - run: pnpm run build:web
+
+  engine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    defaults:
+      run:
+        working-directory: native
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain && rustup component add rustfmt clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native
+      - run: cargo test --release --locked
+      # Required now, unlike the rest of Clippy: long-lived threads start only in the pipe and ZIP encoder pools. Catalog and frame
+      # work takes its turn in Queue::turn (native/clippy.toml).
+      - name: Engine work goes through its queues
+        run: cargo clippy --release --locked -- -A warnings -D clippy::disallowed_methods
+      - name: Formatting (advisory until the imported baseline is clean)
+        continue-on-error: true
+        run: cargo fmt --check
+      - name: Clippy (advisory until the imported baseline is clean)
+        continue-on-error: true
+        run: cargo clippy --release --locked -- -D warnings
+
+  secrets:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Git history with Gitleaks
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location --retry 3 https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o "$archive"
+          printf '%s  %s\n' 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb "$archive" | sha256sum --check
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner
+
+  # The desktop checks on every pull request, so a change that breaks them fails here rather than after it merges.
+  # The runner has no GPU: the app draws in software on Mesa llvmpipe, as on a PC without a usable driver, and must
+  # say so. Checks that need a real GPU, Windows input or the fingerprinted ct-small study run elsewhere
+  # (tools/windows-vm/README.md).
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      VEACOM_SOFTWARE_GL: llvmpipe # electron/main.cjs: lets a development run use llvmpipe for WebGL
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native
+      - name: Desktop libraries and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libnotify4 libsecret-1-0 \
+            libgl1-mesa-dri libegl1 libegl-mesa0
+          # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox uses. Allow them on this
+          # throwaway runner instead of turning the sandbox off.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+          {
+            echo 'DISPLAY=:99'
+            echo "EVIDENCE=$RUNNER_TEMP/desktop-evidence"
+            echo "STUDY=$RUNNER_TEMP/smoke-study"
+          } >> "$GITHUB_ENV"
+      - name: Build
+        id: build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run setup:runtime
+          pnpm run build:core
+          pnpm run build:web
+      - name: Engine pipes, 500 MiB transfer and export rollback
+        run: node tools/check-engine-pipe.cjs
+      - name: Crash reports with usage off
+        run: |
+          ulimit -c 0
+          node tools/check-crash-reporting.cjs "$EVIDENCE/crash-reports.json"
+      - name: Synthetic study
+        id: study
+        run: node tools/fixtures/make-smoke-study.mjs "$STUDY"
+      - name: Desktop smoke, software drawing
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_RENDERER: software
+        run: node tools/desktop-smoke.cjs "$STUDY/S01" "$EVIDENCE/desktop-smoke"
+      - name: Software drawing reported
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-software-rendering.cjs "$STUDY/S01" "$EVIDENCE/software-rendering" --expect software
+      - name: Interface
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-interface.cjs "$STUDY/S01" "$EVIDENCE/interface"
+      - name: PET quantification on a synthetic follow-up
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-followup"
+          node tools/check-pet-voi.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/pet-voi"
+      - name: Arrangements on a synthetic PET/CT
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-study"
+          node tools/check-arrangements.cjs "$RUNNER_TEMP/petct-study" "$EVIDENCE/arrangements"
+      - name: PET reading kit on a synthetic PET/CT
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-reading"
+          node tools/check-pet-reading.cjs "$RUNNER_TEMP/petct-reading" "$EVIDENCE/pet-reading"
+      - name: Gamma camera studies, synthetic SPECT/CT and whole body
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
+          node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
+      - name: File drop
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-file-drop.cjs --study "$STUDY/S01" --output "$EVIDENCE/file-drop"
+      - name: Security boundary
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-security-boundary.cjs "$STUDY/S01" "$EVIDENCE/security-boundary"
+      - name: Pictures decoded in a sandboxed renderer
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-pictures.cjs "$STUDY/S01" "$EVIDENCE/pictures"
+      - name: GPU startup without a GPU
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-gpu-startup.cjs "$STUDY/S01" "$EVIDENCE/gpu-startup.json"
+      - name: Renderer pixel suite on llvmpipe
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node tools/check-padding-gpu.mjs "$EVIDENCE/padding" llvmpipe
+      # The viewport's interaction checks: gestures, measurements against what the screen shows, panel state. They ran
+      # only by hand before, and went stale unnoticed.
+      - name: Viewport interaction checks on llvmpipe
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        timeout-minutes: 20
+        env:
+          VEACOM_HARNESS_ELECTRON: '1'
+          VEACOM_SKIP_GPU_CHECKS: '1' # the pixel suite above covers them on llvmpipe
+        run: node tools/check-harness.mjs
+      - name: Video encoder
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder"
+          node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder-no-gpu" --no-gpu
+      - name: Keep the evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-${{ github.run_id }}
+          path: ${{ runner.temp }}/desktop-evidence
+          if-no-files-found: warn
+          retention-days: 7
+
+  macos-smoke:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_candidate
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: native
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run setup:runtime && pnpm run build:core && pnpm run build:web
+      - name: Package and test DICOM export, linked paging and MPR
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: |
+          pnpm --dir packaging install --frozen-lockfile
+          pnpm exec playwright install ffmpeg
+          node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac --dir --publish never -c.forceCodeSigning=false
+          apps=(release-electron/mac*/"VEAcom Electron.app/Contents/MacOS/VEAcom Electron")
+          test "${#apps[@]}" = 1 && test -f "${apps[0]}"
+          node tools/check-packaged-parity.cjs "${apps[0]}" "$RUNNER_TEMP/viewer-parity"
+      - name: Retain packaged viewer evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-viewer-parity-${{ github.run_id }}
+          path: ${{ runner.temp }}/viewer-parity
+          if-no-files-found: ignore
+          retention-days: 7
+      - run: node tools/fixtures/make-smoke-study.mjs "$RUNNER_TEMP/veacom-smoke-study"
+      - run: node tools/desktop-smoke.cjs "$RUNNER_TEMP/veacom-smoke-study/S01" "$RUNNER_TEMP/desktop-smoke"
+      - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder"
+      - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder" --no-gpu
+      - name: Retain synthetic smoke evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/desktop-smoke
+          if-no-files-found: ignore
+          retention-days: 7

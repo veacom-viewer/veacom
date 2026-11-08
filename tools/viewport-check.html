@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>VEAcom viewport interaction checks</title>
+<style>html,body,#root{margin:0;width:100%;height:100%;background:#020407;color:#fff;font:14px system-ui}*{box-sizing:border-box}#grid{display:grid;width:100%;height:100%;gap:2px}</style>
+<div id="root"></div>
+<script type="module">
+import React, { useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import { Viewport } from '../src/components/Viewport.tsx';
+
+const series = { id:'interaction-fixture', uid:'1', studyUid:'2', patientId:'SYNTHETIC', patientName:'Known mathematical field', studyDate:'', description:'Interaction test', modality:'CT', seriesNumber:1,
+  dimensions:[64,64,32], spacing:[1,1,2], origin:[0,0,0], direction:[1,0,0,0,1,0,0,0,1], windowCenter:128, windowWidth:256, valueUnit:'HU', suvFactor:null,
+  canReconstruct:true, spacingKnown:true, orientationKnown:true, warnings:[], photometricInterpretation:'MONOCHROME2', components:1 };
+const data = new Int16Array(64*64*32);
+for(let z=0;z<32;z++)for(let y=0;y<64;y++)for(let x=0;x<64;x++)data[(z*64+y)*64+x]=x+y+z;
+const volume={series,data};
+const initial={plane:'axial',slice:16,windowCenter:128,windowWidth:256,zoom:1,pan:[0,0],rotation:0,flipX:false,flipY:false,inverted:false};
+let frames=0;
+document.addEventListener('veacom:frame',()=>frames++);
+function Harness(){
+  const [view,setView]=useState(initial),[annotations,setAnnotations]=useState([]),[tool,setTool]=useState('scroll'),[crosshair,setCrosshair]=useState(null),[grid,setGrid]=useState(1),[options,setOptions]=useState({}),[activeVolume,setVolume]=useState(volume);
+  window.viewportTest={setTool,setGrid,setOptions,setSeriesId:id=>setVolume(v=>({...v,series:{...v.series,id}})),setFrameBuffer:frame=>setVolume(v=>({...v,data:data.subarray(frame*64*64,(frame+1)*64*64),sourceFrameIndex:frame})),restoreVolume:()=>setVolume(volume),referencePlanes:[{id:'reference-coronal',series,view:{...initial,plane:'coronal',slice:32}},{id:'reference-oblique',series,view:{...initial,plane:'sagittal',oblique:[20,30]}},{id:'reference-same-facing',series,view:{...initial,oblique:[20,30]}}],setView:patch=>setView(v=>({...v,...patch})),clear:()=>setAnnotations([]),setAnnotations,reset:()=>setView(initial),state:()=>({view,annotations,crosshair,grid,frames})};
+  return React.createElement('div',{id:'grid',style:{gridTemplateColumns:`repeat(${grid},1fr)`,gridTemplateRows:`repeat(${grid},1fr)`}},
+    ...Array.from({length:grid*grid},(_,i)=>React.createElement(Viewport,{key:i,volume:activeVolume,view,tool,annotations,active:i===0,crosshair,...options,
+      onActivate:()=>{},onViewChange:patch=>setView(v=>({...v,...patch})),onAnnotationsChange:setAnnotations,onCrosshairChange:setCrosshair})));
+}
+createRoot(document.querySelector('#root')).render(React.createElement(Harness));
+</script>
+</html>

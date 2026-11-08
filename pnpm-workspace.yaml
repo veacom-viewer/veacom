@@ -1,0 +1,30 @@
+# electron-builder, installed apart in packaging/, packages the app from this root's flat node_modules tree.
+nodeLinker: hoisted
+
+# Supply-chain policy (https://pnpm.io/supply-chain-security). CI installs with --frozen-lockfile, and pnpm checks
+# every lockfile entry against these rules, so they hold for Dependabot and hand-made bumps alike.
+# A version must be 3 days old before it is installed: this year's poisoned releases (axios, the npm worms, arrayref
+# on crates.io) were pulled within hours of publication.
+minimumReleaseAge: 4320
+minimumReleaseAgeIgnoreMissingTime: false
+# Refuse a version published with less trust than an earlier one, such as a CLI publish after trusted publishing.
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+strictDepBuilds: true
+
+# No dependency runs an install script, so none is allowed one. scripts/setup-runtime.cjs (pnpm run setup:runtime)
+# downloads Electron's binary and checks it against the checksums in the electron package.
+
+# Packages removed from the tree. Electron's downloader and unzip binding, and its older copy of @types/node, give way
+# to scripts/setup-runtime.cjs. jiti is an optional peer of Vite that only loads TypeScript config files Vite has no
+# need of here. fsevents is Vite's optional macOS file watcher, a prebuilt native binary; without it the dev server
+# watches files with Node's own fs.watch.
+overrides:
+  'electron>@electron/get': '-'
+  'electron>@electron-internal/extract-zip': '-'
+  'electron>@types/node': '-'
+  jiti: '-'
+  fsevents: '-'
+
+# A reviewed emergency, such as a security release younger than 3 days, may list its exact version under
+# minimumReleaseAgeExclude. Delete the entry once the version is 3 days old.

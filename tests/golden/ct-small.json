@@ -1,0 +1,23 @@
+{
+  "study": "ct-small",
+  "generator": "sekerportakal/veacom@bc2ed3e bench/studies.py v1",
+  "studySha256": "2a47670b220877b7b2e461184b31e25bd752c0c0d7e8c1ab5b706b2327f9d847",
+  "sourceCommit": "bc2ed3ebeba1da5eaa709e2137cff78baa9991bc",
+  "platform": "darwin-arm64",
+  "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M4 Pro, Unspecified Version)",
+  "slice": 50,
+  "windowWidth": 400,
+  "windowCenter": 40,
+  "viewport": [
+    512,
+    512
+  ],
+  "deviceScaleFactor": 1,
+  "overlays": false,
+  "comparison": "Exact decoded RGBA; no tolerance or excluded regions.",
+  "capture": "The export window: Pictures, this image, PNG, all annotations, into the export folder (tools/capture-export.cjs).",
+  "changes": [
+    "2026-11-07: re-captured after veacom-viewer/veacom-private#26 narrowed the pane slice bar from 28 to 14 px. The image area of the 512 px pane widened from 482 to 496 px, so the same image is drawn 2.9% larger and 7 px further right. With the old 28 px margin forced, the new capture equals the previous golden (49ec3b94…) pixel for pixel."
+  ],
+  "pngSha256": "5f51e6aede21dac9cdd637a322b8cac85b7ac943a7560bdbc0a2ec96c882719c"
+}

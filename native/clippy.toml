@@ -1,0 +1,6 @@
+# Pipe and ZIP encoder workers start in their fixed pools. Catalog and frame work hold a turn through cleanup.
+disallowed-methods = [
+  { path = "std::thread::spawn", reason = "use the fixed pipe workers or the shared ZIP encoder pool" },
+  { path = "std::thread::Builder::spawn", reason = "use the fixed pipe workers or the shared ZIP encoder pool" },
+  { path = "std::sync::Condvar::wait", reason = "take a queue's turn with Queue::turn" },
+]

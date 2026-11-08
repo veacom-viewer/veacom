@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>VEAcom source-renderer GPU checks</title>
+<style>body{background:#101820;color:#dbe7ef;font:13px monospace;padding:20px}pre{white-space:pre-wrap}#preview{display:flex;flex-wrap:wrap;gap:20px}canvas{max-width:100%;image-rendering:pixelated}</style>
+<h1>Source-renderer GPU checks</h1>
+<pre id="result">Running on the actual WebGL2 renderer…</pre>
+<div id="preview"></div>
+<script type="module">
+import {verifySourceGpu} from './source-renderer.browser.mjs';
+try {
+  const result = verifySourceGpu();
+  window.sourceGpuResult = result;
+  document.querySelector('#result').textContent = JSON.stringify(result, null, 2);
+  document.title = `${result.passed ? 'PASS' : 'FAIL'} · VEAcom source-renderer GPU checks`;
+} catch (error) {
+  window.sourceGpuResult = {passed:false,error:String(error.stack || error)};
+  document.querySelector('#result').textContent = JSON.stringify(window.sourceGpuResult, null, 2);
+}
+</script>
+</html>

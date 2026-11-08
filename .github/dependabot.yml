@@ -1,0 +1,40 @@
+version: 2
+# Cooldowns hold routine version updates until a release has been public for a week, long enough for a poisoned one
+# to be caught. Security updates are not delayed: GitHub applies cooldown to version updates only.
+updates:
+  # GitHub uses the npm ecosystem for pnpm lockfiles. packaging/ holds electron-builder's own install.
+  - package-ecosystem: npm
+    directories: [/, /packaging]
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      # Electron's patch releases carry Chromium security fixes without advisories. pnpm's 3-day minimumReleaseAge
+      # still applies to them.
+      exclude:
+        - electron
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: cargo
+    directory: /native
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]

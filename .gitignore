@@ -1,0 +1,50 @@
+# Environment and build output
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+packaging/version_info.txt
+
+# Local tool settings
+.claude/
+.vscode/
+.idea/
+.context/
+/reports/
+/research_notes/
+
+# Never commit images or anything from a patient
+*.dcm
+*.zip
+*.rar
+*.log
+DICOMDIR
+build_log.txt
+node_modules/
+native/target
+release/
+release-electron/
+playwright-report/
+test-results/
+public/core-connection.json
+
+# The lesion knowledge base stays outside the repository until its licensing is settled (src/domain/clinical.ts)
+knowledge/
+
+# Local credentials and evidence
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+electron/telemetry-endpoint.json
+.DS_Store
+evidence/
+
+# Collector address and ingest token for packaged builds (telemetry/write-endpoint.sh)
+electron/telemetry-endpoint.json
+
+electron/telemetry-endpoint.json.tmp

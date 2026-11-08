@@ -1,0 +1,3 @@
+/* The import window's view lies over the application window (electron/import-view.cjs): only the dialog and its
+   backdrop are drawn, so the application shows dimmed behind it, as with its own dialogs. */
+html, body { background: transparent; }
