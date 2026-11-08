@@ -127,7 +127,8 @@ jobs:
   windows:
     if: >
       github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows'))
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'windows')) ||
+      github.event_name == 'pull_request' # TEMPORARY: test the Windows job on this pull request; revert before merging
     runs-on: windows-2022
     timeout-minutes: 50
     defaults:
