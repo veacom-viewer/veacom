@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// The kernel updates ctime on writes, including when a writer restores the original mtime.
+/// Ordinary writes change ctime even when a writer restores mtime. A previously writable mapping needs a separate guard.
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Stamp {
     device: u64,
@@ -47,10 +47,24 @@ impl Stamp {
         Err(io::Error::new(io::ErrorKind::InvalidData, changed()))
     }
 
-    pub(super) fn read(&self, file: &File, dst: &mut [u8], offset: u64) -> io::Result<usize> {
-        self.verify(file)?;
-        let n = file.read_at(dst, offset)?;
-        self.verify(file)?;
+    pub(super) fn read(&self, original: &File, contents: &File, dst: &mut [u8], offset: u64) -> io::Result<usize> {
+        self.verify(original)?;
+        let n = contents.read_at(dst, offset)?;
+        self.verify(original)?;
         Ok(n)
+    }
+}
+
+/// A Linux read lease cannot be acquired over an existing writable open or shared writable mapping.
+/// Release it immediately. A writer that starts afterwards must change the already settled ctime on its first write.
+#[cfg(target_os = "linux")]
+pub(super) fn no_existing_writer(file: &File) -> bool {
+    let fd = file.as_raw_fd();
+    // Linux F_SETSIG is 10 on the supported x86 and ARM targets. SIGURG is ignored by default, so a racing
+    // lease-break notification cannot terminate the engine. Both operations affect only this open descriptor.
+    unsafe {
+        libc::fcntl(fd, 10, libc::SIGURG) != -1
+            && libc::fcntl(fd, libc::F_SETLEASE, libc::F_RDLCK) != -1
+            && libc::fcntl(fd, libc::F_SETLEASE, libc::F_UNLCK) != -1
     }
 }

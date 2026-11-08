@@ -1,6 +1,8 @@
 # Desktop imaging boundary
 
-On local APFS, ext, XFS, Btrfs and tmpfs volumes, the engine records the file’s device, inode, size, modification time and change time. It checks the open file before and after each read. Files changed in the last two seconds, Windows files and filesystems outside that list use SHA-256 block hashes. Those hashes are taken at import and verified when pixels, tags or exports read the file again. Local change stamps depend on the filesystem recording writes. They do not provide a cryptographic fingerprint of unread pixels.
+On supported local Linux filesystems, the engine uses file identity and change times for settled files after a short read lease confirms there is no existing writer or writable mapping. It checks the open file before and after every read. On APFS it reads a private copy-on-write clone made at import and also checks the original file's identity. Writes through a mapping can leave timestamps unchanged. The clone keeps those writes out of previously imported images and exports. Its temporary directory uses the same permissions and crash cleanup as archive extraction.
+
+If a lease or clone is unavailable, the engine hashes the source in blocks. Recently written files, Windows files and other filesystems also use block hashes. Later reads verify those hashes before the engine returns bytes.
 
 Electron's main process starts the engine with its stdin and stdout as pipes, and only main holds their other ends. The engine opens no port and has no token: no web page, and no other program on the computer, has anything to connect to. The sandboxed renderer receives typed operations and one-use read capabilities, not a way to reach the engine or an arbitrary proxy.
 

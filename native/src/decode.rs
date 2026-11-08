@@ -596,6 +596,10 @@ fn cannot_read(path: &Path, error: anyhow::Error) -> anyhow::Error {
 
 /// A picture's RGB samples, decoded in the desktop app's sandboxed picture decoder (pictures.rs).
 fn ordinary_rgb(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<Vec<u8>> {
+    let expected = frame_samples(source)?;
+    if source.info.components != 3 {
+        bail!("Ordinary images are read as RGB");
+    }
     let path = &frame.source.path;
     let request = crate::pictures::read(&frame.source, crate::pictures::Want::Pixels, check).map_err(|error| {
         if crate::message::coded(&error).is_some() { error } else { cannot_read(path, error) }
@@ -604,10 +608,7 @@ fn ordinary_rgb(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>)
     if picture.width as usize != source.info.dimensions[0] || picture.height as usize != source.info.dimensions[1] {
         bail!("Image dimensions changed after import");
     }
-    if source.info.components != 3 {
-        bail!("Ordinary images are read as RGB");
-    }
-    anyhow::ensure!(picture.rgb.len() == frame_samples(source)?, "Decoded pixel count differs from image dimensions");
+    anyhow::ensure!(picture.rgb.len() == expected, "Decoded pixel count differs from image dimensions");
     Ok(picture.rgb)
 }
 
@@ -1501,6 +1502,20 @@ mod tests {
         assert_eq!(pixels.bytes(), [255, 0, 20, 0, 200, 255]);
         assert_eq!(decode_frame(&imported.sources[0], 0).unwrap().bytes(), [255, 0, 20, 0, 200, 255]);
         assert!(!imported.sources[0].info.can_reconstruct);
+    }
+    #[test]
+    fn oversized_single_picture_is_rejected_before_reading_its_source() {
+        use crate::pictures::testing::{self, PNG};
+        testing::serve();
+        let dir = crate::test_dir::tempdir().unwrap();
+        let path = dir.path().join("oversized.png");
+        std::fs::write(&path, testing::picture(PNG, 1, 1, &[1, 2, 3])).unwrap();
+        let mut imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+        let series = std::sync::Arc::get_mut(&mut imported.sources[0]).unwrap();
+        series.info.dimensions = [8192, 8192, 1];
+        std::fs::remove_file(&path).unwrap();
+        let error = decode_volume(series).err().expect("oversized picture should fail");
+        assert_eq!(error.to_string(), "Frame exceeds the supported 64 million sample limit");
     }
     #[test]
     fn ordinary_bmp_opens_like_png() {

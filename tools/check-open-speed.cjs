@@ -192,7 +192,7 @@ function markdown(report) {
   let study = args.study && path.resolve(args.study), fixture = args.fixture || null, generated = false;
   if (!study) {
     study = path.join(output, 'ct-1000');
-    fixture ??= 'ct-1000';
+    fixture ??= process.platform === 'darwin' ? 'ct-1000-mac' : 'ct-1000';
     if (!fs.existsSync(path.join(study, 'manifest.json'))) {
       fs.rmSync(study, { recursive: true, force: true });
       execFileSync(process.execPath, [path.join(__dirname, 'fixtures/make-smoke-study.mjs'), study, '--pipe-volume'], { stdio: 'inherit' });

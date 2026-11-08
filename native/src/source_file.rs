@@ -1,6 +1,8 @@
 use anyhow::{Result, ensure};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod stamp;
+#[cfg(target_os = "macos")]
+mod snapshot;
 use sha2::{Digest, Sha256};
 use crate::vfs::{File, OpenOptions};
 use std::{
@@ -52,6 +54,8 @@ pub struct SourceFile {
     hashes: Vec<[u8; 32]>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     stamp: Option<stamp::Stamp>,
+    #[cfg(target_os = "macos")]
+    snapshot: Option<snapshot::Snapshot>,
 }
 
 impl SourceFile {
@@ -73,17 +77,25 @@ impl SourceFile {
         );
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let stamp = stamp::Stamp::capture(file, &metadata);
+        #[cfg(target_os = "macos")]
+        let snapshot = stamp.as_ref().filter(|s| s.settled()).and_then(|_| snapshot::Snapshot::create(file).ok());
+        #[cfg(target_os = "macos")]
+        let local_reader = snapshot.as_ref().and_then(|snap| snap.open().ok());
+        #[cfg(target_os = "linux")]
+        let local_reader = stamp.as_ref().filter(|s| s.settled() && stamp::no_existing_writer(file)).map(|_| &*file);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(local) = stamp.as_ref().filter(|s| s.settled()) {
+        if let (Some(local), Some(contents)) = (&stamp, local_reader) {
             // Both DICOM header passes repeatedly seek inside their initial 8 KiB buffer.
             let mut prefix = vec![0; keep.min(8192).min(len as usize)];
             let mut offset = 0;
             while offset < prefix.len() {
-                let read = local.read(file, &mut prefix[offset..], offset as u64)?;
+                let read = local.read(file, &contents, &mut prefix[offset..], offset as u64)?;
                 ensure!(read != 0, changed());
                 offset += read;
             }
-            return Ok((Arc::new(Self { path: path.to_owned(), len, hashes: Vec::new(), stamp }), Arc::new(prefix)));
+            return Ok((Arc::new(Self { path: path.to_owned(), len, hashes: Vec::new(), stamp,
+                #[cfg(target_os = "macos")] snapshot,
+            }), Arc::new(prefix)));
         }
         let mut remaining = len;
         let mut buffer = Vec::new();
@@ -114,6 +126,8 @@ impl SourceFile {
             hashes,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             stamp,
+            #[cfg(target_os = "macos")]
+            snapshot: None,
         }), Arc::new(prefix)))
     }
 
@@ -132,12 +146,25 @@ impl SourceFile {
         Ok((source, info, header))
     }
 
-    pub fn same_contents(&self, other: &Self) -> bool {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.len != 0 && (self.hashes.is_empty() || other.hashes.is_empty()) {
-            return self.stamp.is_some() && self.stamp == other.stamp;
+    pub fn same_contents(self: &Arc<Self>, other: &Arc<Self>) -> bool {
+        if Arc::ptr_eq(self, other) { return true; }
+        if self.len != other.len { return false; }
+        if self.len == 0 || (!self.hashes.is_empty() && !other.hashes.is_empty()) {
+            return self.hashes == other.hashes;
         }
-        self.len == other.len && (std::ptr::eq(self, other) || self.hashes == other.hashes)
+        #[cfg(target_os = "linux")]
+        if self.hashes.is_empty() && other.hashes.is_empty() { return self.stamp == other.stamp; }
+        // Two independently imported versions of the same path can have identical timestamps and different bytes.
+        let (Ok(mut left), Ok(mut right)) = (self.open(), other.open()) else { return false };
+        let mut remaining = self.len as usize;
+        let mut a = vec![0; remaining.min(BLOCK)];
+        let mut b = vec![0; a.len()];
+        while remaining > 0 {
+            let n = remaining.min(BLOCK);
+            if left.read_exact(&mut a[..n]).is_err() || right.read_exact(&mut b[..n]).is_err() || a[..n] != b[..n] { return false; }
+            remaining -= n;
+        }
+        true
     }
 
     pub fn retained_bytes(&self) -> usize {
@@ -159,6 +186,8 @@ impl SourceFile {
             source: self.clone(),
             pos: 0,
             loaded: None,
+            #[cfg(target_os = "macos")]
+            snapshot: None,
             bytes: Vec::new(),
         }
     }
@@ -166,6 +195,8 @@ impl SourceFile {
 
 pub struct SourceReader {
     file: File,
+    #[cfg(target_os = "macos")]
+    snapshot: Option<File>,
     prefix: Arc<Vec<u8>>,
     source: Arc<SourceFile>,
     pos: u64,
@@ -188,7 +219,15 @@ impl Read for SourceReader {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if self.source.hashes.is_empty() && let Some(stamp) = &self.source.stamp {
             let length = dst.len().min((self.source.len - self.pos) as usize);
-            let read = stamp.read(&self.file, &mut dst[..length], self.pos)?;
+            #[cfg(target_os = "macos")]
+            if self.snapshot.is_none() {
+                self.snapshot = Some(self.source.snapshot.as_ref().expect("stamped APFS source has a clone").open()?);
+            }
+            #[cfg(target_os = "macos")]
+            let contents = self.snapshot.as_ref().unwrap();
+            #[cfg(target_os = "linux")]
+            let contents = &self.file;
+            let read = stamp.read(&self.file, contents, &mut dst[..length], self.pos)?;
             self.pos += read as u64;
             return Ok(read);
         }
@@ -236,6 +275,33 @@ impl Seek for SourceReader {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn existing_writable_mapping_cannot_supply_new_pixels_to_an_imported_source() {
+        use std::os::fd::AsRawFd;
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = temp.path().join("mapped.bin");
+        std::fs::write(&path, vec![11; 2 * BLOCK]).unwrap();
+        let writer = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        // The mapping remains writable after its descriptor is closed. Dirty the same page before and after import.
+        let mapping = unsafe { libc::mmap(std::ptr::null_mut(), 2 * BLOCK, libc::PROT_READ | libc::PROT_WRITE,
+            libc::MAP_SHARED, writer.as_raw_fd(), 0) };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        drop(writer);
+        let byte = unsafe { mapping.cast::<u8>().add(BLOCK) };
+        unsafe { byte.write_volatile(12); }
+        std::thread::sleep(std::time::Duration::from_millis(3100));
+        let original = SourceFile::index(&path).unwrap();
+        let mut reader = original.open().unwrap();
+        unsafe { byte.write_volatile(22); }
+        reader.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
+        let mut output = [0];
+        if reader.read_exact(&mut output).is_ok() { assert_eq!(output, [12]); }
+        let later = SourceFile::index(&path).unwrap();
+        assert!(!original.same_contents(&later));
+        assert_eq!(unsafe { libc::munmap(mapping, 2 * BLOCK) }, 0);
+    }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[test]

@@ -84,7 +84,8 @@ jobs:
         run: >
           node tools/check-open-speed.cjs "--output=$RUNNER_TEMP/open-speed"
           "--base=$BASE_APP/native/target/release/veacom-core" --base-label=beta.2 --head-label=candidate
-          --fixture=ct-1000-local --rounds=10 --cold-rounds=5 --threshold=12 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
+          --fixture=${{ runner.os == 'macOS' && 'ct-1000-apfs' || 'ct-1000-local' }}
+          --rounds=10 --cold-rounds=5 --threshold=12 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
       - name: Compare seven paired desktop runs
         if: ${{ !cancelled() && env.BASE_APP != '' }}
         run: node tools/check-beta-performance.cjs "$RUNNER_TEMP/beta-desktop" 7

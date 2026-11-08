@@ -115,7 +115,7 @@ jobs:
           HEAD_LABEL: ${{ github.event_name == 'pull_request' && 'this pull request' || 'main' }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: >
-          node tools/check-open-speed.cjs --output="$RUNNER_TEMP/open-speed"
+          node tools/check-open-speed.cjs --output="$RUNNER_TEMP/open-speed" --fixture=ct-1000-local
           --head="$RUNNER_TEMP/engines/head/veacom-core" --base="$RUNNER_TEMP/engines/base/veacom-core"
           --head-label="$HEAD_LABEL ${HEAD_SHA::7}" --base-label="$BASE_LABEL"
           --rounds=20 --cold-rounds=10 --summary="$GITHUB_STEP_SUMMARY"

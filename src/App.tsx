@@ -1,5 +1,5 @@
 import { studyKey } from './domain/patient';
-import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useReducer, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import {
   ChevronRight, Circle, CircleHelp, Columns3, Contrast, Crosshair, FileArchive, Files, FlipHorizontal2,
@@ -2068,6 +2068,11 @@ export default function App() {
     <MenuItem action="toolbar-flip-vertical" kind="checkbox" icon={<FlipVertical2 size={16} />} checked={activeSlot.view.flipY} onClick={() => act(() => updateView(activeSlot.id, { flipY: !activeSlot.view.flipY }))}>{t('toolbar.flipVertical')}</MenuItem>
     <MenuDivider />
     <MenuItem action="toolbar-reset-orientation" icon={<RotateCcw size={16} />} onClick={() => act(() => updateView(activeSlot.id, { rotation: 0, flipX: false, flipY: false }))}>{t('toolbar.resetOrientation')}</MenuItem></>;
+  const layoutStudy = useMemo(() => {
+    if (menu !== 'layout' || !activeSeries) return null;
+    const key = studyKey(activeSeries);
+    return { series: series.filter(item => studyKey(item) === key), session: series };
+  }, [menu, activeSeries, series]);
   const toolbarStart: ToolbarItem[] = [
     { id: 'open', group: 'file', node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<FolderOpen size={18} />} label={t('toolbar.open')} shortcut={`${mod}+O`} testId="tool-open" popup="menu" indicator expanded={menu === 'import'} onClick={() => toggleMenu('import')} />
@@ -2110,9 +2115,8 @@ export default function App() {
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
         <LayoutPicker layout={layout} label={t('toolbar.layoutPreview')} choiceLabel={(rows, columns) => t('toolbar.layoutChoice', { rows, columns })} onChoose={chooseLayout} />
-        {activeSeries && PET_LAYOUTS.map(([rule, action, key]) => {
-          const study = series.filter(item => studyKey(item) === studyKey(activeSeries));
-          const plan = match([rule], 'open', { series: study, session: series });
+        {activeSeries && layoutStudy && PET_LAYOUTS.map(([rule, action, key]) => {
+          const plan = match([rule], 'open', layoutStudy);
           if (!plan) return null;
           return <button className="secondary-button compact" type="button" data-action={action} key={action}
             onClick={() => applyArrangement(plan, activeSeries)}>{t(key)}</button>;
