@@ -53,16 +53,16 @@ impl Cache {
         }
         if let Some(at) = self.entries.iter().position(|(k, _)| k == id) {
             if let Some((_, v)) = self.entries.remove(at) {
-                self.bytes -= v.bytes().len();
+                self.bytes -= v.allocated_bytes();
             }
         }
     }
     fn put(&mut self, id: String, value: Arc<PixelBuffer>) {
         self.remove(&id);
-        let bytes = value.bytes().len();
+        let bytes = value.allocated_bytes();
         while self.bytes + bytes > self.limit {
             if let Some((_, old)) = self.entries.pop_front() {
-                self.bytes -= old.bytes().len();
+                self.bytes -= old.allocated_bytes();
             } else {
                 break;
             }
@@ -76,7 +76,7 @@ impl Cache {
     /// cache, so that request does not decode it again.
     fn hand_off(&mut self, id: String, value: Arc<PixelBuffer>) {
         // Too large to cache: kept aside, and the volumes cached for other series stay.
-        if value.bytes().len() > self.limit {
+        if value.allocated_bytes() > self.limit {
             self.remove(&id);
             self.handoff = Some((id, value));
         } else {
@@ -879,6 +879,23 @@ mod cache_tests {
         cache.hand_off("large".into(), volume(64));
         cache.clear();
         assert!(cache.get("large").is_none() && cache.get("small").is_none());
+    }
+
+    #[test]
+    fn an_rgb_picture_with_spare_capacity_obeys_the_cache_limit() {
+        let mut rgba = vec![0; 64];
+        rgba.truncate(48);
+        let picture = Arc::new(PixelBuffer::U8(rgba));
+        let mut cache = Cache { entries: VecDeque::new(), bytes: 0, limit: 64, handoff: None };
+        cache.put("picture".into(), picture.clone());
+        assert_eq!(cache.bytes, 64);
+        cache.put("small".into(), volume(4));
+        assert!(cache.get("picture").is_none());
+        cache.limit = 56;
+        cache.hand_off("picture".into(), picture);
+        assert!(cache.get("picture").is_some());
+        assert!(cache.get("picture").is_none());
+        assert!(cache.get("small").is_some());
     }
 
     #[test]
