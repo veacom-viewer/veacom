@@ -8,7 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, registerSeries, removeSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
@@ -54,9 +54,12 @@ import { usage, type Surface, type UsageSnapshot } from './usage/tracker';
 import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
-import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
+import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, placed, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
+import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, automatic, frameOf, mapPoint, movement, nudged, nudgeStep, transformBetween, withAlignment, withoutAlignment, type Alignment, type Nudge } from './imaging/registration';
+import { applyPoint, IDENTITY } from './imaging/rigid';
+import { AlignmentSection } from './components/AlignmentSection';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
-import { deriveKept, findRole, KEPT_STORAGE, match, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
+import { alignmentPair, deriveKept, findRole, KEPT_STORAGE, match, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
 import { BUILTIN_ARRANGEMENTS, FUSION } from './arrangements/builtin';
 import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
@@ -87,15 +90,15 @@ type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showRef
   /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
 const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
 type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | null;
-type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'workspace' | 'units' | 'mouse';
-const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'workspace', 'units', 'mouse'];
+type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'alignment' | 'workspace' | 'units' | 'mouse';
+const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'alignment', 'workspace', 'units', 'mouse'];
 const SECTION_STORAGE = 'veacom:inspector-sections';
 function readOpenSections(): Set<DisplaySection> {
   try {
     const stored = JSON.parse(localStorage.getItem(SECTION_STORAGE) ?? 'null');
     if (Array.isArray(stored)) return new Set(stored.filter((id): id is DisplaySection => DISPLAY_SECTIONS.includes(id)));
   } catch { /* Storage may be disabled by the host. */ }
-  return new Set(['window', 'color', 'orientation']);
+  return new Set(['window', 'color', 'orientation', 'alignment']);
 }
 type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]> };
 // A notice built from a message key is shown in the current language, and the key is its test hook.
@@ -259,13 +262,17 @@ const PANE_DRAG = 'application/x-veacom-pane';
 /** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
  * rearranged. A sticky one stays until the reader's next action instead of a few seconds. */
 type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
-  onUndo?: () => void; undoAction?: 'pair' | 'arrangement'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
+  onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'alignment'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
 
-function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references,
+function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, alignments, aligned,
   onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast }: {
   slot: Slot; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
   annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
   interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
+  /** Frames of reference aligned (imaging/registration.ts): another pane's plane in an aligned frame is drawn here too. */
+  alignments: readonly Alignment[];
+  /** This pane shows a series, or a fused overlay, placed by an alignment: said in its corner. */
+  aligned?: 'automatic' | 'adjusted';
   onActivate: (id: string) => void; onViewChange: (id: string, patch: Partial<ViewState>) => void;
   onAnnotationsChange: (seriesId: string, annotations: Annotation[]) => void;
   onRotateReference?: (id: string, oblique: [number, number]) => void; clickPicksPoint?: boolean;
@@ -285,7 +292,14 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
   const annotate = (next: Annotation[]) => { if (slot.seriesId) onAnnotationsChange(slot.seriesId, next); };
   const cyclePlane = () => onCyclePlane(slot.id);
   const [dragging, setDragging] = useState(false);
-  const referencePlanes = volume && interaction.showReferences ? references.filter(item => item.id !== slot.id && sharePlaneSpace(item, { series: volume.series, view: renderedView(volume, slot.view) })) : [];
+  const referencePlanes = volume && interaction.showReferences ? references.flatMap(item => {
+    const here = { series: volume.series, view: renderedView(volume, slot.view) };
+    if (item.id === slot.id) return [];
+    if (sharePlaneSpace(item, here)) return [item];
+    // A plane in a frame of reference of its own, aligned to this one: drawn where the alignment puts it.
+    const transform = placed(item) && placed(here) ? alignedTransform(alignments, item.series, volume.series) : null;
+    return transform ? [{ ...item, transform }] : [];
+  }) : [];
   const requestedView = volume ? resolveView(volume, slot.view) : slot.view;
   const displayView = volume ? renderedView(volume, slot.view) : slot.view;
   const count = volume ? sliceCount(volume.series, requestedView) : metadata?.dimensions[2] ?? 1;
@@ -321,12 +335,13 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
         mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
-        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} />
+        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} aligned={aligned} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
       {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
       {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
+          : toast.undoAction === 'alignment' ? <button type="button" data-action="alignment-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
         {toast.onKeep && (toast.keepAction === 'keep-plain' ? <button type="button" data-action="arrangement-keep-plain" onClick={toast.onKeep}>{t('arrangement.keep')}</button>
           : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}</div>}
@@ -487,6 +502,8 @@ export default function App() {
   // Studies whose "not DICOM" notice was closed (this session).
   const [pictureNoticeClosed, setPictureNoticeClosed] = useState<ReadonlySet<string>>(() => new Set());
   const [paneToast, setPaneToast] = useState<PaneToast | null>(null);
+  // The note on screen, for work that finishes later and says so in the same note while it is still there.
+  const paneToastRef = useRef(paneToast);
   // A pane note clears itself after a few seconds. A sticky one (an arrangement applied or undone, an offer to keep one)
   // stays until the reader's next action anywhere but on the note itself: a whole screen arranged must not vanish unseen.
   useEffect(() => {
@@ -533,6 +550,13 @@ export default function App() {
   const maskRequests = useRef(new Map<string, Promise<SegmentationOverlay>>());
   const [fusionId, setFusionId] = useState<string | null>(null);
   const fusionIdRef = useRef(fusionId);
+  // Frames of reference aligned (imaging/registration.ts), per pair: two visits, or a PET and a CT or MR acquired apart.
+  // Handlers read the ref; changeAlignments sets both, so a handler sees an alignment it has just made.
+  const [alignments, setAlignments] = useState<readonly Alignment[]>([]);
+  const alignmentsRef = useRef(alignments);
+  const changeAlignments = (next: readonly Alignment[]) => { alignmentsRef.current = next; setAlignments(next); };
+  // Alignments the engine is finding: the status bar says so and follows the decoding of the volumes they need.
+  const [aligning, setAligning] = useState(0);
   // The fusion asked for last: one asked for earlier, or stopped since, does not start when its PET has loaded.
   const fusionRequest = useRef(0);
   // Series whose preview could not be made: the series list shows a dash for them.
@@ -653,7 +677,9 @@ export default function App() {
   });
   const mrFusable = activeSeries?.modality === 'MR' && series.some(item => item.modality === 'MR' && item.id !== activeSeries.id && item.studyUid === activeSeries.studyUid && !item.segmentation && shareFrame(activeSeries, item));
   // The strip for an MR fusion: no PET series to choose, no blending or scanner look.
-  const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive;
+  // PETs and SPECTs the active series can be fused with: acquired with it, or the same patient's acquired apart (aligned first).
+  const overlayChoices = petSeries.filter(item => !activeSeries || item.id === fusionId || shareFrame(item, activeSeries) || (samePatient(item, activeSeries) && Boolean(frameOf(item) && frameOf(activeSeries))));
+  const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
   const shownSegmentationIds = new Set(shownSegmentations);
@@ -669,19 +695,40 @@ export default function App() {
     return isProjection(volume.series, view) ? [] : [{ id: slot.id, series: volume.series, view }];
   });
   const activateSlot = (id: string) => { activeIdRef.current = id; setActiveId(id); };
+  // The crosshair in the active series' own coordinates (3D draws it there), through an alignment where it was set in
+  // another frame of reference.
+  const crosshairOrigin = crosshairSeriesId ? volumes.get(crosshairSeriesId) : undefined;
+  const toActive = activeVolume && crosshairOrigin ? transformBetween(alignments, crosshairOrigin.series, activeVolume.series) : null;
+  const activeCrosshair = crosshair && toActive ? mapPoint(toActive, crosshair) : crosshair;
+  // The alignment that places the active pane's series or its fused overlay: the display panel's alignment section.
+  const activeAlignment = activeSeries ? alignmentOf(alignments, activeSeries) ?? (fusionPet && fusesOver(activeSeries, fusionPet, alignments) ? alignmentOf(alignments, fusionPet) : null) : null;
+  const nudgeAlignment = (alignment: Alignment, nudge: Nudge) => {
+    // Turned about the middle of what the active pane shows, so what the reader is looking at stays put.
+    const slot = slotsRef.current.find(item => item.id === activeIdRef.current), shown = slot?.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
+    const frame = shown ? frameOf(shown) : null, centre = slot && shown ? getPlaneFrame(shown, slot.view).center : null;
+    const pivot = centre && frame === alignment.fixed ? centre : centre && frame === alignment.moving ? applyPoint(alignment.matrix, centre) : applyPoint(alignment.matrix, alignment.centre);
+    changeAlignments(withAlignment(alignmentsRef.current, nudged(alignment, nudgeStep(nudge, pivot))));
+  };
+  const removeAlignment = (alignment: Alignment) => {
+    changeAlignments(withoutAlignment(alignmentsRef.current, alignment));
+    const slot = slotsRef.current.find(item => item.id === activeIdRef.current);
+    if (slot?.seriesId) setPaneToast({ slotId: slot.id, seriesId: slot.seriesId, text: t('alignment.removed'), sticky: true, undoAction: 'alignment',
+      onUndo: () => { setPaneToast(null); changeAlignments(withAlignment(alignmentsRef.current, alignment)); } });
+  };
 
   useEffect(() => {
     const visible = slots.flatMap(slot => {
       const volume = volumeForSlot(slot);
       if (!volume) return [];
-      const fused = fusion && !slot.unfused && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series) ? fusion : null;
+      const fused = fusion && !slot.unfused && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series, alignments)
+        ? alignedFusion(fusion, transformBetween(alignments, volume.series, fusion.volume.series) ?? IDENTITY) : null;
       return [{ volume, view: renderedView(volume, slot.view), fusion: fused }];
     });
     try {
       if (visible.length) sliceRenderer().setVisibleViews(visible);
       else clearSliceTextureCache();
     } catch { /* Each viewport reports GPU errors. */ }
-  }, [slots, volumeForSlot, fusion]);
+  }, [slots, volumeForSlot, fusion, alignments]);
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; frameCache.dispose(); for (const request of frameRequests.current.values()) request.controller.abort(); }; }, [frameCache]);
   // Find out how images will be drawn before a study opens. Without a usable graphics driver Chromium draws
@@ -715,7 +762,7 @@ export default function App() {
     for (const request of frameRequests.current.values()) request.controller.abort();
     frameRequests.current.clear();
   } });
-  const hasWork = Boolean(busy || loadingIds.size || importing);
+  const hasWork = Boolean(busy || loadingIds.size || importing || aligning);
   useEffect(() => {
     if (!hasWork) { setProgress(null); setCancelledId(null); return; }
     let disposed = false, polling = false;
@@ -1154,8 +1201,10 @@ export default function App() {
         }
         if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
         const target: Pane = { series: other.series, view: slot.view };
-        const anchor = anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
-        const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined);
+        // Aligned frames of reference page by position through the alignment; links by hand are for the others.
+        const toTarget = alignedTransform(alignmentsRef.current, volume.series, other.series) ?? undefined;
+        const anchor = toTarget ? null : anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
+        const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
         return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
       });
     });
@@ -1197,7 +1246,7 @@ export default function App() {
       return volume && slot.seriesId ? [{ id: slot.id, seriesId: slot.seriesId, pane: { series: volume.series, view: slot.view } }] : [];
     });
     return shown.flatMap((one, n) => shown.slice(n + 1).filter(other => facesSame(one.pane, other.pane)
-      && !(sharePlaneSpace(one.pane, other.pane) || inStep(one.pane, other.pane))).map(other => [one, other] as const));
+      && !(sharePlaneSpace(one.pane, other.pane) || inStep(one.pane, other.pane) || alignedTransform(alignmentsRef.current, one.pane.series, other.pane.series))).map(other => [one, other] as const));
   };
   /** Links unrelated panes at the slices they show (all of them, or those not linked yet); how many pairs. */
   const linkHere = (renew: boolean) => {
@@ -1330,7 +1379,7 @@ export default function App() {
       hiddenSlots.current = []; beforeMpr.current = null;
       setSlots([fresh]); setLayout([1, 1]); activateSlot(fresh.id);
       setMaximized(null); setIsMpr(false); setShow3d(false); setShowFusion(false); setFusionId(null);
-      setCrosshair(null); setPlaying(false); setChecklistOpen(false);
+      setCrosshair(null); setPlaying(false); setChecklistOpen(false); changeAlignments([]);
     } else {
       setSlots(current => current.map(empty));
       if (beforeMpr.current) beforeMpr.current = { ...beforeMpr.current, slots: beforeMpr.current.slots.map(empty) };
@@ -1366,9 +1415,11 @@ export default function App() {
       const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
       // A whole-volume MIP holds the point at every turn: it keeps its turn.
       if (!other || isProjection(other.series, slot.view)) return slot;
-      const target = { series: other.series, view: slot.view };
-      if (!sharePlaneSpace({ series: volume.series, view: source.view }, target)) return slot;
-      const slice = coveredSlice(target, point);
+      const target = { series: other.series, view: slot.view }, here = { series: volume.series, view: source.view };
+      // In a frame of reference of its own, aligned: the same place in the patient, through the alignment.
+      const toTarget = sharePlaneSpace(here, target) ? null : placed(here) && placed(target) ? alignedTransform(alignmentsRef.current, volume.series, other.series) : null;
+      if (!toTarget && !sharePlaneSpace(here, target)) return slot;
+      const slice = coveredSlice(target, toTarget ? applyPoint(toTarget, point) : point);
       return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
     }));
   };
@@ -1380,8 +1431,52 @@ export default function App() {
   };
   /** Fuses `pet` over `ct`, shown in the pane `slotId`. A PET without SUV is fused on its own values. `quiet`: an arrangement's
    * own notice says it (that the PET has no SUV is still said). */
+  /** Lays `moving` over `fixed` in the engine (native/src/registration.rs): the alignment of their frames of reference.
+   * Written with promise handlers: the React compiler leaves a component with a `finally` block uncompiled. */
+  const align = (fixed: Series, moving: Series): Promise<Alignment> => {
+    setAligning(count => count + 1);
+    const finished = () => { if (mounted.current) setAligning(count => Math.max(0, count - 1)); };
+    return registerSeries(fixed, moving).then(result => {
+      finished();
+      const found = alignmentFrom(result, fixed, moving);
+      if (!found) throw new Error(t('notice.fusionNoFrame'));
+      return found;
+    }, error => { finished(); throw error; });
+  };
+  /** What a notice calls a series: its modality, as readers name it. */
+  const modalityName = (item: Series) => item.modality === 'CT' ? t('alignment.ct') : item.modality === 'PT' ? 'PET' : item.modality === 'NM' ? 'SPECT' : item.modality;
+  const moved = (alignment: Alignment) => { const { shift, angle } = movement(alignment); return { shift: shift.toFixed(1), angle: angle.toFixed(1) }; };
+  /** A PET or SPECT over a CT or MR acquired apart: aligned first, by the overlay's own CT where it has one, then fused;
+   * the pane says so, with Undo. */
+  const alignForFusion = (pet: Series, base: Series, slotId: string) => {
+    const moving = findRole(FUSION.roles.ct, seriesRef.current, pet) ?? pet;
+    const request = ++fusionRequest.current, names = { overlay: modalityName(pet), base: modalityName(base) };
+    setFusionId(null);
+    const running: PaneToast = { slotId, seriesId: base.id, text: t('alignment.fusionRunning', names), sticky: true };
+    setPaneToast(running);
+    void align(base, moving).then(found => {
+      if (!mounted.current || request !== fusionRequest.current) return;
+      changeAlignments(withAlignment(alignmentsRef.current, found));
+      fusePet(pet, base, slotId, true);
+      setPaneToast({ slotId, seriesId: base.id, text: t('alignment.fusionDone', { ...names, by: modalityName(moving), ...moved(found) }), sticky: true, undoAction: 'alignment',
+        onUndo: () => {
+          setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found));
+          if (fusionIdRef.current === pet.id) { fusionRequest.current++; setFusionId(null); }
+        } });
+    }).catch(error => {
+      if (!mounted.current || request !== fusionRequest.current) return;
+      setPaneToast(current => current === running ? null : current);
+      setNotice({ message: t('alignment.fusionFailed', { ...names, reason: errorText(error) }), kind: 'error' });
+    });
+  };
   const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false) => {
-    if (!shareFrame(ct, pet)) { say('notice.fusionNoFrame', 'error'); return; }
+    if (!shareFrame(ct, pet) && !alignedTransform(alignmentsRef.current, ct, pet)) {
+      // Acquired apart: the same patient's are aligned first; another patient's never.
+      if (!samePatient(ct, pet)) { say('notice.fusionOtherPatient', 'error'); return; }
+      if (!frameOf(ct) || !frameOf(pet)) { say('notice.fusionNoFrame', 'error'); return; }
+      alignForFusion(pet, ct, slotId);
+      return;
+    }
     setFusionId(null);
     const request = ++fusionRequest.current;
     void acquireVolume(pet).then(volume => {
@@ -1420,7 +1515,12 @@ export default function App() {
       // The colour shows in the pane after contrast, where enhancing tissue, bright there, shines through.
       const beside = slotsRef.current.flatMap(other => other.id !== slot?.id && other.seriesId ? seriesRef.current.filter(item => item.id === other.seriesId) : []);
       const partner = mrPartner(shown, beside, item => shareFrame(shown, item));
-      if (!partner) { say('notice.fusionNoMr', 'info', undefined, true); return; }
+      if (!partner) {
+        // No MR beside it: a PET or SPECT of the same patient acquired apart is aligned to it and fused.
+        const apart = overlayApart(shown);
+        if (apart) fuseInActive(apart); else say('notice.fusionNoMr', 'info', undefined, true);
+        return;
+      }
       const [after, before] = contrastPair(shown, partner);
       const target = slotsRef.current.find(other => other.seriesId === after.id);
       if (!target) return;
@@ -1430,9 +1530,23 @@ export default function App() {
       fusePet(before, after, target.id);
       return;
     }
-    const pet = fusesAsOverlay(shown) ? shown : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    const pet = fusesAsOverlay(shown) ? shown : findRole(FUSION.roles.overlay, seriesRef.current, shown) ?? overlayApart(shown);
     if (!pet) { say('notice.fusionNoPet', 'info', undefined, true); return; }
     fuseInActive(pet);
+  };
+  /** For a CT or MR with no PET or SPECT acquired with it: one of the same patient acquired apart, which is aligned to it
+   * first. One aligned already, else the study nearest in time; attenuation-corrected and with more slices first. */
+  const overlayApart = (base: Series): Series | null => {
+    const days = (item: Series) => Math.abs(Date.parse(item.studyDate.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')) - Date.parse(base.studyDate.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')));
+    const found = seriesRef.current.filter(item => fusesAsOverlay(item) && !shareFrame(item, base) && samePatient(item, base) && frameOf(item) && frameOf(base));
+    const rank = (item: Series) => [Number(Boolean(alignedTransform(alignmentsRef.current, base, item))), -(Number.isFinite(days(item)) ? days(item) : Infinity),
+      Number(!/\bNAC\b|NO-?AC/i.test(item.description)), item.dimensions[2]];
+    return found.reduce<Series | null>((best, item) => {
+      if (!best) return item;
+      const a = rank(item), b = rank(best);
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i] ? item : best;
+      return best;
+    }, null);
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
@@ -1443,7 +1557,7 @@ export default function App() {
   const shownPanes = () => slotsRef.current.map(slot => {
     const item = slot.seriesId ? seriesRef.current.find(value => value.id === slot.seriesId) : undefined;
     const pet = fusionIdRef.current ? seriesRef.current.find(value => value.id === fusionIdRef.current) : undefined;
-    const fused = Boolean(item && pet && !slot.unfused && fusesOver(item, pet));
+    const fused = Boolean(item && pet && !slot.unfused && fusesOver(item, pet, alignmentsRef.current));
     return { seriesId: slot.seriesId, view: slot.view, fusedWith: fused && pet ? pet.id : null };
   });
   /** The arranged screen is still the one on screen: the same panes, in any order. */
@@ -1469,9 +1583,10 @@ export default function App() {
   /** Lays a study out as `plan` says: its panes, links and fusion, with a note in the first pane naming it and Undo. Undo
    * puts back what was on screen with `first` in the active pane (what VEAcom shows without arrangements), and offers to
    * keep that instead. */
-  const applyArrangement = (plan: Plan, first: Series) => {
+  const applyArrangement = (plan: Plan, first: Series, session?: readonly Series[]) => {
     const before = { slots: slotsRef.current, layout: layoutRef.current, activeId: activeIdRef.current, hidden: hiddenSlots.current, maximized: maximizedRef.current,
-      linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current };
+      linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current,
+      alignments: alignmentsRef.current };
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
     const separateScales = plan.arrangement.scale === 'shared' && !sharesSuvScale(plan);
@@ -1506,7 +1621,7 @@ export default function App() {
       setSettings(state => state.linked === before.linked ? state : { ...state, linked: before.linked });
       setFusionId(before.fusionId); setShowFusion(before.fusion.show); setFusionOpacity(before.fusion.opacity); setFusionUpper(before.fusion.upper);
       setFusionPalette(before.fusion.palette); setFusionBlend(before.fusion.blend); setFusionDeviceMode(before.fusion.deviceMode);
-      setCrosshair(before.crosshair); setCrosshairSeriesId(before.crosshairSeriesId);
+      setCrosshair(before.crosshair); setCrosshairSeriesId(before.crosshairSeriesId); changeAlignments(before.alignments);
       for (const id of new Set(before.slots.map(slot => slot.seriesId))) {
         const item = seriesRef.current.find(value => value.id === id); loadPaneImage(item);
       }
@@ -1516,16 +1631,58 @@ export default function App() {
         setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.keptPlain', { name }) });
       } });
     };
-    setPaneToast({ slotId: panes[0].id, seriesId: plan.panes[0].series.id, text: separateScales ? t('arrangement.petFollowUp.separate')
-      : plan.arrangement.kept ? t('arrangement.yours', { name }) : notice ? t(notice.key, notice.params) : name,
-      sticky: true, undoAction: 'arrangement', onUndo: undo });
+    const text = separateScales ? t('arrangement.petFollowUp.separate') : plan.arrangement.kept ? t('arrangement.yours', { name }) : notice ? t(notice.key, notice.params) : name;
+    // An arrangement that aligns two frames of reference (the PET follow-up: the prior's to this study's, by their CTs)
+    // says so in its note: under way, then what was done. Panes in the aligned frame go to where the first pane is.
+    // Every series loaded, the study just read among them (the list itself is not yet up to date when a study opens).
+    const pair = alignmentPair(plan, session ?? seriesRef.current), done = pair ? alignedTransform(alignmentsRef.current, pair.fixed, pair.moving) : null;
+    const toast: PaneToast = { slotId: panes[0].id, seriesId: plan.panes[0].series.id, text: pair && !done ? `${text} ${t('alignment.priorRunning')}` : text,
+      sticky: true, undoAction: 'arrangement', onUndo: undo };
+    setPaneToast(toast);
+    if (pair && done) pageAligned(panes[0].id, alignmentsRef.current);
+    else if (pair) alignArranged(plan, pair, toast, text, panes[0].id);
+  };
+  /** Panes whose series lie in a frame of reference aligned to the pane `leadId`'s go to where it is in the patient, as
+   * linked panes do; a whole-volume MIP keeps its turn. */
+  const pageAligned = (leadId: string, aligned: readonly Alignment[]) => {
+    const lead = slotsRef.current.find(slot => slot.id === leadId), leadSeries = lead?.seriesId ? seriesRef.current.find(item => item.id === lead.seriesId) : undefined;
+    if (!lead || !leadSeries || isProjection(leadSeries, lead.view)) return;
+    const at = getPlaneFrame(leadSeries, lead.view).center;
+    setSlots(current => current.map(slot => {
+      const other = slot.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
+      const toOther = other && slot.id !== leadId && !isProjection(other, slot.view) ? alignedTransform(aligned, leadSeries, other) : null;
+      if (!other || !toOther) return slot;
+      const slice = coveredSlice({ series: other, view: slot.view }, applyPoint(toOther, at));
+      return slice === null || slice === slot.view.slice ? slot : { ...slot, view: { ...slot.view, slice } };
+    }));
+  };
+  /** The alignment an arrangement asks for, found by the engine while its screen is shown. Its note says what was done
+   * while it is still there; otherwise a note in the aligned pane says it, with Undo. A failure leaves the two to be
+   * linked by hand, as before alignment. */
+  const alignArranged = (plan: Plan, pair: { fixed: Series; moving: Series }, toast: PaneToast, text: string, leadId: string) => {
+    void align(pair.fixed, pair.moving).then(found => {
+      if (!mounted.current || arranged.current?.plan !== plan) return;
+      const next = withAlignment(alignmentsRef.current, found);
+      changeAlignments(next);
+      pageAligned(leadId, next);
+      const said = t('alignment.priorDone', { by: modalityName(pair.moving), ...moved(found) });
+      if (paneToastRef.current === toast) { setPaneToast({ ...toast, text: `${text} ${said}` }); return; }
+      const role = plan.arrangement.align?.role, shown = role ? slotsRef.current.find(slot => slot.seriesId === plan.roles[role]?.id) : undefined;
+      if (shown?.seriesId) setPaneToast({ slotId: shown.id, seriesId: shown.seriesId, text: said, sticky: true, undoAction: 'alignment',
+        onUndo: () => { setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found)); } });
+    }).catch(error => {
+      if (!mounted.current || arranged.current?.plan !== plan) return;
+      const said = t('alignment.priorFailed', { reason: errorText(error) });
+      if (paneToastRef.current === toast) setPaneToast({ ...toast, text: `${text} ${said}` });
+      else setNotice({ message: said, kind: 'info' });
+    });
   };
   const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study) => {
     arranged.current = null;
     // The session's other studies are where a prior study's role is found (the PET follow-up screen).
     const plan = match(KEPT_ARRANGEMENTS(keptRef.current), 'open', { series: study, session });
     // Without an arrangement, a series already shown (opened while the study was still read) stays as it is.
-    if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(activeIdRef.current, first);
+    if (plan) applyArrangement(plan, first, session); else if (!keepShown) assignSeries(activeIdRef.current, first);
   };
   /** Back to VEAcom's own arrangements: what the reader kept is forgotten. */
   const forgetKept = () => { saveKept({}); say('arrangement.forgotten', 'info', undefined, true); };
@@ -1637,7 +1794,9 @@ export default function App() {
     if (!activeVolume || !canReconstruct) return;
     beforeMpr.current = { slots: slotsRef.current, layout, activeId: activeIdRef.current, crosshair, crosshairSeriesId }; setIsMpr(true);
     const origin = crosshairSeriesId ? volumesRef.current.get(crosshairSeriesId) : undefined;
-    const center = crosshair && origin && shareFrame(activeVolume.series, origin.series) ? crosshair : indexToWorld(activeVolume.series, activeVolume.series.dimensions.map(n => (n - 1) / 2) as Vec3);
+    // The crosshair, in this series' own coordinates when it was set in a frame of reference aligned to it.
+    const toActive = crosshair && origin ? transformBetween(alignmentsRef.current, origin.series, activeVolume.series) : null;
+    const center = crosshair && toActive ? applyPoint(toActive, crosshair) : indexToWorld(activeVolume.series, activeVolume.series.dimensions.map(n => (n - 1) / 2) as Vec3);
     const panes = (['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => ({ id: crypto.randomUUID(), seriesId: activeVolume.series.id,
       view: { ...defaultView(activeVolume.series), windowMode: activeSlot.view.windowMode, windowCenter: activeSlot.view.windowCenter, windowWidth: activeSlot.view.windowWidth, mode: 'mpr' as const, plane, slice: sliceAtWorld(activeVolume.series, plane, center), pan: [0, 0] as [number, number] } }));
     setSlots(panes); setActiveId(panes[0].id); setLayout([1, 3]); setCrosshair(center); setCrosshairSeriesId(activeVolume.series.id); setSettings(current => ({ ...current, linked: true }));
@@ -1850,6 +2009,9 @@ export default function App() {
       ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
     shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot?.view ?? null,
     // For the arrangement checks: the panes on screen and what each one shows.
+    // For the registration checks: the frames aligned, and whether the engine is still finding one.
+    aligning, alignments: alignments.map(item => ({ fixedSeriesId: item.fixedSeriesId, movingSeriesId: item.movingSeriesId, matrix: [...item.matrix], adjusted: adjusted(item),
+      similarity: item.similarity, similarityBefore: item.similarityBefore, overlap: item.overlap })),
     layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
       projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
       windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth })),
@@ -1954,6 +2116,8 @@ export default function App() {
     keptRef.current = kept;
     shownSegmentationsRef.current = shownSegmentations;
     fusionIdRef.current = fusionId;
+    alignmentsRef.current = alignments;
+    paneToastRef.current = paneToast;
     fusionDeviceModeRef.current = fusionDeviceMode;
     displayVolumesRef.current = displayVolumes;
     fusionState.current = { show: showFusion, opacity: fusionOpacity, upper: fusionUpper, palette: fusionPalette, blend: fusionBlend, deviceMode: fusionDeviceMode };
@@ -2040,7 +2204,9 @@ export default function App() {
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
   const showPlane = (plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
   const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
-  const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length : !petSeries.length);
+  // An MR fuses with another MR beside it, or with a PET or SPECT of the same patient acquired apart, aligned first.
+  const mrApart = Boolean(mrActive && activeSeries && overlayChoices.some(item => !shareFrame(item, activeSeries)));
+  const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length && !mrApart : !petSeries.length);
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
@@ -2121,7 +2287,7 @@ export default function App() {
         <MenuDivider />
         <MenuItem action="toolbar-window-palette-orientation" icon={<SlidersHorizontal size={16} />} onClick={() => act(() => openPanelSection('window'))}>{t('toolbar.windowPaletteOrientation')}</MenuItem>
       </Menu>}</div> },
-    ...(petSeries.length || mrFusable ? [    { id: 'fusion', group: 'window', priority: 3, node: <ToolButton icon={<Glyph name="fusion" />} label={t(mrActive || !petSeries.some(item => item.modality === 'PT') ? 'toolbar.fusionPlain' : 'toolbar.fusion')} testId="tool-fusion" disabled={fusionDisabled} why={mrActive && !mrBeside.length ? t('fusion.whyMrPane') : undefined} active={showFusion} onClick={() => showFusion ? stopFusion() : startFusion()} /> }] : []),
+    ...(petSeries.length || mrFusable ? [    { id: 'fusion', group: 'window', priority: 3, node: <ToolButton icon={<Glyph name="fusion" />} label={t(mrActive || !petSeries.some(item => item.modality === 'PT') ? 'toolbar.fusionPlain' : 'toolbar.fusion')} testId="tool-fusion" disabled={fusionDisabled} why={mrActive && !mrBeside.length && !mrApart ? t('fusion.whyMrPane') : undefined} active={showFusion} onClick={() => showFusion ? stopFusion() : startFusion()} /> }] : []),
     { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu><div className="split">
       <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('help.mpr')}`} hint={isMpr ? t('toolbar.restorePrevious') : undefined} shortcut={singleKey('M')} testId="tool-mpr" active={isMpr} disabled={!canReconstruct && !isMpr} why={mprWhy} onClick={mpr} />
       <MenuChevron label={t('toolbar.mprPlanes')} expanded={menu === 'mpr'} testId="tool-mpr-menu" disabled={noImage} onClick={() => toggleMenu('mpr')} />
@@ -2215,7 +2381,7 @@ export default function App() {
         {/* Info notices go into a live region that is always present, so screen readers announce them reliably. */}
         <div className="notice-region" role="status">{notice && notice.kind !== 'error' && noticeBar}</div>
         {notice?.kind === 'error' && noticeBar}
-        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = petSeries.find(value => value.id === event.target.value); if (!item) { setFusionId(null); return; } if (activeVolume?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{petSeries.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
+        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = overlayChoices.find(value => value.id === event.target.value); if (!item) { setFusionId(null); return; } if (activeVolume?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{petSeries.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
         {pictureNotice && <div className="picture-notice-anchor"><div className="picture-notice" role="status" data-testid="picture-notice"><span>{pictureFormat ? t('pictures.limited', { format: pictureFormat }) : t('pictures.limitedPlain')}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-tooltip={t('notice.dismiss')} data-action="picture-notice-close" onClick={() => setPictureNoticeClosed(current => new Set(current).add(pictureNotice))}><X size={14} /></button></div></div>}
         {series.length === 0 ? <div className="welcome-space" data-testid="welcome">
           <div className="welcome-card">
@@ -2234,11 +2400,17 @@ export default function App() {
           {slots.map((slot, index) => {
             const volume = volumeForSlot(slot), metadata = slot.seriesId ? seriesById.get(slot.seriesId) : undefined;
             const origin = crosshairSeriesId ? volumes.get(crosshairSeriesId) : undefined;
-            const linkedCrosshair = settings.showCrosshair && volume && origin && shareFrame(volume.series, origin.series) ? crosshair : null;
-            const fused = fusion && !slot.unfused && volume && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series) ? fusion : null;
+            // The crosshair in this pane's own coordinates: as set in one frame of reference, through the alignment in another.
+            const toPane = volume && origin ? transformBetween(alignments, origin.series, volume.series) : null;
+            const linkedCrosshair = settings.showCrosshair && crosshair && toPane ? mapPoint(toPane, crosshair) : null;
+            const fused = fusion && !slot.unfused && volume && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series, alignments)
+              ? alignedFusion(fusion, transformBetween(alignments, volume.series, fusion.volume.series) ?? IDENTITY) : null;
+            // Placed by an alignment: a series in a frame aligned to another, or an overlay drawn through one.
+            const placedBy = volume ? (fused?.transform ? alignmentOf(alignments, fused.volume.series) : alignments.find(item => item.moving === frameOf(volume.series))) : null;
             return <ViewportCell key={slot.id} slot={slot} index={index} paneCount={slots.length} volume={volume} metadata={metadata} active={slot.id === activeId} tool={tool}
               annotations={slot.seriesId ? annotations[slot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS} crosshair={linkedCrosshair} fusion={fused} segmentations={segmentationOverlays}
               loading={Boolean(slot.seriesId && loadingIds.has(slot.seriesId))} loadError={slot.seriesId ? loadErrors[slot.seriesId] : undefined} linked={settings.linked} interaction={settings} references={!isMpr && slot.id === activeId ? EMPTY_REFERENCES : activeReferences}
+              alignments={alignments} aligned={placedBy ? (adjusted(placedBy) ? 'adjusted' : 'automatic') : undefined}
               onActivate={activateSlot} onViewChange={updateView} onAnnotationsChange={changeAnnotations} onCrosshairChange={changeCrosshair}
               onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
               onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlane : undefined} clickPicksPoint={show3d}
@@ -2354,6 +2526,11 @@ export default function App() {
             <p className="field-help">{t('inspector.obliqueHelp')}</p>{[0, 1].map(axis => <label className="slider-field" key={axis}><span>{axis === 0 ? t('inspector.pitch') : t('inspector.yaw')}<output>{activeSlot.view.oblique?.[axis] ?? 0}°</output></span><input data-action={axis === 0 ? 'oblique-pitch' : 'oblique-yaw'} type="range" disabled={!canReconstruct} min={-90} max={90} step={1} value={activeSlot.view.oblique?.[axis] ?? 0} onChange={event => { const angles: [number, number] = [...(activeSlot.view.oblique ?? [0, 0])]; angles[axis] = Number(event.target.value); if (activeVolume) { const next = { ...activeSlot.view, mode: 'mpr' as const, oblique: angles }; updateView(activeSlot.id, { mode: 'mpr', oblique: angles, slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }} /></label>)}
             <button data-action="oblique-reset" type="button" className="text-button" disabled={!canReconstruct || !activeSlot.view.oblique?.some(Boolean)} onClick={() => { if (activeVolume) { const next = { ...activeSlot.view, oblique: [0, 0] as [number, number] }; updateView(activeSlot.id, { oblique: [0, 0], slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }}>{t('inspector.resetPlane')}</button>
           </PanelSection>
+          {activeAlignment && <PanelSection id="alignment" title={t('inspector.alignment')} open={openSections.has('alignment')} onToggle={toggleSection}>
+            <AlignmentSection alignment={activeAlignment} fixed={seriesById.get(activeAlignment.fixedSeriesId)} moving={seriesById.get(activeAlignment.movingSeriesId)}
+              onNudge={nudge => nudgeAlignment(activeAlignment, nudge)} onAutomatic={() => changeAlignments(withAlignment(alignmentsRef.current, automatic(activeAlignment)))}
+              onRemove={() => removeAlignment(activeAlignment)} />
+          </PanelSection>}
           <PanelSection id="workspace" title={t('inspector.workspace')} open={openSections.has('workspace')} onToggle={toggleSection}>
             <label className="check-field"><input data-action="link-frames" type="checkbox" checked={settings.linked} onChange={event => { if (event.target.checked) pressLink(); else setSettings(current => ({ ...current, linked: false })); }} /> {t('inspector.linkFrames')}</label>
             <label className="check-field"><input data-action="show-crosshair" type="checkbox" checked={settings.showCrosshair} onChange={event => setSettings(current => ({ ...current, showCrosshair: event.target.checked }))} /> {t('inspector.showCrosshair')}</label>
@@ -2389,7 +2566,7 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
@@ -2415,7 +2592,7 @@ export default function App() {
     {showUpdates && <Suspense fallback={null}><UpdateDialog onClose={() => setShowUpdates(false)} /></Suspense>}
     {showFeedback && <Suspense fallback={null}><FeedbackDialog onClose={() => setShowFeedback(false)} onSent={() => say('feedback.sent', 'info', undefined, true)} /></Suspense>}
     {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={() => { setShowHelp(false); setShowUpdates(true); }} /></Suspense>}
-    {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={crosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
+    {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={activeCrosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
       setShow3d(false);
       if (pointFrom3d.current && crosshairRef.current === pointFrom3d.current) setCrosshair(null);
       pointFrom3d.current = null;

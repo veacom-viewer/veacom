@@ -6,8 +6,12 @@
 // - the same sphere drawn on the fused CT also gives the PET's values;
 // - at 41% of its SUVmax the lesion gives MTV and TLG, drawn as the voxels it counts, and the lesion table lists it;
 // - in a new session on the same computer, the study's references and lesion table come back;
-// - opened after its prior, the study lays out as the PET follow-up screen; linked by hand, the two page together, and
-//   the lesion table gives each value's change against the prior's lesion selected by the reader, live and as kept;
+// - opened after its prior, the study lays out as the PET follow-up screen and aligns the prior, which lies 24 mm along
+//   in its own frame of reference, by the two CTs (native/src/registration.rs): the note says so, the two page together
+//   through the alignment, and a nudge in the display panel moves it a millimetre and back; the lesion table gives each
+//   value's change against the prior's lesion selected by the reader, live and as kept;
+// - with the alignment removed, the prior's PET chosen for fusion over this study's CT is aligned first, by the prior's
+//   own CT, and the pointer over this study's lesion reads the prior's PET there, in its own voxels;
 // - the prior was scanned 72 min after its injection, 12 min more than this study, on another scanner with another
 //   reconstruction (EANM 2025, Supplemental File 3): every change is marked, and the table and the acquisition panel
 //   say why, live and as kept; the box saying why has a dismiss button, which hides it in both and keeps the marks;
@@ -306,31 +310,59 @@ async function main() {
     check('In a new session the study\'s references and lesion table come back');
     await desktop.close();
 
-    // Opened after its prior: the PET follow-up screen, this study's PET and the prior's, each over its MIP.
+    // Opened after its prior: the PET follow-up screen, this study's PET and the prior's, each over its MIP. The prior lies
+    // in its own frame of reference, 24 mm further along: it is aligned by the two CTs while the screen is shown.
     await launch(priorStudy);
     await privileged.importPaths(desktop, page, [study]);
     await settled();
+    await page.waitForFunction(() => { const s = window.__VEACOM_TEST__.state(); return s.alignments.length === 1 && !s.aligning; }, undefined, { timeout: 120_000 });
     s = await state();
     const now = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === petGrid.dimensions[2]);
     const before = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === priorGrid.dimensions[2]);
+    const nowCt = s.series.find(item => item.modality === 'CT' && item.dimensions[2] === petGrid.dimensions[2]);
+    const priorCt = s.series.find(item => item.modality === 'CT' && item.dimensions[2] === priorGrid.dimensions[2]);
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [now.id, before.id, now.id, before.id]);
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, 'mip', 'mip']);
-    assert.deepEqual(await page.locator('.pane-toast').allTextContents(), ['PET follow-up on one SUV scale: this study · prior · their MIPs. Bring both to one level, then link them.Undo']);
-    // Linked by hand at the lesion: the studies' frames and slice counts differ, so they page together only once linked.
+    // The prior's CT laid over this study's: a prior point p lies at p − (0, 0, 24) here, within 1 mm and 0.5°.
+    const [aligned] = s.alignments, shift = prior.shift.map((value, axis) => value - current.shift[axis]);
+    const turn = Math.acos(Math.min(1, (aligned.matrix[0] + aligned.matrix[5] + aligned.matrix[10] - 1) / 2)) * 180 / Math.PI;
+    const missed = Math.hypot(aligned.matrix[3] + shift[0], aligned.matrix[7] + shift[1], aligned.matrix[11] + shift[2]);
+    assert.deepEqual([aligned.fixedSeriesId, aligned.movingSeriesId], [nowCt.id, priorCt.id]);
+    assert.ok(missed < 1 && turn < 0.5, `The prior lands within 1 mm and 0.5°: ${missed.toFixed(3)} mm, ${turn.toFixed(3)}°`);
+    assert.deepEqual(await page.locator('.pane-toast').allTextContents(), ['PET follow-up on one SUV scale: this study · prior · their MIPs. Prior aligned to this study by CT: moved 24.0 mm, turned 0.0°.Undo']);
+    for (const index of [1, 3]) assert.match(await cells().nth(index).locator('[data-testid="image-overlay"]').textContent(), /Aligned automatically/);
+    await shot('5a-aligned');
+    // Paged to the lesion here, the prior shows its own: the same anatomy, 24 mm along in its coordinates, and on from there.
     await activate(0);
+    assert.match(await page.getByTestId('status-aligned').textContent(), /Aligned/);
     await goTo(0, lesion.center[2]);
-    await activate(1);
-    await goTo(1, priorLesion.center[2], priorGrid);
-    assert.equal(await location(0), lesion.center[2], 'The prior pages alone before it is linked.');
-    await page.getByTestId('tool-link').click();
-    await activate(0);
+    await page.waitForFunction(z => Number(document.querySelectorAll('[data-testid="viewport-cell"]')[1]?.querySelector('.slice-detail')?.textContent?.match(/Loc: (-?[\d.]+)/)?.[1]) === z, priorLesion.center[2]);
+    assert.equal(await location(1), priorLesion.center[2]);
     const [from, fromPrior] = [await location(0), await location(1)];
     await page.evaluate(() => { const view = window.__VEACOM_TEST__.state().view; window.__VEACOM_TEST__.setView({ slice: view.slice + 5 }); });
     await page.waitForFunction(([a, b]) => { const loc = i => Number(document.querySelectorAll('[data-testid="viewport-cell"]')[i]?.querySelector('.slice-detail')?.textContent?.match(/Loc: (-?[\d.]+)/)?.[1]); return loc(0) !== a && loc(1) !== b; }, [from, fromPrior]);
-    assert.equal(await location(1) - fromPrior, await location(0) - from, 'Linked by hand, the prior follows slice for slice from where it was.');
+    assert.equal(await location(1) - fromPrior, await location(0) - from, 'Aligned, the prior follows this study millimetre for millimetre.');
     await goTo(0, lesion.center[2]);
     assert.equal(await location(1), priorLesion.center[2]);
-    check('Opened after its prior, the study lays out as the PET follow-up; linked by hand, the two page together');
+    check('Opened after its prior, the study lays out as the PET follow-up and aligns the prior by the CTs; the two page together', { missedMm: Number(missed.toFixed(3)), degrees: Number(turn.toFixed(3)) });
+
+    // A nudge in the display panel moves the prior a millimetre toward the head; back to automatic undoes it.
+    if (!await page.getByTestId('inspector-tab-display').isVisible()) await page.getByTestId('tool-inspector').click();
+    await page.getByTestId('inspector-tab-display').click();
+    const alignmentToggle = page.locator('#section-alignment-toggle');
+    if (await alignmentToggle.getAttribute('aria-expanded') !== 'true') await alignmentToggle.click();
+    assert.match(await page.getByTestId('alignment-section').textContent(), /lies over .*Moved24\.0 mm, turned 0\.0°MethodAutomatic, by image similarity/);
+    await page.getByRole('button', { name: 'Move 1 mm toward the head' }).click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().alignments[0]?.adjusted);
+    const nudged = (await state()).alignments[0].matrix;
+    assert.ok(Math.abs(nudged[11] - aligned.matrix[11] - 1) < 1e-9, 'One millimetre toward the head, in this study\'s coordinates.');
+    for (const index of [1, 3]) assert.match(await cells().nth(index).locator('[data-testid="image-overlay"]').textContent(), /Aligned, adjusted by hand/);
+    await shot('5b-nudged');
+    await page.locator('[data-action="alignment-automatic"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().alignments[0]?.adjusted === false);
+    assert.deepEqual((await state()).alignments[0].matrix, aligned.matrix);
+    await page.getByTestId('inspector-tab-measurements').click();
+    check('A nudge moves the aligned prior by a millimetre, and back to automatic undoes it');
 
     // The lesion on the prior, named L1 as it lands, at the same threshold: the table gives each change against it.
     await activate(1);
@@ -491,6 +523,32 @@ async function main() {
     assert.equal(await unnamed(), unnamedBefore, 'Typing the glucose records no action without an id.');
     check('In SUL, SULglu follows SUL: this study\'s from its file, and its change once the prior\'s glucose is typed', { sulGlu: Number(nowGlu.toFixed(2)), change: sulGluChange });
     await showPetValues('bw');
+
+    // A PET over a CT acquired apart. With the alignment removed (Undo would bring it back), the prior's PET chosen for
+    // fusion over this study's CT is aligned first, by the prior's own CT; the pointer over this study's lesion then
+    // reads the prior's PET there, in its own voxels: the prior lesion's SUV 10.
+    await activate(0);
+    await page.getByTestId('inspector-tab-display').click();
+    await page.locator('[data-action="alignment-remove"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().alignments.length === 0);
+    assert.match(await page.locator('.pane-toast').textContent(), /^Alignment removedUndo$/);
+    await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), nowCt.id);
+    await settled();
+    await goTo(0, lesion.center[2], { spacing: [3.125, 3.125, 4], dimensions: [128, 128, petGrid.dimensions[2]] });
+    // The fusion the prior's own PET/CT screen started may still be on: the strip offers the prior's PET either way.
+    if (!await page.getByTestId('fusion-strip').isVisible()) await page.getByTestId('tool-fusion').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fusionId);
+    await page.getByTestId('fusion-series').selectOption(before.id);
+    await page.waitForFunction(id => { const s = window.__VEACOM_TEST__.state(); return s.fusionId === id && s.alignments.length === 1 && !s.aligning; }, before.id, { timeout: 120_000 });
+    s = await state();
+    assert.deepEqual([s.alignments[0].fixedSeriesId, s.alignments[0].movingSeriesId], [nowCt.id, priorCt.id], 'Aligned by the prior PET\'s own CT.');
+    assert.equal(await page.locator('.pane-toast').textContent(), 'PET aligned to this CT by CT: moved 24.0 mm, turned 0.0°.Undo');
+    assert.match(await cells().nth(0).locator('[data-testid="image-overlay"]').textContent(), /Aligned automatically/);
+    const at = await screenPoint(0, lesion.center);
+    await page.mouse.move(at.x, at.y, { steps: 2 });
+    await page.waitForFunction(() => /PET 10\.00 SUVbw/.test([...document.querySelectorAll('[data-testid="viewport-cell"]')[0]?.querySelectorAll('[data-testid="pointer-readout"] text') ?? []].map(node => node.textContent).join('\n')));
+    await shot('5c-fused-apart');
+    check('A PET over a CT acquired apart is aligned by its own CT, then read in its own voxels through the alignment');
     await desktop.close();
 
     // The current study alone, in a new session: the change comes from what was kept for the prior.

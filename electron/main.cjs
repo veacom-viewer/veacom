@@ -168,6 +168,7 @@ app.whenReady().then(async () => {
   handle('imaging:early', (capabilities, after) => imaging.importEarly(capabilities, after));
   handle('imaging:cancel', id => imaging.cancelOperation(id));
   handle('imaging:measure', (...args) => imaging.measure(...args));
+  handle('imaging:register', request => imaging.register(request));
   handle('imaging:tags', (id, generation, frame, revision) => imaging.getTags(id, generation, frame, revision));
   handle('imaging:remove', (ids, generation) => imaging.removeSeries(ids, generation));
   handle('imaging:pixels', request => imaging.getPixels(request));

@@ -43,6 +43,7 @@ run security-boundary node tools/check-security-boundary.cjs "$series" "$out/sec
 run pictures node tools/check-pictures.cjs "$series" "$out/pictures"
 run interface node tools/check-interface.cjs "$series" "$out/interface"
 run pet-followup-fixture node tools/fixtures/make-pet-followup.mjs "$out/pet-followup"
+run registration node tools/check-registration.cjs "$out/pet-followup" "$out/registration.json"
 run pet-voi node tools/check-pet-voi.cjs "$out/pet-followup" "$out/pet-voi"
 run petct-fixture node tools/fixtures/make-petct-study.mjs "$out/petct-study"
 run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arrangements"

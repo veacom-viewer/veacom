@@ -1,4 +1,4 @@
-import type { CoreState, DesktopBridge, ImportResult, Series, Volume, PixelArray } from './model';
+import type { CoreState, DesktopBridge, EngineRegistration, ImportResult, Series, Volume, PixelArray } from './model';
 import { t } from './i18n';
 import { coreErrorText } from './i18n/core';
 
@@ -105,6 +105,16 @@ export async function sampleSeries(series: Series, operation: import('./imaging/
   const revision = series.sourceRevision;
   if (!revision) throw new Error('Missing source revision.');
   return brokerRequest((bridge, generation) => bridge.measure(series.id, generation, revision, operation), series.engineGeneration);
+}
+/** Lays `moving` over `fixed`, two series of one engine, without changing either (native/src/registration.rs). */
+export async function registerSeries(fixed: Series, moving: Series): Promise<EngineRegistration> {
+  const fixedRevision = fixed.sourceRevision, movingRevision = moving.sourceRevision;
+  if (!fixedRevision || !movingRevision) throw new Error('Missing source revision.');
+  if (fixed.engineGeneration !== moving.engineGeneration) throw new Error(restartedMessage());
+  return brokerRequest((bridge, generation) => {
+    if (!bridge.register) throw new Error(t('engine.desktopRequired'));
+    return bridge.register({ fixedId: fixed.id, movingId: moving.id, generation, fixedRevision, movingRevision });
+  }, fixed.engineGeneration);
 }
 export async function getTags(id: string, engineGeneration?: number, frame?: number, revision?: number): Promise<Record<string, unknown>[]> {
   return brokerRequest((bridge, generation) => revision !== undefined ? bridge.getTags(id, generation, frame, revision) : frame === undefined ? bridge.getTags(id, generation) : bridge.getTags(id, generation, frame), engineGeneration);

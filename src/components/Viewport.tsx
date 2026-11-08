@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import type { Annotation, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
+import type { Annotation, FusionSettings, NmFrame, Series, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView } from '../imaging/annotations';
 import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
@@ -22,6 +22,7 @@ import { seriesName } from '../ui/seriesNames';
 import { presetFor } from '../ui/presets';
 import { hitAnnotation, leaderLine, movedHandle, screenPaths, type AnnotationPart, type HitTarget } from '../ui/annotationEdit';
 import { draggedFusion, petHasSuv } from '../imaging/fusion';
+import { frameThrough } from '../imaging/registration';
 import { lineAngle, obliqueAngle, rotationComponent, turnedOblique } from '../imaging/oblique';
 import type { PlaneFrame } from '../imaging/geometry';
 import { overlayKeepOut, placeLabelBeside, shapeBox, shapeKeepOut, type Box } from '../ui/labelPlacement';
@@ -75,13 +76,14 @@ const pointString = (points: Point2[]) => points.map(p => p.join(',')).join(' ')
 const LABEL_CHARACTERS = 30, LABEL_LINE = 15, LABEL_PADDING = 5;
 const NO_BOXES: readonly Box[] = [];
 const NO_ANNOTATIONS: Annotation[] = [];
-// The fused PET's values under each drawing, kept per drawing, PET and chosen SUV (a drawing that changes is a new object).
-const petCache = new WeakMap<Annotation, { volume: Volume; locale: string; text: string }>();
-function petLine(annotation: Annotation, pet: Volume, locale: string): string {
-  const cached = petCache.get(annotation);
-  if (cached && cached.volume === pet && cached.locale === locale) return cached.text;
-  const text = fusedPetSummary(annotation, pet);
-  petCache.set(annotation, { volume: pet, locale, text });
+// The fused PET's values under each drawing, kept per drawing, PET, chosen SUV and alignment (a drawing that changes is
+// a new object, and so is a nudged alignment's transform).
+const petCache = new WeakMap<Annotation, { volume: Volume; locale: string; transform: FusionSettings['transform']; base: Series; text: string }>();
+function petLine(annotation: Annotation, fusion: FusionSettings, base: Series, locale: string): string {
+  const pet = fusion.volume, transform = fusion.transform, cached = petCache.get(annotation);
+  if (cached && cached.volume === pet && cached.locale === locale && cached.transform === transform && (!transform || cached.base === base)) return cached.text;
+  const text = fusedPetSummary(annotation, pet, transform ? { base, transform } : undefined);
+  petCache.set(annotation, { volume: pet, locale, transform, base, text });
   return text;
 }
 /** Turkish writes the percent sign first (%100). */
@@ -809,7 +811,7 @@ export function Viewport(props: ViewportProps) {
   // With a PET fused over the image, a region or a probe also gives the PET's value there.
   const labels = props.fusion ? named.map((label, index) => {
     if (movingSphere?.id === shownAnnotations[index].id) return label;
-    const pet = petLine(shownAnnotations[index], props.fusion!.volume, locale);
+    const pet = petLine(shownAnnotations[index], props.fusion!, props.volume.series, locale);
     return pet && label ? `${label}\n${pet}` : label;
   }) : named;
   // Where each measurement shows here: a sphere as the circle this plane cuts from it (dashed off its centre and on a
@@ -856,7 +858,7 @@ export function Viewport(props: ViewportProps) {
     props.fusion.volume.series.modality !== 'PT' ? t('viewport.fusionOwnValues', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : petHasSuv(props.fusion.volume.series) ? t('viewport.fusionScale', { upper: general(props.fusion.upperSuv), opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : t('viewport.fusionScaleOwn', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) }),
-  ] : [])].map(text => ({ text, fitted: fitWidth(text, lowerWidth, fontFamily) }));
+  ] : []), ...(props.aligned ? [t(props.aligned === 'adjusted' ? 'viewport.alignedAdjusted' : 'viewport.alignedAutomatic')] : [])].map(text => ({ text, fitted: fitWidth(text, lowerWidth, fontFamily) }));
   // The pointer's value takes the lowest lines of the bottom-right corner (the pane's own, then a fused PET's), kept for
   // it while the overlay shows, so labels and corner lines stay put as it comes and goes.
   const readoutLines = props.showOverlay === false || props.volume.series.components === 3 ? 0 : props.fusion && !projected ? 2 : 1;
@@ -908,7 +910,8 @@ export function Viewport(props: ViewportProps) {
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
     : { left: '', right: '', top: '', bottom: '' };
   const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
-    const theirs = getPlaneFrame(reference.series, reference.view);
+    // A plane in a frame of reference of its own is drawn where the alignment puts it in this one.
+    const own = getPlaneFrame(reference.series, reference.view), theirs = reference.transform ? frameThrough(own, reference.transform) : own;
     const segment = referenceSegment(frame, theirs);
     if (!segment) return [];
     const [point, end] = segment.map(p => worldToScreen(mapping, p));

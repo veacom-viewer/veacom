@@ -30,6 +30,7 @@ mod pictures;
 mod pipe;
 mod progress;
 mod random;
+mod registration;
 mod resources;
 mod rle_guard;
 mod source_file;
@@ -321,6 +322,7 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
             "tags" => series_tags(core, body(call.body)?).and_then(|result| ok(&result)),
             "sample" => sample_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
             "measure" => measure_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
+            "register" => register_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
             "export" => export_series(core, request, body(call.body)?).and_then(|result| ok(&result)),
             "exportEstimate" => estimate_export(core, body(call.body)?).and_then(|result| ok(&result)),
             "exportCancel" => {
@@ -779,6 +781,36 @@ fn measure_series(core: &App, cancelled: &AtomicBool, request: MeasureRequest) -
         &request.kind,
         request.plane.as_ref(),
     )?)
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RegisterRequest {
+    fixed_id: String,
+    moving_id: String,
+    fixed_revision: u64,
+    moving_revision: u64,
+}
+/// Lays the moving series over the fixed one (registration.rs): both volumes are decoded as `volume` decodes them, and
+/// neither is changed. A series an import replaced meanwhile is refused, as `sample` refuses it.
+fn register_series(core: &App, cancelled: &AtomicBool, request: RegisterRequest) -> ApiResult<registration::Registration> {
+    let changed = || ApiError(409, "Source series changed".into());
+    let current = |id: &str, revision: u64| -> ApiResult<Arc<SourceSeries>> {
+        let series = source(core, id)?;
+        if series.info.source_revision != revision { return Err(changed()); }
+        Ok(series)
+    };
+    registration::check(&*current(&request.fixed_id, request.fixed_revision)?)?;
+    registration::check(&*current(&request.moving_id, request.moving_revision)?)?;
+    let (fixed, fixed_series) = load_volume(core, &request.fixed_id, false, cancelled)?;
+    let (moving, moving_series) = load_volume(core, &request.moving_id, false, cancelled)?;
+    if fixed_series.info.source_revision != request.fixed_revision || moving_series.info.source_revision != request.moving_revision {
+        return Err(changed());
+    }
+    let result = registration::register((&*fixed_series, &*fixed), (&*moving_series, &*moving), cancelled);
+    if cancelled.load(Ordering::Acquire) {
+        return Err(abandoned());
+    }
+    Ok(result?)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1317,6 +1349,11 @@ mod protocol_tests {
         assert_eq!(engine.json(json!({"op": "processCounters"})).0, 200);
         let (status, length) = engine.json(json!({"op": "measure", "body": {"seriesId": id, "points": [[0, 0, 0], [1, 0, 0]], "kind": "length"}}));
         assert_eq!((status, length["value"].clone()), (200, json!(1.0)));
+        let revision = imported["series"][0]["sourceRevision"].clone();
+        let (status, refused) = engine.json(json!({"op": "register", "body": {"fixedId": id, "movingId": id, "fixedRevision": revision, "movingRevision": revision}}));
+        assert_eq!((status, refused["note"]["code"].clone()), (422, json!("registration.needsVolumes")), "one slice is no volume to align");
+        let (status, _) = engine.json(json!({"op": "register", "body": {"fixedId": id, "movingId": id, "fixedRevision": 0, "movingRevision": revision}}));
+        assert_eq!(status, 409, "a series an import replaced is refused");
         assert_eq!(engine.json(json!({"op": "exportCancel", "body": {"operation": "none"}})).1, json!({"requested": false}));
         assert_eq!(engine.json(json!({"op": "removeSeries", "body": {"ids": [id]}})).1, json!({"removed": 1, "remaining": 0}));
         let (status, error) = engine.json(json!({"op": "volume", "body": {"id": id}}));
