@@ -159,7 +159,7 @@ The PNG is measured twice, once as a direct selection and once through **Open fi
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout.
+- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
 - A click on the MIP sends the linked panes to a lesion.
 - A pane moved and kept changes how the next PET/CT opens.
 - Undo restores the screen from before, and can be kept too.
@@ -246,10 +246,10 @@ gated SPECT is numbered before the summed one. The second is a whole-body scan: 
 anterior and posterior views, named by their detectors' View Code Sequence.
 `check-gamma-camera.cjs` covers them:
 
-- The SPECT/CT opens as CT · SPECT · fused · MIP with no click. The SPECT is placed from its detector geometry, fused on
+- SPECT/CT opens with the first image. Requesting its nuclear medicine screen shows CT, SPECT, fusion and MIP. The SPECT is placed from its detector geometry, fused on
   its own scale, and nothing on it is called SUV.
 - A click on the SPECT MIP sends the linked panes to the vertebral lesion.
-- The whole body opens with ANT and POST side by side. Each pane names its frame's view and detector, both share one
+- The requested whole-body screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share one
   window, and each pages on its own. Undo puts the linking back.
 - The projections name their detector.
 - The gated SPECT opens as 8 placed series in gate order, each named "Gate n/8 · … s acquired" with its own Time Slot

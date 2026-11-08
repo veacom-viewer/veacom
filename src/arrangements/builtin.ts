@@ -4,7 +4,7 @@ import type { Arrangement } from './index';
 
 /** Four views for reporting, available in the layout picker. Both layouts use the same kept preferences. */
 export const PET_CT_READING: Arrangement = {
-  id: 'pet-ct', when: 'open', name: 'arrangement.petCt',
+  id: 'pet-ct', when: 'screen', name: 'arrangement.petCt',
   roles: {
     pet: { modality: 'PT', prefer: ['corrected', 'slices'] },
     ct: { modality: 'CT', of: 'pet', frame: 'same', prefer: ['corrected', 'sameGrid', 'overlap', 'slices'] },
@@ -22,6 +22,7 @@ export const PET_CT_READING: Arrangement = {
 
 export const PET_CT: Arrangement = {
   ...PET_CT_READING,
+  when: 'open',
   grid: [1, 1],
   panes: [{ role: 'ct', plane: 'axial', show: 'fused', over: 'pet' }],
   notice: { key: 'arrangement.petCt.fused' },
@@ -50,10 +51,10 @@ export const PET_FOLLOW_UP: Arrangement = {
   notice: { key: 'arrangement.petFollowUp.notice' },
 };
 
-/** A bone scan's whole body, applied when one opens: the anterior and posterior views side by side, inverted grey, one
+/** A bone scan's requested whole-body screen: the anterior and posterior views side by side, inverted grey, one
  * scale for both, each paging on its own. */
 export const WHOLE_BODY: Arrangement = {
-  id: 'whole-body', when: 'open', name: 'arrangement.wholeBody',
+  id: 'whole-body', when: 'screen', name: 'arrangement.wholeBody',
   roles: { body: { modality: 'NM', imageType: 'WHOLE BODY', views: ['ANT', 'POST'] } },
   grid: [1, 2],
   panes: [
@@ -64,11 +65,11 @@ export const WHOLE_BODY: Arrangement = {
   notice: { key: 'arrangement.wholeBody.notice' },
 };
 
-/** The SPECT/CT screen, applied when a reconstructed SPECT opens with the CT acquired with it: CT · SPECT (inverted grey)
+/** The requested SPECT/CT screen for a reconstructed SPECT and its CT: CT · SPECT (inverted grey)
  * · fused · MIP, linked by the crosshair. A SPECT has no SUV here, so every pane keeps its own window. Of a gated SPECT's
  * reconstructions it takes the summed one, which holds all the counts, and a gate only when there is no other. */
 export const SPECT_CT: Arrangement = {
-  id: 'spect-ct', when: 'open', name: 'arrangement.spectCt',
+  id: 'spect-ct', when: 'screen', name: 'arrangement.spectCt',
   roles: {
     spect: { modality: 'NM', volume: true, prefer: ['ungated', 'corrected', 'slices'] },
     ct: { modality: 'CT', of: 'spect', frame: 'same', prefer: ['corrected', 'sameGrid', 'overlap', 'slices'] },
@@ -124,6 +125,10 @@ export const FUSION: Arrangement = {
   panes: [{ role: 'ct', show: 'fused', over: 'overlay' }],
 };
 
-/** Tried in this order; the first whose roles are all found applies. A bone scan holding both a whole body and a
- * SPECT/CT opens on the whole body, as it is read first. */
+/** The first arrangement matching the trigger and all required roles applies. */
 export const BUILTIN_ARRANGEMENTS: readonly Arrangement[] = [PET_FOLLOW_UP, PET_CT, WHOLE_BODY, SPECT_CT, DWI_ADC, ADC_DWI, SIDE_BY_SIDE, FUSION];
+
+/** The menu beside Fusion prefers PET follow-up when a prior matches, and whole-body over SPECT/CT. */
+export const NUCLEAR_MEDICINE_SCREENS: readonly Arrangement[] = [
+  { ...PET_FOLLOW_UP, when: 'screen' }, PET_CT_READING, WHOLE_BODY, SPECT_CT,
+];

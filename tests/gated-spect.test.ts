@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 // the fusion button keep the summed reconstruction while there is one.
 import { afterEach, describe, it } from 'node:test';
 import { match } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, SPECT_CT } from '../src/arrangements/builtin';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, SPECT_CT } from '../src/arrangements/builtin';
 import { findRole, ROLE_RANKS } from '../src/arrangements/roles';
 import { fusesAsOverlay, petScale } from '../src/imaging/fusion';
 import { phaseLabel, topRightLines } from '../src/ui/overlayCorners';
@@ -34,13 +34,13 @@ afterEach(() => setLocale('en'));
 
 describe('a gated SPECT beside its summed reconstruction', () => {
   it('opens the SPECT/CT screen on the summed SPECT, though its gates come first', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, ...gates, summed] })!;
+    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, ...gates, summed] })!;
     assert.equal(plan.arrangement.id, 'spect-ct');
     assert.deepEqual(plan.panes.map(pane => pane.series.id), ['ct', 'summed', 'ct', 'summed']);
     assert.equal(plan.panes[2].spec.over, 'spect');
   });
   it('opens it on the first gate when the study holds no summed SPECT', () => {
-    const plan = match([SPECT_CT], 'open', { series: [ct, ...gates] })!;
+    const plan = match([SPECT_CT], 'screen', { series: [ct, ...gates] })!;
     assert.equal(plan.roles.spect.id, 'gate-1-1');
   });
   it('ranks a gate below any summed reconstruction, and leaves PET as it was', () => {
@@ -126,14 +126,16 @@ describe('the gates of one gated file', () => {
 describe('the SPECT/CT screen', () => {
   it('takes a SPECT that has a CT in its frame of reference before a better-ranked one that has none', () => {
     const elsewhere = { ...summed, id: 'elsewhere', frameOfReferenceUid: 'another frame' };
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, ...gates, elsewhere] })!;
+    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, ...gates, elsewhere] })!;
     assert.equal(plan.arrangement.id, 'spect-ct');
     assert.deepEqual(plan.panes.map(pane => pane.series.id), ['ct', 'gate-1-1', 'ct', 'gate-1-1']);
     // A summed SPECT in the CT's frame still comes first.
-    assert.equal(match([SPECT_CT], 'open', { series: [ct, ...gates, elsewhere, summed] })!.roles.spect.id, 'summed');
+    assert.equal(match([SPECT_CT], 'screen', { series: [ct, ...gates, elsewhere, summed] })!.roles.spect.id, 'summed');
     // As does a PET with its CT, before a corrected PET with none.
     const pets = [series({ id: 'pet-elsewhere', modality: 'PT', description: 'PET AC', frameOfReferenceUid: 'another frame' }),
       series({ id: 'pet', modality: 'PT', description: 'PET NAC' })];
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, ...pets] })?.roles.pet?.id, 'pet');
+    const context = { series: [ct, ...pets] };
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', context)?.roles.pet?.id, 'pet');
+    assert.equal(match(NUCLEAR_MEDICINE_SCREENS, 'screen', context)?.roles.pet?.id, 'pet');
   });
 });

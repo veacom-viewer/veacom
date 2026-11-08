@@ -438,6 +438,17 @@ pub enum PixelBuffer {
     F64(Vec<f64>),
 }
 impl PixelBuffer {
+    /// Bytes retained by the pixel allocation, including spare capacity after removing an alpha channel.
+    pub fn allocated_bytes(&self) -> usize {
+        match self {
+            Self::I16(v) => v.capacity() * size_of::<i16>(),
+            Self::U16(v) => v.capacity() * size_of::<u16>(),
+            Self::U8(v) => v.capacity(),
+            Self::F32(v) => v.capacity() * size_of::<f32>(),
+            Self::F64(v) => v.capacity() * size_of::<f64>(),
+        }
+    }
+
     pub fn is_padding(&self, source: &SourceSeries, frame: usize, value: f64) -> bool {
         let metadata = source.frames.get(frame).map(|f| &f.metadata);
         if value.is_nan() {

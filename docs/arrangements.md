@@ -1,6 +1,6 @@
 # Arrangements
 
-The study arranges itself, the reader corrects it, VEAcom remembers. An arrangement is data, not code: a short declarative description of how a study is laid out when it opens. There are no specialty modules, menus or toolbar buttons. A specialty is an arrangement over a few shared primitives: roles, linking, fusion of any two series, projections, quantity-aware display, ROI/VOI.
+An arrangement defines which series fill the panes, how they link and which image is fused or projected. It can open with the study or when the reader selects a screen.
 
 ## The PET/CT screen, as data
 
@@ -20,7 +20,7 @@ The study arranges itself, the reader corrects it, VEAcom remembers. An arrangem
 }
 ```
 
-PET/CT opens in one axial pane with PET uptake over the matching CT. The Layout menu offers a four-pane reading view with CT, PET, fusion and MIP. It also offers PET follow-up when a suitable prior is loaded. A layout the reader previously kept still takes precedence. The built-in arrangements live in `src/arrangements/builtin.ts`.
+PET/CT opens in one axial pane with PET uptake over the matching CT. Layout offers a four-pane reading view with CT, PET, fusion and MIP. It also offers follow-up when a suitable prior is loaded. The menu beside Fusion opens the applicable nuclear medicine screen for the active patient and study. A PET layout the reader previously kept still takes precedence on import.
 
 ## Vocabulary
 
@@ -43,7 +43,8 @@ A required role that finds no series means no match. An anchor takes the best se
 
 | Trigger | Arrangement | Behaviour kept from today |
 |---|---|---|
-| A study opens (`importStudies`) | Kept PET follow-up, `pet-ct`, `whole-body`, `spect-ct`, in that order | PET follow-up requires an earlier PET with matching patient identity and tracer. PET and CT series can arrive separately. A mixed bone study opens on the whole body before SPECT/CT. If no arrangement matches, the first image opens in the active pane. [PET quantification](pet-quantification.md) |
+| A study opens (`importStudies`) | Kept PET follow-up, then `pet-ct` | A matching PET/CT opens in 1×1 fusion unless the reader has kept a different layout. Other studies open their first image in the active pane. |
+| Nuclear medicine screen beside Fusion | PET follow-up, four-pane PET/CT, whole body or SPECT/CT | The reader’s active patient and study supply the screen. Only a follow-up prior is drawn from the wider session and must match patient and tracer. [PET quantification](pet-quantification.md) |
 | One series picked into a pane (`selectSeries`, `dropSeries`) | `dwi-adc`, `adc-dwi` | Only with exactly two panes and no three-plane MPR. The partner goes into the other pane, linking turns on, and the pane says "ADC added to this pane" with Undo. |
 | Several series picked together (`openSideBySide`) | `side-by-side` | `grid` by count: 2 → 1×2, 3 → 1×3, 4 → 2×2, 5–6 → 2×3. The first picked goes first, at most six, with no notice. |
 | The fusion button (`startFusion`, `fuseInActive`) | `fusion` | Its `overlay` role (a PET or a reconstructed SPECT) and `ct` role replace `bestPartner`'s callback and scoring. They give the same ranking, and `tests/fusion.test.ts` stays as it is. For a CT, `ungated` picks a summed SPECT over its gates; a gate shown in the pane is fused itself. |
@@ -52,7 +53,7 @@ An automatic arrangement records no usage action. The pane notice names it, such
 
 ## Keep this
 
-Only `open` arrangements can be kept. VEAcom offers **Keep this** in the pane after any of these changes on an arranged screen:
+Automatic and requested screens can be kept. VEAcom offers **Keep this** after a reader changes an arranged screen:
 
 - a pane moved by its grip;
 - a pane's plane changed;
@@ -60,7 +61,7 @@ Only `open` arrangements can be kept. VEAcom offers **Keep this** in the pane af
 
 Keep derives a variant from the current panes. It records the order and each pane's role, plane and `show`. It also records each pane's look: palette, invert, and a window set by hand, in the series' quantity (SUV or HU). SUV is normalised to the patient, so a kept SUV window means the same on the next study.
 
-After Undo, the notice offers **Keep this** too. Keeping that stores the arrangement as `off`, so a reader who never wants the screen says so once.
+Undo of an automatic layout offers **Keep this** to turn automatic opening off. Undo of a requested screen restores the previous view. The reading screen remains available on request.
 
 Variants are stored in `localStorage` under `veacom:arrangements:v1` (per user, per computer) and validated on read, as `readSettings` does. The next matching study opens with the variant; its notice reads "Your PET/CT layout" and still offers Undo. The display panel's Workspace section lists what was kept, and **Forget kept layouts** brings VEAcom's own arrangements back.
 
@@ -90,14 +91,14 @@ A gamma camera file says what each frame is outside the frames, and the engine r
 - **Gated SPECT.** When Image Type says `RECON GATED TOMO`, the file holds one volume per gate. Its frames go by R-R Interval Vector, Time Slot Vector and Slice Vector, the slice fastest (PS3.3 Table C.8-8). Each gate becomes a phase of its file (`GroupKey.temporal` in `native/src/ingest.rs`, with the file's SOP Instance UID in the key), so it is its own series, placed as a reconstructed SPECT is: planes, linking, the crosshair, the MIP and fusion. The series list and the corner name it "Gate 3/8 · 118 s acquired" ("Kapı 3/8 · 118 sn çekim"). The time is the gate's Time Slot Time (0054,0073), the time it counted over all its beats (C.8.4.13.1.2), never a delay after the R wave. Without it a gate is named by number only. All gates of a file share one window, the span of each gate's own, so a gate that counted more looks brighter, as NM workstations show them. Fused over a CT, a gate tops the colour scale at that shared window's top, so the difference stays. The gates of another file, in the same series or gated otherwise, are another set of gates, never part of these volumes. DICOM export copies files whole, so a gate exports with every gate of its file; the export window says so.
   - **Several R-R windows.** An R-R window is a range of beat lengths: normal beats in one, ectopic ones in another (C.8.4.8.1.6). Each window's beats are cut into the same Number of Time Slots, so its gates are a cardiac cycle of their own. The gates are numbered window by window, as the file orders them, and never merged across windows. Where a file holds several windows, a gate is named after its window first, with the beat lengths it took from the window's Low and High R-R Value: "R-R 2 (300–640 ms) · Gate 3/4". A file without an R-R Interval Vector, neither named by the Frame Increment Pointer nor held, has one window, but only if Number of R-R Intervals is absent or 1. A vector the file holds must give every frame a window within that count.
   - **Nothing guessed.** A gated file is split only when its gates are whole volumes that can be placed: every time slot and window within their counts, each gate holding each slice once, Number of Slices × Number of Time Slots × Number of R-R Intervals equal to Number of Frames, the counts checked against the frames before any gate is made, and the slice geometry of a reconstructed SPECT. Otherwise its frames stay one stack, as before. Gated planar frames (`GATED`, a MUGA) and gated projections (`GATED TOMO`) stay planar, unsplit.
-  - **No cardiac analysis.** No LVEF, polar maps or reorientation. The SPECT/CT screen and the fusion button prefer a summed SPECT (`ungated`), which holds all the counts; a study with only gates, or whose summed SPECT has no CT in its frame of reference, opens on the first gate.
+  - **No cardiac analysis.** No LVEF, polar maps or reorientation. The SPECT/CT screen and the fusion button prefer a summed SPECT (`ungated`), which holds all the counts; when only gates have a matching CT, the requested SPECT/CT screen uses the first matching gate.
 - **Activity, never SUV.** A SPECT reads in Bq/ml when a Real World Value Mapping item maps its stored values to Bq/ml (UCUM), as the NM Image Module stores it, or when it gives PET's Units `BQML`. A gamma camera image never has an SUV here: NM records the dose in MBq, not Bq as PET does, and nothing in the file says what the values are decay-corrected to.
 
 ### The SPECT/CT screen, as data
 
 ```json
 {
-  "id": "spect-ct", "name": "arrangement.spectCt", "when": "open",
+  "id": "spect-ct", "name": "arrangement.spectCt", "when": "screen",
   "roles": {
     "spect": { "modality": "NM", "volume": true, "prefer": ["ungated", "corrected", "slices"] },
     "ct": { "modality": "CT", "of": "spect", "frame": "same", "prefer": ["corrected", "sameGrid", "overlap", "slices"] }
@@ -110,7 +111,7 @@ A gamma camera file says what each frame is outside the frames, and the engine r
     { "role": "spect", "plane": "coronal", "show": "mip", "display": { "palette": "gray", "invert": true } }
   ],
   "link": "crosshair",
-  "notice": "arrangement.spectCt.notice"
+  "notice": { "key": "arrangement.spectCt.notice" }
 }
 ```
 
@@ -120,7 +121,7 @@ The SPECT is fused as a PET without SUV is: on its own scale, its 99.5th percent
 
 ```json
 {
-  "id": "whole-body", "name": "arrangement.wholeBody", "when": "open",
+  "id": "whole-body", "name": "arrangement.wholeBody", "when": "screen",
   "roles": { "body": { "modality": "NM", "imageType": "WHOLE BODY", "views": ["ANT", "POST"] } },
   "grid": [1, 2],
   "panes": [
@@ -128,7 +129,7 @@ The SPECT is fused as a PET without SUV is: on its own scale, its 99.5th percent
     { "role": "body", "view": "POST", "display": { "palette": "gray", "invert": true } }
   ],
   "link": "none",
-  "notice": "arrangement.wholeBody.notice"
+  "notice": { "key": "arrangement.wholeBody.notice" }
 }
 ```
 

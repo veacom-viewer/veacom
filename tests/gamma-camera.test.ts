@@ -5,8 +5,8 @@ import assert from 'node:assert/strict';
 // anterior and posterior views side by side, a SPECT fused as a PET is but never read in SUV, and frames named by
 // their view in the corner.
 import { afterEach, describe, it } from 'node:test';
-import { deriveKept, match, paneView, readKept, withKept, type ShownPane } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, SPECT_CT, WHOLE_BODY } from '../src/arrangements/builtin';
+import { activeStudyContext, deriveKept, match, paneView, readKept, withKept, type ShownPane } from '../src/arrangements';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, SPECT_CT, WHOLE_BODY } from '../src/arrangements/builtin';
 import { findRole } from '../src/arrangements/roles';
 import { fusesAsOverlay, fusesOver, fusionScaleMaxKey, petAutoLevel, petHasSuv, petScale } from '../src/imaging/fusion';
 import { quantityScale } from '../src/imaging/quantity';
@@ -43,7 +43,7 @@ afterEach(() => setLocale('en'));
 
 describe('the SPECT/CT screen', () => {
   it('opens CT · SPECT · fused · MIP with the reconstructed SPECT, not its projections, linked by the crosshair', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, projections, spect()] })!;
+    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, projections, spect()] })!;
     assert.equal(plan.arrangement.id, 'spect-ct');
     assert.deepEqual([plan.roles.spect.id, plan.roles.ct.id], ['spect', 'ct']);
     assert.deepEqual(plan.grid, [2, 2]);
@@ -52,14 +52,14 @@ describe('the SPECT/CT screen', () => {
     assert.equal(plan.arrangement.link, 'crosshair');
   });
   it('needs a reconstructed SPECT and the CT in its frame of reference', () => {
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, projections] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [spect()] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, spect('elsewhere', { frameOfReferenceUid: 'other' })] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, spect('other-study', { studyUid: 'other' })] }), null);
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, spect('flat', planar)] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, projections] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [spect()] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, spect('elsewhere', { frameOfReferenceUid: 'other' })] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, spect('other-study', { studyUid: 'other' })] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, spect('flat', planar)] }), null);
   });
   it('shows the SPECT inverted grey in its own window, never in SUV, and its MIP as a whole-volume projection', () => {
-    const plan = match([SPECT_CT], 'open', { series: [ct, spect()] })!;
+    const plan = match([SPECT_CT], 'screen', { series: [ct, spect()] })!;
     const [ctPane, spectPane, fusedPane, mipPane] = plan.panes.map(pane => paneView(pane.series, pane.spec, view({ windowCenter: pane.series.windowCenter, windowWidth: pane.series.windowWidth })));
     assertFields(ctPane, { inverted: false, windowCenter: 40 });
     assertFields(spectPane, { mode: 'source', inverted: true, windowMode: 'dicom', windowCenter: 5000, windowWidth: 10000 });
@@ -70,8 +70,17 @@ describe('the SPECT/CT screen', () => {
 });
 
 describe('a whole body side by side', () => {
+  it('limits a requested screen to the active patient when another patient has the same study UID', () => {
+    const foreign = { ...wholeBody('a'), patientKey: 'patient-one' };
+    const own = { ...wholeBody('z'), patientKey: 'patient-two' };
+    const active = { ...ct, patientKey: own.patientKey };
+    assert.equal(foreign.studyUid, active.studyUid);
+    assert.equal(match(NUCLEAR_MEDICINE_SCREENS, 'screen', activeStudyContext(active, [foreign, active])), null);
+    const plan = match(NUCLEAR_MEDICINE_SCREENS, 'screen', activeStudyContext(active, [foreign, active, own]));
+    assert.deepEqual(plan?.panes.map(pane => pane.series.id), [own.id, own.id]);
+  });
   it('opens the anterior and posterior views side by side, inverted grey, each paging on its own', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [wholeBody()] })!;
+    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [wholeBody()] })!;
     assert.equal(plan.arrangement.id, 'whole-body');
     assert.deepEqual(plan.grid, [1, 2]);
     assert.equal(plan.arrangement.link, 'none');
@@ -79,28 +88,28 @@ describe('a whole body side by side', () => {
     assert.deepEqual(panes.map(pane => [pane.slice, pane.inverted]), [[0, true], [1, true]]);
   });
   it('finds each view in whichever frame holds it', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [wholeBody('wb', [{ view: 'POST' }, { view: 'ANT' }])] })!;
+    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [wholeBody('wb', [{ view: 'POST' }, { view: 'ANT' }])] })!;
     assert.deepEqual(plan.panes.map(pane => paneView(pane.series, pane.spec, view()).slice), [1, 0]);
   });
   it('needs a whole-body scan whose frames name both views', () => {
     for (const labels of [[{ detector: 1 }, { detector: 2 }], [{ view: 'ANT' }], [{ view: 'ANT' }, { view: 'LAO' }], [undefined, undefined]]) {
-      assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [wholeBody('wb', labels)] }), null, JSON.stringify(labels));
+      assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [wholeBody('wb', labels)] }), null, JSON.stringify(labels));
     }
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [scan('spots', 'ORIGINAL\\PRIMARY\\STATIC\\EMISSION', [{ view: 'ANT' }, { view: 'POST' }])] }), null);
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [scan('spots', 'ORIGINAL\\PRIMARY\\STATIC\\EMISSION', [{ view: 'ANT' }, { view: 'POST' }])] }), null);
   });
   it('opens a bone scan holding a whole body and a SPECT/CT on the whole body, read first', () => {
-    assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [ct, spect(), projections, wholeBody()] })!.arrangement.id, 'whole-body');
+    assert.equal(match(BUILTIN_ARRANGEMENTS, 'screen', { series: [ct, spect(), projections, wholeBody()] })!.arrangement.id, 'whole-body');
     assert.ok(BUILTIN_ARRANGEMENTS.indexOf(WHOLE_BODY) < BUILTIN_ARRANGEMENTS.indexOf(SPECT_CT));
   });
   it('keeps the views where the reader moved them, and opens the next whole body so', () => {
-    const plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: [wholeBody()] })!;
+    const plan = match(BUILTIN_ARRANGEMENTS, 'screen', { series: [wholeBody()] })!;
     const shown: ShownPane[] = plan.panes.map(pane => ({ seriesId: pane.series.id, view: paneView(pane.series, pane.spec, view()), fusedWith: null }));
     [shown[0], shown[1]] = [shown[1], shown[0]];
     const variant = deriveKept(plan, shown, [1, 2])!;
     assertFields(variant, { grid: [1, 2], panes: [{ role: 'body', view: 'POST', display: { invert: true } }, { role: 'body', view: 'ANT', display: { invert: true } }] });
     const kept = readKept(JSON.stringify({ 'whole-body': variant }));
     assert.deepEqual(kept['whole-body'], variant);
-    const next = match(withKept(kept), 'open', { series: [wholeBody('wb2')] })!;
+    const next = match(withKept(kept), 'screen', { series: [wholeBody('wb2')] })!;
     assert.equal(next.arrangement.kept, true);
     assert.deepEqual(next.panes.map(pane => paneView(pane.series, pane.spec, view()).slice), [1, 0]);
   });

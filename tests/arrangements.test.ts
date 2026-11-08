@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
 import { deriveKept, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Plan } from '../src/arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, PET_CT, PET_CT_READING, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
 import { findRole, ROLE_RANKS } from '../src/arrangements/roles';
 import { isProjection, PROJECTION_STEPS } from '../src/imaging/geometry';
 import { windowGrey } from '../src/imaging/viewState';
@@ -62,7 +62,7 @@ describe('the PET/CT screen', () => {
     assert.equal(match(BUILTIN_ARRANGEMENTS, 'open', { series: [diagnostic, ct, ac] })!.roles.ct.id, 'ct');
   });
   it('builds each pane: the MIP as a whole-volume projection, the PET inverted grey at SUV 0–5', () => {
-    const plan = match([PET_CT_READING], 'open', { series: [ct, ac] })!;
+    const plan = match([PET_CT_READING], 'screen', { series: [ct, ac] })!;
     const [ctPane, petPane, , mipPane] = plan.panes.map(pane => paneView(pane.series, pane.spec, view()));
     assertFields(ctPane, { mode: 'source', plane: 'axial', inverted: false, windowMode: 'dicom' });
     assertFields(petPane, { mode: 'source', inverted: true, windowMode: 'manual' });
@@ -73,14 +73,14 @@ describe('the PET/CT screen', () => {
   });
   it('keeps a PET without SUV in its own window, never in SUV', () => {
     const uncalibrated = pet('raw', { suvFactor: null });
-    const plan = match([PET_CT_READING], 'open', { series: [ct, uncalibrated] })!;
+    const plan = match([PET_CT_READING], 'screen', { series: [ct, uncalibrated] })!;
     const petPane = paneView(plan.panes[1].series, plan.panes[1].spec, view({ windowCenter: 1000, windowWidth: 2000 }));
     assertFields(petPane, { inverted: true, windowMode: 'dicom', windowCenter: 1000, windowWidth: 2000 });
   });
 });
 
 describe('Keep this', () => {
-  const ac = pet('ac'), plan = match([PET_CT_READING], 'open', { series: [ct, ac] })!;
+  const ac = pet('ac'), plan = match([PET_CT_READING], 'screen', { series: [ct, ac] })!;
   const shown = (plan: Plan) => plan.panes.map(pane => ({ seriesId: pane.series.id, view: paneView(pane.series, pane.spec, view()), fusedWith: pane.spec.show === 'fused' ? ac.id : null }));
   it('keeps the panes as moved, with each one\'s role, plane, kind and look, and opens the next study so', () => {
     const panes = shown(plan);
@@ -94,7 +94,10 @@ describe('Keep this', () => {
     assert.deepEqual(next.panes.map(pane => [pane.series.id, pane.spec.show]), [['ac2', 'plain'], ['ct2', 'plain'], ['ct2', 'fused'], ['ac2', 'mip']]);
   });
   it('keeps the screen without the arrangement too: a kept "off" opens PET/CT studies unarranged', () => {
-    assert.equal(match(withKept(readKept('{"pet-ct":{"off":true}}')), 'open', { series: [ct, ac] }), null);
+    const kept = readKept('{"pet-ct":{"off":true}}');
+    const context = { series: [ct, ac] };
+    assert.equal(matchOnOpen(kept, context), null);
+    assert.deepEqual(match(withKept(kept, NUCLEAR_MEDICINE_SCREENS), 'screen', context)?.grid, [2, 2]);
   });
   it('drops what it cannot trust when reading', () => {
     assert.deepEqual(readKept('not json'), {});
@@ -159,8 +162,10 @@ describe('the rules arrangements replace keep their behaviour', () => {
 describe('the PET follow-up screen', () => {
   const ac = pet('ac'), current = [ct, ac];
   const prior = (id: string, extra: Partial<Series> = {}) => pet(id, { studyUid: 'prior', studyDate: '19991001', frameOfReferenceUid: 'prior-frame', ...extra });
-  it('opens a PET study with its prior side by side, each over its MIP, when the prior is loaded', () => {
-    const before = prior('before'), plan = match(BUILTIN_ARRANGEMENTS, 'open', { series: current, session: [...current, before, prior('before-nac', { description: 'PET NAC' })] })!;
+  it('opens one fused pane with a loaded prior and offers current and prior PETs side by side on request', () => {
+    const before = prior('before'), context = { series: current, session: [...current, before, prior('before-nac', { description: 'PET NAC' })] };
+    assert.deepEqual(matchOnOpen({}, context)?.grid, [1, 1]);
+    const plan = match(NUCLEAR_MEDICINE_SCREENS, 'screen', context)!;
     assert.equal(plan.arrangement.id, 'pet-follow-up');
     assert.equal(plan.roles.pet.id, 'ac');
     assert.equal(plan.roles.prior.id, 'before');

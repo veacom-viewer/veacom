@@ -78,7 +78,10 @@ async function main() {
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 1);
     assert.deepEqual((await state()).view, originalView);
     check('Undo restores the fused view, including slice, window, zoom and the workspace saved by MPR');
-    await choosePetLayout(page);
+    await page.getByTestId('tool-fusion-menu').click();
+    assert.match(await page.locator('[data-action="nm-screen"]').textContent(), /PET\/CT/);
+    await page.locator('[data-action="nm-screen"]').click();
+    await settled();
     s = await state();
     assert.deepEqual(s.layout, [2, 2]);
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id, pet.id, ct.id, pet.id]);
