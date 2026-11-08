@@ -6,41 +6,26 @@
 // on a few helper Workers that share the module's memory (engine.helper.ts, web/engine/src/helpers.rs). To leave the
 // computer room, the engine works on at most half its cores and never more than 4; the helpers sleep when there is
 // nothing to decode. Elsewhere, or if the helpers cannot start, the single-thread build runs.
-import { ownScript } from './trusted-types';
-
-// The site's Trusted Types rule holds in Workers too: the helpers are started from here, and only this site's scripts
-// may be started.
-(self as { trustedTypes?: { createPolicy(name: string, rules: object): unknown } }).trustedTypes?.createPolicy('default', { createScriptURL: ownScript });
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
 type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
 
 const THREADS = Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
-/** Kept so the helpers live as long as this Worker. */
-const helpers: Worker[] = [];
 
-/** Starts `count` helper Workers on the threads build's module and memory. A browser that cannot start a Worker from
- * a Worker, or a helper that fails to load, would leave the start waiting for ever: then, or after 15 s, the
- * single-thread build is used instead. */
-async function startHelpers(threaded: ThreadedEngine, count: number): Promise<void> {
+/** Asks the page to start `count` helper Workers on the threads build's module and memory, and waits for its answer.
+ * The page starts them, not this Worker: the threads build aborts on a panic, and a helper that stops so must reach the
+ * page, which then replaces the engine. Sent here, its error would wait for this Worker, which may be the very thread
+ * waiting for that helper. The page gives up after 15 s; then the single-thread build is used. */
+function startHelpers(threaded: ThreadedEngine, count: number): Promise<void> {
   const [module, memory] = threaded.helperSetup() as [WebAssembly.Module, WebAssembly.Memory];
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const started = Array.from({ length: count }, () => new Promise<void>((resolve, reject) => {
-    const helper = new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' });
-    helpers.push(helper);
-    helper.onmessage = () => resolve();
-    helper.onerror = () => reject(new Error('a thread could not start'));
-    helper.postMessage({ module, memory });
-  }));
-  const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('the threads did not start in time')), 15_000); });
-  try {
-    await Promise.race([Promise.all(started), late]);
-  } catch (error) {
-    for (const helper of helpers.splice(0)) helper.terminate();
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
+  const { port1, port2 } = new MessageChannel();
+  return new Promise((resolve, reject) => {
+    port1.onmessage = ({ data }) => {
+      port1.close();
+      if (data.ok) resolve(); else reject(new Error(data.error || 'the threads did not start'));
+    };
+    scope.postMessage({ type: 'helpers', module, memory, count, port: port2 }, [port2]);
+  });
 }
 
 async function load(): Promise<{ engine: Engine; threads: number; memory: WebAssembly.Memory }> {
@@ -61,7 +46,8 @@ async function load(): Promise<{ engine: Engine; threads: number; memory: WebAss
 let engine: Engine;
 
 export type EngineRequest =
-  | { id: number; op: 'init'; cancel: SharedArrayBuffer }
+  // `cancel`: the page's cancel flag, where the page is cross-origin isolated and so has shared memory.
+  | { id: number; op: 'init'; cancel?: SharedArrayBuffer }
   | { id: number; op: 'import'; files: { path: string; file: File }[]; roots: string[] }
   | { id: number; op: 'list' }
   | { id: number; op: 'remove'; ids: string[] }
@@ -99,15 +85,26 @@ async function heads(files: { file: File }[]): Promise<(Uint8Array | undefined)[
 }
 
 scope.onmessage = async ({ data }) => {
+  let loaded: Awaited<typeof ready>;
   try {
-    const loaded = await ready;
+    loaded = await ready;
+  } catch (error) {
+    // The engine did not load (its module could not be fetched or compiled): nothing here can answer any request. The
+    // page treats this as a crash, so it replaces this Worker and stops trying after a few attempts. wasm-bindgen
+    // reports a failed fetch as a plain Error, which below would read as one of the engine's own answers.
+    scope.postMessage({ id: data.id, ok: false, error: String((error as Error)?.message ?? error), fatal: true, detail: 'The engine could not load.' });
+    return;
+  }
+  try {
     let value: unknown, transfer: Transferable[] = [];
     switch (data.op) {
       case 'init': {
-        engine.watch((record: string) => scope.postMessage({ type: 'progress', value: JSON.parse(record) }), new Int32Array(data.cancel));
+        // Without shared memory the page cannot reach a flag while the engine works; this one stays 0.
+        engine.watch((record: string) => scope.postMessage({ type: 'progress', value: JSON.parse(record) }), new Int32Array(data.cancel ?? new ArrayBuffer(4)));
         // In the threads build the module's memory is shared: the page reads progress and sets the cancel flag in it.
+        // SharedArrayBuffer itself exists only where the page is cross-origin isolated.
         const [cancel, progress] = engine.sharedState();
-        const shared = loaded.memory.buffer instanceof SharedArrayBuffer ? { buffer: loaded.memory.buffer, cancel, progress } : undefined;
+        const shared = typeof SharedArrayBuffer === 'function' && loaded.memory.buffer instanceof SharedArrayBuffer ? { buffer: loaded.memory.buffer, cancel, progress } : undefined;
         value = { threads: loaded.threads, shared } satisfies EngineInfo;
         break;
       }

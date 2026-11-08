@@ -273,8 +273,9 @@ export interface DesktopBridge {
   /** Features this bridge lacks are `false`; without the field (the desktop) it has them all. */
   features?: Partial<Record<BridgeFeature, boolean>>;
   /** The browser build's engine runs in a Web Worker and hands pixels over directly, instead of a `veacom://`
-   *  capability URL (`getPixels`); the response has the same headers. */
-  fetchPixels?(request: { seriesId: string; generation: number; revision?: number; index?: number }): Promise<Response>;
+   *  capability URL (`getPixels`); the response has the same headers. `signal`: the caller giving up, which drops a
+   *  request still waiting, as the desktop's own fetch is cancelled. */
+  fetchPixels?(request: { seriesId: string; generation: number; revision?: number; index?: number }, signal?: AbortSignal): Promise<Response>;
   /** The saved interface language, passed by the main process ('tr' or 'en'). */
   locale?: string;
   /** Saves the interface language for the main process's own text and the next start. */

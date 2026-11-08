@@ -13,13 +13,31 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
-type Pending = { resolve: (value: never) => void; reject: (error: Error) => void; busy: boolean };
+/** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
+ * engine's flag for it, which its answer clears. */
+type Pending = { resolve: (value: never) => void; reject: (error: Error) => void; busy: boolean; op: Request['op']; abandoned?: boolean; cancelled?: boolean };
+interface CallOptions {
+  /** A job the progress bar shows (an import, a whole series): Cancel reaches it. */
+  busy?: boolean;
+  /** The caller's own abort: a request still waiting is dropped, a whole series still decoding is stopped. */
+  signal?: AbortSignal;
+  /** Told the request's number as soon as it waits, so it can be cancelled before it starts. */
+  onQueued?: (id: number) => void;
+}
 interface Selection { files: { path: string; file: File }[]; roots: string[]; zip: boolean }
 type Progress = { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean };
 
 const LOCALE_KEY = 'veacom.locale';
 /** How long a cancelled job may take to stop before the engine is replaced. */
 const CANCEL_GRACE_MS = 8000;
+/** After a crash the engine starts again after these pauses, as the desktop's engine process does
+ * (electron/engine-process.cjs). One more crash leaves it stopped until the page is reloaded, rather than restarting an
+ * engine that cannot start (a module that fails to load, say) for ever. */
+const RESTART_DELAYS_MS = [250, 1000];
+/** How many series one confirmation of a full cleanup lists (see `reviewPixels`). */
+const REVIEW_PAGE = 12;
+/** How long the threads build's helpers may take to start before the engine runs on one thread instead. */
+const HELPER_START_MS = 15_000;
 
 function storedLocale(): 'tr' | 'en' {
   try {
@@ -118,46 +136,78 @@ function download(name: string, data: Blob): void {
 
 export function createWebBridge(): DesktopBridge {
   let locale = storedLocale();
-  let generation = 0, restartCount = 0, requestId = 0, selectionNumber = 0;
-  let worker: Worker;
+  let generation = 0, restartCount = 0, crashes = 0, requestId = 0, selectionNumber = 0;
+  let worker: Worker | undefined;
   let state: CoreState = { status: 'starting', generation: 0, restartCount: 0 };
   let progress: Progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
-  let cancelTimer: ReturnType<typeof setTimeout> | undefined;
+  let cancelTimer: ReturnType<typeof setTimeout> | undefined, restartTimer: ReturnType<typeof setTimeout> | undefined;
   const pending = new Map<number, Pending>();
   const stateListeners = new Set<(state: CoreState) => void>();
   const selections = new Map<string, Selection>();
   const known = new Map<string, number>();
   /** Each series as the engine last listed it: its catalog revision, and what the export review names it by. */
   const described = new Map<string, Series>();
-  // The cancel flag the engine reads while it works: a job id, -1 for whatever runs, 0 for none.
-  const cancel = new Int32Array(new SharedArrayBuffer(4));
+  // The cancel flag the engine reads while it works: a job id, -1 for whatever runs, 0 for none. Only a cross-origin
+  // isolated page has shared memory. Elsewhere (a host without the site's headers) the single-thread engine runs and
+  // cannot see a flag while it works, so a Cancel there replaces the engine once CANCEL_GRACE_MS have passed.
+  const cancel = self.crossOriginIsolated ? new Int32Array(new SharedArrayBuffer(4)) : null;
   // In the threads build, the same flag and the progress record inside the engine's own shared memory: while a decode
   // runs on the pool, the engine's Worker waits for it and passes nothing on.
   let shared: { cancel: Int32Array; progress: Uint32Array } | null = null;
   let busyStage = '';
+  // The DICOM export under way, for its Cancel.
+  let exporting: { id: number; cancelled: boolean } | null = null;
+  // The threads build's helper Workers, started here for the engine Worker (see startHelpers).
+  let helpers: Worker[] = [];
 
   const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
-  const setCancel = (value: number) => { Atomics.store(cancel, 0, value); if (shared) Atomics.store(shared.cancel, 0, value); };
+  const setCancel = (value: number) => { if (cancel) Atomics.store(cancel, 0, value); if (shared) Atomics.store(shared.cancel, 0, value); };
+
+  /** Fails every request sent or waiting: the engine that had them answers none. */
+  function failPending(): void {
+    for (const { reject } of pending.values()) reject(new Error(t('engine.restartedReopen')));
+    pending.clear();
+  }
 
   /** A new engine generation: whatever the old engine was doing fails, and the interface hears of it. */
   function start(message?: string): void {
-    for (const { reject } of pending.values()) reject(new Error(t('engine.restartedReopen')));
-    pending.clear();
+    clearTimeout(restartTimer);
+    failPending();
     generation++;
     spawn();
     publish({ status: 'ready', generation, restartCount, ...(message ? { message } : {}) });
+  }
+
+  /** The engine crashed or could not start. It starts again after a pause, as on the desktop, but not a third time. */
+  function crashed(): void {
+    restartCount++;
+    stop();
+    failPending();
+    if (crashes >= RESTART_DELAYS_MS.length) {
+      publish({ status: 'failed', generation, restartCount, message: t('engine.reloadPage') });
+      return;
+    }
+    publish({ status: 'restarting', generation, restartCount, message: t('engine.restartingNow') });
+    restartTimer = setTimeout(() => start(t('engine.restartedEmpty')), RESTART_DELAYS_MS[crashes++]);
   }
 
   // WebAssembly memory only grows. Once every series is closed and nothing runs, a fresh engine Worker takes the old
   // one's place and the browser gets its memory back. Nothing open refers to the old engine, so the generation stays.
   let releaseWhenIdle = false, releases = 0;
   function releaseMemory(): void {
+    // Files being imported fill the catalog again, and series listed since are open: nothing to give back. Asked again
+    // when the requests have drained, since an import answered by then has added its series.
+    if (known.size || [...pending.values()].some(request => request.op === 'import' && !request.abandoned)) {
+      releaseWhenIdle = false;
+      return;
+    }
     releaseWhenIdle = pending.size > 0;
     if (releaseWhenIdle) return;
     spawn();
     // For the measurement tools (web/tools): how many times the memory was given back.
     document.documentElement.dataset.engineReleases = String(++releases);
   }
+  const releaseWhenDrained = () => { if (releaseWhenIdle && !pending.size) setTimeout(() => { if (releaseWhenIdle) releaseMemory(); }); };
 
   // Requests wait here and go to the engine one at a time, as it works through them in order. A slice for the screen
   // (or a series' tags, or the list) goes ahead of whole series waiting before it: a series of 400 CT slices takes
@@ -167,7 +217,7 @@ export function createWebBridge(): DesktopBridge {
   const QUICK: ReadonlySet<string> = new Set(['frame', 'tags', 'list']);
   function dispatch(): void {
     dispatching = false;
-    if (inFlight !== null || !queue.length) return;
+    if (!worker || inFlight !== null || !queue.length) return;
     const first = queue.findIndex(item => item.request.op !== 'volume');
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
@@ -176,32 +226,45 @@ export function createWebBridge(): DesktopBridge {
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
   const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
 
-  /** A fresh engine Worker, in place of the old one. */
-  function spawn(): void {
+  /** Ends the engine Worker and its helpers, and forgets what was waiting for them. */
+  function stop(): void {
     worker?.terminate();
+    worker = undefined;
+    for (const helper of helpers) helper.terminate();
+    helpers = [];
     queue = []; inFlight = null;
     known.clear(); clearTimeout(cancelTimer); shared = null; setCancel(0);
     progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
+  }
+
+  /** A fresh engine Worker, in place of the old one. */
+  function spawn(): void {
+    stop();
     const own = worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = ({ data }) => {
+    own.onmessage = ({ data }) => {
+      if (own !== worker) return;
       if (data.type === 'progress') { progress = data.value; return; }
+      if (data.type === 'helpers') { startHelpers(own, data); return; }
       if (data.id === inFlight) { inFlight = null; dispatch(); }
       const request = pending.get(data.id);
       if (!request) return;
       pending.delete(data.id);
-      if (releaseWhenIdle && !pending.size) setTimeout(() => { if (releaseWhenIdle) releaseMemory(); });
-      if (request.busy) { progress = { ...progress, running: false }; clearTimeout(cancelTimer); setCancel(0); }
-      if (data.ok) { request.resolve(data.value as never); return; }
+      releaseWhenDrained();
+      if (request.busy) progress = { ...progress, running: false };
+      if (request.busy || request.cancelled) { clearTimeout(cancelTimer); setCancel(0); }
       if (data.fatal) {
         console.error('The imaging engine stopped:', data.error, data.detail ?? '');
         request.reject(new Error(t('engine.restartedReopen')));
-        restartCount++; start(t('engine.restartedEmpty'));
+        crashed();
         return;
       }
+      if (request.abandoned) return;
+      if (data.ok) { request.resolve(data.value as never); return; }
       request.reject(new Error(coreErrorText(data.error, locale)));
     };
-    worker.onerror = () => { restartCount++; start(t('engine.restartedEmpty')); };
-    void call<EngineInfo>({ op: 'init', cancel: cancel.buffer as SharedArrayBuffer }).then(info => {
+    // A module that does not load, or an error outside any request.
+    own.onerror = () => { if (own === worker) crashed(); };
+    void call<EngineInfo>({ op: 'init', ...(cancel ? { cancel: cancel.buffer as SharedArrayBuffer } : {}) }).then(info => {
       if (own !== worker) return;
       if (info.shared) shared = { cancel: new Int32Array(info.shared.buffer, info.shared.cancel, 1), progress: new Uint32Array(info.shared.buffer, info.shared.progress, 4) };
       // For the measurement tools (web/tools): how many threads decode.
@@ -209,18 +272,80 @@ export function createWebBridge(): DesktopBridge {
     }, () => {});
   }
 
-  function call<T>(request: Request, busy = false): Promise<T> {
+  /** Starts the threads build's helper Workers for the engine Worker `engine`, on its module and memory, and tells it on
+   * `port` whether they all started. They are started here rather than in the engine Worker so that one that stops (a
+   * panic aborts the threads build) reaches the page, which then replaces the engine: an engine run waiting for that
+   * helper would otherwise wait for ever, and its Worker could hear nothing. */
+  function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort }): void {
+    const started: Worker[] = [];
+    let waiting = request.count, settled = false;
+    const settle = (error?: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      // Not started: the engine runs on one thread instead, without these.
+      if (error) { for (const helper of started) helper.terminate(); helpers = helpers.filter(helper => !started.includes(helper)); }
+      request.port.postMessage(error ? { ok: false, error } : { ok: true });
+      request.port.close();
+    };
+    const stopped = (error: string) => { if (!settled) settle(error); else if (engine === worker) crashed(); };
+    const timer = setTimeout(() => settle('the threads did not start in time'), HELPER_START_MS);
+    for (let index = 0; index < request.count; index++) {
+      const helper = new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' });
+      started.push(helper); helpers.push(helper);
+      helper.onmessage = ({ data }) => {
+        if (data?.type === 'ready') { if (--waiting === 0) settle(); return; }
+        if (data?.type === 'failed') {
+          console.error('An engine thread stopped:', data.error);
+          stopped(String(data.error || 'a thread stopped'));
+        }
+      };
+      helper.onerror = () => stopped('a thread could not start');
+      helper.postMessage({ module: request.module, memory: request.memory });
+    }
+  }
+
+  function call<T>(request: Request, { busy = false, signal, onQueued }: CallOptions = {}): Promise<T> {
+    // Stopped for good (see crashed): nothing would answer.
+    if (state.status === 'failed') return Promise.reject(new Error(state.message ?? t('engine.unavailable')));
+    if (signal?.aborted) return Promise.reject(signal.reason);
     const id = ++requestId;
+    onQueued?.(id);
     return new Promise<T>((resolve, reject) => {
-      pending.set(id, { resolve: resolve as (value: never) => void, reject, busy });
+      pending.set(id, { resolve: resolve as (value: never) => void, reject, busy, op: request.op });
       // New files keep the engine busy again: no release waits any more.
       if (request.op === 'import') releaseWhenIdle = false;
       // A job starts at its own stage with nothing done; the engine's reports (or, while the pool decodes, the shared
       // record) then fill it in.
       if (busy) { busyStage = request.op === 'volume' ? 'decode' : 'import'; progress = { ...progress, running: true, cancelled: false, stage: busyStage, completed: 0, total: 0 }; }
       queue.push({ id, request });
+      signal?.addEventListener('abort', () => abandon(id, signal.reason), { once: true });
       dispatchSoon();
     });
+  }
+
+  /** Takes a request out of the queue before it starts: false once it has started (or ended). */
+  function unqueue(id: number): boolean {
+    const at = queue.findIndex(item => item.id === id);
+    if (at < 0) return false;
+    queue.splice(at, 1);
+    const request = pending.get(id);
+    pending.delete(id);
+    if (request?.busy && ![...pending.values()].some(other => other.busy)) progress = { ...progress, running: false };
+    releaseWhenDrained();
+    return true;
+  }
+
+  /** A request its caller gave up on (a slice scrolled past, a series left): dropped while it waits, and its answer
+   * ignored once it runs. A whole series still decoding is stopped, as the desktop stops a request the interface
+   * abandons: the single engine thread would otherwise decode it before what the reader is waiting for. */
+  function abandon(id: number, reason: unknown): void {
+    const request = pending.get(id);
+    if (!request || request.abandoned) return;
+    request.abandoned = true;
+    request.reject(reason instanceof Error ? reason : new DOMException('The request was abandoned.', 'AbortError'));
+    if (unqueue(id)) return;
+    if (id === inFlight && request.busy) { request.cancelled = true; setCancel(-1); }
   }
 
   /** The progress record; during a job, the shared one when the engine has it (threads build). */
@@ -242,17 +367,28 @@ export function createWebBridge(): DesktopBridge {
     return { ...result, series };
   }
 
-  /** A full cleanup keeps the pixels. As the desktop asks in its own window, the reader confirms here, in the browser's
-   * own dialog (which the page's content cannot draw), that the selected series show no identifying text. */
+  /** A full cleanup keeps the pixels. As the desktop asks in its own window, the reader confirms here that the selected
+   * series show no identifying text: in the browser's own dialog, which the page's content cannot draw, with the
+   * desktop's texts, and like the desktop a page of series at a time, so every one is shown.
+   *
+   * Unlike the desktop's window this is no approval from outside the page, as nothing in a page can approve above the
+   * page itself. A page changed to skip it (from the browser's developer tools, or by an attack) could as well export
+   * without any cleanup, which needs no review. So in the browser it is a check for the reader, not a security
+   * boundary (web/README.md). */
   function reviewPixels(ids: string[], frame?: number): boolean {
     const label = (value: unknown) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/gu, ' ').slice(0, 80);
     const lines = ids.map(id => {
       const item = described.get(id);
       return (item && [item.patientName, item.patientId, item.description, item.studyUid, item.uid].map(label).filter(Boolean).join(' · ')) || id;
     });
-    const shown = lines.length > 12 ? [...lines.slice(0, 12), '…'] : lines;
-    return window.confirm([t('export.reviewTitle'), t('export.reviewMessage', { count: ids.length }), t('export.reviewDetail'), shown.join('\n'),
-      frame === undefined ? '' : t('export.reviewSlice', { n: frame + 1 })].filter(Boolean).join('\n\n'));
+    const pages = Math.ceil(lines.length / REVIEW_PAGE);
+    for (let page = 0; page < pages; page++) {
+      const from = page * REVIEW_PAGE, shown = lines.slice(from, from + REVIEW_PAGE);
+      const position = pages === 1 ? '' : t(page + 1 < pages ? 'export.reviewPageNext' : 'export.reviewPageLast', { from: from + 1, to: from + shown.length, total: lines.length });
+      if (!window.confirm([t('export.reviewTitle'), t('export.reviewMessage', { count: ids.length }), t('export.reviewDetail'), shown.join('\n'), position,
+        frame === undefined ? '' : t('export.reviewSlice', { n: frame + 1 })].filter(Boolean).join('\n\n'))) return false;
+    }
+    return true;
   }
 
   function remember(files: { path: string; file: File }[]): string[] {
@@ -303,7 +439,7 @@ export function createWebBridge(): DesktopBridge {
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
       for (const token of capabilities) selections.delete(token);
       const files = chosen.flatMap(selection => selection!.files), roots = chosen.flatMap(selection => selection!.roots);
-      const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, true));
+      const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
       return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
     },
     // The engine answers one request at a time, so it cannot publish series while an import runs: every series
@@ -319,10 +455,11 @@ export function createWebBridge(): DesktopBridge {
       cancelTimer = setTimeout(() => { if ([...pending.values()].some(request => request.busy)) { restartCount++; start(t('engine.restartedEmpty')); } }, CANCEL_GRACE_MS);
       return { requested: true };
     },
-    async getTags(seriesId, requestGeneration, frame) {
+    async getTags(seriesId, requestGeneration, frame, revision) {
       requireGeneration(requestGeneration);
-      // The series as listed now: tags of one imported again meanwhile are refused.
-      return call({ op: 'tags', seriesId, revision: described.get(seriesId)?.catalogRevision, ...(frame === undefined ? {} : { frame }) });
+      // The catalog revision the tag panel shows, as on the desktop: the engine refuses it for a series imported again
+      // since, rather than answering with the new series' tags.
+      return call({ op: 'tags', seriesId, ...(revision === undefined ? {} : { revision }), ...(frame === undefined ? {} : { frame }) });
     },
     // A region's statistics or a window from the source pixels (imaging/nativeMeasurements.ts).
     async measure(seriesId, requestGeneration, revision, operation) {
@@ -339,12 +476,12 @@ export function createWebBridge(): DesktopBridge {
       return result;
     },
     getPixels: () => Promise.reject(new Error('The browser build hands pixels over with fetchPixels.')),
-    async fetchPixels({ seriesId, generation: requestGeneration, revision, index }) {
+    async fetchPixels({ seriesId, generation: requestGeneration, revision, index }, signal) {
       requireGeneration(requestGeneration);
       if (known.get(seriesId) !== generation) throw new Error(t('engine.seriesNotOpen'));
       const pixels = await (index === undefined
-        ? call<EnginePixels>({ op: 'volume', seriesId, revision }, true)
-        : call<EnginePixels>({ op: 'frame', seriesId, index, revision }));
+        ? call<EnginePixels>({ op: 'volume', seriesId, revision }, { busy: true, signal })
+        : call<EnginePixels>({ op: 'frame', seriesId, index, revision }, { signal }));
       const headers = new Headers({
         'Content-Type': 'application/octet-stream', 'Content-Length': String(pixels.bytes.byteLength),
         'X-Pixel-Type': pixels.pixelType, 'X-Components': String(pixels.components),
@@ -372,11 +509,34 @@ export function createWebBridge(): DesktopBridge {
       const full = options.anonymize && Boolean(options.full);
       if (full && !reviewPixels(ids, options.frame)) return null;
       const reviewed = full ? Object.fromEntries(ids.flatMap(id => { const revision = described.get(id)?.catalogRevision; return revision === undefined ? [] : [[id, revision]]; })) : {};
-      const exported = await call<EngineExport>({ op: 'export', ids, ...(options.frame === undefined ? {} : { frame: options.frame }),
-        options: { anonymize: options.anonymize, full: Boolean(options.full), dicomdir: options.dicomdir, decompress: Boolean(options.decompress) }, reviewed });
-      const name = `${exported.result.directory.split('/').pop() || 'VEACOM'}.zip`;
-      download(name, zipStored(exported.files));
-      return { ...exported.result, directory: name };
+      const job = { id: 0, cancelled: false };
+      exporting = job;
+      try {
+        const exported = await call<EngineExport>({ op: 'export', ids, ...(options.frame === undefined ? {} : { frame: options.frame }),
+          options: { anonymize: options.anonymize, full: Boolean(options.full), dicomdir: options.dicomdir, decompress: Boolean(options.decompress) }, reviewed },
+          { onQueued: id => { job.id = id; } });
+        // Cancelled as the engine finished: nothing is downloaded, as a cancelled desktop export leaves nothing behind.
+        if (job.cancelled) throw new Error(t('export.cancelled'));
+        const name = `${exported.result.directory.split('/').pop() || 'VEACOM'}.zip`;
+        download(name, zipStored(exported.files));
+        return { ...exported.result, directory: name };
+      } finally {
+        if (exporting === job) exporting = null;
+      }
+    },
+    // The export dialog's and the status bar's Cancel: an export still waiting never starts; one under way stops at the
+    // engine's next file (the engine then drops what it wrote), and an engine that does not stop is replaced.
+    async cancelExport() {
+      const job = exporting;
+      if (!job || job.cancelled) return;
+      job.cancelled = true;
+      const request = pending.get(job.id);
+      if (!request) return;
+      if (unqueue(job.id)) { request.reject(new Error(t('export.cancelled'))); return; }
+      request.cancelled = true;
+      setCancel(-1);
+      clearTimeout(cancelTimer);
+      cancelTimer = setTimeout(() => { if (pending.has(job.id)) { restartCount++; start(t('engine.restartedEmpty')); } }, CANCEL_GRACE_MS);
     },
     async beginImages(suggestedName) {
       const id = crypto.randomUUID();

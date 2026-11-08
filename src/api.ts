@@ -127,7 +127,7 @@ async function pixelResponse(series: Series, index?: number, externalSignal?: Ab
   signal.throwIfAborted();
   const bridge = desktop(), revision = series.catalogRevision === undefined ? {} : { revision: series.catalogRevision };
   if (bridge.fetchPixels) {
-    const response = await abortable(bridge.fetchPixels({ seriesId: series.id, generation: current.generation, ...revision, ...(index === undefined ? {} : { index }) }), signal);
+    const response = await abortable(bridge.fetchPixels({ seriesId: series.id, generation: current.generation, ...revision, ...(index === undefined ? {} : { index }) }, signal), signal);
     signal.throwIfAborted();
     responseSignals.set(response, signal);
     return response;
