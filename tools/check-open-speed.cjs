@@ -80,7 +80,7 @@ function generatedFixtureBudget(study) {
     }
     return 'ct-1000-mac';
   }
-  if (process.platform === 'linux' && [0xef53, 0x9123683e, 0x01021994, 0x58465342].includes(fs.statfsSync(study).type)) return 'ct-1000-local';
+  if (process.platform === 'linux' && [0xef53, 0x9123683e, 0x58465342].includes(fs.statfsSync(study).type)) return 'ct-1000-local';
   return 'ct-1000';
 }
 
@@ -179,7 +179,7 @@ function markdown(report) {
       const verdict = row.verdict === 'slower' && row.gated ? '**slower**' : row.verdict === 'slower' ? 'slower (not gated)' : row.verdict;
       lines.push(`| ${row.cache} | ${NAMES[row.phase]} | ${ms(row.base)} | ${ms(row.head)} | ${percent(row.change)} (${percent(row.low)} to ${percent(row.high)}) | ${verdict} |`);
     }
-    lines.push('', `Slower or faster means the whole interval lies beyond ±${(100 * threshold).toFixed(0)}% and the medians differ by at least ${minMs} ms. Listing and whole open are gated. On Linux and macOS, the separate cold-volume trial flushes both file caches after listing so costs moved between phases are visible.`, '');
+    lines.push('', `Slower or faster means the whole interval lies beyond ±${(100 * threshold).toFixed(0)}% and the medians differ by at least ${minMs} ms. Listing, whole open and full-volume decode are gated. On Linux and macOS the cold-volume gate uses a separate trial that flushes both file caches after listing; the ordinary cold volume phase is reported separately.`, '');
   } else if (report.timings) {
     lines.push(`${labels.head}: ${report.rounds.warm} warm and ${report.rounds.cold} cold opens.${report.coldNote ? ` ${report.coldNote}` : ''}`, '');
     lines.push('| cache | step | median | 10th–90th percentile |', '|---|---|---|---|');
