@@ -1,0 +1,70 @@
+# CLOSE calipers
+
+The sinus CT's pre-operative checklist (CLOSE) has a caliper for the four items that are geometry of a millimetre or
+more: olfactory fossa depth, the anterior ethmoidal artery's distance below the skull base, sphenoid pneumatisation and
+septal deviation. The reader starts one from the checklist, for an item and a side, and clicks its landmarks on the
+image. The caliper draws its measurement, writes the answer its classification gives, and records the value, the
+points and the slice under that side. Whether a thin wall is intact (lamina papyracea, optic and carotid canals, a
+dehiscent artery) stays the reader's call: those walls are mostly below what CT resolves.
+
+Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the synthetic sinus CT of
+`tools/fixtures/make-sinus-study.mjs`.
+
+## The calipers
+
+| Item | Plane | Points | Value | Answer |
+| --- | --- | --- | --- | --- |
+| Cribriform plate (Keros) | coronal | cribriform plate beside the crista galli, foot of the lateral lamella, its top at the fovea ethmoidalis | depth: the lamella's height, straight up; Gera angle: the lamella against the plate carried on past its foot | Keros type 1–3 |
+| Anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
+| Sphenoid pneumatisation | sagittal | tuberculum sellae, top of the dorsum sellae, sinus wall furthest back | the wall's place against the two sella lines | sellar or postsellar; none in front of the tuberculum line |
+| Septal deviation / spur | coronal | maxillary crest, crista galli, most deviated point | angle at the crista galli, and the side it bows to | Yes on that side |
+
+- **Keros** (Keros 1962): type 1 is 1–3 mm, 2 is 4–7 mm, 3 is 8–16 mm, read in whole millimetres as Keros measured. A
+  depth within 0.5 mm of the 3–4 or 7–8 mm gaps is marked "near limit": a measurement error of about 0.5 mm (Reuter
+  2026) or the other usual cut (below 4, 4–8, above 8 mm) could change its type. When both sides are measured, the
+  report gives their difference.
+- **Gera** (Gera et al., Rhinology 2018;56:65–72): class I above 80°, II 45–80°, III below 45°. The plate is read from
+  the reader's own first two points, so a tilted head does not change the angle.
+- **Anterior ethmoidal artery** (El-Anwar et al., J Neurol Surg B Skull Base 2021;82(S3):e259–e267): the artery's
+  middle to the ethmoid roof on coronal CT; type 1 is 0–2 mm, 2 is 2–4 mm, 3 is 4–6 mm, 4 above 6 mm. Types 2 to 4
+  answer yes (below the skull base). Type 1 gives no answer: the item's yes also covers a dehiscent artery, which the
+  caliper cannot see.
+- **Sphenoid pneumatisation** (Güldner et al., Acta Radiol 2012;53:214–219): lines through the tuberculum and the
+  dorsum, square to the line joining them. Between them the sinus is sellar, behind the dorsum line postsellar. In
+  front of the tuberculum line it is presellar or conchal, which the sinus's size decides, so the reader answers.
+- **Septal angle**: mild below 9°, moderate 9–15°, severe above 15°. This is a common grading, not a standard one.
+  Below 1° the septum is read as on the midline and no side is marked.
+
+Every value needs the image's pixel spacing (or a calibration), and the plane the caliper is read on: within 45° of
+coronal or sagittal, upright. Otherwise the checklist's button is unavailable and says why, and a drawing made there
+says "Unavailable" with the reason.
+
+## Snapping onto bone
+
+A point marked for bone moves, within its plane, to the nearest place within 2 mm whose interpolated value is 200 HU
+or more, to 0.1 mm. Thin skull-base plates read well below cortical bone through partial volume, so the bound is low.
+A point already on bone stays; so does one with no bone that near, and every point of a series not in HU (the hint
+says so). The artery's canal and the septum's deviated point never move: one is soft tissue, the other may be
+cartilage. Moving a point by hand afterwards does not snap.
+
+## The checklist record
+
+Notes are kept per item and side. Every side has a button that notes the slice on screen, and the four items above
+also have a caliper button; a side holds one note, whichever came last. A caliper's note holds its points (patient
+millimetres), its reading and the answer it gave. Moving a point of its drawing measures again; the answer follows until the reader picks another one. Deleting
+the drawing leaves the record. "Copy for the report" gives each side its answer, measurement and slice.
+
+## Saving the answers (not written)
+
+The checklist lives in memory while the viewer is open. Nothing is written to disk until the hospital's ethics
+committee, its KVKK legal basis and its data protection officer approve it. The design for that opt-in:
+
+- Off by default, switched on per installation, with the approval reference shown beside the switch.
+- One JSON file per study in the user's data folder, mode 0600, named by an HMAC-SHA-256 of the Study Instance UID
+  under a key kept only on that computer: the file name does not give the UID, and the same study finds its file again.
+- Contents: `{ "version": 1, "study": "<hmac>", "kind": "pns", "items": { "<item>": { "<side>": { "answer", "slice",
+  "plane", "oblique", "caliper": { "kind", "points", "reading", "given" } } } }, "suggestionShown": false }`. No name,
+  patient ID, birth date, accession number or institution. `suggestionShown` is for the later AI suggestions: whether
+  one was on screen when the answer was given.
+- A control that forgets one study or every study. Exporting records for research goes through anonymisation first
+  (DICOM PS3.15 Basic Profile), outside this file.

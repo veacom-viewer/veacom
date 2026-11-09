@@ -445,7 +445,20 @@ async function main() {
     await page.getByTestId('tool-assessment').click(); await checklist.waitFor();
     await inChecklist('Reopening the checklist moves focus into it.');
     assert.equal(await firstAnswer.getAttribute('aria-checked'), 'true', 'The checklist keeps its answers when it closes.');
+    // A note is per item and side: noted on the left, the slice shows under the left answer only.
+    const lamina = which => checklist.locator(`[data-item="lamina"] [data-side="${which}"]`);
+    await lamina('left').locator('[data-action="checklist-note"]').click();
+    assert.match(await lamina('left').locator('[data-action="checklist-go"]').textContent(), /^(Slice|Kesit) \d+\/\d+$/, 'The note shows under the side it was taken for.');
+    assert.equal(await lamina('right').locator('[data-action="checklist-go"]').count(), 0, 'The other side has no note.');
+    // A caliper needs its own plane: on these axial slices it is unavailable and says why (tools/check-close-calipers.cjs
+    // measures with each one on a synthetic sinus CT).
+    const keros = checklist.locator('[data-item="keros"] [data-side="right"] [data-action="checklist-caliper"]');
+    assert.equal(await keros.getAttribute('aria-disabled'), 'true', 'Keros cannot be measured on an axial slice.');
+    assert.match(await keros.getAttribute('aria-description'), /coronal|koronal/i, 'It says it needs a coronal plane.');
+    await keros.click({ force: true }); await settle();
+    assert.equal(await page.getByTestId('caliper-hint').count(), 0, 'An unavailable caliper does not start.');
     await checklist.locator('[data-action="checklist-clear"]').click();
+    assert.equal(await lamina('left').locator('[data-action="checklist-go"]').count(), 0, 'Clear removes the notes too.');
     await viewport.focus(); await page.keyboard.press('Escape'); await settle();
     assert.equal(await checklist.isVisible(), true, 'Esc in the image must not close the checklist.');
     await checklist.locator('[data-action="checklist-clear"]').focus(); await page.keyboard.press('Escape');
@@ -470,7 +483,7 @@ async function main() {
       await page.getByTestId('volume-view').waitFor({ state: 'detached' });
       await page.waitForFunction(() => document.activeElement?.dataset.testid === 'tool-3d');
     }
-    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
+    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, says why a caliper cannot measure here, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
 
     // A real click with the text tool leaves focus in the note field: typed letters are text, not shortcuts. It comes
     // right after 3D closed, which with slow (software) drawing is before the widened pane's resize frame: the pane

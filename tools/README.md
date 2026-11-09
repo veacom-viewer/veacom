@@ -173,6 +173,26 @@ node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
 
+## CLOSE calipers
+
+`check-close-calipers.cjs` opens the synthetic sinus CT from `fixtures/make-sinus-study.mjs`: 0.5 mm voxels with
+olfactory fossae, ethmoid artery canals, a bowed septum and a sellar sphenoid at known places, listed in its
+`manifest.json`. From the pre-operative checklist it measures each [CLOSE caliper](../docs/close-calipers.md) by clicking
+those landmarks and checks:
+
+- each value, answer and side in the checklist, and the near-limit word for a Keros depth near a type limit;
+- a roof point clicked in the air moves onto the bone;
+- moving a point measures again, and undo takes it back with its answer;
+- a caliper on the wrong plane is unavailable and says why, and Esc ends one;
+- "Copy for the report" in English and Turkish, with screenshots in both.
+
+CI's desktop job (screens shard) and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-sinus-study.mjs /tmp/sinus-study
+node tools/check-close-calipers.cjs /tmp/sinus-study test-results/close-calipers
+```
+
 ## PET validation against the vendor workstation
 
 `pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET

@@ -2,7 +2,8 @@ import type { Annotation, Series, Vec3, ViewState, Volume } from '../model';
 import { getPlaneFrame, indexToWorld, isPaddingValue, isProjection, sampleVolume, sourceFrameSeries, worldToIndex, type PlaneFrame } from './geometry';
 import { usesSourceFrames } from './viewState';
 import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableVolume, sphereOf, sphereSection, sphereSulGlu, sphereStatisticsFor, thresholdVolumeFor } from './voi';
-import { t } from '../i18n';
+import { getLocale, t } from '../i18n';
+import { caliperLabel, caliperMmScale, caliperResult } from './calipers';
 import { isEmission, overlayKind, petHasSuv } from './emission';
 import { sulGluGlucose } from './glucose';
 
@@ -463,6 +464,8 @@ export function sphereSummary(annotation: Annotation, volume: Volume): string {
 
 export function annotationSummary(annotation: Annotation, volume: Volume): string {
   if (annotation.type === 'sphere') return sphereSummary(annotation, volume);
+  // A CLOSE caliper says what it measured for the checklist (imaging/calipers.ts).
+  if (annotation.caliper) return caliperLabel(annotation.caliper, caliperResult(annotation.caliper, annotation.points, caliperMmScale(volume.series)), getLocale());
   const points = annotation.points;
   const needsPixels = ['probe', 'rectangle', 'ellipse', 'polygon'].includes(annotation.type);
   const source = annotation.mode === 'source' ? annotationSourceFrame(annotation, volume, needsPixels) : null;

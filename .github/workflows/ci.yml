@@ -325,6 +325,11 @@ jobs:
         run: |
           node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
           node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
+      - name: CLOSE calipers on a synthetic sinus CT
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-sinus-study.mjs "$RUNNER_TEMP/sinus-study"
+          node tools/check-close-calipers.cjs "$RUNNER_TEMP/sinus-study" "$EVIDENCE/close-calipers"
       - name: Renderer pixel suite on llvmpipe
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: node tools/check-padding-gpu.mjs "$EVIDENCE/padding" llvmpipe

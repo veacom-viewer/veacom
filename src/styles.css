@@ -193,6 +193,8 @@
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px); padding: 4px 10px; pointer-events: none;
   border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--label-chip); color: var(--text-strong); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* A caliper names its next point in full: it wraps rather than cut the words. */
+.viewport-hint.is-caliper { width: max-content; white-space: normal; text-align: center; }
 .annotation-prompt {
   position: absolute; z-index: 7; display: grid; gap: 6px; padding: 10px;
   border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg-menu); box-shadow: var(--shadow-popover);
