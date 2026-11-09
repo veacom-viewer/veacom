@@ -2,8 +2,7 @@
   "name": "veacom-viewer-site",
   "private": true,
   "license": "GPL-3.0-or-later",
-  "description": "wrangler, which publishes viewer.veacom.app, installed apart from the root so a root install never fetches it",
-  "type": "module",
+  "description": "wrangler, which publishes viewer.veacom.app, installed apart from the root so only the deploy job fetches it",
   "devDependencies": {
     "wrangler": "4.158.0"
   },
