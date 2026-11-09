@@ -185,7 +185,8 @@ those landmarks and checks:
 - moving a point measures again, and undo takes it back with its answer;
 - started off its plane, a caliper turns its pane to that plane and the bone window, says so with Undo, and Undo puts
   the pane back; Esc ends one;
-- "Copy for the report" in English and Turkish, with screenshots in both.
+- "Copy for the report" in English and Turkish, with screenshots in both;
+- the theatre card on one A4 page, as a PDF of the page made in place of the print dialog.
 
 CI's desktop job (screens shard) and `tools/verify.sh` run it.
 

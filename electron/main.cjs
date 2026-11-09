@@ -253,6 +253,14 @@ app.whenReady().then(async () => {
   handle('export:folder', () => exportFolder.folder());
   // Text for a report (the checklist's summary): the system clipboard, which the page itself may not reach.
   handle('clipboard:write', text => { if (typeof text !== 'string' || text.length > 100000) throw new Error('Invalid text.'); clipboard.writeText(text); });
+  // The checklist's theatre card: the system print dialog for this window, whose page then shows only the card
+  // (src/components/TheatreCard.css). The reader picks a printer or a PDF there; VEAcom itself writes nothing. Without
+  // backgrounds, as browsers print: the window's dark background would otherwise fill the page.
+  handle('print:page', () => new Promise((resolve, reject) => {
+    // Electron gives no fixed reason for a dialog the reader closed ("cancelled", "Print preview cancelled" and others):
+    // any cancel is the reader's choice, not a failure.
+    window.webContents.print({ printBackground: false }, (printed, reason) => printed || /cancel/i.test(reason) ? resolve(printed) : reject(new Error(reason)));
+  }));
   handle('export:chooseFolder', () => exportFolder.choose());
   handle('export:reveal', async target => {
     if (typeof target !== 'string' || !(exported.has(target) || await exportFolder.holds(target))) throw new Error('Not an export of this session.');

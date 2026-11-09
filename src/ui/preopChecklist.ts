@@ -109,27 +109,55 @@ const SIDE_NAMES: Record<Side, Words> = { right: { tr: 'Sağ', en: 'Right' }, le
 
 const sidesOf = (item: ChecklistItem): Side[] => item.sided ? ['right', 'left'] : ['both'];
 
-/** The checklist as text for the report: what was marked or measured, each side with its measurement and the slice it
- * was seen on. Both olfactory fossae measured give their difference. */
-export function checklistSummary(kind: ChecklistKind, answers: Answers, notes: Notes, locale: 'tr' | 'en'): string {
-  const list = CHECKLISTS[kind], lines = [list.title[locale]];
-  for (const group of list.groups) for (const item of group.items) {
-    const given = answers[item.id] ?? {}, seen = notes[item.id] ?? {};
-    const sides = sidesOf(item);
-    if (!sides.some(side => given[side] || seen[side]?.caliper)) continue;
-    const options = item.options ?? FINDING;
-    const word = (value?: string) => options.find(option => option.value === value)?.[locale] ?? '–';
-    const parts = sides.map(side => {
-      const note = seen[side];
+/** One side of an item as the report and the theatre card give it. */
+export interface CheckedSide {
+  side: Side;
+  /** The answer's word in the language asked for, or – when nothing is marked. */
+  word: string;
+  marked: boolean;
+  /** What a caliper measured there, as the report says it. */
+  measured?: string;
+  nearLimit: boolean;
+  /** Where it was seen: "slice 41/141", with the tilt of a tilted plane. */
+  slice?: string;
+  /** The plane it was seen on, in lower case. */
+  plane?: string;
+}
+export interface CheckedItem { id: string; label: string; hint: string; sided: boolean; sides: CheckedSide[];
+  /** Both olfactory fossae measured: "right–left difference 2.5 mm". */
+  difference?: string }
+
+/** Every item of the checklist with its sides as marked, measured and noted, group by group, in one language. */
+export function checklistRows(kind: ChecklistKind, answers: Answers, notes: Notes, locale: 'tr' | 'en'): Array<{ title: string; items: CheckedItem[] }> {
+  return CHECKLISTS[kind].groups.map(group => ({ title: group.title[locale], items: group.items.map(item => {
+    const given = answers[item.id] ?? {}, seen = notes[item.id] ?? {}, options = item.options ?? FINDING, sides = sidesOf(item);
+    const checked = sides.map((side): CheckedSide => {
+      const note = seen[side], result = note?.caliper?.result, value = given[side];
       const tilted = note?.tilt ? `, ${PLANE_NAMES[locale][note.plane] ?? note.plane} ${locale === 'tr' ? 'oblik' : 'oblique'} ${note.tilt}°` : '';
-      const details = [note?.caliper && caliperReport(note.caliper.result, locale), note && `${locale === 'tr' ? 'kesit' : 'slice'} ${note.shown}${tilted}`].filter(Boolean).join('; ');
-      const answer = side === 'both' ? word(given.both) : `${SIDE_NAMES[side][locale]} ${word(given[side])}`;
-      return details ? `${answer} (${details})` : answer;
+      return { side, word: options.find(option => option.value === value)?.[locale] ?? '–', marked: Boolean(value),
+        nearLimit: Boolean(result && 'reading' in result && 'nearLimit' in result.reading && result.reading.nearLimit),
+        ...(result ? { measured: caliperReport(result, locale) } : {}),
+        ...(note ? { slice: `${locale === 'tr' ? 'kesit' : 'slice'} ${note.shown}${tilted}`, plane: PLANE_NAMES[locale][note.plane] ?? note.plane } : {}) };
     });
     const depths = sides.map(side => { const result = seen[side]?.caliper?.result; return result && 'reading' in result && result.reading.kind === 'keros' ? result.reading.depth : null; });
     const difference = depths.length === 2 && depths[0] !== null && depths[1] !== null
-      ? `; ${translate(locale, 'checklist.difference', { value: Math.abs(depths[0] - depths[1]).toFixed(1) })}` : '';
-    lines.push(`${item.label[locale]}: ${parts.join(', ')}${difference}`);
+      ? translate(locale, 'checklist.difference', { value: Math.abs(depths[0] - depths[1]).toFixed(1) }) : undefined;
+    return { id: item.id, label: item.label[locale], hint: item.hint[locale], sided: item.sided, sides: checked, ...(difference ? { difference } : {}) };
+  }) }));
+}
+
+/** The checklist as text for the report: what was marked or measured, each side with its measurement and the slice it
+ * was seen on. Both olfactory fossae measured give their difference. */
+export function checklistSummary(kind: ChecklistKind, answers: Answers, notes: Notes, locale: 'tr' | 'en'): string {
+  const lines = [CHECKLISTS[kind].title[locale]];
+  for (const group of checklistRows(kind, answers, notes, locale)) for (const item of group.items) {
+    if (!item.sides.some(side => side.marked || side.measured)) continue;
+    const parts = item.sides.map(side => {
+      const details = [side.measured, side.slice].filter(Boolean).join('; ');
+      const answer = side.side === 'both' ? side.word : `${SIDE_NAMES[side.side][locale]} ${side.word}`;
+      return details ? `${answer} (${details})` : answer;
+    });
+    lines.push(`${item.label}: ${parts.join(', ')}${item.difference ? `; ${item.difference}` : ''}`);
   }
   return lines.join('\n');
 }

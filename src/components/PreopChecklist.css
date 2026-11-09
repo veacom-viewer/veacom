@@ -36,7 +36,11 @@
 /* Near a type limit or a sella line: said in a word, in the caution colour. */
 .preop-limit { flex: none; color: var(--warning); font-size: var(--text-xs); white-space: nowrap; }
 .preop-checklist > footer { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-subtle); }
-.preop-help { margin-right: auto; color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.4; }
+/* Three buttons and the help: the help takes its own line above them. */
+.preop-checklist > footer { flex-wrap: wrap; }
+.preop-help { flex: 1 0 100%; color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.4; }
+.preop-checklist > footer > button:first-of-type { margin-left: auto; }
+.preop-print-failed { margin: 0; padding: 8px 12px 0; color: var(--danger); font-size: var(--text-sm); }
 /* A one-answer row (sphenoid pneumatisation) has longer words: each choice as wide as its word. */
 .preop-row.is-single .preop-option { flex: 1 1 auto; padding: 0 5px; }
 .preop-kind-name { margin: 10px 12px 4px; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600; }

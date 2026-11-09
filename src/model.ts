@@ -327,6 +327,8 @@ export interface DesktopBridge {
   exportFolder?: () => Promise<string>;
   /** Text onto the system clipboard. */
   copyText?: (text: string) => Promise<void>;
+  /** The system print dialog for the page; false when the reader cancels it. */
+  printPage?: () => Promise<boolean>;
   chooseExportFolder?: () => Promise<string | null>;
   revealExport?: (target: string) => Promise<void>;
   beginVideo: (suggestedName: string, fps: number) => Promise<{ id: string } | null>;

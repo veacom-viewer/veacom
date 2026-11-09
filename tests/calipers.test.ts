@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { aeaType, caliperLabel, caliperReport, caliperResult, caliperShort, caliperView, geraClass, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
 import { getPlaneFrame, sub, dot } from '../src/imaging/geometry';
-import { checklistSummary, recordCaliper, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
+import { checklistRows, checklistSummary, recordCaliper, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
 import type { CaliperTag, Series, Vec3, ViewState, Volume } from '../src/model';
 
 const coronal = (side: CaliperTag['side'], kind: CaliperTag['kind'] = 'keros'): CaliperTag => ({ kind, item: 'keros', side, up: [0, 0, 1], normal: [0, 1, 0] });
@@ -224,5 +224,28 @@ describe('setting a pane up for a caliper', () => {
     assert.ok(mip && 'patch' in mip && mip.plane && mip.patch.projection === undefined && mip.patch.mode === 'mpr');
     assert.deepEqual(caliperView('keros', series, view('axial', bone), at, false), { blocked: 'caliper.noCoronal' });
     assert.deepEqual(caliperView('sella', series, view('axial', bone), at, false), { blocked: 'caliper.noSagittal' });
+  });
+});
+
+describe('the theatre card', () => {
+  it('lists every item with both sides, what was marked, measured and where, and the fossae difference', () => {
+    let state: ChecklistState = { kind: 'pns', answers: { lamina: { left: 'yes' } }, notes: {} };
+    const slice = { seriesId: 's', slice: 40, shown: '41/141', plane: 'coronal', mode: 'mpr' };
+    const keros = (side: 'right' | 'left', depth: number): SliceNote & { caliper: CaliperNote } => {
+      const result = caliperResult(coronal(side), [[side === 'right' ? -2 : 2, 0, 10], [side === 'right' ? -5 : 5, 0, 10], [side === 'right' ? -5 : 5, 0, 10 + depth]], 1);
+      return { ...slice, caliper: { annotationId: side, kind: 'keros', points: [], result, given: 'answer' in result ? result.answer : undefined } };
+    };
+    state = recordCaliper(recordCaliper(state, 'keros', 'right', keros('right', 3.5)), 'keros', 'left', keros('left', 6));
+    const groups = checklistRows('pns', state.answers, state.notes, 'en');
+    assert.deepEqual(groups.map(group => group.title), ['CLOSE', 'Other']);
+    assert.equal(groups.flatMap(group => group.items).length, 11, 'Every item, marked or not.');
+    const [fossae] = groups[0].items;
+    assert.deepEqual(fossae.sides[0], { side: 'right', word: '2', marked: true, nearLimit: true, measured: '3.5 mm, type 2, near limit; Gera 90.0°, class I', slice: 'slice 41/141', plane: 'coronal' });
+    assert.equal(fossae.difference, 'right–left difference 2.5 mm');
+    const lamina = groups[0].items.find(item => item.id === 'lamina');
+    assert.deepEqual(lamina?.sides.map(side => [side.word, side.marked]), [['–', false], ['Yes', true]]);
+    const pneumatisation = groups[0].items.find(item => item.id === 'pneumatisation');
+    assert.deepEqual(pneumatisation?.sides.map(side => side.side), ['both']);
+    assert.equal(checklistRows('pns', state.answers, state.notes, 'tr')[0].items[1].sides[1].word, 'Var');
   });
 });

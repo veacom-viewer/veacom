@@ -2456,7 +2456,7 @@ export default function App() {
       </main>
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
-      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
+      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries} hidePatient={settings.hidePatientData}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
         onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view) : null}

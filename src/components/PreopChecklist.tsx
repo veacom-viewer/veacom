@@ -1,10 +1,13 @@
 import { studyKey } from '../domain/patient';
 import { useState, useSyncExternalStore } from 'react';
-import { ClipboardCheck, Copy, Crosshair, Ruler, X } from './icons';
+import { flushSync } from 'react-dom';
+import { ClipboardCheck, Copy, Crosshair, Printer, Ruler, X } from './icons';
 import type { CaliperKind, Series } from '../model';
 import type { MessageKey } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { copyText } from '../ui/clipboard';
+import { printPage } from '../ui/print';
+import { TheatreCard } from './TheatreCard';
 import { CALIPERS, caliperName, caliperShort, ITEM_CALIPERS } from '../imaging/calipers';
 import { keepChecklist, keptChecklist, subscribeChecklists } from '../ui/checklistStore';
 import { CHECKLISTS, FINDING, checklistKind, checklistSummary, type ChecklistState, type ChecklistKind, type Side, type SliceNote } from '../ui/preopChecklist';
@@ -12,8 +15,10 @@ import './PreopChecklist.css';
 
 /** The pre-operative checklist beside the images: each finding marked per side, with the slice it was seen on, and the
  * items with a caliper measured on the image. */
-export function PreopChecklist({ series, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, headingRef }: {
+export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, headingRef }: {
   series: Series; onClose: () => void;
+  /** The reader hid the patient's data: the theatre card leaves it out too. */
+  hidePatient: boolean;
   /** The slice on screen now (null without one). */
   onNote: () => SliceNote | null;
   onGoTo: (note: SliceNote) => void;
@@ -45,6 +50,13 @@ export function PreopChecklist({ series, onClose, onNote, onGoTo, onMeasure, mea
   const copy = async () => {
     const text = checklistSummary(state.kind, state.answers, state.notes, locale);
     try { await copyText(text); setCopiedFrom({ state: saved }); } catch { setCopiedFrom(null); }
+  };
+  // The theatre card, stamped with when it was printed: in the page from the first print on, and only ever on paper.
+  const [printedAt, setPrintedAt] = useState<Date | null>(null);
+  const [printFailed, setPrintFailed] = useState(false);
+  const print = async () => {
+    flushSync(() => { setPrintedAt(new Date()); setPrintFailed(false); });
+    try { await printPage(); } catch { setPrintFailed(true); }
   };
   const sideName = (side: Side) => side === 'both' ? '' : t(side === 'right' ? 'checklist.right' : 'checklist.left');
 
@@ -95,9 +107,13 @@ export function PreopChecklist({ series, onClose, onNote, onGoTo, onMeasure, mea
         })}
       </div>)}
     </div>
+    {printFailed && <p className="preop-print-failed" role="alert">{t('checklist.printFailed')}</p>}
     <footer><span className="preop-help">{t('checklist.help')}</span>
       <button type="button" className="secondary-button compact" data-action="checklist-clear" onClick={() => update({ ...state, answers: {}, notes: {} })}>{t('checklist.clear')}</button>
+      <button type="button" className="secondary-button compact" data-action="checklist-print" data-tooltip={t('checklist.print')} data-tooltip-hint={t('checklist.printHint')}
+        aria-description={t('checklist.printHint')} onClick={() => void print()}><Printer size={14} />{t('checklist.print')}</button>
       <button type="button" className="primary-button compact" data-action="checklist-copy" onClick={() => void copy()}><Copy size={14} />{copied ? t('report.copied') : t('report.copy')}</button></footer>
+    {printedAt && <TheatreCard series={series} state={state} hidePatient={hidePatient} printedAt={printedAt} />}
   </section>;
 }
 

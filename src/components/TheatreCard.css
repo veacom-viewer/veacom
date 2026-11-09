@@ -1,0 +1,21 @@
+/* The theatre card is printed, never shown: on paper (no backgrounds, src/ui/print.ts) the app gives way to it, A4. */
+.theatre-card { display: none; }
+@media print {
+  @page { size: A4 portrait; margin: 12mm; }
+  html, body { height: auto; overflow: visible; }
+  body > :not(.theatre-card) { display: none !important; }
+  .theatre-card { display: block; color: var(--print-ink); font-family: var(--font-ui); font-size: 10pt; line-height: 1.35; }
+  .theatre-card h1 { margin: 0 0 3pt; font-size: 13pt; font-weight: 600; }
+  .theatre-card header p { margin: 0; }
+  .theatre-card .theatre-card-identity { font-weight: 600; }
+  .theatre-card table { width: 100%; margin-top: 8pt; border-collapse: collapse; table-layout: fixed; }
+  .theatre-card col.theatre-card-item { width: 30%; }
+  .theatre-card th, .theatre-card td { padding: 3pt 5pt; border-bottom: 0.5pt solid var(--print-line); text-align: left; vertical-align: top; font-weight: 400; }
+  .theatre-card thead th, .theatre-card .theatre-card-group th { padding-top: 6pt; color: var(--print-muted); font-size: 9pt; font-weight: 600; }
+  .theatre-card tbody th[scope="row"] { font-weight: 500; }
+  .theatre-card td strong { font-weight: 600; }
+  .theatre-card td span, .theatre-card th small { display: block; color: var(--print-muted); font-size: 9pt; }
+  .theatre-card td.is-empty strong { color: var(--print-muted); font-weight: 400; }
+  .theatre-card tr { break-inside: avoid; }
+  .theatre-card footer { margin-top: 8pt; color: var(--print-muted); font-size: 8.5pt; }
+}

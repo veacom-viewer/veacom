@@ -2,7 +2,8 @@
 // started from the pre-operative checklist, measured by clicking the fixture's landmarks on the plane it needs (a point
 // clicked in the air moves onto the bone), and writes its answer and value into the side it measured. Moving a point
 // measures again and undo takes it back. Started off its plane, a caliper turns its pane to that plane and the bone
-// window and says so with Undo. Esc ends one; "Copy for the report" gives every value with its side and slice.
+// window and says so with Undo. Esc ends one; "Copy for the report" gives every value with its side and slice, and the
+// theatre card prints them on one A4 page (the print dialog is replaced by Electron's printToPDF of the same page).
 // Screenshots in English and Turkish.
 // usage: node tools/check-close-calipers.cjs SINUS_STUDY [OUTPUT_DIR]
 const { _electron: electron } = require('playwright');
@@ -10,6 +11,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
+const { execFileSync } = require('node:child_process');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 
 async function main() {
@@ -217,6 +219,38 @@ async function main() {
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
     check('Copy for the report gives every caliper value with its side and slice', { report });
 
+    // The theatre card: the main process's print dialog is replaced by a PDF of the page as it would print, kept here.
+    await desktop.evaluate(({ BrowserWindow }) => {
+      const contents = BrowserWindow.getAllWindows()[0].webContents;
+      globalThis.__theatreCards = [];
+      contents.print = (_options, callback) => contents.printToPDF({ preferCSSPageSize: true, printBackground: false })
+        .then(data => { globalThis.__theatreCards.push(data.toString('base64')); callback(true, ''); }, error => callback(false, String(error)));
+    });
+    const card = page.getByTestId('theatre-card');
+    /** Prints the card and keeps its PDF (and on macOS a picture of it); returns the card's text. */
+    const printCard = async (name, count) => {
+      await checklist.locator('[data-action="checklist-print"]').click();
+      for (let tries = 0; tries < 100 && (await desktop.evaluate(() => globalThis.__theatreCards.length)) < count; tries++) await page.waitForTimeout(100);
+      const pdf = Buffer.from((await desktop.evaluate(() => globalThis.__theatreCards))[count - 1], 'base64');
+      assert.equal((pdf.toString('latin1').match(/\/Type\s*\/Page(?!s)/g) ?? []).length, 1, 'The card fits on one page.');
+      await fs.writeFile(path.join(output, `${name}.pdf`), pdf);
+      if (process.platform === 'darwin') execFileSync('sips', ['-s', 'format', 'png', path.join(output, `${name}.pdf`), '--out', path.join(output, `${name}.png`)], { stdio: 'ignore' });
+      assert.equal(await card.isVisible(), false, 'The card is printed, never shown on screen.');
+      return card.textContent();
+    };
+    /** What the card gives for an item's side: its answer, then its measurement and where it was seen. */
+    const cardCell = async (item, which) => [await card.locator(`[data-item="${item}"] [data-side="${which}"] strong`).textContent(),
+      ...await card.locator(`[data-item="${item}"] [data-side="${which}"] span`).allTextContents()];
+    const english = await printCard('4-theatre-card-en', 1);
+    assert.equal(await card.locator('h1').textContent(), 'Theatre card · Sinus CT · before surgery');
+    assert.match(await card.locator('.theatre-card-identity').textContent(), /^SYNTHETIC SINUS · Study date: 01\.01\.2000/);
+    assert.deepEqual(await cardCell('keros', 'right'), ['1', '3.2 mm, type 1, near limit; Gera 70.0°, class II', 'coronal · slice 41/141']);
+    assert.deepEqual(await cardCell('lamina', 'left'), ['–'], 'A side not marked says so.');
+    assert.equal(await card.locator('[data-item="keros"] th small').textContent(), 'right–left difference 2.8 mm');
+    assert.equal(await card.locator('[data-item="pneumatisation"] td').count(), 1, 'An item with one answer spans both sides.');
+    assert.match(await card.locator('footer').textContent(), /^16 of 21 sides not marked · Measured on CT: check against the images\./);
+    check('The theatre card prints the patient, every item with both sides, measurements and slices, on one A4 page', { card: english });
+
     // The same in Turkish.
     await page.getByTestId('tool-language').press('Enter');
     await page.getByTestId('language-tr').press('Enter');
@@ -225,6 +259,8 @@ async function main() {
     const turkish = await copied('Kopyalandı');
     assert.match(turkish, /Kribriform plate \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; Gera 70\.0°, sınıf II; kesit \d+\/\d+\)/);
     assert.match(turkish, /sağ–sol fark 2\.8 mm/);
+    const turkishCard = await printCard('4-theatre-card-tr', 2);
+    assert(turkishCard.includes('Ameliyathane kartı · PNS BT · ameliyat öncesi') && turkishCard.includes('taraftan'), turkishCard);
     await page.screenshot({ path: path.join(output, '1-keros-tr.png') });
     await show('sagittal', landmarks.sella.x);
     await page.mouse.move(5, 5);

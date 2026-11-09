@@ -64,6 +64,14 @@ also have a caliper button; a side holds one note, whichever came last. A calipe
 millimetres), its reading and the answer it gave. Moving a point of its drawing measures again; the answer follows until the reader picks another one. Deleting
 the drawing leaves the record. "Copy for the report" gives each side its answer, measurement and slice.
 
+## The theatre card
+
+"Theatre card" in the checklist prints it on one A4 page to take into theatre: the patient as the image corner gives
+it (left out when the reader hides patient data), the series and when it was printed, then every item with its right
+and left side: the answer, what a caliper measured, the plane and slice it was seen on, and how many sides are not
+marked. It goes through the system print dialog, which asks first and offers a printer or a PDF; VEAcom writes no file
+itself, so it does not save the checklist this way (the next section).
+
 ## Saving the answers (not written)
 
 The checklist lives in memory while the viewer is open. Nothing is written to disk until the hospital's ethics
