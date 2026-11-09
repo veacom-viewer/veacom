@@ -38,20 +38,33 @@ downloads.
 - `worker.js` adds the headers to every response (cross-origin isolation for the threads, the content policy, a year's
   caching for the hashed files under `/assets/`, `no-cache` for the rest) and answers only GET and HEAD.
 - `wrangler.jsonc`: the Worker `veacom-viewer` on the custom domain viewer.veacom.app, with no workers.dev address.
+- `package.json` and `pnpm-lock.yaml`: wrangler, pinned and installed apart from the root, under the root's
+  supply-chain policy (`pnpm-workspace.yaml`).
+
+CI publishes the site. On every push to main, once every check of the Verify workflow passed, its `deploy` job
+publishes the files the `browser` job built and checked. It then checks that viewer.veacom.app serves that build with
+its headers. Pull requests only run `wrangler deploy --dry-run`. A manual run of Verify on main publishes again.
+
+The job reads two secrets of the `viewer-site` environment, which only main may use:
+- `CLOUDFLARE_API_TOKEN`: a Cloudflare API token from the "Edit Cloudflare Workers" template, limited to the account
+  and to the veacom.app zone;
+- `CLOUDFLARE_ACCOUNT_ID`: the account it publishes to.
+
+To try the site and its configuration on this computer:
 
 ```sh
 pwsh -NoProfile -File web/build.ps1
 pnpm run build:browser
 node web/site/prepare.mjs
+pnpm --dir web/site install --frozen-lockfile
 cd web/site
-wrangler dev --ip 127.0.0.1 --port 8788
-wrangler login
-wrangler deploy
+pnpm exec wrangler dev --ip 127.0.0.1 --port 8788
+pnpm exec wrangler deploy --dry-run
 ```
 
-`wrangler dev` runs the site in Cloudflare's runtime on this computer (http://127.0.0.1:8788/); `login` is needed once,
-and `deploy` publishes. `VEACOM_URL` points `app-check`, `export-check` and `viewports` at another address, such as
-the local copy or the published site.
+`wrangler dev` runs the site in Cloudflare's runtime on this computer (http://127.0.0.1:8788/). `VEACOM_URL` points
+`app-check`, `export-check` and `viewports` at another address, such as the local copy or the published site.
+To put the previous version back, run `pnpm exec wrangler rollback` in `web/site`, after `wrangler login`.
 
 ## Layout
 

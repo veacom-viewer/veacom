@@ -84,6 +84,9 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/site/pnpm-lock.yaml
       - name: Rust toolchains for WebAssembly (web/build.ps1 pins both)
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component clippy --target wasm32-unknown-unknown
@@ -118,6 +121,23 @@ jobs:
       - run: pnpm run build:browser
       - run: node web/site/prepare.mjs
       - run: node web/tools/browser-check.mjs
+      # wrangler, from web/site's own lockfile, reads wrangler.jsonc and bundles worker.js as a deploy would, and stops
+      # before publishing: a change that would break the deploy job on main fails here first.
+      - name: Site configuration (wrangler deploy --dry-run)
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          pnpm --dir web/site install --frozen-lockfile
+          pnpm --dir web/site exec wrangler deploy --dry-run
+      # The files the checks above opened are the files the deploy job publishes.
+      - name: Keep the site for the deploy job
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viewer-site-${{ github.run_id }}
+          path: web/site/public
+          if-no-files-found: error
+          retention-days: 7
 
   engine:
     runs-on: ubuntu-24.04
@@ -421,3 +441,75 @@ jobs:
             | select(.key != "dependencies" or .value.result != "skipped") | "\(.key): \(.value.result)"' <<< "$NEEDS")
           if [ -n "$failed" ]; then printf 'Not passed:\n%s\n' "$failed"; exit 1; fi
           echo 'Every job passed.'
+
+  # Publishes viewer.veacom.app (web/README.md) from main once every check above passed: the files the browser job
+  # built and checked, with wrangler from web/site's lockfile. The Cloudflare token is a secret of the viewer-site
+  # environment, which only main may use (Settings > Environments). A newer push to main cancels this run, and its own
+  # run publishes after its checks.
+  deploy:
+    name: Publish viewer.veacom.app
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: passed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: viewer-site
+      url: https://viewer.veacom.app/
+    concurrency:
+      group: publish-viewer-site
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: web/site/pnpm-lock.yaml
+      - run: pnpm --dir web/site install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: viewer-site-${{ github.run_id }}
+          path: web/site/public
+      # A manual run and a push run do not cancel each other, so the one that finished last would publish, even an older
+      # commit. Only main's current commit is published; a newer commit's run publishes after this one.
+      - name: Is this main's current commit?
+        id: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo current=true >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now, so its own run publishes; not publishing $GITHUB_SHA."
+            echo current=false >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish
+        if: steps.main.outputs.current == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: pnpm --dir web/site exec wrangler deploy --message "main ${GITHUB_SHA}"
+      # The new version is live within seconds: the home page must name this build's entry script and come with the
+      # headers the threads and the content policy depend on.
+      - name: The site serves this build with its headers
+        if: steps.main.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          entry=$(grep -o 'src="\./assets/[^"]*\.js"' web/site/public/index.html | head -n 1)
+          test -n "$entry"
+          for attempt in $(seq 1 12); do
+            curl --fail --silent --show-error --dump-header "$RUNNER_TEMP/headers" --output "$RUNNER_TEMP/page.html" https://viewer.veacom.app/
+            if grep -qF "$entry" "$RUNNER_TEMP/page.html"; then break; fi
+            if [ "$attempt" = 12 ]; then echo "viewer.veacom.app still serves a build other than $entry"; exit 1; fi
+            sleep 5
+          done
+          for header in 'cross-origin-opener-policy: same-origin' 'cross-origin-embedder-policy: require-corp' \
+            "content-security-policy: .*require-trusted-types-for 'script'"; do
+            grep -qiE "^$header" "$RUNNER_TEMP/headers" || { echo "viewer.veacom.app answers without $header"; exit 1; }
+          done
+          echo "viewer.veacom.app serves $entry with its headers."
