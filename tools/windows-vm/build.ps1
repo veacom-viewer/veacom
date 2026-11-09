@@ -92,7 +92,7 @@ try {
     Invoke-Step 'package' @('packaging-install', 'setup-runtime', 'web-build', 'app-local-runtime') {
         $Release = Join-Path $Root 'release-electron'
         if (Test-Path -LiteralPath $Release) { Remove-Item -LiteralPath $Release -Recurse -Force }
-        Invoke-LoggedTool -Name 'package' -Executable $Node -Arguments @('packaging\node_modules\electron-builder\cli.js', '--config', 'electron-builder.release.cjs',
+        Invoke-LoggedTool -Name 'package' -Executable $Node -Arguments @('packaging\node_modules\electron-builder\cli.js', '--config', 'packaging/electron-builder.smoke.cjs',
             '--win', '--x64', '--dir', '--publish', 'never', '-c.forceCodeSigning=false') -WorkingDirectory $Root -OutputDirectory $Output -TimeoutMinutes 15 | Out-Null
         $Packaged = Join-Path $Release 'win-unpacked\VEAcom Electron.exe'
         $PackagedCore = Join-Path $Release 'win-unpacked\resources\native\veacom-core.exe'

@@ -396,7 +396,7 @@ jobs:
         run: |
           pnpm --dir packaging install --frozen-lockfile
           pnpm exec playwright install ffmpeg
-          node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac --dir --publish never -c.forceCodeSigning=false
+          node packaging/node_modules/electron-builder/cli.js --config packaging/electron-builder.smoke.cjs --mac --dir --publish never -c.forceCodeSigning=false
           apps=(release-electron/mac*/"VEAcom Electron.app/Contents/MacOS/VEAcom Electron")
           test "${#apps[@]}" = 1 && test -f "${apps[0]}"
           node tools/check-packaged-parity.cjs "${apps[0]}" "$RUNNER_TEMP/viewer-parity"

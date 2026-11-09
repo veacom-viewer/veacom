@@ -4,6 +4,7 @@ mod snapshot;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod stamp;
 use crate::vfs::{File, OpenOptions};
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -48,15 +49,18 @@ pub(crate) fn open_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// What a source's metadata said at import: its size and modification time, and on Unix also its identity and change
-/// time, which every ordinary write moves. The browser's files have no time; the page's File objects cannot change
-/// under it (the browser refuses to read one whose file on disk changed).
+/// What a source's metadata said at import: its size and modification time, and on Unix and Windows also its identity
+/// and change time, which every write moves, even one that puts the modification time back (a copy over the file keeps
+/// the copied file's). The browser's files have no time; the page's File objects cannot change under it (the browser
+/// refuses to read one whose file on disk changed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fingerprint {
     len: u64,
     modified: Option<SystemTime>,
     #[cfg(unix)]
     identity: (u64, u64, i64, i64),
+    #[cfg(windows)]
+    identity: (u32, u64, i64),
 }
 
 impl Fingerprint {
@@ -75,6 +79,8 @@ impl Fingerprint {
                     metadata.ctime_nsec(),
                 )
             },
+            #[cfg(windows)]
+            identity: windows_identity(file)?,
         })
     }
 
@@ -86,14 +92,46 @@ impl Fingerprint {
     }
 }
 
+/// The volume, the file's index on it and its change time, which NTFS moves on every write and attribute change.
+#[cfg(windows)]
+fn windows_identity(file: &File) -> io::Result<(u32, u64, i64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx,
+    };
+    let handle = file.as_raw_handle();
+    // The handle stays open for both calls, and each fills the plain structure it is given.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    let size = size_of::<FILE_BASIC_INFO>() as u32;
+    if unsafe { GetFileInformationByHandleEx(handle, FileBasicInfo, (&raw mut basic).cast(), size) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        basic.ChangeTime,
+    ))
+}
+
 /// Stable local files on Linux and APFS are checked on the open descriptor as they are read (see `stamp`). Other
-/// sources are checked against their import fingerprint before and after every read. Nothing reads a whole file to
-/// import it: the first image does not wait for the study to be read.
+/// sources are checked against their import fingerprint before and after every read, and against the digest of the
+/// headers import read whenever they are opened again. Nothing reads a whole file to import it: the first image does
+/// not wait for the study to be read.
 #[derive(Debug)]
 pub struct SourceFile {
     pub path: PathBuf,
     pub len: u64,
     fingerprint: Fingerprint,
+    /// SHA-256 of the file's first 8 KiB (or all of a smaller file), for sources without a fast path. A copy over the
+    /// file can keep every time Windows reports, but not the patient, study and image identity in these headers.
+    head: Option<[u8; 32]>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     stamp: Option<stamp::Stamp>,
     #[cfg(target_os = "macos")]
@@ -153,6 +191,7 @@ impl SourceFile {
                     path: path.to_owned(),
                     len,
                     fingerprint,
+                    head: None,
                     stamp,
                     #[cfg(target_os = "macos")]
                     snapshot,
@@ -160,15 +199,19 @@ impl SourceFile {
                 Arc::new(prefix),
             ));
         }
-        // Only the headers' prefix is read now, as on the fast path; later reads are checked against the fingerprint.
-        let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
+        // Only the headers are read now, as on the fast path; later reads are checked against the fingerprint, and the
+        // headers' digest when the file is opened again.
+        let mut prefix = vec![0; HEADER_PREFIX.min(len as usize)];
         file.read_exact(&mut prefix)?;
         ensure!(Fingerprint::of(file)? == fingerprint, changed());
+        let head = Sha256::digest(&prefix).into();
+        prefix.truncate(keep.min(prefix.len()));
         Ok((
             Arc::new(Self {
                 path: path.to_owned(),
                 len,
                 fingerprint,
+                head: Some(head),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 stamp: None,
                 #[cfg(target_os = "macos")]
@@ -207,7 +250,8 @@ impl SourceFile {
         if self.stamp.is_some() && other.stamp.is_some() {
             return self.stamp == other.stamp;
         }
-        // The same file, unwritten since: on Unix every write moves the change time.
+        // The same file, unwritten since: on Unix every write moves the change time. NTFS may defer that update until a
+        // writer closes the file, so Windows compares the bytes below.
         #[cfg(unix)]
         if self.fingerprint == other.fingerprint {
             return true;
@@ -245,7 +289,15 @@ impl SourceFile {
             return Ok(self.reader(file, Arc::default()));
         }
         self.fingerprint.verify(&file)?;
-        Ok(self.reader(file, Arc::default()))
+        let Some(expected) = &self.head else {
+            return Ok(self.reader(file, Arc::default()));
+        };
+        // The headers are read again and served from this check, so what follows reads past them.
+        let mut head = vec![0; HEADER_PREFIX.min(self.len as usize)];
+        let mut file = file;
+        ensure!(file.read_exact(&mut head).is_ok(), changed());
+        ensure!(Sha256::digest(&head)[..] == expected[..], changed());
+        Ok(self.reader(file, Arc::new(head)))
     }
 
     fn reader(self: &Arc<Self>, file: File, prefix: Arc<Vec<u8>>) -> SourceReader {
@@ -346,7 +398,13 @@ mod tests {
         assert_eq!(prefix.as_slice(), &bytes[..HEADER_PREFIX]);
         let mut reader = source.open().unwrap();
         std::fs::write(&path, vec![22; bytes.len()]).unwrap();
+        // The headers come from the copy checked against their import digest when the file was opened.
+        let mut first = [0; 8];
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(first, [7; 8]);
+        reader.seek(SeekFrom::Start(HEADER_PREFIX as u64)).unwrap();
         assert!(reader.read_exact(&mut [0; 8]).is_err());
+        assert!(source.open().is_err());
     }
 
     #[cfg(target_os = "linux")]
@@ -366,7 +424,11 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         file.rewind().unwrap();
         file.write_all(&[22; 8]).unwrap();
-        assert!(reader.read_exact(&mut [0; 8]).is_err());
+        // The whole file is within the headers checked against their import digest when it was opened.
+        let mut bytes = [0; 8];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [11; 8]);
+        assert!(original.open().is_err());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]

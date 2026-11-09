@@ -44,6 +44,7 @@ async function main() {
   if (!out || out.startsWith('--')) throw new Error('Usage: node tools/check-crash-reporting.cjs evidence.json [--live]');
   const executablePath = process.env.VEACOM_SMOKE_EXECUTABLE;
   if (executablePath && !live) throw new Error('A packaged executable uses the real intake; select --live explicitly.');
+  if (live && !executablePath) throw new Error('--live requires VEACOM_SMOKE_EXECUTABLE pointing to a release package.');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(),'veacom-crash-check-'));
   const profile = path.join(temp,sentinel);
   fs.mkdirSync(profile); fs.writeFileSync(path.join(profile,'preferences.json'),JSON.stringify({usageConsent:'denied'}));
@@ -87,8 +88,12 @@ async function main() {
       const requireApp = process.getBuiltinModule('module').createRequire(app.getAppPath()+'/package.json');
       const folder = requireApp('node:path').join(app.getAppPath(),'electron');
       const config = requireApp('./electron/usage.cjs').collectorConfig(app.isPackaged ? {} : process.env,folder);
-      return Boolean(config);
+      return Boolean(config) && (!app.isPackaged || config.url === 'https://otel-collector-5phqzw3wxq-nw.a.run.app/v1/traces');
     });
+    if (live) {
+      assert.equal(await desktop.evaluate(({app})=>app.isPackaged),true,'Live checks require the packaged viewer.');
+      assert.equal(usageCollectorConfigured,true,'The release package must include the usage collector.');
+    }
     const usageControlAccepted = await page.evaluate(id=>window.veacom.usageRecord([{name:'ux.action',
       trace:id,span:id.slice(0,16),start:Date.now(),duration:1,attributes:{'veacom.action':'annotation-delete'}}]),usageControlId);
     assert.equal(usageControlAccepted,0,'a valid usage event must be rejected with sharing off');

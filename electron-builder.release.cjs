@@ -14,6 +14,7 @@ module.exports = {
   extraMetadata: { veacomBuildCommit: /^[0-9a-f]{40}$/.test(revision || '') ? revision : 'unknown' },
   directories: { ...base.directories, output: 'release-electron' },
   publish: null,
+  afterPack: './packaging/verify-telemetry.cjs',
   forceCodeSigning: true,
   win: {
     ...base.win,
