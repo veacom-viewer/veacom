@@ -4,8 +4,16 @@ use dicom_pixeldata::{DecodedPixelData, PixelDecoder};
 use std::{collections::HashMap, path::Path};
 
 /// In WebAssembly everything shares 4 GB, so a decoded volume may take a quarter of it there.
-const MAX_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
-const VOLUME_LIMIT: &str = if cfg!(target_arch = "wasm32") { "1 GiB" } else { "2 GiB" };
+const MAX_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") {
+    1024 * 1024 * 1024
+} else {
+    2 * 1024 * 1024 * 1024
+};
+const VOLUME_LIMIT: &str = if cfg!(target_arch = "wasm32") {
+    "1 GiB"
+} else {
+    "2 GiB"
+};
 const MAX_FRAME_SAMPLES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
@@ -111,7 +119,8 @@ fn validate_decoded(source: &SourceSeries, decoded: &DecodedPixelData<'_>) -> Re
         bail!("Decoded frame dimensions or components differ from the imported series");
     }
     // A palette label map's indices are its segment numbers; the palette only suggests colours.
-    let label_map = source.info.segmentation.is_some() && source.info.photometric_interpretation == "PALETTE COLOR";
+    let label_map = source.info.segmentation.is_some()
+        && source.info.photometric_interpretation == "PALETTE COLOR";
     if source.info.components == 1
         && !label_map
         && !matches!(
@@ -274,7 +283,11 @@ fn widen_encapsulated_bits(object: &mut dicom_object::DefaultDicomObject) {
         .element(Tag(0x7fe0, 0x0010))
         .is_ok_and(|e| matches!(e.value(), Value::PixelSequence(_)));
     if one_bit && encapsulated {
-        object.put(DataElement::new(Tag(0x0028, 0x0100), VR::US, PrimitiveValue::from(8u16)));
+        object.put(DataElement::new(
+            Tag(0x0028, 0x0100),
+            VR::US,
+            PrimitiveValue::from(8u16),
+        ));
     }
 }
 
@@ -287,10 +300,11 @@ fn bit_values(
     frame: &Frame,
 ) -> Result<FrameValues> {
     use dicom_core::{PrimitiveValue, Tag, value::Value};
-    let attribute = |tag: Tag| -> Result<usize> {
-        Ok(object.element(tag)?.to_int::<usize>()?)
-    };
-    let (rows, columns) = (attribute(Tag(0x0028, 0x0010))?, attribute(Tag(0x0028, 0x0011))?);
+    let attribute = |tag: Tag| -> Result<usize> { Ok(object.element(tag)?.to_int::<usize>()?) };
+    let (rows, columns) = (
+        attribute(Tag(0x0028, 0x0010))?,
+        attribute(Tag(0x0028, 0x0011))?,
+    );
     if [columns, rows] != [source.info.dimensions[0], source.info.dimensions[1]]
         || attribute(Tag(0x0028, 0x0002))? != 1
         || source.info.components != 1
@@ -315,14 +329,18 @@ fn bit_values(
         Value::Primitive(PrimitiveValue::U16(words)) => {
             std::borrow::Cow::Owned(words.iter().flat_map(|word| word.to_le_bytes()).collect())
         }
-        Value::PixelSequence(_) => bail!("Encapsulated 1-bit pixel data must be decoded by its codec"),
+        Value::PixelSequence(_) => {
+            bail!("Encapsulated 1-bit pixel data must be decoded by its codec")
+        }
         _ => bail!("1-bit PixelData has an invalid value representation"),
     };
     let per_frame = frame_samples(source)?;
     let start = per_frame
         .checked_mul(frame.index as usize)
         .context("Frame offset overflow")?;
-    let end = start.checked_add(per_frame).context("Frame offset overflow")?;
+    let end = start
+        .checked_add(per_frame)
+        .context("Frame offset overflow")?;
     if end.div_ceil(8) > bytes.len() {
         bail!("1-bit PixelData is shorter than its frames");
     }
@@ -491,30 +509,69 @@ fn special_scalar_values(
     }))
 }
 
-fn apply_modality(values:&mut [f64],object:&dicom_object::DefaultDicomObject,frame:&Frame,floating:bool)->Result<()> {
+fn apply_modality(
+    values: &mut [f64],
+    object: &dicom_object::DefaultDicomObject,
+    frame: &Frame,
+    floating: bool,
+) -> Result<()> {
     use dicom_core::Tag;
     if let Some(mapping) = &frame.activity {
-        let signed = object.get(Tag(0x0028,0x0103)).and_then(|v| v.to_int::<u16>().ok()) == Some(1);
-        let bits = object.get(Tag(0x0028,0x0100)).context("Missing BitsAllocated")?.to_int::<u32>()?;
-        let padding = crate::ingest::padding_range(object, frame.index as usize, 1., 0., signed, bits);
+        let signed = object
+            .get(Tag(0x0028, 0x0103))
+            .and_then(|v| v.to_int::<u16>().ok())
+            == Some(1);
+        let bits = object
+            .get(Tag(0x0028, 0x0100))
+            .context("Missing BitsAllocated")?
+            .to_int::<u32>()?;
+        let padding =
+            crate::ingest::padding_range(object, frame.index as usize, 1., 0., signed, bits);
         for value in values {
-            *value = if padding.is_some_and(|range| (range[0]..=range[1]).contains(value)) { f64::NAN } else { mapping.value(*value) };
-            if value.is_infinite() { bail!("Activity mapping exceeds the finite range"); }
+            *value = if padding.is_some_and(|range| (range[0]..=range[1]).contains(value)) {
+                f64::NAN
+            } else {
+                mapping.value(*value)
+            };
+            if value.is_infinite() {
+                bail!("Activity mapping exceeds the finite range");
+            }
         }
-    } else if let Some(lut)=crate::modality_lut::read(object,frame.index as usize,object.meta().transfer_syntax()!="1.2.840.10008.1.2.2")? {
-        if floating { bail!("Modality LUT requires integer stored pixel values"); }
-        let signed=object.get(Tag(0x0028,0x0103)).and_then(|v|v.to_int::<u16>().ok())==Some(1);
-        let bits=object.get(Tag(0x0028,0x0100)).context("Missing BitsAllocated")?.to_int::<u32>()?;
-        let padding=crate::ingest::padding_range(object,frame.index as usize,1.,0.,signed,bits);
+    } else if let Some(lut) = crate::modality_lut::read(
+        object,
+        frame.index as usize,
+        object.meta().transfer_syntax() != "1.2.840.10008.1.2.2",
+    )? {
+        if floating {
+            bail!("Modality LUT requires integer stored pixel values");
+        }
+        let signed = object
+            .get(Tag(0x0028, 0x0103))
+            .and_then(|v| v.to_int::<u16>().ok())
+            == Some(1);
+        let bits = object
+            .get(Tag(0x0028, 0x0100))
+            .context("Missing BitsAllocated")?
+            .to_int::<u32>()?;
+        let padding =
+            crate::ingest::padding_range(object, frame.index as usize, 1., 0., signed, bits);
         for value in values {
-            if !value.is_finite() || value.fract()!=0. { bail!("Invalid stored value for Modality LUT"); }
-            *value=if padding.is_some_and(|range| *value>=range[0] && *value<=range[1]) {f64::NAN} else {lut.value(*value as i64)};
+            if !value.is_finite() || value.fract() != 0. {
+                bail!("Invalid stored value for Modality LUT");
+            }
+            *value = if padding.is_some_and(|range| *value >= range[0] && *value <= range[1]) {
+                f64::NAN
+            } else {
+                lut.value(*value as i64)
+            };
         }
     } else {
         for value in values {
-            let was_finite=value.is_finite();
-            *value=*value*frame.slope+frame.intercept;
-            if !value.is_finite() && (was_finite || !floating) {bail!("Pixel rescale produced non-finite physical values");}
+            let was_finite = value.is_finite();
+            *value = *value * frame.slope + frame.intercept;
+            if !value.is_finite() && (was_finite || !floating) {
+                bail!("Pixel rescale produced non-finite physical values");
+            }
         }
     }
     Ok(())
@@ -550,7 +607,9 @@ fn scalar_values(
         8 => data.iter().map(|&byte| unpack(u16::from(byte))).collect(),
         // The decoder has already converted the file's words to native byte order.
         16 => data
-            .as_chunks::<2>().0.iter()
+            .as_chunks::<2>()
+            .0
+            .iter()
             .map(|word| unpack(u16::from_ne_bytes([word[0], word[1]])))
             .collect(),
         _ => bail!("Unsupported scalar BitsAllocated"),
@@ -568,12 +627,14 @@ fn decoded_values(
 ) -> Result<Vec<f64>> {
     validate_decoded(source, decoded)?;
     if source.info.components == 3 {
-        Ok(crate::color::rgb_frame(object, decoded, index, frame.index)?
-            .into_iter()
-            .map(f64::from)
-            .collect())
+        Ok(
+            crate::color::rgb_frame(object, decoded, index, frame.index)?
+                .into_iter()
+                .map(f64::from)
+                .collect(),
+        )
     } else if source.info.components == 1 {
-        scalar_values(object,decoded, index, frame)
+        scalar_values(object, decoded, index, frame)
     } else {
         bail!("Only scalar and RGB images are supported")
     }
@@ -591,38 +652,75 @@ fn cannot_read(path: &Path, error: anyhow::Error) -> anyhow::Error {
         }
         _ => crate::message::Param::error(&error),
     };
-    coded!("decode.cannotRead", "Cannot read {path}: {reason}", path = path.display().to_string(), reason = reason).into()
+    coded!(
+        "decode.cannotRead",
+        "Cannot read {path}: {reason}",
+        path = path.display().to_string(),
+        reason = reason
+    )
+    .into()
 }
 
 /// A picture's RGB samples, decoded in the desktop app's sandboxed picture decoder (pictures.rs).
-fn ordinary_rgb(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<Vec<u8>> {
+fn ordinary_rgb(
+    source: &SourceSeries,
+    frame: &Frame,
+    check: fn() -> Result<()>,
+) -> Result<Vec<u8>> {
     let expected = frame_samples(source)?;
     if source.info.components != 3 {
         bail!("Ordinary images are read as RGB");
     }
     let path = &frame.source.path;
-    let request = crate::pictures::read(&frame.source, crate::pictures::Want::Pixels, check).map_err(|error| {
-        if crate::message::coded(&error).is_some() { error } else { cannot_read(path, error) }
-    })?;
-    let picture = request.decode().context("Cannot decode this ordinary image")?;
-    if picture.width as usize != source.info.dimensions[0] || picture.height as usize != source.info.dimensions[1] {
+    let request = crate::pictures::read(&frame.source, crate::pictures::Want::Pixels, check)
+        .map_err(|error| {
+            if crate::message::coded(&error).is_some() {
+                error
+            } else {
+                cannot_read(path, error)
+            }
+        })?;
+    let picture = request
+        .decode()
+        .context("Cannot decode this ordinary image")?;
+    if picture.width as usize != source.info.dimensions[0]
+        || picture.height as usize != source.info.dimensions[1]
+    {
         bail!("Image dimensions changed after import");
     }
-    anyhow::ensure!(picture.rgb.len() == expected, "Decoded pixel count differs from image dimensions");
+    anyhow::ensure!(
+        picture.rgb.len() == expected,
+        "Decoded pixel count differs from image dimensions"
+    );
     Ok(picture.rgb)
 }
 
-fn one_frame_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<()>) -> Result<FrameValues> {
+fn one_frame_values(
+    source: &SourceSeries,
+    frame: &Frame,
+    check: fn() -> Result<()>,
+) -> Result<FrameValues> {
     if frame.ordinary_image {
-        return Ok(FrameValues::from(ordinary_rgb(source, frame, check)?.into_iter().map(f64::from).collect::<Vec<_>>()));
+        return Ok(FrameValues::from(
+            ordinary_rgb(source, frame, check)?
+                .into_iter()
+                .map(f64::from)
+                .collect::<Vec<_>>(),
+        ));
     }
-    let file = frame.source.open().map_err(|error| cannot_read(&frame.source.path, error))?;
-    let mut object = dicom_object::OpenFileOptions::new().from_reader(file)
+    let file = frame
+        .source
+        .open()
+        .map_err(|error| cannot_read(&frame.source.path, error))?;
+    let mut object = dicom_object::OpenFileOptions::new()
+        .from_reader(file)
         .map_err(|error| cannot_read(&frame.source.path, error.into()))?;
     check_object(&object, false)?;
     crate::codec_guard::check(&object, Some(frame.index))?;
     widen_encapsulated_bits(&mut object);
-    if source.info.photometric_interpretation == "PALETTE COLOR" && source.info.segmentation.is_none() {
+    if source.info.photometric_interpretation == "PALETTE COLOR"
+        && source.info.segmentation.is_none()
+    {
         return Ok(FrameValues::from(
             crate::palette::decode_palette_frame(&object, frame.index)?
                 .into_iter()
@@ -635,16 +733,18 @@ fn one_frame_values(source: &SourceSeries, frame: &Frame, check: fn() -> Result<
     }
     let decoded = object
         .decode_pixel_data_frame(frame.index)
-        .map_err(|error| coded!(
-            "decode.unsupportedPixels",
-            "Unsupported or damaged DICOM pixel data (transfer syntax {syntax}): {reason}",
-            syntax = object.meta().transfer_syntax().to_string(),
-            reason = error.to_string(),
-        ))?;
+        .map_err(|error| {
+            coded!(
+                "decode.unsupportedPixels",
+                "Unsupported or damaged DICOM pixel data (transfer syntax {syntax}): {reason}",
+                syntax = object.meta().transfer_syntax().to_string(),
+                reason = error.to_string(),
+            )
+        })?;
     Ok(FrameValues {
-        values:decoded_values(source, &object, &decoded, 0, frame)?,
-        preserve_precision:false,
-        allow_ieee:frame.metadata.padding_is_nan,
+        values: decoded_values(source, &object, &decoded, 0, frame)?,
+        preserve_precision: false,
+        allow_ieee: frame.metadata.padding_is_nan,
     })
 }
 
@@ -687,9 +787,12 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         bail!("Volume exceeds the {VOLUME_LIMIT} decoded output limit");
     }
     let mut output = Vec::new();
-    output
-        .try_reserve_exact(count)
-        .map_err(|_| coded!("decode.noMemory", "Not enough memory for the decoded volume"))?;
+    output.try_reserve_exact(count).map_err(|_| {
+        coded!(
+            "decode.noMemory",
+            "Not enough memory for the decoded volume"
+        )
+    })?;
     output.resize(count, T::default());
     crate::progress::check()?;
     let mut groups: HashMap<&Path, Vec<usize>> = HashMap::new();
@@ -703,20 +806,33 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         individuals.map(|indices| source.frames[indices[0]].jpeg_component_threads),
     )
     .min((1024 * 1024 * 1024 / (per_frame * 24)).max(1));
-    crate::parallel::try_for_each("frame-decode", workers, output.chunks_mut(per_frame).enumerate(), |(index, target)| -> Result<()> {
-        let frame = &source.frames[index];
-        if groups[frame.source.path.as_path()].len() == 1 {
-            crate::progress::check()?;
-            copy_values(target, one_frame_values(source, frame, crate::progress::check)?)?;
-            crate::progress::step()?;
-        }
-        Ok(())
-    })?;
+    crate::parallel::try_for_each(
+        "frame-decode",
+        workers,
+        output.chunks_mut(per_frame).enumerate(),
+        |(index, target)| -> Result<()> {
+            let frame = &source.frames[index];
+            if groups[frame.source.path.as_path()].len() == 1 {
+                crate::progress::check()?;
+                copy_values(
+                    target,
+                    one_frame_values(source, frame, crate::progress::check)?,
+                )?;
+                crate::progress::step()?;
+            }
+            Ok(())
+        },
+    )?;
 
     for (path, indices) in groups.into_iter().filter(|(_, indices)| indices.len() > 1) {
         crate::progress::check()?;
-        let file = source.frames[indices[0]].source.open().map_err(|error| cannot_read(path, error))?;
-        let mut object = dicom_object::OpenFileOptions::new().from_reader(file).map_err(|error| cannot_read(path, error.into()))?;
+        let file = source.frames[indices[0]]
+            .source
+            .open()
+            .map_err(|error| cannot_read(path, error))?;
+        let mut object = dicom_object::OpenFileOptions::new()
+            .from_reader(file)
+            .map_err(|error| cannot_read(path, error.into()))?;
         check_object(&object, true)?;
         crate::codec_guard::check(&object, None)?;
         widen_encapsulated_bits(&mut object);
@@ -740,16 +856,20 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
             }
             continue;
         }
-        let decoded = object.decode_pixel_data().map_err(|error| coded!(
-            "decode.unsupportedPixels",
-            "Unsupported or damaged DICOM pixel data (transfer syntax {syntax}): {reason}",
-            syntax = object.meta().transfer_syntax().to_string(),
-            reason = error.to_string(),
-        ))?;
+        let decoded = object.decode_pixel_data().map_err(|error| {
+            coded!(
+                "decode.unsupportedPixels",
+                "Unsupported or damaged DICOM pixel data (transfer syntax {syntax}): {reason}",
+                syntax = object.meta().transfer_syntax().to_string(),
+                reason = error.to_string(),
+            )
+        })?;
         for index in indices {
             crate::progress::check()?;
             let frame = &source.frames[index];
-            let values = if source.info.photometric_interpretation == "PALETTE COLOR" && source.info.segmentation.is_none() {
+            let values = if source.info.photometric_interpretation == "PALETTE COLOR"
+                && source.info.segmentation.is_none()
+            {
                 crate::palette::apply_palette(&decoded, &object, frame.index)?
                     .into_iter()
                     .map(f64::from)
@@ -759,7 +879,11 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
             };
             copy_values(
                 &mut output[index * per_frame..(index + 1) * per_frame],
-                FrameValues {values,preserve_precision:false,allow_ieee:frame.metadata.padding_is_nan},
+                FrameValues {
+                    values,
+                    preserve_precision: false,
+                    allow_ieee: frame.metadata.padding_is_nan,
+                },
             )?;
             crate::progress::step()?;
         }
@@ -782,17 +906,20 @@ fn decode_volume_compact(source: &SourceSeries) -> Result<PixelBuffer> {
     if source.frames.len() != source.info.dimensions[2] {
         bail!("Frame count differs from series dimensions");
     }
-    if let [frame] = source.frames.as_slice() && frame.ordinary_image {
+    if let [frame] = source.frames.as_slice()
+        && frame.ordinary_image
+    {
         let pixels = ordinary_rgb(source, frame, crate::progress::check)?;
         crate::progress::step()?;
         return Ok(PixelBuffer::U8(pixels));
     }
     if source.info.pixel_type == "float32"
         && source.info.components == 1
-        && source
-            .frames
-            .iter()
-            .all(|frame| !frame.metadata.padding_is_nan && frame.slope.fract() == 0. && frame.intercept.fract() == 0.)
+        && source.frames.iter().all(|frame| {
+            !frame.metadata.padding_is_nan
+                && frame.slope.fract() == 0.
+                && frame.intercept.fract() == 0.
+        })
     {
         // Header ranges can exceed i16 even when every stored physical value fits.
         // Check during the compact decode, without allocating a float volume first.
@@ -933,7 +1060,10 @@ mod tests {
             .write_to_file(path)
             .unwrap();
     }
-    #[allow(clippy::too_many_arguments, reason = "each argument is one attribute of the test image or one expected value")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is one attribute of the test image or one expected value"
+    )]
     fn check(
         pixels: &[u16],
         signed: bool,
@@ -1076,7 +1206,9 @@ mod tests {
         ] {
             let bytes: Vec<u8> = hex
                 .as_bytes()
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
                 .collect();
             assert_eq!(decode_rle32(&bytes, 3).unwrap(), expected);
@@ -1432,12 +1564,25 @@ mod tests {
         let path = dir.path().join("shifted.dcm");
         for syntax in ["1.2.840.10008.1.2.1", "1.2.840.10008.1.2.2"] {
             for (allocated, high, vr, pixels) in [
-                (8u16, 6u16, VR::OB, PrimitiveValue::U8(vec![0xc3, 0xff, 0x83, 0xbf].into())),
-                (16, 13, VR::OW, PrimitiveValue::U16(vec![0xe1ff, 0xffff, 0xc1ff, 0xdfff].into())),
+                (
+                    8u16,
+                    6u16,
+                    VR::OB,
+                    PrimitiveValue::U8(vec![0xc3, 0xff, 0x83, 0xbf].into()),
+                ),
+                (
+                    16,
+                    13,
+                    VR::OW,
+                    PrimitiveValue::U16(vec![0xe1ff, 0xffff, 0xc1ff, 0xdfff].into()),
+                ),
             ] {
                 fixture(&path, &[0; 4], true, 5, 1., 0., "MONOCHROME2");
                 let mut object = dicom_object::open_file(&path).unwrap();
-                for (tag, value) in [(Tag(0x0028, 0x0100), allocated), (Tag(0x0028, 0x0102), high)] {
+                for (tag, value) in [
+                    (Tag(0x0028, 0x0100), allocated),
+                    (Tag(0x0028, 0x0102), high),
+                ] {
                     object.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
                 }
                 object.put(DataElement::new(Tag(0x7fe0, 0x0010), vr, pixels));
@@ -1445,7 +1590,10 @@ mod tests {
                 object.write_to_file(&path).unwrap();
                 let data = imported(&path);
                 let source = &data.sources[0];
-                for buffer in [decode_frame(source, 0).unwrap(), decode_volume(source).unwrap()] {
+                for buffer in [
+                    decode_frame(source, 0).unwrap(),
+                    decode_volume(source).unwrap(),
+                ] {
                     let values: Vec<_> = (0..buffer.len()).map(|i| buffer.value(i)).collect();
                     assert_eq!(values, [-16., -1., 0., 15.], "{allocated} bits in {syntax}");
                 }
@@ -1476,15 +1624,29 @@ mod tests {
         // A TIFF named .png is refused before any decoder sees it.
         let disguised = dir.path().join("disguised.png");
         std::fs::write(&disguised, b"II*\0\x08\0\0\0\0\0\0\0\0\0").unwrap();
-        let error = crate::ingest::import(&[disguised.to_string_lossy().into_owned()]).err().unwrap();
-        assert!(format!("{error:#}").contains("PNG, JPEG and BMP"), "{error:#}");
-        assert!(!testing::decoded().lock().unwrap().iter().any(|bytes| bytes.starts_with(b"II*")));
+        let error = crate::ingest::import(&[disguised.to_string_lossy().into_owned()])
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("PNG, JPEG and BMP"),
+            "{error:#}"
+        );
+        assert!(
+            !testing::decoded()
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|bytes| bytes.starts_with(b"II*"))
+        );
         // A PNG named .jpg opens: the decoder follows the contents.
         let misnamed = dir.path().join("misnamed.jpg");
         let bytes = testing::picture(PNG, 1, 1, &[1, 2, 3]);
         std::fs::write(&misnamed, &bytes).unwrap();
         let imported = crate::ingest::import(&[misnamed.to_string_lossy().into_owned()]).unwrap();
-        assert_eq!(decode_volume(&imported.sources[0]).unwrap().bytes(), [1, 2, 3]);
+        assert_eq!(
+            decode_volume(&imported.sources[0]).unwrap().bytes(),
+            [1, 2, 3]
+        );
         assert!(testing::decoded().lock().unwrap().contains(&bytes));
         // So does a JPEG.
         let photo = dir.path().join("photo.jpeg");
@@ -1498,12 +1660,19 @@ mod tests {
         testing::serve();
         let dir = crate::test_dir::tempdir().unwrap();
         let path = dir.path().join("color.png");
-        std::fs::write(&path, testing::picture(PNG, 2, 1, &[255, 0, 20, 0, 200, 255])).unwrap();
+        std::fs::write(
+            &path,
+            testing::picture(PNG, 2, 1, &[255, 0, 20, 0, 200, 255]),
+        )
+        .unwrap();
         let imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
         let pixels = decode_volume(&imported.sources[0]).unwrap();
         assert_eq!(pixels.type_name(), "uint8");
         assert_eq!(pixels.bytes(), [255, 0, 20, 0, 200, 255]);
-        assert_eq!(decode_frame(&imported.sources[0], 0).unwrap().bytes(), [255, 0, 20, 0, 200, 255]);
+        assert_eq!(
+            decode_frame(&imported.sources[0], 0).unwrap().bytes(),
+            [255, 0, 20, 0, 200, 255]
+        );
         assert!(!imported.sources[0].info.can_reconstruct);
     }
     #[test]
@@ -1517,8 +1686,13 @@ mod tests {
         let series = std::sync::Arc::get_mut(&mut imported.sources[0]).unwrap();
         series.info.dimensions = [8192, 8192, 1];
         std::fs::remove_file(&path).unwrap();
-        let error = decode_volume(series).err().expect("oversized picture should fail");
-        assert_eq!(error.to_string(), "Frame exceeds the supported 64 million sample limit");
+        let error = decode_volume(series)
+            .err()
+            .expect("oversized picture should fail");
+        assert_eq!(
+            error.to_string(),
+            "Frame exceeds the supported 64 million sample limit"
+        );
     }
     #[test]
     fn ordinary_bmp_opens_like_png() {
@@ -1527,7 +1701,11 @@ mod tests {
         testing::serve();
         let dir = crate::test_dir::tempdir().unwrap();
         let path = dir.path().join("scan.bmp");
-        std::fs::write(&path, testing::picture(BMP, 2, 1, &[255, 0, 20, 0, 200, 255])).unwrap();
+        std::fs::write(
+            &path,
+            testing::picture(BMP, 2, 1, &[255, 0, 20, 0, 200, 255]),
+        )
+        .unwrap();
         let imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(imported.sources[0].info.dimensions, [2, 1, 1]);
         let pixels = decode_volume(&imported.sources[0]).unwrap();
@@ -1540,16 +1718,44 @@ mod tests {
         let dir = crate::test_dir::tempdir().unwrap();
         // Wider than 32768 pixels: refused while the import reads it, before its samples are asked for.
         let wide = dir.path().join("wide.png");
-        std::fs::write(&wide, [PNG, b"VEACOM TEST PICTURE", &32769u32.to_le_bytes(), &1u32.to_le_bytes()].concat()).unwrap();
-        let error = crate::ingest::import(&[wide.to_string_lossy().into_owned()]).err().unwrap();
-        assert!(format!("{error:#}").contains("Invalid or excessive image dimensions"), "{error:#}");
+        std::fs::write(
+            &wide,
+            [
+                PNG,
+                b"VEACOM TEST PICTURE",
+                &32769u32.to_le_bytes(),
+                &1u32.to_le_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap();
+        let error = crate::ingest::import(&[wide.to_string_lossy().into_owned()])
+            .err()
+            .unwrap();
+        assert!(
+            format!("{error:#}").contains("Invalid or excessive image dimensions"),
+            "{error:#}"
+        );
         // 5000 × 5000 RGB is 75 million samples: listed, but its samples are never asked for.
         let large = dir.path().join("large.png");
-        std::fs::write(&large, [PNG, b"VEACOM TEST PICTURE", &5000u32.to_le_bytes(), &5000u32.to_le_bytes()].concat()).unwrap();
+        std::fs::write(
+            &large,
+            [
+                PNG,
+                b"VEACOM TEST PICTURE",
+                &5000u32.to_le_bytes(),
+                &5000u32.to_le_bytes(),
+            ]
+            .concat(),
+        )
+        .unwrap();
         let imported = crate::ingest::import(&[large.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(imported.sources[0].info.dimensions, [5000, 5000, 1]);
         let error = decode_frame(&imported.sources[0], 0).err().unwrap();
-        assert!(error.to_string().contains("64 million sample limit"), "{error}");
+        assert!(
+            error.to_string().contains("64 million sample limit"),
+            "{error}"
+        );
         assert!(decode_volume(&imported.sources[0]).is_err());
         // A picture whose file changed to another size after the import is not shown with the old one's geometry.
         std::fs::write(&large, testing::picture(PNG, 2, 1, &[0; 6])).unwrap();

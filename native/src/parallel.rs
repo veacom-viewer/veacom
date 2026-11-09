@@ -116,7 +116,10 @@ pub struct Pool {
 }
 
 impl Pool {
-    #[allow(clippy::disallowed_methods, reason = "the fixed ZIP encoder pool shares its limit across exports")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixed ZIP encoder pool shares its limit across exports"
+    )]
     pub fn new(name: &str, limit: usize) -> Self {
         let (jobs, receive) = mpsc::channel::<Job>();
         let receive = Arc::new(Mutex::new(receive));
