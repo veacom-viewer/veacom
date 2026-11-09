@@ -38,8 +38,8 @@ interface CurrentJob {
 function validateDescriptor(descriptor: RoiFrameDescriptor): void {
   if (!Object.hasOwn(constructors, descriptor.pixelType) || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1
     || typeof descriptor.key !== 'string' || !descriptor.key) throw new Error('Invalid ROI source frame version or pixel type.');
-  const dimensions = descriptor.series.dimensions;
-  if (dimensions.some(n => !Number.isSafeInteger(n) || n < 1) || (descriptor.series.components ?? 1) !== 1) {
+  const dimensions: readonly number[] = descriptor.series.dimensions;
+  if (dimensions.length !== 3 || dimensions.some(n => !Number.isSafeInteger(n) || n < 1) || (descriptor.series.components ?? 1) !== 1) {
     throw new Error('ROI measurement requires valid scalar source frames.');
   }
   if (!Number.isSafeInteger(descriptor.sourceFrameIndex) || descriptor.sourceFrameIndex < 0 || descriptor.sourceFrameIndex >= dimensions[2]) {

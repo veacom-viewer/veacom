@@ -465,6 +465,12 @@ describe('background measurement protocol', () => {
       assertFields(await request({ type: 'commit', id: 12, seriesId: 'one' }), { type: 'committed' });
       const invalidPreview = await request({ type: 'begin', id: 13, volumes: [{ ...preview, sourceFrameIndex: 2 }] });
       assertFields(invalidPreview, { type: 'error', message: 'Invalid source frame index.' });
+      // Descriptors as a faulty sender could post them, each with a byte count its shape would otherwise match.
+      const shaped = (dimensions: number[]) => ({ ...descriptor(9), series: { ...input.series, dimensions: dimensions as unknown as Vec3 } });
+      assertFields(await request({ type: 'begin', id: 14, volumes: [shaped([5, 5, 2, 1])] }), { type: 'error', message: 'Invalid image dimensions.' });
+      assertFields(await request({ type: 'begin', id: 15, volumes: [{ ...shaped([5, 5]), sourceFrameIndex: 0, byteLength: 100 }] }), { type: 'error', message: 'Invalid image dimensions.' });
+      const unknownType = { ...descriptor(10), pixelType: 'float16' } as unknown as ClinicalVolumeDescriptor;
+      assertFields(await request({ type: 'begin', id: 16, volumes: [unknownType] }), { type: 'error', message: 'Invalid pixel representation or image version.' });
     } finally {
       if (previousMessage) scope.onmessage = previousMessage; else delete scope.onmessage;
       if (previousPost) scope.postMessage = previousPost; else delete scope.postMessage;

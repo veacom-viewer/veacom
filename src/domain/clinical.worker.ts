@@ -29,11 +29,12 @@ let staged: { seriesId: string; bytes: ArrayBuffer; received: number } | null = 
 let timer: ReturnType<typeof setTimeout> | undefined;
 let latestId = 0;
 
+// A descriptor is checked as it arrives, whatever its type says, as the ROI Worker checks its own.
 function validateDescriptor(descriptor: ClinicalVolumeDescriptor): number {
+  if (!Object.hasOwn(constructors, descriptor.pixelType) || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1) throw new Error('Invalid pixel representation or image version.');
   const Constructor = constructors[descriptor.pixelType];
-  if (!Number.isSafeInteger(descriptor.version) || descriptor.version < 1) throw new Error('Invalid image version.');
-  const { dimensions, components = 1 } = descriptor.series;
-  if (dimensions.some(size => !Number.isSafeInteger(size) || size < 1) || ![1, 3].includes(components)) throw new Error('Invalid image dimensions.');
+  const { components = 1 } = descriptor.series, dimensions: readonly number[] = descriptor.series.dimensions;
+  if (dimensions.length !== 3 || dimensions.some(size => !Number.isSafeInteger(size) || size < 1) || ![1, 3].includes(components)) throw new Error('Invalid image dimensions.');
   const frame = descriptor.sourceFrameIndex;
   if (frame !== undefined && (!Number.isSafeInteger(frame) || frame < 0 || frame >= dimensions[2])) throw new Error('Invalid source frame index.');
   const expected = dimensions[0] * dimensions[1] * (frame === undefined ? dimensions[2] : 1) * components * Constructor.BYTES_PER_ELEMENT;
