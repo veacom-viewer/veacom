@@ -625,7 +625,35 @@ async function main() {
     await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
     await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
     check('Slice bar pages, drags to the last slice, and follows pane resizing');
-    const layers = await page.evaluate(() => [...document.querySelector('.viewport-cell.is-active').querySelectorAll('canvas,svg,[data-export-label]')]
+
+    // A drag that starts in the image's right edge pages the slices whatever the tool, 6 px a slice: with the mouse
+    // and with one finger. The window stays as it was.
+    const middleSlice = Math.floor(max / 2);
+    const toMiddle = async () => {
+      await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), middleSlice);
+      await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, middleSlice);
+    };
+    const pagedFive = () => page.waitForFunction(value => Math.abs(window.__VEACOM_TEST__.state().view.slice - value) === 5, middleSlice);
+    const windowNow = () => page.evaluate(() => { const { windowWidth, windowCenter } = window.__VEACOM_TEST__.state().view; return `${windowWidth}/${windowCenter}`; });
+    const image = await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').boundingBox();
+    const edgeX = Math.round(image.x + image.width * 0.94), edgeY = Math.round(image.y + image.height * 0.3);
+    const windowBeforeEdge = await windowNow();
+    await toMiddle();
+    await page.mouse.move(edgeX, edgeY); await page.mouse.down();
+    await page.mouse.move(edgeX, edgeY + 32, { steps: 4 }); await page.mouse.up();
+    await pagedFive();
+    await toMiddle();
+    const finger = await page.context().newCDPSession(page);
+    await finger.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: edgeX, y: edgeY, id: 1 }] });
+    for (const moved of [8, 16, 24, 32]) await finger.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: edgeX, y: edgeY + moved, id: 1 }] });
+    await finger.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await pagedFive();
+    await finger.detach();
+    assert.equal(await windowNow(), windowBeforeEdge, 'An edge drag leaves the window as it was.');
+    await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
+    await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
+    check('A drag from the right edge of the image pages the slices with the mouse and with one finger');
+    const layers =await page.evaluate(() => [...document.querySelector('.viewport-cell.is-active').querySelectorAll('canvas,svg,[data-export-label]')]
       .filter(layer => !layer.closest('[data-export-exclude]')).filter(layer => { const r = layer.getBoundingClientRect(); return r.width && r.height && getComputedStyle(layer).display !== 'none'; })
       .map(layer => layer.dataset.testid || layer.getAttribute('data-testid')));
     assert.deepEqual(layers, ['dicom-canvas', 'annotation-overlay'], 'Exports draw only the image and its overlay.');

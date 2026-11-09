@@ -44,7 +44,7 @@ yerini gösterir (app/... dosyası).
 - [x] Fare işlevleri: Kaydır (T), W/L (W), Kesit kaydırma (S), Yakınlaştır (Z), Döndür (R), Ölçüm (M),
   Artı imleç (H), 3D alan seçimi (V), İşlem yok (N); varsayılan sol W/L, sağ zoom, tekerlek kesit, orta pan
 - [x] Ctrl+tekerlek yakınlaştırma (×1.1, imleç çevresinde), tekerlekle döndürme 5°, sağ sürükleme yakınlaştırma
-- [x] Görüntünün sağ %12'sinde sol sürükleme kesit kaydırır (6 px/kesit)
+- [x] Görüntünün sağ %12'sinde sol sürükleme kesit kaydırır (6 px/kesit); fareyle, tek parmakla ya da kalemle
 - [x] Sol alttaki düzlem adına tık: Aksiyel→Koronal→Sagittal
 - [x] Dokunmatik: tek parmak sol tuş, iki parmak pan + pinch (dokunmatik ekranda elle denenmedi)
 - [x] Tuşlar: Del, Esc, Enter, oklar, PgUp/PgDn ±10; 0 DICOM pencere, Shift+A otomatik, 1–9 ön ayar, I ters,

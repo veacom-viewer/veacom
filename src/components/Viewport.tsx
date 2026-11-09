@@ -514,9 +514,10 @@ export function Viewport(props: ViewportProps) {
         return;
       }
     }
-    if (button === 'left' && event.pointerType === 'mouse' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
+    // A drag that starts in the right edge pages the slices whatever the tool: with the mouse, one finger or a pen.
+    if (button === 'left' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
       event.currentTarget.setPointerCapture(event.pointerId);
-      if (event.detail <= 1) gesture.current = usage.begin('drag-scroll', 'drag');
+      if (event.detail <= 1) gesture.current = usage.begin('drag-scroll', input === 'touch' ? 'touch' : 'drag');
       drag.current = { mode: 'scroll', edge: true, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
       return;
     }
