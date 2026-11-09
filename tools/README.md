@@ -141,7 +141,7 @@ scanning is off on them, and their disks are fast: what a hospital PC feels need
 
 ## Beta performance comparison
 
-`Beta performance comparison` builds the beta 2 tag and the candidate in separate directories on the same GitHub Linux or macOS runner. The engine check uses ten warm and five cache-flushed pairs. The desktop check drops one warm-up pair, then alternates launch order for seven pairs. Every desktop trial has a fresh Electron process and profile. Reports include the raw samples and a paired bootstrap 95% interval for the median change.
+`Beta performance comparison` builds the beta 2 tag and the candidate in separate directories on the same GitHub Linux or macOS runner. It runs nightly on main, by hand, and on a pull request labelled `performance` (when the label is added and on each push while it stays), so ordinary pull requests do not wait its eleven minutes. The engine check uses ten warm and five cache-flushed pairs. The desktop check drops one warm-up pair, then alternates launch order for seven pairs. Every desktop trial has a fresh Electron process and profile. Reports include the raw samples and a paired bootstrap 95% interval for the median change.
 
 With both engines and web apps built and Electron installed, run:
 

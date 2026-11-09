@@ -15,7 +15,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   seriesNumber: 1, dimensions: [64, 64, 90], spacing: [2.6, 2.6, 4], origin: [-82, -82, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2',
   frameOfReferenceUid: 'frame', orientationKnown: true, positionKnown: true, ...overrides,
-} as Series);
+});
 const ct = series({ id: 'ct', description: 'CT' });
 const pet = (id: string, extra: Partial<Series> = {}) => series({ id, modality: 'PT', petAcquisition: { tracer: 'FDG' }, valueUnit: 'Bq/ml', suvFactor: 3.5e-4, dimensions: [32, 32, 90], spacing: [5.2, 5.2, 4], description: 'PET AC', ...extra });
 const view = (extra: Partial<ViewState> = {}): ViewState => ({ mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false, ...extra });

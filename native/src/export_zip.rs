@@ -10,7 +10,10 @@
 //! and streamed into their patient's ZIP. A ZIP is named as VEAcom 1 named it ("SURNAME NAME - MR - 13.06.2022",
 //! "ANONIM - ..." when anonymised, without the date when fully anonymised) and holds a folder per series.
 
-use super::{ExportOptions, ExportResult, IdentityMap, SourceFile, patient_key, clean_instance, reported, value};
+use super::{
+    ExportOptions, ExportResult, IdentityMap, SourceFile, clean_instance, patient_key, reported,
+    value,
+};
 use anyhow::{Context, Result};
 use dicom_core::Tag;
 use dicom_encoding::TransferSyntaxIndex;
@@ -105,17 +108,22 @@ impl Encoding {
     }
 }
 
-pub(super) fn write(sources: &[Arc<SourceFile>], opts: &ExportOptions, destination: &Path) -> Result<ExportResult> {
+pub(super) fn write(
+    sources: &[Arc<SourceFile>],
+    opts: &ExportOptions,
+    destination: &Path,
+) -> Result<ExportResult> {
     let (names, places) = plan(sources, opts)?;
-    let mut archives: Vec<Option<(PathBuf, ZipWriter<File>)>> = (0..names.len()).map(|_| None).collect();
+    let mut archives: Vec<Option<(PathBuf, ZipWriter<File>)>> =
+        (0..names.len()).map(|_| None).collect();
     let packed = pack(sources, opts, destination, &names, &places, &mut archives);
     let mut written = Vec::new();
     let mut failure = packed.as_ref().err().map(|error| format!("{error:#}"));
     for (path, writer) in archives.into_iter().flatten() {
-        if failure.is_none() {
-            if let Err(error) = writer.finish() {
-                failure = Some(format!("Cannot finish {}: {error}", path.display()));
-            }
+        if failure.is_none()
+            && let Err(error) = writer.finish()
+        {
+            failure = Some(format!("Cannot finish {}: {error}", path.display()));
         }
         written.push(path);
     }
@@ -152,17 +160,27 @@ fn pack(
     for (batch, files) in sources.chunks(BATCH).enumerate() {
         // Read and cleaned in order: the identity map renames the same UID alike in every file.
         let mut jobs = Vec::with_capacity(files.len());
-        let prepared = files.iter().enumerate().try_for_each(|(offset, source)| -> Result<()> {
-            opts.check()?;
-            let (archive, folder) = &places[batch * BATCH + offset];
-            let number = numbers.entry((*archive, folder.as_str())).or_insert(0);
-            *number += 1;
-            let entry = format!("{folder}/IM{number:04}.dcm");
-            let (original, object, encapsulated) = prepare(source, opts, &mut identity, &mut warnings, &entry)?;
-            let file = Prepared { archive: *archive, entry, original, object, encapsulated };
-            jobs.push(Encoding::start(file, opts.smallest));
-            Ok(())
-        });
+        let prepared = files
+            .iter()
+            .enumerate()
+            .try_for_each(|(offset, source)| -> Result<()> {
+                opts.check()?;
+                let (archive, folder) = &places[batch * BATCH + offset];
+                let number = numbers.entry((*archive, folder.as_str())).or_insert(0);
+                *number += 1;
+                let entry = format!("{folder}/IM{number:04}.dcm");
+                let (original, object, encapsulated) =
+                    prepare(source, opts, &mut identity, &mut warnings, &entry)?;
+                let file = Prepared {
+                    archive: *archive,
+                    entry,
+                    original,
+                    object,
+                    encapsulated,
+                };
+                jobs.push(Encoding::start(file, opts.smallest));
+                Ok(())
+            });
         // Wait for submitted jobs even if a later source failed validation or the user cancelled.
         let packed: Vec<_> = jobs.into_iter().map(Encoding::wait).collect();
         prepared?;
@@ -210,10 +228,15 @@ fn prepare(
     if opts.anonymize {
         clean_instance(&mut obj, opts, identity, warnings, name)?;
     }
-    let syntax = obj.meta().transfer_syntax().trim_end_matches('\0').to_owned();
+    let syntax = obj
+        .meta()
+        .transfer_syntax()
+        .trim_end_matches('\0')
+        .to_owned();
     let original = if opts.anonymize {
         let mut bytes = Vec::with_capacity(raw.len());
-        obj.write_all(&mut bytes).context("Cannot write exported DICOM")?;
+        obj.write_all(&mut bytes)
+            .context("Cannot write exported DICOM")?;
         bytes
     } else {
         raw
@@ -226,29 +249,58 @@ fn prepare(
 /// Single-component greyscale of 8 or 16 bits, uncompressed (or losslessly compressed, for the smallest size): what
 /// lossless JPEG-LS is sure to hold. Colour and the rest go as they are.
 fn reencodable(obj: &DefaultDicomObject, syntax: &str, smallest: bool) -> bool {
-    let number = |tag: Tag| obj.element(tag).ok().and_then(|element| element.to_int::<u32>().ok());
+    let number = |tag: Tag| {
+        obj.element(tag)
+            .ok()
+            .and_then(|element| element.to_int::<u32>().ok())
+    };
     let allocated = number(Tag(0x0028, 0x0100));
     (NATIVE.contains(&syntax) || (smallest && LOSSLESS.contains(&syntax)))
         && obj.element(Tag(0x7fe0, 0x0010)).is_ok()
         && number(Tag(0x0028, 0x0002)) == Some(1)
         && matches!(allocated, Some(8 | 16))
-        && number(Tag(0x0028, 0x0101)).is_some_and(|stored| (2..=16).contains(&stored) && Some(stored) <= allocated)
-        && matches!(value(obj, Tag(0x0028, 0x0004)).as_str(), "MONOCHROME1" | "MONOCHROME2")
+        && number(Tag(0x0028, 0x0101))
+            .is_some_and(|stored| (2..=16).contains(&stored) && Some(stored) <= allocated)
+        && matches!(
+            value(obj, Tag(0x0028, 0x0004)).as_str(),
+            "MONOCHROME1" | "MONOCHROME2"
+        )
 }
 
 fn finish(file: Prepared, smallest: bool) -> Packed {
-    let Prepared { archive, entry, original, object, encapsulated } = file;
+    let Prepared {
+        archive,
+        entry,
+        original,
+        object,
+        encapsulated,
+    } = file;
     if let Some(bytes) = object.and_then(|obj| jpeg_ls(obj, original.len())) {
-        return Packed { archive, entry, bytes, stored: true };
+        return Packed {
+            archive,
+            entry,
+            bytes,
+            stored: true,
+        };
     }
-    Packed { archive, entry, bytes: original, stored: encapsulated && !smallest }
+    Packed {
+        archive,
+        entry,
+        bytes: original,
+        stored: encapsulated && !smallest,
+    }
 }
 
 /// The file with its images as lossless JPEG-LS, if they decode back to exactly the same samples and the file comes
 /// out smaller than `limit` bytes.
 fn jpeg_ls(mut obj: DefaultDicomObject, limit: usize) -> Option<Vec<u8>> {
     let syntax = TransferSyntaxRegistry.get(JPEG_LS_LOSSLESS)?;
-    let encapsulated = obj.element(Tag(0x7fe0, 0x0010)).ok()?.value().fragments().is_some();
+    let encapsulated = obj
+        .element(Tag(0x7fe0, 0x0010))
+        .ok()?
+        .value()
+        .fragments()
+        .is_some();
     if encapsulated {
         crate::codec_guard::check(&obj, None).ok()?;
     }
@@ -268,8 +320,11 @@ fn jpeg_ls(mut obj: DefaultDicomObject, limit: usize) -> Option<Vec<u8>> {
     (bytes.len() < limit).then_some(bytes)
 }
 
-/// Each source's archive (by index into the names) and folder there, from the files' headers; the archives' names.
-fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<(Vec<String>, Vec<(usize, String)>)> {
+/// The archives' names, and each source's archive (by index into the names) and folder there.
+type Plan = (Vec<String>, Vec<(usize, String)>);
+
+/// Each source's archive and folder there, from the files' headers; the archives' names.
+fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<Plan> {
     struct Patient {
         name: String,
         id: String,
@@ -288,9 +343,19 @@ fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<(Vec<String
             .read_until(Tag(0x7fe0, 0x0000))
             .from_reader(handle)
             .with_context(|| format!("Cannot parse DICOM {}", source.path.display()))?;
-        let (name, id) = (value(&obj, Tag(0x0010, 0x0010)), value(&obj, Tag(0x0010, 0x0020)));
+        let (name, id) = (
+            value(&obj, Tag(0x0010, 0x0010)),
+            value(&obj, Tag(0x0010, 0x0020)),
+        );
         let at = *known.entry(patient_key(&obj)).or_insert_with(|| {
-            patients.push(Patient { name, id, modalities: Vec::new(), date: String::new(), folders: HashMap::new(), taken: HashSet::new() });
+            patients.push(Patient {
+                name,
+                id,
+                modalities: Vec::new(),
+                date: String::new(),
+                folders: HashMap::new(),
+                taken: HashSet::new(),
+            });
             patients.len() - 1
         });
         let patient = &mut patients[at];
@@ -308,7 +373,10 @@ fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<(Vec<String
                 let base = if opts.anonymize && opts.full {
                     format!("Series-{}", patient.folders.len() + 1)
                 } else {
-                    folder_name(&value(&obj, Tag(0x0020, 0x0011)), &value(&obj, Tag(0x0008, 0x103e)))
+                    folder_name(
+                        &value(&obj, Tag(0x0020, 0x0011)),
+                        &value(&obj, Tag(0x0008, 0x103e)),
+                    )
                 };
                 let folder = unique(&base, &patient.taken);
                 patient.taken.insert(folder.to_lowercase());
@@ -323,7 +391,16 @@ fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<(Vec<String
     let names = patients
         .iter()
         .map(|patient| {
-            let name = unique(&archive_name(&patient.name, &patient.id, &patient.modalities, &patient.date, opts), &taken);
+            let name = unique(
+                &archive_name(
+                    &patient.name,
+                    &patient.id,
+                    &patient.modalities,
+                    &patient.date,
+                    opts,
+                ),
+                &taken,
+            );
             taken.insert(name.to_lowercase());
             name
         })
@@ -332,8 +409,18 @@ fn plan(sources: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<(Vec<String
 }
 
 /// "SURNAME NAME - MR-CT - 13.06.2022"; "ANONIM - MR - 13.06.2022" anonymised; no date when fully anonymised.
-fn archive_name(name: &str, id: &str, modalities: &[String], date: &str, opts: &ExportOptions) -> String {
-    let person = name.replace('^', " ").split_whitespace().collect::<Vec<_>>().join(" ");
+fn archive_name(
+    name: &str,
+    id: &str,
+    modalities: &[String],
+    date: &str,
+    opts: &ExportOptions,
+) -> String {
+    let person = name
+        .replace('^', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
     let who = if opts.anonymize {
         "ANONIM".to_owned()
     } else if !person.is_empty() {
@@ -350,10 +437,28 @@ fn archive_name(name: &str, id: &str, modalities: &[String], date: &str, opts: &
     } else {
         String::new()
     };
-    let text = [who, modalities.join("-"), date].into_iter().filter(|part| !part.is_empty()).collect::<Vec<_>>().join(" - ");
-    let clean: String = text.chars().map(|c| if c.is_control() || r#"\/:*?"<>|"#.contains(c) { '_' } else { c }).take(120).collect();
+    let text = [who, modalities.join("-"), date]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" - ");
+    let clean: String = text
+        .chars()
+        .map(|c| {
+            if c.is_control() || r#"\/:*?"<>|"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
+        .take(120)
+        .collect();
     let clean = clean.trim_matches([' ', '.']).to_owned();
-    if clean.is_empty() { "Hasta".to_owned() } else { clean }
+    if clean.is_empty() {
+        "Hasta".to_owned()
+    } else {
+        clean
+    }
 }
 
 /// A series' folder in its archive: "3_T2 Aksiyel", as VEAcom 1.x named it.
@@ -361,17 +466,33 @@ fn folder_name(number: &str, description: &str) -> String {
     let text = format!("{number}_{description}");
     let clean: String = text
         .chars()
-        .map(|c| if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .take(64)
         .collect();
     let clean = clean.trim_matches([' ', '_']).to_owned();
-    if clean.is_empty() { "seri".to_owned() } else { clean }
+    if clean.is_empty() {
+        "seri".to_owned()
+    } else {
+        clean
+    }
 }
 
 /// `base`, or "base (2)" and on, whichever is not taken (compared without case, as Windows does).
 fn unique(base: &str, taken: &HashSet<String>) -> String {
     (1..)
-        .map(|n| if n == 1 { base.to_owned() } else { format!("{base} ({n})") })
+        .map(|n| {
+            if n == 1 {
+                base.to_owned()
+            } else {
+                format!("{base} ({n})")
+            }
+        })
         .find(|name| !taken.contains(&name.to_lowercase()))
         .unwrap()
 }
@@ -379,11 +500,17 @@ fn unique(base: &str, taken: &HashSet<String>) -> String {
 /// A new ZIP named `name` in `directory`, "name (2).zip" and on if one is there already; never an existing file.
 fn create(directory: &Path, name: &str) -> Result<(PathBuf, ZipWriter<File>)> {
     for n in 1..10_000 {
-        let path = directory.join(if n == 1 { format!("{name}.zip") } else { format!("{name} ({n}).zip") });
+        let path = directory.join(if n == 1 {
+            format!("{name}.zip")
+        } else {
+            format!("{name} ({n}).zip")
+        });
         match OpenOptions::new().create_new(true).write(true).open(&path) {
             Ok(file) => return Ok((path, ZipWriter::new(file))),
             Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => return Err(error).with_context(|| format!("Cannot create {}", path.display())),
+            Err(error) => {
+                return Err(error).with_context(|| format!("Cannot create {}", path.display()));
+            }
         }
     }
     anyhow::bail!("No free name for {name}.zip")
@@ -394,7 +521,12 @@ pub fn estimate_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Resu
     let sizes: Vec<u64> = files.iter().map(|path| path.len).collect();
     let total: u64 = sizes.iter().sum();
     if files.is_empty() || total == 0 {
-        return Ok(Estimate { files: files.len(), before: total, after: total, seconds: 0. });
+        return Ok(Estimate {
+            files: files.len(),
+            before: total,
+            after: total,
+            seconds: 0.,
+        });
     }
     let mut identity = IdentityMap::default();
     let mut warnings = Vec::new();
@@ -403,20 +535,35 @@ pub fn estimate_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Resu
     // From the middle of each of SAMPLE equal stretches: a fixed stride can fall on every other file only, and
     // studies that alternate (compressed and not, one series' files beside another's) came out far too small.
     let picks = SAMPLE.min(files.len());
-    for index in (0..picks).map(|k| ((2 * k + 1) * files.len() / (2 * picks)).min(files.len() - 1)) {
+    for index in (0..picks).map(|k| ((2 * k + 1) * files.len() / (2 * picks)).min(files.len() - 1))
+    {
         let started = Instant::now();
-        let (original, object, encapsulated) = prepare(&files[index], opts, &mut identity, &mut warnings, "IM")?;
+        let (original, object, encapsulated) =
+            prepare(&files[index], opts, &mut identity, &mut warnings, "IM")?;
         reading += started.elapsed().as_secs_f64();
-        let file = Prepared { archive: 0, entry: String::new(), original, object, encapsulated };
+        let file = Prepared {
+            archive: 0,
+            entry: String::new(),
+            original,
+            object,
+            encapsulated,
+        };
         let (packed, elapsed) = Encoding::start(file, opts.smallest).wait()?;
         encoding += elapsed.as_secs_f64();
         let started = Instant::now();
-        after += if packed.stored { packed.bytes.len() as u64 } else { deflated(&packed.bytes) };
+        after += if packed.stored {
+            packed.bytes.len() as u64
+        } else {
+            deflated(&packed.bytes)
+        };
         packing += started.elapsed().as_secs_f64();
         before += sizes[index];
     }
     let scale = total as f64 / before.max(1) as f64;
-    let cores = ENCODERS.get().map_or(1, |pool| pool.threads()).min(files.len()) as f64;
+    let cores = ENCODERS
+        .get()
+        .map_or(1, |pool| pool.threads())
+        .min(files.len()) as f64;
     Ok(Estimate {
         files: files.len(),
         before: total,
@@ -426,7 +573,10 @@ pub fn estimate_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Resu
 }
 
 fn deflated(bytes: &[u8]) -> u64 {
-    let mut encoder = flate2::write::DeflateEncoder::new(Vec::new(), flate2::Compression::new(DEFLATE_LEVEL as u32));
+    let mut encoder = flate2::write::DeflateEncoder::new(
+        Vec::new(),
+        flate2::Compression::new(DEFLATE_LEVEL as u32),
+    );
     match encoder.write_all(bytes).and_then(|()| encoder.finish()) {
         Ok(out) => out.len() as u64,
         Err(_) => bytes.len() as u64,
@@ -440,7 +590,15 @@ mod tests {
     use dicom_object::{FileMetaTableBuilder, InMemDicomObject};
 
     /// A 64×64 greyscale slice of `bits` stored bits holding `pixels`, in patient `name`'s series `series`.
-    fn slice(path: &Path, name: &str, series: &str, number: &str, sop: &str, bits: u16, pixels: Vec<u16>) {
+    fn slice(
+        path: &Path,
+        name: &str,
+        series: &str,
+        number: &str,
+        sop: &str,
+        bits: u16,
+        pixels: Vec<u16>,
+    ) {
         let mut obj = InMemDicomObject::new_empty();
         for (tag, vr, v) in [
             (Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.4"),
@@ -468,7 +626,11 @@ mod tests {
         ] {
             obj.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
         }
-        obj.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW, PrimitiveValue::U16(pixels.into())));
+        obj.put(DataElement::new(
+            Tag(0x7fe0, 0x0010),
+            VR::OW,
+            PrimitiveValue::U16(pixels.into()),
+        ));
         obj.with_meta(FileMetaTableBuilder::new().transfer_syntax("1.2.840.10008.1.2.1"))
             .unwrap()
             .write_to_file(path)
@@ -476,11 +638,15 @@ mod tests {
     }
 
     fn smooth(seed: u16) -> Vec<u16> {
-        (0..64u16 * 64).map(|i| (i % 64) * 20 + (i / 64) * 10 + seed).collect()
+        (0..64u16 * 64)
+            .map(|i| (i % 64) * 20 + (i / 64) * 10 + seed)
+            .collect()
     }
 
     fn options(directory: &Path) -> ExportOptions {
-        ExportOptions { operation: None, cancelled: None,
+        ExportOptions {
+            operation: None,
+            cancelled: None,
             directory: directory.to_string_lossy().into_owned(),
             anonymize: false,
             dicomdir: false,
@@ -499,7 +665,12 @@ mod tests {
                 let mut file = archive.by_index(i).unwrap();
                 let mut bytes = Vec::new();
                 file.read_to_end(&mut bytes).unwrap();
-                (file.name().unwrap().into_owned(), OpenFileOptions::new().from_reader(Cursor::new(bytes)).unwrap())
+                (
+                    file.name().unwrap().into_owned(),
+                    OpenFileOptions::new()
+                        .from_reader(Cursor::new(bytes))
+                        .unwrap(),
+                )
             })
             .collect()
     }
@@ -509,21 +680,57 @@ mod tests {
         let sources = crate::test_dir::tempdir().unwrap();
         let out = crate::test_dir::tempdir().unwrap();
         let mut files = Vec::new();
-        for (i, (series, number)) in [("2.25.11", "3"), ("2.25.11", "3"), ("2.25.12", "5")].into_iter().enumerate() {
+        for (i, (series, number)) in [("2.25.11", "3"), ("2.25.11", "3"), ("2.25.12", "5")]
+            .into_iter()
+            .enumerate()
+        {
             let path = sources.path().join(format!("{i}.dcm"));
-            slice(&path, "DENEME^HASTA", series, number, &format!("2.25.{}", 100 + i), 12, smooth(i as u16));
+            slice(
+                &path,
+                "DENEME^HASTA",
+                series,
+                number,
+                &format!("2.25.{}", 100 + i),
+                12,
+                smooth(i as u16),
+            );
             files.push(path);
         }
         let result = super::super::export_series(&files, &options(out.path())).unwrap();
         assert_eq!(result.archives.len(), 1);
-        assert!(result.directory.ends_with("DENEME HASTA - MR - 01.02.2024.zip"), "{}", result.directory);
+        assert!(
+            result
+                .directory
+                .ends_with("DENEME HASTA - MR - 01.02.2024.zip"),
+            "{}",
+            result.directory
+        );
         let inside = entries(&result.archives[0]);
         let names: Vec<_> = inside.iter().map(|(name, _)| name.as_str()).collect();
-        assert_eq!(names, ["3_T2 aks_1/IM0001.dcm", "3_T2 aks_1/IM0002.dcm", "5_T2 aks_1/IM0001.dcm"]);
+        assert_eq!(
+            names,
+            [
+                "3_T2 aks_1/IM0001.dcm",
+                "3_T2 aks_1/IM0002.dcm",
+                "5_T2 aks_1/IM0001.dcm"
+            ]
+        );
         for (i, (_, obj)) in inside.iter().enumerate() {
-            assert_eq!(obj.meta().transfer_syntax().trim_end_matches('\0'), JPEG_LS_LOSSLESS);
-            assert!(obj.element(Tag(0x7fe0, 0x0003)).is_err() && obj.element(Tag(0x0028, 0x0008)).is_err());
-            let samples: Vec<u16> = obj.decode_pixel_data().unwrap().data().chunks(2).map(|b| u16::from_le_bytes([b[0], b[1]])).collect();
+            assert_eq!(
+                obj.meta().transfer_syntax().trim_end_matches('\0'),
+                JPEG_LS_LOSSLESS
+            );
+            assert!(
+                obj.element(Tag(0x7fe0, 0x0003)).is_err()
+                    && obj.element(Tag(0x0028, 0x0008)).is_err()
+            );
+            let samples: Vec<u16> = obj
+                .decode_pixel_data()
+                .unwrap()
+                .data()
+                .chunks(2)
+                .map(|b| u16::from_le_bytes([b[0], b[1]]))
+                .collect();
             assert_eq!(samples, smooth(i as u16));
         }
         let size = fs::metadata(&result.archives[0]).unwrap().len();
@@ -536,16 +743,32 @@ mod tests {
         let sources = crate::test_dir::tempdir().unwrap();
         let out = crate::test_dir::tempdir().unwrap();
         let opts = options(out.path());
-        let files: Vec<_> = (0..BATCH + 2).map(|i| {
-            let path = sources.path().join(format!("{i:02}.dcm"));
-            slice(&path, "SYNTHETIC", "2.25.11", "3", &format!("2.25.{}", 500 + i), 12, smooth(i as u16));
-            path
-        }).collect();
-        let last = OpenOptions::new().write(true).open(files.last().unwrap()).unwrap();
+        let files: Vec<_> = (0..BATCH + 2)
+            .map(|i| {
+                let path = sources.path().join(format!("{i:02}.dcm"));
+                slice(
+                    &path,
+                    "SYNTHETIC",
+                    "2.25.11",
+                    "3",
+                    &format!("2.25.{}", 500 + i),
+                    12,
+                    smooth(i as u16),
+                );
+                path
+            })
+            .collect();
+        let last = OpenOptions::new()
+            .write(true)
+            .open(files.last().unwrap())
+            .unwrap();
         last.set_len(last.metadata().unwrap().len() - 2).unwrap();
         drop(last);
 
-        let files: Vec<_> = files.iter().map(|path| SourceFile::index(path).unwrap()).collect();
+        let files: Vec<_> = files
+            .iter()
+            .map(|path| SourceFile::index(path).unwrap())
+            .collect();
         // Headers still plan successfully. The final file fails after its batch has started encoding.
         plan(&files, &opts).unwrap();
         assert!(write(&files, &opts, out.path()).is_err());
@@ -562,10 +785,22 @@ mod tests {
         let mut pixels = smooth(0);
         pixels[5] = 0xf123;
         let path = sources.path().join("a.dcm");
-        slice(&path, "DENEME^HASTA", "2.25.11", "3", "2.25.100", 12, pixels.clone());
-        let result = super::super::export_series(&[path.clone()], &options(out.path())).unwrap();
+        slice(
+            &path,
+            "DENEME^HASTA",
+            "2.25.11",
+            "3",
+            "2.25.100",
+            12,
+            pixels.clone(),
+        );
+        let result =
+            super::super::export_series(std::slice::from_ref(&path), &options(out.path())).unwrap();
         let inside = entries(&result.archives[0]);
-        assert_eq!(inside[0].1.meta().transfer_syntax().trim_end_matches('\0'), "1.2.840.10008.1.2.1");
+        assert_eq!(
+            inside[0].1.meta().transfer_syntax().trim_end_matches('\0'),
+            "1.2.840.10008.1.2.1"
+        );
         let mut zipped = zip::ZipArchive::new(File::open(&result.archives[0]).unwrap()).unwrap();
         let mut bytes = Vec::new();
         zipped.by_index(0).unwrap().read_to_end(&mut bytes).unwrap();
@@ -579,15 +814,40 @@ mod tests {
         let mut files = Vec::new();
         for (i, name) in ["BIR^HASTA", "IKI^HASTA"].into_iter().enumerate() {
             let path = sources.path().join(format!("{i}.dcm"));
-            slice(&path, name, &format!("2.25.{}", 20 + i), "3", &format!("2.25.{}", 200 + i), 12, smooth(0));
+            slice(
+                &path,
+                name,
+                &format!("2.25.{}", 20 + i),
+                "3",
+                &format!("2.25.{}", 200 + i),
+                12,
+                smooth(0),
+            );
             files.push(path);
         }
         fs::write(out.path().join("ANONIM - MR.zip"), b"not ours").unwrap();
-        let opts = ExportOptions { anonymize: true, full: true, ..options(out.path()) };
+        let opts = ExportOptions {
+            anonymize: true,
+            full: true,
+            ..options(out.path())
+        };
         let result = super::super::export_series(&files, &opts).unwrap();
-        let names: Vec<_> = result.archives.iter().map(|p| Path::new(p).file_name().unwrap().to_string_lossy().into_owned()).collect();
+        let names: Vec<_> = result
+            .archives
+            .iter()
+            .map(|p| {
+                Path::new(p)
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
         assert_eq!(names, ["ANONIM - MR (2).zip", "ANONIM - MR (2) (2).zip"]);
-        assert_eq!(fs::read(out.path().join("ANONIM - MR.zip")).unwrap(), b"not ours");
+        assert_eq!(
+            fs::read(out.path().join("ANONIM - MR.zip")).unwrap(),
+            b"not ours"
+        );
         for archive in &result.archives {
             let (_, obj) = &entries(archive)[0];
             assert_ne!(value(obj, Tag(0x0010, 0x0010)), "BIR^HASTA");
@@ -599,15 +859,24 @@ mod tests {
     fn zip_membership_uses_issuer_and_splits_unscoped_ids_by_study() {
         let source = crate::test_dir::tempdir().unwrap();
         for (first_id, first_issuer, second_issuer, expected) in [
-            ("ID1", "SITE_A", "SITE_B", 2), ("ID1", "", "", 2),
-            ("", "", "", 2), ("ID1", "SITE_A", "SITE_A", 1),
+            ("ID1", "SITE_A", "SITE_B", 2),
+            ("ID1", "", "", 2),
+            ("", "", "", 2),
+            ("ID1", "SITE_A", "SITE_A", 1),
         ] {
             let out = crate::test_dir::tempdir().unwrap();
             let mut files = Vec::new();
             for (i, issuer) in [first_issuer, second_issuer].iter().enumerate() {
                 let path = source.path().join(format!("patient{i}.dcm"));
-                slice(&path, "SYNTHETIC^PATIENT", &format!("2.25.2{i}"), "1",
-                    &format!("2.25.3{i}"), 12, smooth(i as u16));
+                slice(
+                    &path,
+                    "SYNTHETIC^PATIENT",
+                    &format!("2.25.2{i}"),
+                    "1",
+                    &format!("2.25.3{i}"),
+                    12,
+                    smooth(i as u16),
+                );
                 let mut obj = dicom_object::open_file(&path).unwrap();
                 obj.put_str(Tag(0x0010, 0x0020), VR::LO, first_id);
                 obj.put_str(Tag(0x0010, 0x0021), VR::LO, *issuer);
@@ -617,8 +886,16 @@ mod tests {
             }
             let result = super::super::export_series(&files, &options(out.path())).unwrap();
             assert_eq!(result.archives.len(), expected);
-            let membership: Vec<Vec<String>> = result.archives.iter().map(|zip|
-                entries(zip).iter().map(|(_,obj)| value(obj, Tag(0x0008, 0x0018))).collect()).collect();
+            let membership: Vec<Vec<String>> = result
+                .archives
+                .iter()
+                .map(|zip| {
+                    entries(zip)
+                        .iter()
+                        .map(|(_, obj)| value(obj, Tag(0x0008, 0x0018)))
+                        .collect()
+                })
+                .collect();
             if expected == 2 {
                 assert_eq!(membership, [vec!["2.25.30"], vec!["2.25.31"]]);
             } else {
@@ -633,35 +910,66 @@ mod tests {
         let source = crate::test_dir::tempdir().unwrap();
         let out = crate::test_dir::tempdir().unwrap();
         let path = source.path().join("source.dcm");
-        slice(&path, "SYNTHETIC^PATIENT", "2.25.11", "3", "2.25.100", 12, smooth(0));
+        slice(
+            &path,
+            "SYNTHETIC^PATIENT",
+            "2.25.11",
+            "3",
+            "2.25.100",
+            12,
+            smooth(0),
+        );
         let mut obj = dicom_object::open_file(&path).unwrap();
         obj.put_str(Tag(0x0010, 0x0020), VR::LO, MARKER);
         obj.put_str(Tag(0x0008, 0x1030), VR::LO, format!("Prior {MARKER}"));
         obj.put_str(Tag(0x0008, 0x103e), VR::LO, format!("Followup {MARKER}"));
         obj.put_str(Tag(0x0008, 0x2111), VR::ST, format!("Derived for {MARKER}"));
         let mut nested = InMemDicomObject::new_empty();
-        nested.put_str(Tag(0x0008, 0x2111), VR::ST, format!("Nested derivation {MARKER}"));
+        nested.put_str(
+            Tag(0x0008, 0x2111),
+            VR::ST,
+            format!("Nested derivation {MARKER}"),
+        );
         nested.put_str(Tag(0x0008, 0x103e), VR::LO, format!("Nested {MARKER}"));
-        obj.put(DataElement::new(Tag(0x0008, 0x1115), VR::SQ,
-            dicom_core::value::DataSetSequence::new(vec![nested], dicom_core::Length::UNDEFINED)));
+        obj.put(DataElement::new(
+            Tag(0x0008, 0x1115),
+            VR::SQ,
+            dicom_core::value::DataSetSequence::new(vec![nested], dicom_core::Length::UNDEFINED),
+        ));
         obj.write_to_file(&path).unwrap();
-        let mut opts = ExportOptions { full: true, anonymize: true, ..options(out.path()) };
+        let mut opts = ExportOptions {
+            full: true,
+            anonymize: true,
+            ..options(out.path())
+        };
         let result = super::super::export_series(std::slice::from_ref(&path), &opts).unwrap();
         let (entry, obj) = entries(&result.archives[0]).pop().unwrap();
         assert_eq!(entry, "Series-1/IM0001.dcm");
-        for tag in [Tag(0x0008, 0x1030), Tag(0x0008, 0x103e), Tag(0x0010, 0x0020)] {
+        for tag in [
+            Tag(0x0008, 0x1030),
+            Tag(0x0008, 0x103e),
+            Tag(0x0010, 0x0020),
+        ] {
             assert!(!value(&obj, tag).contains(MARKER));
         }
-        let nested = &obj.element(Tag(0x0008, 0x1115)).unwrap().value().items().unwrap()[0];
+        let nested = &obj
+            .element(Tag(0x0008, 0x1115))
+            .unwrap()
+            .value()
+            .items()
+            .unwrap()[0];
         assert!(nested.get(Tag(0x0008, 0x103e)).is_none());
         assert!(nested.get(Tag(0x0008, 0x2111)).is_none());
         assert!(obj.get(Tag(0x0008, 0x2111)).is_none());
         opts.zip = false;
         opts.dicomdir = true;
         let result = super::super::export_series(&[path], &opts).unwrap();
-        for name in ["DICOMDIR","DICOM/IM000001"] {
+        for name in ["DICOMDIR", "DICOM/IM000001"] {
             let bytes = fs::read(Path::new(&result.directory).join(name)).unwrap();
-            assert!(!bytes.windows(MARKER.len()).any(|s| s == MARKER.as_bytes()), "{name}");
+            assert!(
+                !bytes.windows(MARKER.len()).any(|s| s == MARKER.as_bytes()),
+                "{name}"
+            );
         }
     }
 
@@ -671,13 +979,28 @@ mod tests {
         let files: Vec<_> = (0..20)
             .map(|i| {
                 let path = sources.path().join(format!("{i}.dcm"));
-                slice(&path, "DENEME^HASTA", "2.25.11", "3", &format!("2.25.{}", 300 + i), 12, smooth(i));
+                slice(
+                    &path,
+                    "DENEME^HASTA",
+                    "2.25.11",
+                    "3",
+                    &format!("2.25.{}", 300 + i),
+                    12,
+                    smooth(i),
+                );
                 path
             })
             .collect();
-        let estimate = estimate_indexed(&super::super::index_test_files(&files).unwrap(), &options(sources.path())).unwrap();
+        let estimate = estimate_indexed(
+            &super::super::index_test_files(&files).unwrap(),
+            &options(sources.path()),
+        )
+        .unwrap();
         assert_eq!(estimate.files, 20);
-        assert!(estimate.after < estimate.before / 2 && estimate.seconds >= 0., "{estimate:?}");
+        assert!(
+            estimate.after < estimate.before / 2 && estimate.seconds >= 0.,
+            "{estimate:?}"
+        );
     }
 
     #[test]
@@ -692,16 +1015,37 @@ mod tests {
                 let pixels = if i % 2 == 0 {
                     smooth(i)
                 } else {
-                    (0..64 * 64).map(|_| { state = state.wrapping_mul(1_103_515_245).wrapping_add(12345); ((state >> 16) & 0x0fff) as u16 }).collect()
+                    (0..64 * 64)
+                        .map(|_| {
+                            state = state.wrapping_mul(1_103_515_245).wrapping_add(12345);
+                            ((state >> 16) & 0x0fff) as u16
+                        })
+                        .collect()
                 };
-                slice(&path, "DENEME^HASTA", "2.25.11", "3", &format!("2.25.{}", 400 + i), 12, pixels);
+                slice(
+                    &path,
+                    "DENEME^HASTA",
+                    "2.25.11",
+                    "3",
+                    &format!("2.25.{}", 400 + i),
+                    12,
+                    pixels,
+                );
                 path
             })
             .collect();
-        let estimate = estimate_indexed(&super::super::index_test_files(&files).unwrap(), &options(out.path())).unwrap();
+        let estimate = estimate_indexed(
+            &super::super::index_test_files(&files).unwrap(),
+            &options(out.path()),
+        )
+        .unwrap();
         let result = super::super::export_series(&files, &options(out.path())).unwrap();
         let actual = fs::metadata(&result.archives[0]).unwrap().len() as f64;
         let ratio = estimate.after as f64 / actual;
-        assert!((0.7..1.4).contains(&ratio), "estimated {} for {actual}", estimate.after);
+        assert!(
+            (0.7..1.4).contains(&ratio),
+            "estimated {} for {actual}",
+            estimate.after
+        );
     }
 }

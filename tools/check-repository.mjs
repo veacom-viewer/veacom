@@ -51,4 +51,52 @@ if (locked.size) {
     gone.length && `No lockfile contains these names any more; delete their lines from ${NAMES}:\n${gone.join('\n')}`,
   ].filter(Boolean).join('\n\n'));
 }
-console.log(`PASS repository policy (${files.length} tracked files, ${locked.size} dependency names)`);
+// Every check in tools/ is started by something: a workflow, tools/verify.sh, a package script or another tool. A check
+// that nothing starts goes stale unnoticed. Only these run by hand, each for the reason given.
+const BY_HAND = new Map([
+  ['tools/check-resource-spikes.cjs', 'a release check: a packaged build on the fingerprinted ct-small, which CI cannot make, through the usage consent'],
+  ['tools/check-window-and-segmentation.cjs', 'it needs public research studies (a mammogram without a stored window, a CT with DICOM SEG) that CI does not download'],
+]);
+const checks = files.filter(file => /^tools\/check-[^/]+\.(?:cjs|mjs|ps1)$/.test(file));
+// What a file runs, its comments left out: a check that only a comment names is not started. Quoted text is kept
+// whole, so a # or // inside a string does not cut off the command after it. A quote ends at the line's end, except a
+// JavaScript template literal; a backslash escapes in JavaScript strings, in double-quoted shell text and outside quotes
+// in shell. In shell, YAML and PowerShell a # starts a comment where a word starts: after a space or ; & | ( ).
+function code(file, text) {
+  if (file.endsWith('.json')) return text;
+  const js = !/\.(?:ya?ml|sh|ps1)$/.test(file), ps1 = file.endsWith('.ps1');
+  const skipTo = (from, end) => { const at = text.indexOf(end, from); return at < 0 ? text.length : at + end.length; };
+  let out = '', quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      out += c;
+      if (c === '\\' && (js || quote === '"')) out += text[++i] ?? '';
+      else if (c === quote || (c === '\n' && quote !== '`')) quote = null;
+      continue;
+    }
+    const wordStart = i === 0 || /[\s;&|()]/.test(text[i - 1]);
+    if (!js && c === '\\') { out += c + (text[i + 1] ?? ''); i++; continue; }
+    if (js && text.startsWith('/*', i)) { i = skipTo(i + 2, '*/') - 1; continue; }
+    if (js && text.startsWith('<!--', i)) { i = skipTo(i + 4, '-->') - 1; continue; }
+    if (ps1 && text.startsWith('<#', i)) { i = skipTo(i + 2, '#>') - 1; continue; }
+    if ((js && text.startsWith('//', i)) || (!js && c === '#' && wordStart)) {
+      const end = text.indexOf('\n', i);
+      if (end < 0) break;
+      i = end - 1; // the newline itself is kept
+      continue;
+    }
+    if (c === '"' || c === "'" || (js && c === '`')) quote = c;
+    out += c;
+  }
+  return out;
+}
+const starters = files.filter(file => /\.(?:ya?ml|sh|json|[cm]?js|ts|html|ps1)$/.test(file) && file !== 'tools/check-repository.mjs' && existsSync(file))
+  .map(file => [file, code(file, readFileSync(file, 'utf8'))]);
+const unstarted = checks.filter(check => !BY_HAND.has(check)
+  && !starters.some(([file, text]) => file !== check && text.includes(check.slice('tools/'.length))));
+if (unstarted.length) throw new Error(`Nothing starts these checks; run each from CI (.github/workflows) or tools/verify.sh:\n${unstarted.join('\n')}`);
+const started = [...BY_HAND.keys()].filter(check => starters.some(([file, text]) => file !== check && text.includes(check.slice('tools/'.length))));
+if (started.length) throw new Error(`These checks now run, so delete them from BY_HAND in tools/check-repository.mjs:\n${started.join('\n')}`);
+
+console.log(`PASS repository policy (${files.length} tracked files, ${locked.size} dependency names, ${checks.filter(check => !BY_HAND.has(check)).length} checks started)`);

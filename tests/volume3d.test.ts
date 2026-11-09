@@ -575,7 +575,7 @@ describe('binary STL isosurface export', () => {
     for (let i = 1; i < mask.length; i += 2) mask[i] = 1;
     const triangles = readTriangles(extractStl(volume, 0.25, fullCrop(volume), mask));
     const positions = new Set(triangles.flatMap(triangle => triangle.vertices.map(point => point[0])));
-    assert.deepEqual([...positions].sort(), [0.25, 0.5]);
+    assert.deepEqual([...positions].sort((a, b) => a - b), [0.25, 0.5]);
     for (const triangle of triangles) {
       const x = triangle.vertices[0][0];
       assert.equal(triangle.vertices.every(point => point[0] === x), true);

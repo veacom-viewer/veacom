@@ -116,7 +116,10 @@ pub struct Pool {
 }
 
 impl Pool {
-    #[allow(clippy::disallowed_methods)] // The fixed ZIP encoder pool shares its limit across exports.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixed ZIP encoder pool shares its limit across exports"
+    )]
     pub fn new(name: &str, limit: usize) -> Self {
         let (jobs, receive) = mpsc::channel::<Job>();
         let receive = Arc::new(Mutex::new(receive));
@@ -308,7 +311,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         std::thread::scope(|scope| {
-            let other = scope.spawn(&request);
+            let other = scope.spawn(request);
             let ids: HashSet<_> = request().into_iter().chain(other.join().unwrap()).collect();
             assert_eq!(ids.len(), 2);
         });

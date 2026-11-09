@@ -3,6 +3,10 @@
     "target": "ES2022", "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext", "moduleResolution": "Bundler", "jsx": "react-jsx",
     "strict": true, "skipLibCheck": true, "esModuleInterop": true,
+    // Dead code and slips the compiler can see: unused names and parameters (prefix an unused one with _), a switch case
+    // that falls through, an override without the keyword, code after a return.
+    "noUnusedLocals": true, "noUnusedParameters": true, "noFallthroughCasesInSwitch": true, "noImplicitOverride": true,
+    "allowUnreachableCode": false, "allowUnusedLabels": false,
     "resolveJsonModule": true, "allowImportingTsExtensions": true, "noEmit": true, "erasableSyntaxOnly": true,
     "types": ["vite/client", "node"]
   },

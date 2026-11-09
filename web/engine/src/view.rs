@@ -3,13 +3,19 @@
 use veacom_core::model::PixelBuffer;
 
 /// The linear VOI function of PS3.3 C.11.2.1.2 to 8 bits; color pixels are passed through.
-pub fn window_rgba(pixels: &PixelBuffer, components: usize, center: f64, width: f64, invert: bool) -> Vec<u8> {
+pub fn window_rgba(
+    pixels: &PixelBuffer,
+    components: usize,
+    center: f64,
+    width: f64,
+    invert: bool,
+) -> Vec<u8> {
     let count = pixels.len() / components.max(1);
     let mut rgba = vec![255u8; count * 4];
     if components == 3 {
-        for (i, out) in rgba.chunks_exact_mut(4).enumerate() {
-            for c in 0..3 {
-                out[c] = pixels.value(i * 3 + c).clamp(0., 255.) as u8;
+        for (i, out) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            for (c, channel) in out.iter_mut().take(3).enumerate() {
+                *channel = pixels.value(i * 3 + c).clamp(0., 255.) as u8;
             }
         }
         return rgba;
@@ -17,7 +23,7 @@ pub fn window_rgba(pixels: &PixelBuffer, components: usize, center: f64, width: 
     let width = width.max(1.);
     let low = center - 0.5 - (width - 1.) / 2.;
     let high = center - 0.5 + (width - 1.) / 2.;
-    for (i, out) in rgba.chunks_exact_mut(4).enumerate() {
+    for (i, out) in rgba.as_chunks_mut::<4>().0.iter_mut().enumerate() {
         let x = pixels.value(i);
         let y = if x <= low {
             0.
@@ -33,4 +39,3 @@ pub fn window_rgba(pixels: &PixelBuffer, components: usize, center: f64, width: 
     }
     rgba
 }
-

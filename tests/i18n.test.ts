@@ -91,7 +91,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   seriesNumber: 1, dimensions: [4, 4, 2], spacing: [1, 1, 1], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, spacingKnown: true, orientationKnown: true,
   warnings: [], photometricInterpretation: 'MONOCHROME2', ...overrides,
-} as Series);
+});
 const volume = (overrides: Partial<Series> = {}): Volume => ({ series: series(overrides), data: new Float32Array(32).fill(12) });
 const annotation = (type: Annotation['type'], points: Annotation['points']): Annotation => ({ id: type, type, points, plane: 'axial', slice: 0, mode: 'mpr' });
 

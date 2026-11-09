@@ -117,6 +117,34 @@ it('rejects committed editor hooks, unlisted dependency names and crates from ou
   for (const file of hooks) assert.ok(result.stderr.includes(file));
 });
 
+it('counts a check as started when something runs it, not when only a comment names it', async () => {
+  const git = (...args: string[]) => assert.equal(spawnSync('git', args, { cwd: dir }).status, 0);
+  const check = () => node('tools/check-repository.mjs', [], dir);
+  git('init', '-q');
+  await mkdir(path.join(dir, '.github/workflows'), { recursive: true });
+  await mkdir(path.join(dir, 'tools'));
+  await writeFile(path.join(dir, 'tools/check-new.cjs'), "console.log('checked');\n");
+  await writeFile(path.join(dir, 'tools/other.mjs'), '// check-new.cjs runs in CI.\n/* see check-new.cjs */\nexport {};\n');
+  await writeFile(path.join(dir, '.github/workflows/ci.yml'), 'jobs:\n  test:\n    steps:\n      # tools/check-new.cjs\n      - run: echo hello\n');
+  await writeFile(path.join(dir, 'tools/run.sh'), 'echo ready;# tools/check-new.cjs\necho \\" # tools/check-new.cjs\n');
+  git('add', '.');
+  let result = check();
+  assert.equal(result.status, 1); assert.ok(result.stderr.includes('Nothing starts these checks')); assert.ok(result.stderr.includes('tools/check-new.cjs'));
+  // A # or // inside quotes is no comment: the command after it still counts.
+  await writeFile(path.join(dir, 'tools/run.sh'), 'echo "ticket #42"; node tools/check-new.cjs\n');
+  git('add', '.');
+  result = check();
+  assert.equal(result.status, 0, result.stderr);
+  await writeFile(path.join(dir, 'tools/run.sh'), "echo 'see https://example.com/#top'\n");
+  await writeFile(path.join(dir, 'tools/other.mjs'), "const url = 'https://example.com/a'; spawn('node', ['tools/check-new.cjs']);\n");
+  result = check();
+  assert.equal(result.status, 0, result.stderr);
+  await writeFile(path.join(dir, 'tools/other.mjs'), 'export {};\n');
+  await writeFile(path.join(dir, '.github/workflows/ci.yml'), 'jobs:\n  test:\n    steps:\n      - run: node tools/check-new.cjs # the new check\n');
+  result = check();
+  assert.equal(result.status, 0, result.stderr);
+});
+
 it('the local gate stops before app launch when a study has the right names but wrong bytes', { skip: process.platform === 'win32' }, async () => {
   const study = path.join(dir, 'study'), series = path.join(study, 'S01'), bin = path.join(dir, 'bin');
   await mkdir(series, { recursive: true }); await mkdir(bin);

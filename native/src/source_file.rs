@@ -1,8 +1,8 @@
 use anyhow::{Result, ensure};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-mod stamp;
 #[cfg(target_os = "macos")]
 mod snapshot;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod stamp;
 use crate::vfs::{File, OpenOptions};
 use std::{
     io::{self, Read, Seek, SeekFrom},
@@ -71,7 +71,12 @@ impl Fingerprint {
             #[cfg(unix)]
             identity: {
                 use std::os::unix::fs::MetadataExt;
-                (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+                (
+                    metadata.dev(),
+                    metadata.ino(),
+                    metadata.ctime(),
+                    metadata.ctime_nsec(),
+                )
             },
             #[cfg(windows)]
             identity: windows_identity(file)?,
@@ -79,7 +84,9 @@ impl Fingerprint {
     }
 
     fn verify(&self, file: &File) -> io::Result<()> {
-        if *self == Self::of(file)? { return Ok(()); }
+        if *self == Self::of(file)? {
+            return Ok(());
+        }
         Err(io::Error::new(io::ErrorKind::InvalidData, changed()))
     }
 }
@@ -89,18 +96,27 @@ impl Fingerprint {
 fn windows_identity(file: &File) -> io::Result<(u32, u64, i64)> {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::Storage::FileSystem::{
-        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle,
+        GetFileInformationByHandleEx,
     };
     let handle = file.as_raw_handle();
     // The handle stays open for both calls, and each fills the plain structure it is given.
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 { return Err(io::Error::last_os_error()); }
-    let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
-    let size = size_of::<FILE_BASIC_INFO>() as u32;
-    if unsafe { GetFileInformationByHandleEx(handle, FileBasicInfo, (&raw mut basic).cast(), size) } == 0 {
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok((info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow), basic.ChangeTime))
+    let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    let size = size_of::<FILE_BASIC_INFO>() as u32;
+    if unsafe { GetFileInformationByHandleEx(handle, FileBasicInfo, (&raw mut basic).cast(), size) }
+        == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((
+        info.dwVolumeSerialNumber,
+        (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        basic.ChangeTime,
+    ))
 }
 
 /// Stable local files on Linux and APFS are checked on the open descriptor as they are read (see `stamp`). Other
@@ -127,7 +143,11 @@ impl SourceFile {
         Ok(Self::index_prefix(path, &mut file, 0)?.0)
     }
 
-    fn index_prefix(path: &Path, file: &mut File, keep: usize) -> Result<(Arc<Self>, Arc<Vec<u8>>)> {
+    fn index_prefix(
+        path: &Path,
+        file: &mut File,
+        keep: usize,
+    ) -> Result<(Arc<Self>, Arc<Vec<u8>>)> {
         let metadata = file.metadata()?;
         let len = metadata.len();
         let fingerprint = Fingerprint::of(file)?;
@@ -139,38 +159,56 @@ impl SourceFile {
         let stamp = stamp::Stamp::capture(file, &metadata);
         #[cfg(target_os = "macos")]
         // A file of one block or less skips the clone: its fingerprint is checked instead, which costs less than a clone per slice.
-        let snapshot = stamp.as_ref().filter(|s| (len > BLOCK as u64 || keep < BLOCK) && s.settled())
+        let snapshot = stamp
+            .as_ref()
+            .filter(|s| (len > BLOCK as u64 || keep < BLOCK) && s.settled())
             .and_then(|_| snapshot::Snapshot::create(file).ok());
         #[cfg(target_os = "macos")]
-        let local_reader = snapshot.as_ref().and_then(|snap| snap.open().ok());
+        let opened = snapshot.as_ref().and_then(|snap| snap.open().ok());
+        #[cfg(target_os = "macos")]
+        let local_reader = opened.as_ref();
         #[cfg(target_os = "linux")]
-        let local_reader = stamp.as_ref().filter(|s| s.settled() && stamp::no_existing_writer(file)).map(|_| &*file);
+        let local_reader = stamp
+            .as_ref()
+            .filter(|s| s.settled() && stamp::no_existing_writer(file))
+            .map(|_| &*file);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let (Some(local), Some(contents)) = (&stamp, local_reader) {
             let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
             let mut offset = 0;
             while offset < prefix.len() {
-                let read = local.read(file, &contents, &mut prefix[offset..], offset as u64)?;
+                let read = local.read(file, contents, &mut prefix[offset..], offset as u64)?;
                 ensure!(read != 0, changed());
                 offset += read;
             }
-            return Ok((Arc::new(Self { path: path.to_owned(), len, fingerprint, stamp,
-                #[cfg(target_os = "macos")] snapshot,
-            }), Arc::new(prefix)));
+            return Ok((
+                Arc::new(Self {
+                    path: path.to_owned(),
+                    len,
+                    fingerprint,
+                    stamp,
+                    #[cfg(target_os = "macos")]
+                    snapshot,
+                }),
+                Arc::new(prefix),
+            ));
         }
         // Only the headers' prefix is read now, as on the fast path; later reads are checked against the fingerprint.
         let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
         file.read_exact(&mut prefix)?;
         ensure!(Fingerprint::of(file)? == fingerprint, changed());
-        Ok((Arc::new(Self {
-            path: path.to_owned(),
-            len,
-            fingerprint,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            stamp: None,
-            #[cfg(target_os = "macos")]
-            snapshot: None,
-        }), Arc::new(prefix)))
+        Ok((
+            Arc::new(Self {
+                path: path.to_owned(),
+                len,
+                fingerprint,
+                #[cfg(any(target_os = "linux", target_os = "macos"))]
+                stamp: None,
+                #[cfg(target_os = "macos")]
+                snapshot: None,
+            }),
+            Arc::new(prefix),
+        ))
     }
 
     pub fn dicom(path: &Path) -> Result<(Arc<Self>, crate::input_guard::InputInfo, SourceReader)> {
@@ -189,23 +227,40 @@ impl SourceFile {
     }
 
     pub fn same_contents(self: &Arc<Self>, other: &Arc<Self>) -> bool {
-        if Arc::ptr_eq(self, other) { return true; }
-        if self.len != other.len { return false; }
-        if self.len == 0 { return true; }
+        if Arc::ptr_eq(self, other) {
+            return true;
+        }
+        if self.len != other.len {
+            return false;
+        }
+        if self.len == 0 {
+            return true;
+        }
         #[cfg(target_os = "linux")]
-        if self.stamp.is_some() && other.stamp.is_some() { return self.stamp == other.stamp; }
+        if self.stamp.is_some() && other.stamp.is_some() {
+            return self.stamp == other.stamp;
+        }
         // The same file, unwritten since: on Unix every write moves the change time. NTFS may defer that update until a
         // writer closes the file, so Windows compares the bytes below.
         #[cfg(unix)]
-        if self.fingerprint == other.fingerprint { return true; }
+        if self.fingerprint == other.fingerprint {
+            return true;
+        }
         // Two independently imported versions of the same path can have identical timestamps and different bytes.
-        let (Ok(mut left), Ok(mut right)) = (self.open(), other.open()) else { return false };
+        let (Ok(mut left), Ok(mut right)) = (self.open(), other.open()) else {
+            return false;
+        };
         let mut remaining = self.len as usize;
         let mut a = vec![0; remaining.min(BLOCK)];
         let mut b = vec![0; a.len()];
         while remaining > 0 {
             let n = remaining.min(BLOCK);
-            if left.read_exact(&mut a[..n]).is_err() || right.read_exact(&mut b[..n]).is_err() || a[..n] != b[..n] { return false; }
+            if left.read_exact(&mut a[..n]).is_err()
+                || right.read_exact(&mut b[..n]).is_err()
+                || a[..n] != b[..n]
+            {
+                return false;
+            }
             remaining -= n;
         }
         true
@@ -219,7 +274,10 @@ impl SourceFile {
         let file = open_file(&self.path)?;
         ensure!(file.metadata()?.len() == self.len, changed());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if let Some(stamp) = &self.stamp { stamp.verify(&file)?; return Ok(self.reader(file, Arc::default())); }
+        if let Some(stamp) = &self.stamp {
+            stamp.verify(&file)?;
+            return Ok(self.reader(file, Arc::default()));
+        }
         self.fingerprint.verify(&file)?;
         Ok(self.reader(file, Arc::default()))
     }
@@ -262,7 +320,13 @@ impl Read for SourceReader {
             let length = dst.len().min((self.source.len - self.pos) as usize);
             #[cfg(target_os = "macos")]
             if self.snapshot.is_none() {
-                self.snapshot = Some(self.source.snapshot.as_ref().expect("stamped APFS source has a clone").open()?);
+                self.snapshot = Some(
+                    self.source
+                        .snapshot
+                        .as_ref()
+                        .expect("stamped APFS source has a clone")
+                        .open()?,
+                );
             }
             #[cfg(target_os = "macos")]
             let contents = self.snapshot.as_ref().unwrap();
@@ -277,7 +341,9 @@ impl Read for SourceReader {
         self.file.seek(SeekFrom::Start(self.pos))?;
         let read = self.file.read(&mut dst[..length])?;
         self.source.fingerprint.verify(&self.file)?;
-        if read == 0 { return Err(io::Error::new(io::ErrorKind::InvalidData, changed())); }
+        if read == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, changed()));
+        }
         self.pos += read as u64;
         Ok(read)
     }
@@ -308,7 +374,8 @@ mod tests {
         let bytes = vec![7; 32 * 1024];
         std::fs::write(&path, &bytes).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(3100));
-        let (source, prefix) = SourceFile::index_prefix(&path, &mut open_file(&path).unwrap(), IMPORT_PREFIX).unwrap();
+        let (source, prefix) =
+            SourceFile::index_prefix(&path, &mut open_file(&path).unwrap(), IMPORT_PREFIX).unwrap();
         assert!(source.snapshot.is_none());
         assert_eq!(prefix.as_slice(), &bytes[..HEADER_PREFIX]);
         let mut reader = source.open().unwrap();
@@ -346,7 +413,9 @@ mod tests {
         assert!(fresh.stamp.is_none()); // Just written: checked by its fingerprint.
         std::thread::sleep(std::time::Duration::from_millis(3100));
         let settled = SourceFile::index(&path).unwrap();
-        if settled.stamp.is_none() { return; } // This filesystem has no fast path.
+        if settled.stamp.is_none() {
+            return;
+        } // This filesystem has no fast path.
         assert!(settled.same_contents(&fresh));
         let mut reader = settled.open().unwrap();
         let mut byte = [0];
@@ -358,7 +427,10 @@ mod tests {
         writer.write_all(&[9]).unwrap();
         writer.set_modified(mtime).unwrap();
         reader.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
-        assert_eq!(reader.read_exact(&mut byte).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            reader.read_exact(&mut byte).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         assert_eq!(byte, [7]);
         std::fs::rename(&path, temp.path().join("original")).unwrap();
         std::fs::write(&path, vec![7; BLOCK + 8]).unwrap();

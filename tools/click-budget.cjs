@@ -65,7 +65,7 @@ class ClickBudget {
   /** Writes the observed counts as budgets (keeps the other tasks' budgets). */
   save() {
     const current = readBudgets(this.file);
-    const tasks = { ...(current.tasks ?? {}) };
+    const tasks = { ...current.tasks };
     for (const result of this.results) if (result.status !== 'unnamed') tasks[result.task] = result.actions;
     const sorted = Object.fromEntries(Object.entries(tasks).sort(([a], [b]) => a.localeCompare(b)));
     fs.writeFileSync(this.file, `${JSON.stringify({ ...current, tasks: sorted }, null, 2)}\n`);

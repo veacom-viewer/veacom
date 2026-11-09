@@ -226,21 +226,32 @@ impl Drop for Request {
 pub fn index(path: &Path) -> Result<std::sync::Arc<crate::source_file::SourceFile>> {
     // A page has no picture decoder to answer yet; waiting for one would only delay the rest of the import.
     if cfg!(target_arch = "wasm32") {
-        bail!(coded!("pictures.browser", "PNG, JPEG and BMP pictures cannot be opened in the browser yet"));
+        bail!(coded!(
+            "pictures.browser",
+            "PNG, JPEG and BMP pictures cannot be opened in the browser yet"
+        ));
     }
     use std::io::{Seek, SeekFrom};
     let mut file = crate::source_file::open_file(path)?;
     let len = file.metadata()?.len();
-    if len > MAX_FILE_BYTES { bail!("Not a picture file of a supported size"); }
+    if len > MAX_FILE_BYTES {
+        bail!("Not a picture file of a supported size");
+    }
     let mut prefix = [0; 8];
     let prefix = &mut prefix[..len.min(8) as usize];
     file.read_exact(prefix)?;
-    if !is_picture(prefix) { bail!("Only PNG, JPEG and BMP images can be opened"); }
+    if !is_picture(prefix) {
+        bail!("Only PNG, JPEG and BMP images can be opened");
+    }
     file.seek(SeekFrom::Start(0))?;
     crate::source_file::SourceFile::index_handle(path, file)
 }
 
-pub fn read(source: &std::sync::Arc<crate::source_file::SourceFile>, want: Want, check: fn() -> Result<()>) -> Result<Request> {
+pub fn read(
+    source: &std::sync::Arc<crate::source_file::SourceFile>,
+    want: Want,
+    check: fn() -> Result<()>,
+) -> Result<Request> {
     let mut file = source.open()?;
     let file_length = source.len as usize;
     let want = if want == Want::Probe && file_length <= PROBE_BYTES {
@@ -473,7 +484,10 @@ pub mod testing {
 
     /// Starts the tests' decoder once: it takes pictures as the desktop app does and answers from what `picture` wrote,
     /// or that the picture cannot be decoded.
-    #[allow(clippy::disallowed_methods)] // The test decoder stands in for the desktop process.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test decoder stands in for the desktop process"
+    )]
     pub fn serve() {
         static SERVING: OnceLock<()> = OnceLock::new();
         // Never cancelled.
@@ -663,10 +677,7 @@ mod tests {
             .set_len(MAX_FILE_BYTES)
             .unwrap();
         assert_eq!(
-            index(&disguised)
-            .err()
-            .unwrap()
-            .to_string(),
+            index(&disguised).err().unwrap().to_string(),
             "Only PNG, JPEG and BMP images can be opened"
         );
         // A JPEG named .png is read: what decodes it follows the contents.

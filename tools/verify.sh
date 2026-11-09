@@ -24,10 +24,14 @@ run() {
 run repository node tools/check-repository.mjs
 run fixture node tools/check-golden-study.mjs "$study"
 run react-memo node tools/check-react-memo.mjs
+run lint node tools/pinned-tool.mjs oxlint --type-aware
+run workflows node tools/pinned-tool.mjs actionlint
 series="$study/S01"
 run runtime pnpm run setup:runtime
 run core-build pnpm run build:core
 run core-tests cargo test --release --locked --manifest-path native/Cargo.toml
+run core-clippy cargo clippy --release --locked --all-targets --manifest-path native/Cargo.toml -- -D warnings
+run rust-format cargo fmt --all --check
 run open-work node tools/check-open-speed.cjs --output="$out/open-work"
 run unit pnpm test
 run web-build pnpm run build:web

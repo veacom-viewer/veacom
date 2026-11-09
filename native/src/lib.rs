@@ -8,17 +8,17 @@
 // First, so `note!` and `coded!` are available to every module below.
 #[macro_use]
 pub mod message;
-#[cfg(test)]
-mod codec_tests;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod archive_temp;
+#[cfg(test)]
+mod codec_tests;
 // In a browser an extracted archive lives in memory, with the rest of its files.
+#[cfg(windows)]
+mod archive_owner_windows;
 #[cfg(target_arch = "wasm32")]
 #[path = "archive_temp_memory.rs"]
 pub mod archive_temp;
 pub mod catalog;
-#[cfg(windows)]
-mod archive_owner_windows;
 pub mod codec_guard;
 pub mod color;
 pub mod confidentiality;
@@ -29,8 +29,8 @@ pub mod geometry;
 pub mod import_budget;
 pub mod ingest;
 pub mod input_guard;
-pub mod media_directory;
 pub mod measure;
+pub mod media_directory;
 pub mod memory_fs;
 pub mod modality_lut;
 pub mod model;

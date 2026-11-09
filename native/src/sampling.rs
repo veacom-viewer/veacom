@@ -111,7 +111,9 @@ impl Normalization {
         let s = &source.info;
         let positive = |value: Option<f64>| value.filter(|v| v.is_finite() && *v > 0.);
         let unit = s.stored_unit();
-        if s.modality == "PT" && let Some(factor) = positive(s.suv_factor) {
+        if s.modality == "PT"
+            && let Some(factor) = positive(s.suv_factor)
+        {
             match self {
                 Self::Lbm if positive(s.sul_factor).is_some() => {
                     return (s.sul_factor.unwrap(), "SUL");

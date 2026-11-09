@@ -28,7 +28,7 @@ pub fn tempdir() -> std::io::Result<TempDir> {
         "veacom-test-{}",
         crate::random::hex(&crate::random::bytes::<16>())
     ));
-    #[cfg_attr(not(unix), allow(unused_mut))]
+    #[cfg_attr(not(unix), allow(unused_mut, reason = "only Unix sets the mode"))]
     let mut builder = std::fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);

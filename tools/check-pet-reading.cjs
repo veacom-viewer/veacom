@@ -119,7 +119,7 @@ async function main() {
       const cell = document.querySelectorAll('[data-testid="viewport-cell"]')[1];
       const slice = cell.querySelector('canvas').dataset.slice;
       const reading = cell.querySelector('[data-testid="pointer-readout"] text')?.textContent;
-      return /^PET /.test(reading ?? '') && (returned ? slice === originalSlice && reading === before : slice !== originalSlice && reading !== before);
+      return (reading ?? '').startsWith('PET ') && (returned ? slice === originalSlice && reading === before : slice !== originalSlice && reading !== before);
     }, { originalSlice, before, returned });
     await page4(100);
     await waitForReading(false);

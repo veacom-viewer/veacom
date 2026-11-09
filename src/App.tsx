@@ -2219,7 +2219,7 @@ export default function App() {
           <Glyph name={TOOL_GLYPHS[item]} size={22} /><span>{t(`quick.short.${item}` as 'quick.short.window')}</span></button>)}
       </div>
       <MenuDivider /><MenuHeading>{t('quick.measure')}</MenuHeading>
-      {MEASURE_TOOLS.map(item => <MenuItem action="menu-option" key={item} kind="radio" checked={tool === item} icon={<Glyph name={TOOL_GLYPHS[item]} size={18} />} shortcut={TOOL_KEYS[item] ? singleKey(TOOL_KEYS[item]!) : undefined} onClick={() => quickAct(() => setTool(item))}>{toolLabel(item)}</MenuItem>)}
+      {MEASURE_TOOLS.map(item => <MenuItem action="menu-option" key={item} kind="radio" checked={tool === item} icon={<Glyph name={TOOL_GLYPHS[item]} size={18} />} shortcut={TOOL_KEYS[item] ? singleKey(TOOL_KEYS[item]) : undefined} onClick={() => quickAct(() => setTool(item))}>{toolLabel(item)}</MenuItem>)}
       <MenuDivider /><MenuHeading>{t('quick.colour')}</MenuHeading>
       <div className="quick-colours" role="group" aria-label={t('quick.colour')}>
         {(['gray', 'hot', 'ge', 'rainbow'] as const).map(palette => <button key={palette} type="button" role="menuitemradio" tabIndex={-1} aria-checked={(activeSlot.view.palette ?? 'gray') === palette} className="quick-swatch" data-action="menu-option"

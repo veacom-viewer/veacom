@@ -1,3 +1,4 @@
+use crate::vfs::File;
 use anyhow::{Context, Result, bail, ensure};
 use dicom_core::{PrimitiveValue, Tag};
 use dicom_encoding::{
@@ -9,7 +10,6 @@ use dicom_parser::{
     stateful::decode::{DynStatefulDecoder, StatefulDecode},
 };
 use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
-use crate::vfs::File;
 use std::{
     cell::Cell,
     io::{self, BufReader, Read, Seek, SeekFrom},
@@ -21,8 +21,16 @@ pub(crate) const MAX_META: u64 = 32 * 1024 * 1024;
 const MAX_VALUE: u64 = 1024 * 1024;
 const MAX_FILE_META: u64 = 64 * 1024;
 /// In WebAssembly everything shares 4 GB, so one file's pixel data may take a quarter of it there.
-const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
-const PIXEL_LIMIT: &str = if cfg!(target_arch = "wasm32") { "1 GiB" } else { "2 GiB" };
+const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") {
+    1024 * 1024 * 1024
+} else {
+    2 * 1024 * 1024 * 1024
+};
+const PIXEL_LIMIT: &str = if cfg!(target_arch = "wasm32") {
+    "1 GiB"
+} else {
+    "2 GiB"
+};
 const MAX_DATA: u64 = MAX_PIXELS + MAX_META;
 pub const MAX_FILE_SIZE: u64 = MAX_DATA + MAX_FILE_META + 132;
 const MAX_ELEMENTS: usize = 200_000;
@@ -110,10 +118,7 @@ impl StatefulDecode for GuardDecoder {
 impl Read for GuardRead {
     fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
         if crate::progress::is_stopping() {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Native core is shutting down",
-            ));
+            return Err(io::Error::other("Native core is shutting down"));
         }
         if output.is_empty() {
             return Ok(0);
@@ -230,7 +235,10 @@ fn file_meta(reader: &mut (impl Read + Seek), file_length: u64) -> Result<(Strin
         reader.seek(SeekFrom::Start(128))?;
         reader.read_exact(&mut magic)?;
     }
-    ensure!(magic == *b"DICM", coded!("file.notDicom", "Missing DICOM file meta marker"));
+    ensure!(
+        magic == *b"DICM",
+        coded!("file.notDicom", "Missing DICOM file meta marker")
+    );
     let (tag, length) = meta_header(reader)?;
     ensure!(
         tag == Tag(2, 0) && length == 4,
@@ -474,7 +482,11 @@ pub fn inspect_reader(reader: impl Read + Seek + 'static, len: u64) -> Result<In
     inspect_stream(reader, len, ScanMode::Complete)
 }
 
-fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: ScanMode) -> Result<InputInfo> {
+fn inspect_stream(
+    file: impl Read + Seek + 'static,
+    file_length: u64,
+    mode: ScanMode,
+) -> Result<InputInfo> {
     ensure!(
         file_length <= MAX_FILE_SIZE,
         coded!("file.tooLarge", "DICOM source exceeds the input size limit")
@@ -625,8 +637,7 @@ fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: Scan
                         .checked_mul(65536)
                         .context("Frame count overflow")?;
                     let limit = (decoded.saturating_mul(2).saturating_add(overhead))
-                        .max(16 * 1024 * 1024)
-                        .min(MAX_PIXELS);
+                        .clamp(16 * 1024 * 1024, MAX_PIXELS);
                     compressed = Some(Encapsulated {
                         items: 0,
                         fragments: 0,
@@ -785,9 +796,10 @@ fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: Scan
                         "Truncated Extended Offset Table"
                     );
                     let values: Vec<u64> = bytes
-                        .chunks_exact(8)
-                        .map(|word| {
-                            let word: [u8; 8] = word.try_into().unwrap();
+                        .as_chunks::<8>()
+                        .0
+                        .iter()
+                        .map(|&word| {
                             if syntax.endianness() == dicom_encoding::Endianness::Big {
                                 u64::from_be_bytes(word)
                             } else {
@@ -833,8 +845,10 @@ fn inspect_stream(file: impl Read + Seek + 'static, file_length: u64, mode: Scan
                     decoder.read_to_vec(len, &mut table)?;
                     ensure!(table.len() == len as usize, "Truncated Basic Offset Table");
                     compressed.offsets = table
-                        .chunks_exact(4)
-                        .map(|v| u64::from(u32::from_le_bytes(v.try_into().unwrap())))
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
+                        .map(|&v| u64::from(u32::from_le_bytes(v)))
                         .collect();
                     ensure!(
                         compressed.offsets.first().is_none_or(|v| *v == 0)
@@ -933,7 +947,7 @@ mod tests {
             bytes.extend(element(tag, b"US", &value.to_le_bytes()));
         }
         let mut count = frames.as_bytes().to_vec();
-        if count.len() % 2 != 0 {
+        if !count.len().is_multiple_of(2) {
             count.push(b' ');
         }
         bytes.extend(element(Tag(0x28, 8), b"IS", &count));
