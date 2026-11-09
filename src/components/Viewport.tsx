@@ -1024,7 +1024,13 @@ export function Viewport(props: ViewportProps) {
       </g>}
     </svg>
     {readoutLines > 0 && <ValueReadout ref={readout} right={dimensions[0] - 14} bottom={dimensions[1] - 40} width={lowerWidth} fontFamily={fontFamily} />}
-    {props.caliper ? <div className="viewport-hint is-caliper" data-testid="caliper-hint" data-export-exclude>{props.caliper.prompts[Math.min(caliperStep, props.caliper.prompts.length - 1)]}</div>
+    {/* Under the top corner lines (18 px down, 16 px apart), so patient identity and the orientation letter stay readable. */}
+    {props.caliper ? <div className="viewport-caliper" data-export-exclude style={{ top: Math.max(topLeft.length, topRight.length) ? 18 + Math.max(topLeft.length, topRight.length) * 16 + 4 : 12 }}>
+      <div className="viewport-hint" data-testid="caliper-hint">{props.caliper.prompts[Math.min(caliperStep, props.caliper.prompts.length - 1)]}</div>
+      {/* What setting the pane up for the caliper changed, with Undo, until the first point is placed. */}
+      {props.caliper.setUp && caliperStep === 0 && <div className="caliper-setup" role="status" data-testid="caliper-setup"><span>{props.caliper.setUp.text}</span>
+        <button type="button" data-action="caliper-view-undo" onClick={props.caliper.setUp.onUndo}>{t('pair.undo')}</button></div>}
+    </div>
       : !props.hideMeasurements && draft && draftHint && <div className="viewport-hint" data-export-exclude>{t(draftHint)}</div>}
     {error && <div role="alert" className="viewport-render-error">{error}</div>}
     {textPrompt && (() => {

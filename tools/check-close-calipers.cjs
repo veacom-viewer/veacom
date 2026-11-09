@@ -1,8 +1,9 @@
 // Desktop check of the CLOSE calipers on the synthetic sinus CT of tools/fixtures/make-sinus-study.mjs. Each caliper is
 // started from the pre-operative checklist, measured by clicking the fixture's landmarks on the plane it needs (a point
 // clicked in the air moves onto the bone), and writes its answer and value into the side it measured. Moving a point
-// measures again and undo takes it back; a caliper is unavailable on the wrong plane and says why; Esc ends one; "Copy
-// for the report" gives every value with its side and slice. Screenshots in English and Turkish.
+// measures again and undo takes it back. Started off its plane, a caliper turns its pane to that plane and the bone
+// window and says so with Undo. Esc ends one; "Copy for the report" gives every value with its side and slice.
+// Screenshots in English and Turkish.
 // usage: node tools/check-close-calipers.cjs SINUS_STUDY [OUTPUT_DIR]
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
@@ -139,15 +140,57 @@ async function main() {
     assert.match(await value('septum', 'right'), /^Slice \d+\/\d+$/, 'The right side has its slice noted.');
     check('Septal angle: measured at the crista galli and recorded on the side the septum bows to; the other side noted by hand', { septum });
 
-    // The sella lines on the midsagittal plane; there the coronal calipers say why they cannot measure.
+    // The sella lines on the midsagittal plane.
     const sagittal = await show('sagittal', landmarks.sella.x);
-    assert.equal(await caliperButton('keros', 'right').getAttribute('aria-disabled'), 'true', 'Keros cannot be measured on a sagittal plane.');
-    assert.equal(await caliperButton('keros', 'right').getAttribute('aria-description'), 'Show an upright coronal plane to measure');
     const sella = await measure('pneumatisation', 'both', sagittal, [landmarks.sella.tuberculum, landmarks.sella.dorsum, landmarks.sella.wall]);
     assert.match(sella, /^\d+\.\d mm behind tuberculum line$/);
     assert.equal(await answer('pneumatisation', 'both'), 'Sellar', 'A sinus wall between the lines is sellar.');
     await page.screenshot({ path: path.join(output, '2-sella-en.png') });
-    check('Sella lines: the sinus wall placed between the tuberculum and dorsum lines on the midsagittal plane; a coronal caliper says it needs a coronal plane', { sella });
+    check('Sella lines: the sinus wall placed between the tuberculum and dorsum lines on the midsagittal plane', { sella });
+
+    // From the sagittal plane in a soft-tissue window, a coronal caliper sets its pane up first: the coronal plane through
+    // the pane's middle and the bone window, said in the pane with Undo. Undo puts the pane back and ends the caliper; once
+    // a point is placed the note goes, and ending the caliper keeps the pane as it is.
+    const view = () => page.evaluate(() => window.__VEACOM_TEST__.state().view);
+    const shownPlane = plane => page.waitForFunction(plane => document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.plane === plane, plane);
+    const softWindow = async () => {
+      await page.evaluate(() => window.__VEACOM_TEST__.setView({ windowWidth: 400, windowCenter: 40 }));
+      await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.windowWidth === 400);
+    };
+    const setUp = page.getByTestId('caliper-setup'), sagittalSlice = (await view()).slice;
+    await softWindow();
+    // A point picked over the olfactory fossae: the coronal plane goes through it.
+    await page.evaluate(() => window.__VEACOM_TEST__.setTool('crosshair'));
+    await page.mouse.click(...await screen('sagittal', [landmarks.keros.y, landmarks.keros.right[1][1]]));
+    await page.evaluate(() => window.__VEACOM_TEST__.setTool('window'));
+    const before = await view();
+    assert.equal(await caliperButton('keros', 'right').getAttribute('aria-disabled'), null, 'Keros starts from a sagittal plane too.');
+    assert.equal(await caliperButton('keros', 'right').getAttribute('data-tooltip-hint'), 'Measured on a coronal plane, in a bone window');
+    await caliperButton('keros', 'right').click();
+    await setUp.waitFor();
+    assert.equal(await setUp.locator('span').textContent(), 'Coronal plane and bone window for Keros and Gera');
+    await shownPlane('coronal');
+    const turned = await view();
+    assert.deepEqual([turned.mode, turned.slice, turned.windowWidth, turned.windowCenter], ['mpr', Math.round((landmarks.keros.y - grid.origin[1]) / grid.spacing), 1500, 300],
+      'The pane shows the coronal plane through the picked point, in the bone window.');
+    await page.mouse.move(5, 5);
+    await page.screenshot({ path: path.join(output, '3-set-up-en.png') });
+    await setUp.getByRole('button').click();
+    await page.getByTestId('caliper-hint').waitFor({ state: 'detached' });
+    await shownPlane('sagittal');
+    const back = await view();
+    assert.deepEqual([back.plane, back.slice, back.windowWidth, back.windowCenter], ['sagittal', sagittalSlice, 400, 40], 'Undo puts the pane back as it was.');
+    assert.deepEqual(back, before, 'Undo puts the whole view back.');
+    assert.equal(await caliperButton('keros', 'right').getAttribute('aria-pressed'), 'false', 'Undo ends the caliper.');
+    await caliperButton('keros', 'right').click();
+    await setUp.waitFor();
+    await page.mouse.click(...await screen('coronal', landmarks.keros.right[0]));
+    await setUp.waitFor({ state: 'detached' });
+    await page.keyboard.press('Escape'); // the point placed
+    await page.keyboard.press('Escape'); // the caliper
+    await page.getByTestId('caliper-hint').waitFor({ state: 'detached' });
+    assert.deepEqual([(await view()).plane, (await view()).windowWidth], ['coronal', 1500], 'Ending the caliper keeps the pane set up.');
+    check('A caliper turns its pane to its plane and the bone window, says so with Undo, and Undo puts the pane back');
 
     // Esc ends a caliper before it is drawn, and the left button gets its tool back.
     await show('coronal', landmarks.keros.y);
@@ -186,6 +229,15 @@ async function main() {
     await show('sagittal', landmarks.sella.x);
     await page.mouse.move(5, 5);
     await page.screenshot({ path: path.join(output, '2-sella-tr.png') });
+    await softWindow();
+    await caliperButton('keros', 'right').click();
+    await setUp.waitFor();
+    assert.equal(await setUp.locator('span').textContent(), 'Keros ve Gera için koronal kesit ve kemik penceresi');
+    await shownPlane('coronal');
+    await page.mouse.move(5, 5);
+    await page.screenshot({ path: path.join(output, '3-set-up-tr.png') });
+    await setUp.getByRole('button').click();
+    await shownPlane('sagittal');
     check('In Turkish: the checklist, its limit word and the report', { report: turkish });
 
     assert.deepEqual(errors, [], 'No page errors.');

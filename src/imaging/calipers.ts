@@ -2,9 +2,10 @@
 // places on a coronal or sagittal plane, moved onto the nearest bone, and gives that item's answer together with the
 // measurement it came from. Only geometry of a millimetre or more is answered; whether a thin wall is intact is left to
 // the reader. Definitions and sources: docs/close-calipers.md.
-import type { CaliperKind, CaliperTag, Series, Vec3, Volume } from '../model';
-import { add, cross, dot, length, sampleVolume, scale, sub } from './geometry';
+import type { CaliperKind, CaliperTag, Series, Vec3, ViewState, Volume } from '../model';
+import { add, cross, dot, isProjection, length, planeAxes, sampleVolume, scale, sliceAtWorld, sub } from './geometry';
 import { translate, type Locale, type MessageKey } from '../i18n';
+import { BONE_WINDOW } from '../ui/presets';
 
 interface CaliperSpec {
   /** The measuring tool its points are placed with: two points with Length, three with Angle. */
@@ -166,6 +167,24 @@ export function snapToBone(volume: Volume, point: Vec3, u: Vec3, v: Vec3): Vec3 
     if (value !== null && Number.isFinite(value) && value >= BONE_HU) return candidate;
   }
   return point;
+}
+
+/** What a pane showing `view` (as drawn) of `series` needs before a caliper can measure in it, as a view patch: the
+ * caliper's plane, plain and through `at` (the picked point, or the pane's middle), unless the pane is on that plane
+ * already, when its slice and tilt stay; and the bone window, unless its window already reaches as wide and as high (a
+ * CT in HU only). Null when nothing needs to change; `blocked` when the series cannot be shown on that plane. */
+export function caliperView(kind: CaliperKind, series: Series, view: ViewState, at: Vec3, canReconstruct: boolean):
+  { patch: Partial<ViewState>; plane: boolean; window: boolean } | { blocked: MessageKey } | null {
+  const spec = CALIPERS[kind], axes = planeAxes(series, view);
+  const plane = isProjection(series, view) || !onCaliperPlane(kind, scale(axes.v, -1), axes.normal);
+  if (plane && !canReconstruct) return { blocked: spec.plane === 'coronal' ? 'caliper.noCoronal' : 'caliper.noSagittal' };
+  const target = { plane: spec.plane, mode: 'mpr' as const, oblique: [0, 0] as [number, number], projection: undefined };
+  const window = series.valueUnit === 'HU' && !(view.windowWidth >= BONE_WINDOW.width && view.windowCenter >= BONE_WINDOW.center);
+  if (!plane && !window) return null;
+  return { plane, window, patch: {
+    ...(plane ? { ...target, slice: sliceAtWorld(series, target, at) } : {}),
+    ...(window ? { windowWidth: BONE_WINDOW.width, windowCenter: BONE_WINDOW.center, windowMode: 'manual' as const } : {}),
+  } };
 }
 
 /** The caliper's points moved onto bone where its definition says so, within the plane (`up`, `normal`) they lie in. */

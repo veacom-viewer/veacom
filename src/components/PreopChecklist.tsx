@@ -5,7 +5,7 @@ import type { CaliperKind, Series } from '../model';
 import type { MessageKey } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { copyText } from '../ui/clipboard';
-import { caliperName, caliperShort, ITEM_CALIPERS } from '../imaging/calipers';
+import { CALIPERS, caliperName, caliperShort, ITEM_CALIPERS } from '../imaging/calipers';
 import { keepChecklist, keptChecklist, subscribeChecklists } from '../ui/checklistStore';
 import { CHECKLISTS, FINDING, checklistKind, checklistSummary, type ChecklistState, type ChecklistKind, type Side, type SliceNote } from '../ui/preopChecklist';
 import './PreopChecklist.css';
@@ -83,7 +83,7 @@ export function PreopChecklist({ series, onClose, onNote, onGoTo, onMeasure, mea
                   {kind && <button type="button" className={`icon-button preop-tool${armed ? ' is-on' : ''}${why ? ' is-unavailable' : ''}`} data-action="checklist-caliper"
                     aria-pressed={armed} aria-disabled={why ? true : undefined} aria-description={why ? t(why) : undefined}
                     aria-label={armed ? t('caliper.stop') : named(t('caliper.measure', { name: caliperName(kind, locale) }))}
-                    data-tooltip={armed ? t('caliper.stop') : t('caliper.measure', { name: caliperName(kind, locale) })} data-tooltip-hint={why ? t(why) : undefined}
+                    data-tooltip={armed ? t('caliper.stop') : t('caliper.measure', { name: caliperName(kind, locale) })} data-tooltip-hint={why ? t(why) : armed ? undefined : t(CALIPERS[kind].plane === 'coronal' ? 'caliper.onCoronal' : 'caliper.onSagittal')}
                     onClick={why ? undefined : () => onMeasure(item.id, side, kind)}><Ruler size={15} /></button>}
                   {seen && <button type="button" className="preop-seen" data-action="checklist-go" data-tooltip={measured ? t('checklist.measuredOn', { value: caliperShort(measured, locale), slice: seen.shown }) : t('checklist.seenOn', { slice: seen.shown })}
                     onClick={() => onGoTo(seen)}>{measured ? caliperShort(measured, locale) : t('checklist.seenOn', { slice: seen.shown })}</button>}

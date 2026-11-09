@@ -228,8 +228,9 @@ export interface ViewportProps {
   onRotateReference?: (id: string, oblique: [number, number]) => void;
   /** Shown in the accessible name when several panes are open, so they can be told apart. */
   paneNumber?: number;
-  /** A CLOSE caliper under way in this pane: what to click, point by point (`key` names the caliper). */
-  caliper?: { key: string; prompts: readonly string[] };
+  /** A CLOSE caliper under way in this pane: what to click, point by point (`key` names the caliper), and what setting
+   * the pane up for it changed, with its Undo. */
+  caliper?: { key: string; prompts: readonly string[]; setUp?: { text: string; onUndo: () => void } };
 }
 export interface VolumeViewProps {
   volume: Volume; crosshair: Vec3 | null;

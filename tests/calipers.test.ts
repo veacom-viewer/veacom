@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { aeaType, caliperLabel, caliperReport, caliperResult, caliperShort, geraClass, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
+import { aeaType, caliperLabel, caliperReport, caliperResult, caliperShort, caliperView, geraClass, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
+import { getPlaneFrame, sub, dot } from '../src/imaging/geometry';
 import { checklistSummary, recordCaliper, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
-import type { CaliperTag, Series, Vec3, Volume } from '../src/model';
+import type { CaliperTag, Series, Vec3, ViewState, Volume } from '../src/model';
 
 const coronal = (side: CaliperTag['side'], kind: CaliperTag['kind'] = 'keros'): CaliperTag => ({ kind, item: 'keros', side, up: [0, 0, 1], normal: [0, 1, 0] });
 const sagittal: CaliperTag = { kind: 'sella', item: 'pneumatisation', side: 'both', up: [0, 0, 1], normal: [-1, 0, 0] };
@@ -180,5 +181,48 @@ describe('the checklist record of a caliper', () => {
     const turkish = checklistSummary('pns', state.answers, state.notes, 'tr');
     assert.ok(turkish.includes('Sağ 2 (3.5 mm, tip 2, sınırda; Gera 70.0°, sınıf II; kesit 42/120)'), turkish);
     assert.ok(turkish.includes('sağ–sol fark 2.5 mm'), turkish);
+  });
+});
+
+describe('setting a pane up for a caliper', () => {
+  // A 64 mm cube at 1 mm, origin at 0: voxel centres from 0 to 63 on each axis.
+  const series = {
+    id: 's', uid: 'u', studyUid: 'study', patientId: 'P', patientName: 'Synthetic', studyDate: '', description: '', modality: 'CT',
+    seriesNumber: 1, dimensions: [64, 64, 64], spacing: [1, 1, 1], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
+    windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, orientationKnown: true, warnings: [], photometricInterpretation: 'MONOCHROME2',
+  } as Series;
+  const view = (plane: ViewState['plane'], window: [number, number], extra: Partial<ViewState> = {}): ViewState => ({ plane, slice: 32, windowWidth: window[0], windowCenter: window[1],
+    zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false, mode: 'mpr', ...extra });
+  const soft: [number, number] = [400, 40], bone: [number, number] = [1500, 300];
+  const at: Vec3 = [20, 12, 40];
+
+  it('turns the pane to the plain plane through the point, in the bone window', () => {
+    const setUp = caliperView('keros', series, view('axial', soft), at, true);
+    assert.ok(setUp && 'patch' in setUp && setUp.plane && setUp.window);
+    assert.equal(setUp.patch.plane, 'coronal');
+    assert.deepEqual([setUp.patch.mode, setUp.patch.oblique, setUp.patch.windowWidth, setUp.patch.windowCenter, setUp.patch.windowMode], ['mpr', [0, 0], 1500, 300, 'manual']);
+    // The plane shown afterwards passes through the point.
+    const frame = getPlaneFrame(series, { ...view('axial', bone), ...setUp.patch });
+    assert.ok(Math.abs(dot(sub(at, frame.center), frame.normal)) <= frame.step / 2);
+    const sella = caliperView('sella', series, view('coronal', bone), at, true);
+    assert.ok(sella && 'patch' in sella && sella.patch.plane === 'sagittal' && !sella.window);
+    const sagittalFrame = getPlaneFrame(series, { ...view('coronal', bone), ...sella.patch });
+    assert.ok(Math.abs(dot(sub(at, sagittalFrame.center), sagittalFrame.normal)) <= sagittalFrame.step / 2);
+  });
+
+  it('keeps a pane already on the plane, with its slice and tilt, and a window that already shows bone', () => {
+    assert.equal(caliperView('keros', series, view('coronal', [2000, 400], { oblique: [10, 0] }), at, true), null);
+    const window = caliperView('aea', series, view('coronal', soft, { oblique: [10, 0] }), at, true);
+    assert.deepEqual(window, { plane: false, window: true, patch: { windowWidth: 1500, windowCenter: 300, windowMode: 'manual' } });
+    // A lung window is as wide but centred on air; a series not in HU keeps its own window.
+    assert.equal(caliperView('keros', series, view('coronal', [1500, -400]), at, true) !== null, true);
+    assert.equal(caliperView('keros', { ...series, valueUnit: '' }, view('coronal', soft), at, true), null);
+  });
+
+  it('leaves a whole-volume MIP for the plane, and says when the series cannot be shown on it', () => {
+    const mip = caliperView('septum', series, view('coronal', bone, { projection: 'mip', slice: 0 }), at, true);
+    assert.ok(mip && 'patch' in mip && mip.plane && mip.patch.projection === undefined && mip.patch.mode === 'mpr');
+    assert.deepEqual(caliperView('keros', series, view('axial', bone), at, false), { blocked: 'caliper.noCoronal' });
+    assert.deepEqual(caliperView('sella', series, view('axial', bone), at, false), { blocked: 'caliper.noSagittal' });
   });
 });

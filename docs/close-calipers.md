@@ -36,8 +36,18 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
   Below 1° the septum is read as on the midline and no side is marked.
 
 Every value needs the image's pixel spacing (or a calibration), and the plane the caliper is read on: within 45° of
-coronal or sagittal, upright. Otherwise the checklist's button is unavailable and says why, and a drawing made there
-says "Unavailable" with the reason.
+coronal or sagittal, upright. A drawing made on another plane says "Unavailable" with the reason.
+
+## Setting the pane up
+
+Starting a caliper sets up the pane it measures in. Another pane of the same series already on the caliper's plane
+becomes the active one, so the three-plane MPR keeps its planes. Otherwise the active pane turns to the plain plane
+through the point picked in that series, or through the middle of the plane it showed; a pane already on the plane,
+tilted or not, keeps its slice. Its window becomes the bone preset, unless it is already at least as wide and as high.
+The pane says what changed, with Undo, until the first point is placed. Undo puts the pane back and ends the caliper.
+Finding the slice of the structure itself (the per-item jump of the CLOSE plan) needs segmentation and is not done
+here. The checklist's button is unavailable, and says why, only when there is no CT in the active pane, its pixel
+spacing is unknown, it is still loading, or the series cannot be shown on the caliper's plane.
 
 ## Snapping onto bone
 

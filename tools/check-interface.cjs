@@ -450,13 +450,24 @@ async function main() {
     await lamina('left').locator('[data-action="checklist-note"]').click();
     assert.match(await lamina('left').locator('[data-action="checklist-go"]').textContent(), /^(Slice|Kesit) \d+\/\d+$/, 'The note shows under the side it was taken for.');
     assert.equal(await lamina('right').locator('[data-action="checklist-go"]').count(), 0, 'The other side has no note.');
-    // A caliper needs its own plane: on these axial slices it is unavailable and says why (tools/check-close-calipers.cjs
-    // measures with each one on a synthetic sinus CT).
+    // A caliper sets its pane up: on these axial slices Keros turns the pane to a coronal plane in a bone window and says
+    // so with Undo, which puts the pane back and ends the caliper (tools/check-close-calipers.cjs measures with each one
+    // on a synthetic sinus CT).
     const keros = checklist.locator('[data-item="keros"] [data-side="right"] [data-action="checklist-caliper"]');
-    assert.equal(await keros.getAttribute('aria-disabled'), 'true', 'Keros cannot be measured on an axial slice.');
-    assert.match(await keros.getAttribute('aria-description'), /coronal|koronal/i, 'It says it needs a coronal plane.');
-    await keros.click({ force: true }); await settle();
-    assert.equal(await page.getByTestId('caliper-hint').count(), 0, 'An unavailable caliper does not start.');
+    const shownPlane = plane => page.waitForFunction(plane => document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.plane === plane, plane);
+    await shownPlane('axial');
+    const viewBefore = await page.evaluate(() => window.__VEACOM_TEST__.state().view);
+    const modeBefore = await page.locator('.viewport-cell.is-active canvas[data-renderer]').getAttribute('data-mode');
+    await keros.click();
+    await page.getByTestId('caliper-setup').waitFor();
+    await shownPlane('coronal');
+    assert.equal(await keros.getAttribute('aria-pressed'), 'true', 'The caliper is under way.');
+    await page.locator('[data-action="caliper-view-undo"]').click();
+    await page.getByTestId('caliper-hint').waitFor({ state: 'detached' });
+    await shownPlane('axial');
+    assert.deepEqual(await page.evaluate(() => window.__VEACOM_TEST__.state().view), viewBefore, 'Undo puts the view back exactly.');
+    await page.waitForFunction(mode => document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.mode === mode, modeBefore);
+    assert.equal(await keros.getAttribute('aria-pressed'), 'false', 'Undo ends the caliper.');
     await checklist.locator('[data-action="checklist-clear"]').click();
     assert.equal(await lamina('left').locator('[data-action="checklist-go"]').count(), 0, 'Clear removes the notes too.');
     await viewport.focus(); await page.keyboard.press('Escape'); await settle();
@@ -483,7 +494,7 @@ async function main() {
       await page.getByTestId('volume-view').waitFor({ state: 'detached' });
       await page.waitForFunction(() => document.activeElement?.dataset.testid === 'tool-3d');
     }
-    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, says why a caliper cannot measure here, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
+    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, sets up the pane for a caliper with Undo, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
 
     // A real click with the text tool leaves focus in the note field: typed letters are text, not shortcuts. It comes
     // right after 3D closed, which with slow (software) drawing is before the widened pane's resize frame: the pane
