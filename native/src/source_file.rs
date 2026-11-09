@@ -194,8 +194,9 @@ impl SourceFile {
         if self.len == 0 { return true; }
         #[cfg(target_os = "linux")]
         if self.stamp.is_some() && other.stamp.is_some() { return self.stamp == other.stamp; }
-        // The same file, unwritten since: on Unix and Windows every write moves the change time.
-        #[cfg(any(unix, windows))]
+        // The same file, unwritten since: on Unix every write moves the change time. NTFS may defer that update until a
+        // writer closes the file, so Windows compares the bytes below.
+        #[cfg(unix)]
         if self.fingerprint == other.fingerprint { return true; }
         // Two independently imported versions of the same path can have identical timestamps and different bytes.
         let (Ok(mut left), Ok(mut right)) = (self.open(), other.open()) else { return false };
