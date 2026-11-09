@@ -2,7 +2,7 @@
 // harness can tell from the screen which slice any viewer shows. The same name always gives the same bytes; the
 // manifest records each file's SHA-256 so a run can check its study before timing it.
 //
-//   node tools/browser-tools/browser-bench/make-study.mjs <name> [<folder>]
+//   node tools/browser-bench/make-study.mjs <name> [<folder>]
 // Names: ct-300 (300 × 512², ~158 MB) and ct-1000 (1,000 × 512², ~525 MB), uncompressed Explicit VR Little Endian.
 // The folder defaults to ~/.cache/veacom-bench/studies/<name>; an existing study is checked, not rewritten.
 import { createHash } from 'node:crypto';
@@ -10,6 +10,7 @@ import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { dataset, element } from '../fixtures/dicom-elements.mjs';
 import { drawBand } from './lib/marker.mjs';
 
@@ -99,8 +100,8 @@ export async function makeStudy(name, folder = studyFolder(name), { log = consol
   return manifest;
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [name, folder] = process.argv.slice(2);
-  if (!name) throw new Error('Usage: node tools/browser-tools/browser-bench/make-study.mjs <name> [<folder>]');
+  if (!name) throw new Error('Usage: node tools/browser-bench/make-study.mjs <name> [<folder>]');
   await makeStudy(name, folder ? path.resolve(folder) : undefined);
 }

@@ -21,18 +21,25 @@ const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '.
 export async function serveStatic(root, { isolation = false, spa = false, overlay = {} } = {}) {
   const headers = { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...(isolation ? {
     'Cross-Origin-Opener-Policy': 'same-origin', 'Cross-Origin-Embedder-Policy': 'require-corp', 'Cross-Origin-Resource-Policy': 'same-origin' } : {}) };
-  const server = createServer(async (request, response) => {
+  const inside = root.endsWith(path.sep) ? root : root + path.sep;
+  // One bad request answers an error; it never ends the run this server lives in.
+  const server = createServer((request, response) => {
+    answer(request, response).catch(() => { if (!response.headersSent) response.writeHead(500, headers); response.end(); });
+  });
+  async function answer(request, response) {
     const url = new URL(request.url, 'http://localhost');
-    const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '');
+    let relative;
+    try { relative = decodeURIComponent(url.pathname).replace(/^\/+/, ''); } catch { response.writeHead(400, headers).end(); return; }
     let file = overlay[relative] ?? path.join(root, relative);
-    if (!overlay[relative] && !file.startsWith(root)) { response.writeHead(403).end(); return; }
+    if (!overlay[relative] && file !== root && !file.startsWith(inside)) { response.writeHead(403, headers).end(); return; }
     let stat = await fs.stat(file).catch(() => null);
     if (stat?.isDirectory()) { file = path.join(file, 'index.html'); stat = await fs.stat(file).catch(() => null); }
     if (!stat && spa && !path.extname(url.pathname)) { file = path.join(root, 'index.html'); stat = await fs.stat(file).catch(() => null); }
     if (!stat) { response.writeHead(404, headers).end(); return; }
     response.writeHead(200, { ...headers, 'Content-Type': TYPES[path.extname(file).toLowerCase()] ?? 'application/octet-stream', 'Content-Length': stat.size });
-    if (request.method === 'HEAD') response.end(); else createReadStream(file).pipe(response);
-  });
+    if (request.method === 'HEAD') { response.end(); return; }
+    createReadStream(file).on('error', () => response.destroy()).pipe(response);
+  }
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return { url: `http://127.0.0.1:${server.address().port}/`, close: () => new Promise(resolve => server.close(resolve)) };
 }

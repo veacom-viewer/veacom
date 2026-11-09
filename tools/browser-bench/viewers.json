@@ -1,5 +1,5 @@
 {
-  "about": "Pinned copies of the browser viewers the benchmark compares with VEAcom. `node tools/browser-tools/browser-bench/fetch-viewers.mjs` downloads each into ~/.cache/veacom-bench/viewers/<name>@<version> and checks it against `tree` (the SHA-256 of the sorted lines '<file sha256>  <relative path>'). Pinned 8 Nov 2026.",
+  "about": "Pinned copies of the browser viewers the benchmark compares with VEAcom. `node tools/browser-bench/fetch-viewers.mjs` downloads each into ~/.cache/veacom-bench/viewers/<name>@<version> and checks it against `tree` (the SHA-256 of the sorted lines '<file sha256>  <relative path>'). Pinned 8 Nov 2026.",
   "viewers": [
     {
       "name": "ohif", "title": "OHIF Viewer", "version": "3.13.14", "released": "2026-11-03", "licence": "MIT",

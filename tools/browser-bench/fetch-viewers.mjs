@@ -1,14 +1,14 @@
 // Downloads the pinned viewers of tools/browser-bench/viewers.json into ~/.cache/veacom-bench/viewers/<name>@<version> and checks
 // each against its tree hash, so every machine benchmarks exactly the same files. A copy already there is checked,
 // not downloaded again. For the live-only PlexusMD it only reports whether the live build still matches the pin.
-//   node tools/browser-tools/browser-bench/fetch-viewers.mjs [name …]
+//   node tools/browser-bench/fetch-viewers.mjs [name …]
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const LOCK = JSON.parse(readFileSync(path.join(here, 'viewers.json'), 'utf8'));
@@ -110,4 +110,5 @@ export async function fetchAll(names = []) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) await fetchAll(process.argv.slice(2));
+// Run as a script (a percent-encoded URL either way, so a path with a space or a Windows drive still matches).
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) await fetchAll(process.argv.slice(2));

@@ -243,9 +243,15 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
 }
 
 app.on('window-all-closed', () => {});
+// Whatever fails outside the trial's own error handling (loading the adapter, writing the result) still ends this
+// Electron with a result, so the run never waits on a trial that cannot finish.
 void app.whenReady().then(async () => {
-  const adapter = (await import(pathToFileURL(path.join(here, 'viewers', `${spec.viewer.adapter}.mjs`)).href)).default;
-  const line = await trial({ ...spec, viewer: { ...spec.viewer, adapter } });
-  fs.writeFileSync(spec.result, `${JSON.stringify(line)}\n`);
-  app.exit(0);
+  let line;
+  try {
+    const adapter = (await import(pathToFileURL(path.join(here, 'viewers', `${spec.viewer.adapter}.mjs`)).href)).default;
+    line = await trial({ ...spec, viewer: { ...spec.viewer, adapter } });
+  } catch (error) {
+    line = { viewer: spec.viewer.id, study: spec.study.name, round: spec.round, warmup: spec.round <= 0, order: spec.order, error: String(error?.stack ?? error) };
+  }
+  try { fs.writeFileSync(spec.result, `${JSON.stringify(line)}\n`); } finally { app.exit(0); }
 });

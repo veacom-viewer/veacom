@@ -84,9 +84,10 @@ try {
   for (let round = 1 - warmup; round <= rounds; round++) {
     for (const study of studies) for (const viewer of order(viewers, round)) {
       const idle = await waitIdle();
-      const spec = { viewer: { id: viewer.id, adapter: viewer.adapter }, served: served.get(viewer.id), study, round, order: count++, outDir,
+      const spec = { viewer: { id: viewer.id, adapter: viewer.adapter }, served: served.get(viewer.id), study, round, order: count, outDir,
         result: path.join(outDir, 'trials', `${count}.json`), machine: state(), idle, width: Number(options.width), height: Number(options.height),
         rates: options.rates.split(',').map(Number), scenarios: options.scenarios.split(',') };
+      count++;
       let line;
       try { line = await runTrial(spec); } catch (error) { line = { viewer: viewer.id, study: study.name, round, warmup: round <= 0, order: spec.order, error: String(error.message) }; }
       fs.appendFileSync(path.join(outDir, 'results.jsonl'), `${JSON.stringify(line)}\n`);
