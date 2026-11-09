@@ -9,12 +9,14 @@ Audit the branch's diff, fix what it finds, and report the rest. The patterns ar
 
 ## Steps
 
-1. **Scope.** Diff the branch against the main branch it will merge into. Use the remote that points at github.com/veacom-viewer/veacom, often `origin`:
+1. **Scope.** Commit your work first, so the audit covers the commit you report. Then diff that commit against the main branch it will merge into. Set `remote` to the remote that points at github.com/veacom-viewer/veacom, often `origin`:
 
    ```sh
-   base=$(git merge-base HEAD origin/main)
-   git diff --stat "$base"
-   git diff "$base"
+   remote=origin
+   git fetch "$remote" main
+   base=$(git merge-base HEAD FETCH_HEAD)
+   git diff --stat "$base" HEAD
+   git diff "$base" HEAD
    ```
 
    Audit code in `src/`, `electron/`, `native/`, `web/`, `tools/` and `tests/`, and interface text in `src/i18n/`. Skip generated files and fixtures.
@@ -26,17 +28,17 @@ Audit the branch's diff, fix what it finds, and report the rest. The patterns ar
 4. **Check the patterns**, most severe group first. This search finds leads on added lines. Each lead still needs reading:
 
    ```sh
-   git diff -U0 "$base" -- src electron native web tools tests \
+   git diff -U0 "$base" HEAD -- src electron native web tools tests \
      | grep -E '^\+.*(\?\? *[01]\b|\|\| *[01]\b|\.catch\(\(\) *=>|catch *(\([^)]*\))? *\{ *\}|as unknown as|\.unwrap\(\)|unsafe *\{)'
    ```
 
-5. **Fix** high and medium findings in the same change unless the owner says otherwise. Do not edit code outside the diff; list what you saw there separately.
+5. **Fix** high and medium findings in the same change unless the owner says otherwise, with the tests each fix needs, even in files outside the diff. Leave unrelated code alone and list what you saw there separately.
 
-6. **Report** in the pull request or a review file, as CONTRIBUTING.md asks: the commit audited, the files audited, then the findings ranked by severity.
+6. **Report** in the pull request or a review file, as CONTRIBUTING.md asks: the commit audited (commit the fixes and audit again, so it is the commit that will merge), the files audited, then the findings ranked by severity.
 
    | Severity | Where | Pattern | Problem | Fix |
    |---|---|---|---|---|
-   | high | `path/to/file.ts:88` | A1 | Spacing falls back to 1 mm when the file has none, so a length in pixels is shown in mm | Show the length in pixels and say why |
+   | high | `path/to/file.ts:88` | A1 | Spacing falls back to 1 mm when the file has none, so a length in pixels is shown in mm | Show the length in mm as unavailable, with the reason, and the length in pixels separately |
 
    When nothing is found, write "No findings" with the commit and the files.
 
