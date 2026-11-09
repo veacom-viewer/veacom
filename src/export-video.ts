@@ -66,7 +66,7 @@ export async function waitForSlice(viewport: HTMLElement, slice: number, signal?
       return;
     }
     const error = viewport.querySelector('[role="alert"]');
-    if (error) throw error.textContent?.trim() ? new Error(error.textContent.trim()) : videoError('video.renderFailed', 'The selected image could not be rendered.');
+    if (error) throw error.textContent.trim() ? new Error(error.textContent.trim()) : videoError('video.renderFailed', 'The selected image could not be rendered.');
   } while (performance.now() < deadline);
   throw videoError('video.sliceMissing', `The viewer did not present slice ${slice + 1}. No video was saved.`, { number: slice + 1 });
 }
@@ -115,7 +115,7 @@ async function captureViewportCanvas(viewport: HTMLElement, options: Pick<Viewpo
     }
   }
   const alert = viewport.querySelector('[role="alert"]');
-  if (alert) throw alert.textContent?.trim() ? new Error(alert.textContent.trim()) : videoError('video.imageFailed', 'The image could not be rendered.');
+  if (alert) throw alert.textContent.trim() ? new Error(alert.textContent.trim()) : videoError('video.imageFailed', 'The image could not be rendered.');
   const sourceBounds = source.getBoundingClientRect();
   const requested = options.outputSize;
   if (requested && (!Number.isInteger(requested.width) || !Number.isInteger(requested.height)

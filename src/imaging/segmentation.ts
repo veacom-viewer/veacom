@@ -232,7 +232,7 @@ export function framesOnPlane(frames: readonly MaskFrame[], plane: Pick<PlaneFra
 
 /** What a segmentation shows in a viewed plane: its own frames where the plane is parallel to them, otherwise where the plane cuts them. */
 export function overlayShapes(overlay: SegmentationOverlay, plane: PlaneFrame): MaskFrame[] {
-  const normal = overlay.labels?.normal ?? overlay.frames[0]?.normal;
+  const normal = overlay.labels?.normal ?? overlay.frames.at(0)?.normal;
   if (!normal) return [];
   if (Math.abs(dot(normal, plane.normal)) > 0.9999) return framesOnPlane(overlay.frames, plane);
   return overlay.labels ? planeOutlines(overlay.labels, plane) : [];

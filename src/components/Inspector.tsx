@@ -50,13 +50,12 @@ function TagPanel({ series, frame, query, onQuery, onError }: TagSource & {
     let current = true;
     const sameSeries = lastRequest.current?.id === id && lastRequest.current.generation === generation && lastRequest.current.revision === revision;
     lastRequest.current = { id, generation, revision };
-    const timer = setTimeout(async () => {
-      try {
-        const tags = await getTags(id, generation, frame, revision);
+    const timer = setTimeout(() => {
+      getTags(id, generation, frame, revision).then(tags => {
         if (current) setResult({ id, generation, revision, frame, tags: frameTags(tags) });
-      } catch (error) {
+      }).catch((error: unknown) => {
         if (current) { setResult({ id, generation, revision, frame, tags: emptyTags }); reportError(error); }
-      }
+      });
     }, sameSeries ? 150 : 0);
     return () => { current = false; clearTimeout(timer); };
   }, [id, generation, revision, frame]);

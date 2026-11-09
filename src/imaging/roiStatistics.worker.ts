@@ -39,7 +39,7 @@ function validateDescriptor(descriptor: RoiFrameDescriptor): void {
   if (!Object.hasOwn(constructors, descriptor.pixelType) || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1
     || typeof descriptor.key !== 'string' || !descriptor.key) throw new Error('Invalid ROI source frame version or pixel type.');
   const dimensions = descriptor.series.dimensions;
-  if (dimensions.length !== 3 || dimensions.some(n => !Number.isSafeInteger(n) || n < 1) || (descriptor.series.components ?? 1) !== 1) {
+  if (dimensions.some(n => !Number.isSafeInteger(n) || n < 1) || (descriptor.series.components ?? 1) !== 1) {
     throw new Error('ROI measurement requires valid scalar source frames.');
   }
   if (!Number.isSafeInteger(descriptor.sourceFrameIndex) || descriptor.sourceFrameIndex < 0 || descriptor.sourceFrameIndex >= dimensions[2]) {
@@ -110,23 +110,21 @@ export function createRoiWorkerHandler(post: (reply: RoiWorkerResult) => void, c
         post({ type: 'committed', id: data.id });
         return;
       }
-      if (data.type === 'measure') {
-        if (!job.pixels || job.staged) throw new Error('ROI source frame upload must finish before measurement.');
-        if (data.annotation.mode !== 'source') throw new Error('Background ROI measurement requires an acquired-source annotation.');
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-          if (current !== job) return;
-          try {
-            const volume: Volume = { series: job.descriptor.series, data: job.pixels!, sourceFrameIndex: job.descriptor.sourceFrameIndex };
-            const statistics = roiStatistics(data.annotation, volume);
-            clearCurrent();
-            post({ type: 'result', id: data.id, statistics });
-          } catch (error) {
-            clearCurrent();
-            post({ type: 'error', id: data.id, message: error instanceof Error ? error.message : String(error) });
-          }
-        }, 0);
-      }
+      if (!job.pixels || job.staged) throw new Error('ROI source frame upload must finish before measurement.');
+      if (data.annotation.mode !== 'source') throw new Error('Background ROI measurement requires an acquired-source annotation.');
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (current !== job) return;
+        try {
+          const volume: Volume = { series: job.descriptor.series, data: job.pixels!, sourceFrameIndex: job.descriptor.sourceFrameIndex };
+          const statistics = roiStatistics(data.annotation, volume);
+          clearCurrent();
+          post({ type: 'result', id: data.id, statistics });
+        } catch (error) {
+          clearCurrent();
+          post({ type: 'error', id: data.id, message: error instanceof Error ? error.message : String(error) });
+        }
+      }, 0);
     } catch (error) {
       clearCurrent();
       post({ type: 'error', id: data.id, message: error instanceof Error ? error.message : String(error) });

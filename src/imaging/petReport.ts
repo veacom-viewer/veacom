@@ -86,7 +86,7 @@ export interface PetReport {
 
 const change = (now: number | undefined, before: number | undefined) => percentChange(now, before) ?? undefined;
 /** `changes` without the ones that cannot be told. */
-const told = (changes: Changes): Changes => Object.fromEntries(Object.entries(changes).filter(([, value]) => value !== undefined));
+const told = (changes: Changes): Changes => Object.fromEntries(Object.entries<number | undefined>(changes).filter(([, value]) => value !== undefined));
 const coverageOf = (stats: SphereStatistics | null): Coverage | undefined => stats && (stats.clipped || stats.paddingCount || stats.invalidCount)
   ? { clipped: stats.clipped, padding: stats.paddingCount, invalid: stats.invalidCount } : undefined;
 
@@ -142,7 +142,7 @@ export function petReport({ series, volume, annotations, typedGlucose, lesionPri
 /** The acquisition panel's rows the technique gives, in the panel's order. */
 const TECHNIQUE: readonly PetRow['key'][] = ['tracer', 'activity', 'uptake', 'weight', 'height', 'glucose'];
 /** The PET values setting's names for the SUVs it gives (src/i18n, inspector.suv*). */
-const SUV_NAMES: Readonly<Record<string, MessageKey>> = { SUVbw: 'inspector.suvBw', SUL: 'inspector.suvLbm', SUVbsa: 'inspector.suvBsa' };
+const SUV_NAMES: Readonly<Partial<Record<string, MessageKey>>> = { SUVbw: 'inspector.suvBw', SUL: 'inspector.suvLbm', SUVbsa: 'inspector.suvBsa' };
 /** The measurement list's words for voxels left out, one and many. */
 const LEFT_OUT = { invalid: ['roi.nonFiniteVoxel', 'roi.nonFiniteVoxels'], padding: ['roi.paddingVoxel', 'roi.paddingVoxels'] } as const;
 const mmol = (glucose: StudyGlucose) => general(Math.round(glucose.mmol * 100) / 100);
@@ -165,7 +165,8 @@ export function petReportText(report: PetReport, locale: Locale): string {
 
   const technique = petRows(report.pet, say).filter(row => TECHNIQUE.includes(row.key) && row.value !== null)
     .map(row => `${say(`pet.${row.key}`)}: ${row.key === 'glucose' && report.glucoseTyped ? say('report.glucoseTyped', { value: row.value! }) : row.value}`);
-  if (report.suv) technique.push(`${say('inspector.petValues')}: ${SUV_NAMES[unit] ? say(SUV_NAMES[unit]) : unit}`);
+  const suvName = SUV_NAMES[unit];
+  if (report.suv) technique.push(`${say('inspector.petValues')}: ${suvName ? say(suvName) : unit}`);
 
   const references = report.references.map(({ role, max, mean, coverage }) => {
     const name = say(role === 'liver' ? 'sphere.roleLiver' : 'sphere.roleBloodPool');

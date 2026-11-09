@@ -721,10 +721,10 @@ export function Viewport(props: ViewportProps) {
     drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     // A still left click on a MIP goes there whatever the tool: the linked panes go to the hottest voxel along that ray.
-    if (!active.moved && !active.edge && event.button === 0 && active.mode !== 'crosshair' && projectedNow()) { latest.current.onCrosshairChange?.(pickAt(...active.start)); return; }
+    if (!active.moved && !active.edge && event.button === 0 && active.mode !== 'crosshair' && projectedNow()) { latest.current.onCrosshairChange(pickAt(...active.start)); return; }
     // With 3D open, a still left click marks the point there too (the toolbar waits while 3D is open).
     if (!active.moved && !active.edge && event.button === 0 && latest.current.clickPicksPoint && !annotationTools.has(active.mode) && active.mode !== 'crosshair') {
-      latest.current.onCrosshairChange?.(active.startWorld); return;
+      latest.current.onCrosshairChange(active.startWorld); return;
     }
     if (annotationTools.has(active.mode) && active.moved && draftLive.current) commit(active.mode, draftLive.current.points);
     else if (!active.moved && twoPointTools.has(active.mode)) {

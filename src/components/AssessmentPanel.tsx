@@ -37,7 +37,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
   const mrVolumes = volumes.filter(v => v.series.modality.toUpperCase() === 'MR' && v.series.components !== 3);
   const studies = [...new Map(mrVolumes.map(v => [studyKey(v.series), v.series])).values()];
   const [study, setStudy] = useState('');
-  const initialStudy = mrVolumes.find(v => v.series.id === activeSeriesId)?.series ?? studies[0];
+  const initialStudy = mrVolumes.find(v => v.series.id === activeSeriesId)?.series ?? studies.at(0);
   const activeStudy = studies.some(s => studyKey(s) === study) ? study : initialStudy && studyKey(initialStudy);
   // Keep the study selected when the inspector covers this panel.
   if (hidden && !study && activeStudy) setStudy(activeStudy);
@@ -118,7 +118,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       workerReplies.current.clear();
     };
   }, []);
-  const first = activeVolumes[0]?.series;
+  const first = activeVolumes.at(0)?.series;
   const shownAge = age ?? (first?.patientAge === undefined ? '' : String(first.patientAge));
   const shownSex = sex ?? (first?.patientSex === 'M' ? 'E' : first?.patientSex === 'F' ? 'K' : '');
   const patient: Patient = { age: shownAge.trim() && Number.isFinite(Number(shownAge)) && Number(shownAge) >= 0 ? Number(shownAge) : null,
@@ -130,8 +130,8 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       sourceIndex: annotationSourceIndex(annotation, v.series) })));
   const inferred = inferStudySequences(activeVolumes.map(volume => volume.series), t);
   const sequences = Object.fromEntries(activeVolumes.map(v => [v.series.id, sequenceOverrides[v.series.id] ?? inferred[v.series.id]]));
-  const assignedRois = roiOptions.filter(roi => assignments[roi.key]);
-  const marks = roiOptions.flatMap(roi => assignments[roi.key]
+  const assignedRois = roiOptions.filter(roi => Object.hasOwn(assignments, roi.key));
+  const marks = roiOptions.flatMap(roi => Object.hasOwn(assignments, roi.key)
     ? [{ annotation: roi.annotation, seriesId: roi.series.id, ...assignments[roi.key] }] : []);
   const measurementQuery = { activeVolumes, marks, sequences, locale };
   const emptyMeasurement = measureStudy(activeVolumes, [], sequences, t);
@@ -147,6 +147,8 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
     latestMeasurement.current = { id, query: measurementQuery };
     failedMeasurement.current = null;
     let cancelled = false;
+    // Asked after every wait: the effect's cleanup or a worker error can end this run meanwhile.
+    const stopped = () => cancelled || failedMeasurement.current === id;
     const waitFor = (type: 'ready' | 'committed' | 'received', seriesId = '') => new Promise<ClinicalWorkerResult>((resolve, reject) => {
       workerReplies.current.set(`${id}:${type}:${seriesId}`, { resolve, reject });
     });
@@ -169,13 +171,13 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       const ready = waitFor('ready');
       post({ type: 'begin', id, volumes: descriptors, locale });
       const reply = await ready;
-      if (cancelled || failedMeasurement.current === id || reply.type !== 'ready') return;
+      if (stopped() || reply.type !== 'ready') return;
       for (const seriesId of reply.missing) {
-        if (cancelled || failedMeasurement.current === id) return;
+        if (stopped()) return;
         const volume = activeVolumes.find(v => v.series.id === seriesId)!;
         post({ type: 'start', id, seriesId });
         for (let offset = 0; offset < volume.data.byteLength; offset += CLINICAL_COPY_CHUNK_BYTES) {
-          if (cancelled || failedMeasurement.current === id) return;
+          if (stopped()) return;
           const count = Math.min(CLINICAL_COPY_CHUNK_BYTES, volume.data.byteLength - offset);
           // Copy bounded pieces, transfer only those copies, then yield so input and painting can run.
           const copy = new Uint8Array(count);
@@ -185,12 +187,12 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
           await received;
           await new Promise<void>(resolve => setTimeout(resolve, 0));
         }
-        if (cancelled || failedMeasurement.current === id) return;
+        if (stopped()) return;
         const committed = waitFor('committed', seriesId);
         post({ type: 'commit', id, seriesId });
         await committed;
       }
-      if (!cancelled && failedMeasurement.current !== id) post({ type: 'measure', id, marks, sequences, locale });
+      if (!stopped()) post({ type: 'measure', id, marks, sequences, locale });
     }
     void uploadAndMeasure().catch(error => {
       if (!cancelled) setCompletedMeasurement({ query: measurementQuery, value: { ...emptyMeasurement, warnings: [t('assessment.measurementUnavailable', { error: errorMessage(error) })] } });
@@ -208,7 +210,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
   const ranking = rank(found, available, patient);
   const results = measurement.blockers.length ? [] : ranking.ranked;
   const hasFindings = FEATURES.some(f => found[f]);
-  const latestLesion = [...marks].filter(mark => mark.kind === 'lesion').sort((a, b) => b.order - a.order)[0];
+  const latestLesion = [...marks].filter(mark => mark.kind === 'lesion').sort((a, b) => b.order - a.order).at(0);
   const lesionSlices = new Set(marks.filter(mark => mark.kind === 'lesion' && mark.seriesId === latestLesion?.seriesId).map(mark => `${mark.annotation.plane}:${mark.annotation.slice}:${mark.annotation.oblique?.join(',') ?? '0,0'}`)).size;
   const summary = assessmentSummary({ region, patient, findings: found, measurement, ranked: results, note, manualFeatures: FEATURES.filter(f => Boolean(overrides[f])), lesionSlices });
   const assign = (key: string, value: string) => setAssignments(current => {
@@ -316,7 +318,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       {/* Only the regions used as lesion or reference: other measurements would crowd the list. */}
       {assignedRois.length ? <div className="assessment-rois">{assignedRois.map(roi => <div className="assessment-roi" key={roi.key}>
         <div><strong>{roi.title}</strong><small>{roi.series.description || t('assessment.seriesNumber', { number: roi.series.seriesNumber })} · {roi.annotation.mode === 'source' ? roi.sourceIndex === null ? t('assessment.sourceUnavailable') : `${t('assessment.imageNumber', { number: roi.series.frameMetadata?.[roi.sourceIndex]?.instanceNumber ?? roi.sourceIndex + 1 })}${roi.series.frameMetadata?.[roi.sourceIndex]?.sourceFrameNumber ? t('assessment.frameNumber', { number: roi.series.frameMetadata[roi.sourceIndex].sourceFrameNumber! }) : ''}` : `${t(`planeLower.${roi.annotation.plane}` as const)} ${roi.annotation.slice + 1}`}</small></div>
-        <select data-action="assessment-roi-use" aria-label={t('assessment.useAs', { title: roi.title })} value={assignments[roi.key]?.kind ?? ''} onChange={e => assign(roi.key, e.target.value)}>
+        <select data-action="assessment-roi-use" aria-label={t('assessment.useAs', { title: roi.title })} value={Object.hasOwn(assignments, roi.key) ? assignments[roi.key].kind : ''} onChange={e => assign(roi.key, e.target.value)}>
           <option value="">{t('assessment.unused')}</option><option value="lesion">{t('assessment.lesion')}</option><option value="reference">{t('assessment.reference')}</option></select>
       </div>)}</div> : <p className="assessment-empty">{t('assessment.noRois')}</p>}
       <details className="assessment-details"><summary data-testid="assessment-sequence-settings" data-loaded-count={activeVolumes.length}>{t('assessment.sequenceSettings', { count: activeVolumes.length })}</summary>
@@ -370,17 +372,17 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       <h3>{t('assessment.secondOpinion')}</h3><p className="assessment-help">{t('assessment.secondOpinionHelp')}</p>
       <label className="assessment-field">{t('assessment.note')}<textarea data-action="assessment-note" rows={2} data-testid="assessment-note" value={note} onChange={e => setNote(e.target.value)} placeholder={t('assessment.notePlaceholder')} /></label>
       <button type="button" className="assessment-button" data-testid="assessment-preview-summary" onClick={() => { setShowSummary(!showSummary); setCopyStatus(''); }}><Info size={15} />{showSummary ? t('assessment.hideSummary') : t('assessment.previewSummary')}</button>
-      {showSummary && <div className="assessment-summary"><textarea aria-label={t('assessment.summaryLabel')} data-testid="assessment-summary" readOnly rows={14} value={summary} /><button type="button" className="assessment-button" data-action="assessment-copy" onClick={() => copySummary()}><ClipboardCopy size={15} />{t('assessment.copy')}</button>{window.veacom?.openExternal && <button type="button" className="assessment-button" data-action="assessment-copy-open" onClick={() => copySummary(true)}>{t('assessment.copyOpen')}</button>}<small role="status">{copyStatus}</small>
+      {showSummary && <div className="assessment-summary"><textarea aria-label={t('assessment.summaryLabel')} data-testid="assessment-summary" readOnly rows={14} value={summary} /><button type="button" className="assessment-button" data-action="assessment-copy" onClick={() => void copySummary()}><ClipboardCopy size={15} />{t('assessment.copy')}</button>{window.veacom?.openExternal && <button type="button" className="assessment-button" data-action="assessment-copy-open" onClick={() => void copySummary(true)}>{t('assessment.copyOpen')}</button>}<small role="status">{copyStatus}</small>
         {aiEnabled && window.veacom?.askSecondOpinion && <>
           <details className="assessment-details"><summary>{t('assessment.api', { state: aiConfigured ? t('assessment.keyConfigured') : t('assessment.setupRequired') })}</summary>
             <p className="assessment-help">{t('assessment.keyHelp')}</p>
             <label className="assessment-field">{t('assessment.model')}<input data-action="assessment-ai-model" value={aiModel} onChange={e => setAiModel(e.target.value)} autoComplete="off" /></label>
             <label className="assessment-field">{t('assessment.apiKey')}<input type="password" data-action="assessment-ai-key" value={apiKey} onChange={e => setApiKey(e.target.value)} placeholder={aiConfigured ? t('assessment.keepKey') : t('assessment.enterKey')} autoComplete="off" /></label>
-            <div className="assessment-ai-actions"><button type="button" className="assessment-button" data-action="assessment-ai-save" disabled={configBusy || aiBusy || !aiModel.trim() || (!aiConfigured && !apiKey.trim())} onClick={() => configureAi()}>{configBusy ? t('assessment.saving') : t('assessment.saveSettings')}</button>
-              {aiConfigured && <button type="button" className="assessment-button" data-action="assessment-ai-remove" disabled={configBusy || aiBusy} onClick={() => configureAi(true)}>{t('assessment.removeKey')}</button>}</div>
+            <div className="assessment-ai-actions"><button type="button" className="assessment-button" data-action="assessment-ai-save" disabled={configBusy || aiBusy || !aiModel.trim() || (!aiConfigured && !apiKey.trim())} onClick={() => void configureAi()}>{configBusy ? t('assessment.saving') : t('assessment.saveSettings')}</button>
+              {aiConfigured && <button type="button" className="assessment-button" data-action="assessment-ai-remove" disabled={configBusy || aiBusy} onClick={() => void configureAi(true)}>{t('assessment.removeKey')}</button>}</div>
           </details>
           <p className="assessment-help">{t('assessment.sendHelp')}</p>
-          <button type="button" className="assessment-button" data-action="assessment-ai-send" disabled={!aiConfigured || aiBusy || configBusy || measurementPending || measurement.blockers.length > 0 || !hasFindings} onClick={askAi}>{aiBusy ? t('assessment.waiting') : t('assessment.send')}</button>
+          <button type="button" className="assessment-button" data-action="assessment-ai-send" disabled={!aiConfigured || aiBusy || configBusy || measurementPending || measurement.blockers.length > 0 || !hasFindings} onClick={() => void askAi()}>{aiBusy ? t('assessment.waiting') : t('assessment.send')}</button>
         </>}
         {aiError && <p className="assessment-warning" role="alert">{aiError}</p>}
         {aiReply && <div className="assessment-ai-reply"><h3>{t('assessment.aiReply')}</h3>{opinion.summary !== summary && <p className="assessment-warning">{t('assessment.changed')}</p>}<p className="assessment-help">{t('assessment.reviewReply')}</p><pre>{aiReply}</pre><details className="assessment-details"><summary>{t('assessment.sentText')}</summary><pre>{opinion.summary}</pre></details></div>}

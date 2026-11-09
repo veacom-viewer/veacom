@@ -274,9 +274,9 @@ function acquisitionSeconds(series: Series): number | null {
   const value = datetime && /^\d{8}\d{4}/.test(datetime) ? datetime.slice(8).replace(/[+-]\d{4}$/, '') : series.acquisitionTime?.trim();
   const match = value?.match(/^(\d{2})(\d{2})(?:(\d{2})(?:\.(\d{1,6}))?)?$/);
   if (!match) return null;
-  const hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match[3] ?? 0);
+  const hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match.at(3) ?? 0);
   if (hours > 23 || minutes > 59 || seconds > 60) return null;
-  return hours * 3600 + minutes * 60 + seconds + Number(`0.${match[4] ?? 0}`);
+  return hours * 3600 + minutes * 60 + seconds + Number(`0.${match.at(4) ?? 0}`);
 }
 function repeatSignature(series: Series): string | null {
   if (!(series.repetitionTime! > 0) || !(series.echoTime! > 0) || series.orientationKnown === false || series.direction.length !== 9) return null;

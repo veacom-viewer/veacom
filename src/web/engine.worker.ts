@@ -75,7 +75,7 @@ let lastError = '';
 const consoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => { lastError = args.map(String).join(' ').slice(0, 4000); consoleError(...args); };
 
-scope.onmessage = async ({ data }) => {
+async function answer(data: EngineRequest): Promise<void> {
   let loaded: Awaited<typeof ready>;
   try {
     loaded = await ready;
@@ -83,7 +83,7 @@ scope.onmessage = async ({ data }) => {
     // The engine did not load (its module could not be fetched or compiled): nothing here can answer any request. The
     // page treats this as a crash, so it replaces this Worker and stops trying after a few attempts. wasm-bindgen
     // reports a failed fetch as a plain Error, which below would read as one of the engine's own answers.
-    scope.postMessage({ id: data.id, ok: false, error: String((error as Error)?.message ?? error), fatal: true, detail: 'The engine could not load.' });
+    scope.postMessage({ id: data.id, ok: false, error: error instanceof Error ? error.message : String(error), fatal: true, detail: 'The engine could not load.' });
     return;
   }
   try {
@@ -127,7 +127,9 @@ scope.onmessage = async ({ data }) => {
   } catch (error) {
     // The engine's own messages arrive as plain Errors holding its JSON body. Anything else is the engine crashing
     // (a WebAssembly trap, a stack overflow): its state cannot be trusted any more, and the page replaces this Worker.
-    const fatal = (error as Error)?.constructor !== Error;
-    scope.postMessage({ id: data.id, ok: false, error: String((error as Error)?.message ?? error), fatal, detail: fatal ? lastError : undefined });
+    const fatal = !(error instanceof Error && error.constructor === Error);
+    scope.postMessage({ id: data.id, ok: false, error: error instanceof Error ? error.message : String(error), fatal, detail: fatal ? lastError : undefined });
   }
-};
+}
+
+scope.onmessage = ({ data }) => { void answer(data); };

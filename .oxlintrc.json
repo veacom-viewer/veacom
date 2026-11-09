@@ -37,11 +37,7 @@
     // characters: all on purpose here.
     "typescript/no-base-to-string": "off",
     "typescript/restrict-template-expressions": "off",
-    "typescript/no-misused-spread": "off",
-    // Each finding needs reading on its own: an async click handler, timer or worker message whose rejection nobody
-    // sees (11 in src/ on 9 Nov 2026). no-unnecessary-condition (114 in src/), not turned on yet, likewise: where the
-    // engine's reply is typed as always present but can lack a field, the type is what to fix.
-    "typescript/no-misused-promises": "off"
+    "typescript/no-misused-spread": "off"
   },
   "overrides": [
     {
@@ -61,13 +57,21 @@
         "react/incompatible-library": "error",
         "react/unsupported-syntax": "error",
         "react/error-boundaries": "error",
-        "react/globals": "error"
+        "react/globals": "error",
+        // An async function handed to something that ignores its promise (a click handler, a timer, a worker's
+        // onmessage), where a rejection would go unseen.
+        "typescript/no-misused-promises": "error",
+        // A check the types say cannot change the outcome: either the type is wrong where the value comes in (fix the
+        // type, keep the check) or the check is dead (delete it). tsconfig.json does not set noUncheckedIndexedAccess, so
+        // a lookup that can miss is typed where it is made: `.at(i)` for an array, Partial<Record> for a table.
+        "typescript/no-unnecessary-condition": "error"
       }
     },
     // Expected values written as the formula they come from, such as 0 / scale.
     { "files": ["tests/**"], "rules": { "oxc/erasing-op": "off" } },
     // Plain JavaScript that no tsconfig covers, and the browser build's bridge, whose types come from the WebAssembly
     // engine's generated modules (tsconfig.web.json) that the lint job does not build: the type-aware rules stay off.
+    // The bridge keeps the two set for src/** above: nothing they check there reads the engine's types.
     {
       "files": ["electron/**", "tools/**", "web/**", "scripts/**", "telemetry/**", "packaging/**", ".agents/**", "tests/**/*.mjs", "electron-builder.release.cjs", "src/web/**"],
       "rules": {

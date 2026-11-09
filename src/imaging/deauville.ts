@@ -60,11 +60,11 @@ export function suggestScore(bands: readonly Band[], value: number, references: 
   const below = lower ? bounds.findIndex(bound => bound && bound.value === lower.value) : -1;
   let above = index + 1;
   while (upper && bounds[above]?.value === upper.value) above++;
-  const nearest = [lower && { bound: lower, otherScore: bands[below].score }, upper && { bound: upper, otherScore: bands[above]?.score }]
+  const nearest = [lower && { bound: lower, otherScore: bands[below].score }, upper && { bound: upper, otherScore: bands.at(above)?.score }]
     .filter((item): item is { bound: NonNullable<typeof lower>; otherScore: number } => !!item && item.otherScore !== undefined)
     .map(item => ({ ...item, distance: Math.abs(value / item.bound.value - 1) }))
     .filter(item => item.distance <= NEAR_BOUND)
-    .sort((a, b) => a.distance - b.distance)[0];
+    .sort((a, b) => a.distance - b.distance).at(0);
   const ratios = Object.fromEntries(needed.map(role => [role, value / references[role]!])) as Record<ReferenceRole, number>;
   return { score: bands[index].score, ratios, lower, upper, near: nearest ? { ...nearest.bound, otherScore: nearest.otherScore } : null };
 }

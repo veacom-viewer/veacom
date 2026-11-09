@@ -106,7 +106,7 @@ function chooseFiles(kind: 'files' | 'folder' | 'archive'): Promise<SelectedFile
   const picker = (window as { showDirectoryPicker?: FolderPicker }).showDirectoryPicker;
   if (kind === 'folder' && picker) {
     return picker.call(window, { mode: 'read', id: 'veacom-open' }).then(async folder => [await readFolder(folder)], (error: Error) => {
-      if (error?.name === 'AbortError') return [];
+      if (error.name === 'AbortError') return [];
       throw error;
     });
   }

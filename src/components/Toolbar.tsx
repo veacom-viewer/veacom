@@ -43,7 +43,7 @@ function restoreTrigger(element: HTMLElement) {
 function focusMenuItem(menu: HTMLDivElement | null) {
   if (!menu) return;
   const items = [...menu.querySelectorAll<HTMLButtonElement>(itemSelector)].filter(item => !item.disabled);
-  (items.find(item => item.getAttribute('role') === 'menuitemradio' && item.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
+  (items.find(item => item.getAttribute('role') === 'menuitemradio' && item.getAttribute('aria-checked') === 'true') ?? items.at(0))?.focus();
   return restoreTrigger(menu);
 }
 function focusMenu(menu: HTMLDivElement | null) {
@@ -202,8 +202,11 @@ export function Toolbar({ label, start, end, moreLabel }: {
     const all = controls(), index = all.indexOf(target);
     if (index < 0) return;
     event.preventDefault();
-    const next = all[nextIndex(index, event.key, all.map(element => !(element as HTMLButtonElement).disabled), 'horizontal')];
-    if (next) { current.current = next; syncTabStops(); next.focus(); }
+    // -1 when every control is disabled.
+    const to = nextIndex(index, event.key, all.map(element => !(element as HTMLButtonElement).disabled), 'horizontal');
+    if (to < 0) return;
+    const next = all[to];
+    current.current = next; syncTabStops(); next.focus();
   };
 
   // Items that do not fit go to a second row under the first (as in VEAcom Next), opened with the arrow at the end;

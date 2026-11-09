@@ -944,7 +944,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
         <button data-action="volume-select" type="button" className="secondary-button compact" aria-expanded={showSelection} onClick={() => setShowSelection(value => !value)}>{t('view3d.selectVolume')}</button>
         <button data-action="volume-visible-region" type="button" className="secondary-button compact" disabled={exporting || !initialView || !viewportSize} onClick={() => void applyVoi(null)}>{t('view3d.visibleRegionButton')}</button>
         {!!selectionLabel && <button data-action="volume-clear-selection" type="button" className="secondary-button compact" disabled={exporting} onClick={clearSelection}>{t('view3d.clearSelection')}</button>}
-        <button type="button" className="secondary-button compact" data-testid="volume-export-stl" disabled={exporting || !!error} onClick={exportSurface}>{exporting ? t('view3d.extractingButton') : t('view3d.exportStl')}</button>
+        <button type="button" className="secondary-button compact" data-testid="volume-export-stl" disabled={exporting || !!error} onClick={() => void exportSurface()}>{exporting ? t('view3d.extractingButton') : t('view3d.exportStl')}</button>
       </div>
       {showCrop && <div className="v3d-toolbar" style={{ fontSize: 12 }}>
         <span>{t('view3d.voxelBounds')}</span>

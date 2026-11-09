@@ -31,9 +31,9 @@ let latestId = 0;
 
 function validateDescriptor(descriptor: ClinicalVolumeDescriptor): number {
   const Constructor = constructors[descriptor.pixelType];
-  if (!Constructor || !Number.isSafeInteger(descriptor.version) || descriptor.version < 1) throw new Error('Invalid pixel representation or image version.');
+  if (!Number.isSafeInteger(descriptor.version) || descriptor.version < 1) throw new Error('Invalid image version.');
   const { dimensions, components = 1 } = descriptor.series;
-  if (dimensions.length !== 3 || dimensions.some(size => !Number.isSafeInteger(size) || size < 1) || ![1, 3].includes(components)) throw new Error('Invalid image dimensions.');
+  if (dimensions.some(size => !Number.isSafeInteger(size) || size < 1) || ![1, 3].includes(components)) throw new Error('Invalid image dimensions.');
   const frame = descriptor.sourceFrameIndex;
   if (frame !== undefined && (!Number.isSafeInteger(frame) || frame < 0 || frame >= dimensions[2])) throw new Error('Invalid source frame index.');
   const expected = dimensions[0] * dimensions[1] * (frame === undefined ? dimensions[2] : 1) * components * Constructor.BYTES_PER_ELEMENT;
@@ -94,17 +94,15 @@ scope.onmessage = ({ data }) => {
       scope.postMessage({ type: 'committed', id: data.id, seriesId: data.seriesId });
       return;
     }
-    if (data.type === 'measure') {
-      if (staged || [...current.descriptors].some(([id, descriptor]) => volumes.get(id)?.version !== descriptor.version)) throw new Error('Image upload must complete before measurement.');
-      const wanted = [...current.descriptors.keys()].map(id => volumes.get(id)!.volume);
-      clearTimeout(timer);
-      timer = setTimeout(() => {
-        if (data.id !== current?.id) return;
-        const start = performance.now();
-        try { scope.postMessage({ type: 'result', id: data.id, measurement: measureStudy(wanted, data.marks, data.sequences), milliseconds: performance.now() - start }); }
-        catch (error) { scope.postMessage({ type: 'error', id: data.id, message: error instanceof Error ? error.message : String(error) }); }
-      }, 0);
-    }
+    if (staged || [...current.descriptors].some(([id, descriptor]) => volumes.get(id)?.version !== descriptor.version)) throw new Error('Image upload must complete before measurement.');
+    const wanted = [...current.descriptors.keys()].map(id => volumes.get(id)!.volume);
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      if (data.id !== current?.id) return;
+      const start = performance.now();
+      try { scope.postMessage({ type: 'result', id: data.id, measurement: measureStudy(wanted, data.marks, data.sequences), milliseconds: performance.now() - start }); }
+      catch (error) { scope.postMessage({ type: 'error', id: data.id, message: error instanceof Error ? error.message : String(error) }); }
+    }, 0);
   } catch (error) {
     clearTimeout(timer); staged = null; current = null;
     if (data.type === 'begin') volumes.clear();
