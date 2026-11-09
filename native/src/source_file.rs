@@ -48,15 +48,18 @@ pub(crate) fn open_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// What a source's metadata said at import: its size and modification time, and on Unix also its identity and change
-/// time, which every ordinary write moves. The browser's files have no time; the page's File objects cannot change
-/// under it (the browser refuses to read one whose file on disk changed).
+/// What a source's metadata said at import: its size and modification time, and on Unix and Windows also its identity
+/// and change time, which every write moves, even one that puts the modification time back (a copy over the file keeps
+/// the copied file's). The browser's files have no time; the page's File objects cannot change under it (the browser
+/// refuses to read one whose file on disk changed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Fingerprint {
     len: u64,
     modified: Option<SystemTime>,
     #[cfg(unix)]
     identity: (u64, u64, i64, i64),
+    #[cfg(windows)]
+    identity: (u32, u64, i64),
 }
 
 impl Fingerprint {
@@ -70,6 +73,8 @@ impl Fingerprint {
                 use std::os::unix::fs::MetadataExt;
                 (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
             },
+            #[cfg(windows)]
+            identity: windows_identity(file)?,
         })
     }
 
@@ -77,6 +82,25 @@ impl Fingerprint {
         if *self == Self::of(file)? { return Ok(()); }
         Err(io::Error::new(io::ErrorKind::InvalidData, changed()))
     }
+}
+
+/// The volume, the file's index on it and its change time, which NTFS moves on every write and attribute change.
+#[cfg(windows)]
+fn windows_identity(file: &File) -> io::Result<(u32, u64, i64)> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_BASIC_INFO, FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+    };
+    let handle = file.as_raw_handle();
+    // The handle stays open for both calls, and each fills the plain structure it is given.
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 { return Err(io::Error::last_os_error()); }
+    let mut basic: FILE_BASIC_INFO = unsafe { std::mem::zeroed() };
+    let size = size_of::<FILE_BASIC_INFO>() as u32;
+    if unsafe { GetFileInformationByHandleEx(handle, FileBasicInfo, (&raw mut basic).cast(), size) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok((info.dwVolumeSerialNumber, (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow), basic.ChangeTime))
 }
 
 /// Stable local files on Linux and APFS are checked on the open descriptor as they are read (see `stamp`). Other
@@ -170,8 +194,8 @@ impl SourceFile {
         if self.len == 0 { return true; }
         #[cfg(target_os = "linux")]
         if self.stamp.is_some() && other.stamp.is_some() { return self.stamp == other.stamp; }
-        // The same file, unwritten since: on Unix every write moves the change time.
-        #[cfg(unix)]
+        // The same file, unwritten since: on Unix and Windows every write moves the change time.
+        #[cfg(any(unix, windows))]
         if self.fingerprint == other.fingerprint { return true; }
         // Two independently imported versions of the same path can have identical timestamps and different bytes.
         let (Ok(mut left), Ok(mut right)) = (self.open(), other.open()) else { return false };
