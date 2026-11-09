@@ -181,17 +181,22 @@ it('closes a desktop app that quits, and kills one that does not with what it st
   const { exitCode } = process, { error } = console, said: string[] = [];
   console.error = (...args: unknown[]) => { said.push(args.join(' ')); };
   const started = Date.now();
-  let quit: boolean, marked: typeof process.exitCode;
+  let quit: boolean, marked: typeof process.exitCode, elapsed: number, unkillable: boolean;
   try {
     quit = await closeDesktop({ close: () => new Promise(() => {}), process: () => app }, 300);
     marked = process.exitCode;
+    elapsed = Date.now() - started;
+    // One that cannot be killed either (no process to signal, no exit ever) is reported as possibly still running.
+    unkillable = await closeDesktop({ close: () => new Promise(() => {}),
+      process: () => ({ pid: undefined, exitCode: null, signalCode: null, once() {}, kill() {} }) }, 300);
   } finally { console.error = error; process.exitCode = exitCode; }
-  const elapsed = Date.now() - started;
   for (const until = Date.now() + 3000; alive(engine) && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 50));
   const survivors = [app.pid!, engine].filter(alive);
   for (const pid of survivors) process.kill(pid, 'SIGKILL');
   assert.deepEqual(survivors, [], 'the app and its engine are gone');
   assert.equal(quit, false); assert.equal(marked, 1);
   assert.ok(elapsed < 4000, `closed after ${elapsed} ms`);
-  assert.match(said.join('\n'), /did not quit within 0.3 s/);
+  assert.match(said[0], /did not quit within 0.3 s, so it was killed/);
+  assert.equal(unkillable, false);
+  assert.match(said[1], /did not quit within 0.3 s and could not be killed/);
 });

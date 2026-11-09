@@ -22,8 +22,9 @@ const ended = child => new Promise(resolve => { if (running(child)) child.once('
 function killTree(child) {
   const gone = ended(child);
   // Playwright starts the app as the leader of a process group of its own, except on Windows, where Playwright too
-  // stops the whole tree with taskkill. taskkill can stall itself, so it is stopped after 5 s.
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000 });
+  // stops the whole tree with taskkill (killProcessTree in its processLauncher). taskkill can stall itself, so it is
+  // stopped after 5 s.
+  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000, windowsHide: true });
   else try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
   return gone;
 }
@@ -42,8 +43,9 @@ async function closeDesktop(desktop, ms = QUIT_MS) {
   const closed = Promise.all([desktop.close().catch(() => {}), ended(child)]).then(() => true);
   if (await within(closed, ms) || !running(child)) return true;
   process.exitCode = 1;
-  console.error(`The desktop app did not quit within ${ms / 1000} s, so it was killed with its helpers and engine.`);
-  await within(killTree(child), 5000);
+  const killed = await within(killTree(child).then(() => true), Math.min(ms, 5000));
+  console.error(killed ? `The desktop app did not quit within ${ms / 1000} s, so it was killed with its helpers and engine.`
+    : `The desktop app did not quit within ${ms / 1000} s and could not be killed: process ${child.pid} and what it started may still run.`);
   return false;
 }
 
