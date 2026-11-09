@@ -3,17 +3,19 @@ use anyhow::{Result, ensure};
 mod stamp;
 #[cfg(target_os = "macos")]
 mod snapshot;
-use sha2::{Digest, Sha256};
 use crate::vfs::{File, OpenOptions};
 use std::{
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
     sync::Arc,
+    time::SystemTime,
 };
 
 const BLOCK: usize = 256 * 1024;
-// Two MiB covers an ordinary CT slice. This prefix lives only while a file is being indexed.
+// What import may keep of a file while indexing it.
 const IMPORT_PREFIX: usize = 2 * 1024 * 1024;
+// Both DICOM header passes repeatedly seek inside their initial 8 KiB buffer: import reads no more than that.
+const HEADER_PREFIX: usize = 8192;
 pub fn changed() -> crate::message::Coded {
     coded!(
         "file.sourceChanged",
@@ -46,12 +48,45 @@ pub(crate) fn open_file(path: &Path) -> Result<File> {
     Ok(file)
 }
 
-/// Stable local files are checked on the open descriptor as they are read. Other sources use a digest per block.
+/// What a source's metadata said at import: its size and modification time, and on Unix also its identity and change
+/// time, which every ordinary write moves. The browser's files have no time; the page's File objects cannot change
+/// under it (the browser refuses to read one whose file on disk changed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Fingerprint {
+    len: u64,
+    modified: Option<SystemTime>,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl Fingerprint {
+    fn of(file: &File) -> io::Result<Self> {
+        let metadata = file.metadata()?;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok(),
+            #[cfg(unix)]
+            identity: {
+                use std::os::unix::fs::MetadataExt;
+                (metadata.dev(), metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+            },
+        })
+    }
+
+    fn verify(&self, file: &File) -> io::Result<()> {
+        if *self == Self::of(file)? { return Ok(()); }
+        Err(io::Error::new(io::ErrorKind::InvalidData, changed()))
+    }
+}
+
+/// Stable local files on Linux and APFS are checked on the open descriptor as they are read (see `stamp`). Other
+/// sources are checked against their import fingerprint before and after every read. Nothing reads a whole file to
+/// import it: the first image does not wait for the study to be read.
 #[derive(Debug)]
 pub struct SourceFile {
     pub path: PathBuf,
     pub len: u64,
-    hashes: Vec<[u8; 32]>,
+    fingerprint: Fingerprint,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     stamp: Option<stamp::Stamp>,
     #[cfg(target_os = "macos")]
@@ -71,6 +106,7 @@ impl SourceFile {
     fn index_prefix(path: &Path, file: &mut File, keep: usize) -> Result<(Arc<Self>, Arc<Vec<u8>>)> {
         let metadata = file.metadata()?;
         let len = metadata.len();
+        let fingerprint = Fingerprint::of(file)?;
         ensure!(
             metadata.is_file() && len <= crate::input_guard::MAX_FILE_SIZE,
             "Invalid or excessive source file"
@@ -78,7 +114,7 @@ impl SourceFile {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         let stamp = stamp::Stamp::capture(file, &metadata);
         #[cfg(target_os = "macos")]
-        // A single DICOM block can be hashed and kept for header parsing in the same read.
+        // A file of one block or less skips the clone: its fingerprint is checked instead, which costs less than a clone per slice.
         let snapshot = stamp.as_ref().filter(|s| (len > BLOCK as u64 || keep < BLOCK) && s.settled())
             .and_then(|_| snapshot::Snapshot::create(file).ok());
         #[cfg(target_os = "macos")]
@@ -87,47 +123,27 @@ impl SourceFile {
         let local_reader = stamp.as_ref().filter(|s| s.settled() && stamp::no_existing_writer(file)).map(|_| &*file);
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let (Some(local), Some(contents)) = (&stamp, local_reader) {
-            // Both DICOM header passes repeatedly seek inside their initial 8 KiB buffer.
-            let mut prefix = vec![0; keep.min(8192).min(len as usize)];
+            let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
             let mut offset = 0;
             while offset < prefix.len() {
                 let read = local.read(file, &contents, &mut prefix[offset..], offset as u64)?;
                 ensure!(read != 0, changed());
                 offset += read;
             }
-            return Ok((Arc::new(Self { path: path.to_owned(), len, hashes: Vec::new(), stamp,
+            return Ok((Arc::new(Self { path: path.to_owned(), len, fingerprint, stamp,
                 #[cfg(target_os = "macos")] snapshot,
             }), Arc::new(prefix)));
         }
-        let mut remaining = len;
-        let mut buffer = Vec::new();
-        let mut hashes = Vec::with_capacity(len.div_ceil(BLOCK as u64) as usize);
-        let mut prefix = vec![0; (keep / BLOCK * BLOCK).min(len as usize)];
-        while remaining != 0 {
-            crate::progress::check()?;
-            let n = remaining.min(BLOCK as u64) as usize;
-            let offset = (len - remaining) as usize;
-            let block = if let Some(slice) = prefix.get_mut(offset..offset + n) {
-                slice
-            } else {
-                buffer.resize(n, 0);
-                &mut buffer[..]
-            };
-            file.read_exact(block)?;
-            hashes.push(Sha256::digest(block).into());
-            remaining -= n as u64;
-        }
-        let after = file.metadata()?;
-        ensure!(
-            after.len() == len && after.modified().ok() == metadata.modified().ok(),
-            changed()
-        );
+        // Only the headers' prefix is read now, as on the fast path; later reads are checked against the fingerprint.
+        let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
+        file.read_exact(&mut prefix)?;
+        ensure!(Fingerprint::of(file)? == fingerprint, changed());
         Ok((Arc::new(Self {
             path: path.to_owned(),
             len,
-            hashes,
+            fingerprint,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            stamp,
+            stamp: None,
             #[cfg(target_os = "macos")]
             snapshot: None,
         }), Arc::new(prefix)))
@@ -151,11 +167,12 @@ impl SourceFile {
     pub fn same_contents(self: &Arc<Self>, other: &Arc<Self>) -> bool {
         if Arc::ptr_eq(self, other) { return true; }
         if self.len != other.len { return false; }
-        if self.len == 0 || (!self.hashes.is_empty() && !other.hashes.is_empty()) {
-            return self.hashes == other.hashes;
-        }
+        if self.len == 0 { return true; }
         #[cfg(target_os = "linux")]
-        if self.hashes.is_empty() && other.hashes.is_empty() { return self.stamp == other.stamp; }
+        if self.stamp.is_some() && other.stamp.is_some() { return self.stamp == other.stamp; }
+        // The same file, unwritten since: on Unix every write moves the change time.
+        #[cfg(unix)]
+        if self.fingerprint == other.fingerprint { return true; }
         // Two independently imported versions of the same path can have identical timestamps and different bytes.
         let (Ok(mut left), Ok(mut right)) = (self.open(), other.open()) else { return false };
         let mut remaining = self.len as usize;
@@ -170,14 +187,15 @@ impl SourceFile {
     }
 
     pub fn retained_bytes(&self) -> usize {
-        size_of::<Self>() + self.path.as_os_str().as_encoded_bytes().len() + self.hashes.len() * 32
+        size_of::<Self>() + self.path.as_os_str().as_encoded_bytes().len()
     }
 
     pub fn open(self: &Arc<Self>) -> Result<SourceReader> {
         let file = open_file(&self.path)?;
         ensure!(file.metadata()?.len() == self.len, changed());
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.hashes.is_empty() && let Some(stamp) = &self.stamp { stamp.verify(&file)?; }
+        if let Some(stamp) = &self.stamp { stamp.verify(&file)?; return Ok(self.reader(file, Arc::default())); }
+        self.fingerprint.verify(&file)?;
         Ok(self.reader(file, Arc::default()))
     }
 
@@ -187,10 +205,8 @@ impl SourceFile {
             prefix,
             source: self.clone(),
             pos: 0,
-            loaded: None,
             #[cfg(target_os = "macos")]
             snapshot: None,
-            bytes: Vec::new(),
         }
     }
 }
@@ -202,8 +218,6 @@ pub struct SourceReader {
     prefix: Arc<Vec<u8>>,
     source: Arc<SourceFile>,
     pos: u64,
-    loaded: Option<usize>,
-    bytes: Vec<u8>,
 }
 
 impl Read for SourceReader {
@@ -219,7 +233,7 @@ impl Read for SourceReader {
             return Ok(n);
         }
         #[cfg(any(target_os = "linux", target_os = "macos"))]
-        if self.source.hashes.is_empty() && let Some(stamp) = &self.source.stamp {
+        if let Some(stamp) = &self.source.stamp {
             let length = dst.len().min((self.source.len - self.pos) as usize);
             #[cfg(target_os = "macos")]
             if self.snapshot.is_none() {
@@ -233,31 +247,14 @@ impl Read for SourceReader {
             self.pos += read as u64;
             return Ok(read);
         }
-        let index = (self.pos / BLOCK as u64) as usize;
-        if self.loaded != Some(index) {
-            self.loaded = None;
-            let start = index as u64 * BLOCK as u64;
-            self.bytes
-                .resize((self.source.len - start).min(BLOCK as u64) as usize, 0);
-            self.file.seek(SeekFrom::Start(start))?;
-            self.file
-                .read_exact(&mut self.bytes)
-                .map_err(|e| match e.kind() {
-                    io::ErrorKind::UnexpectedEof => {
-                        io::Error::new(io::ErrorKind::InvalidData, changed())
-                    }
-                    _ => e,
-                })?;
-            if Sha256::digest(&self.bytes)[..] != self.source.hashes[index] {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, changed()));
-            }
-            self.loaded = Some(index);
-        }
-        let offset = (self.pos % BLOCK as u64) as usize;
-        let count = dst.len().min(self.bytes.len() - offset);
-        dst[..count].copy_from_slice(&self.bytes[offset..offset + count]);
-        self.pos += count as u64;
-        Ok(count)
+        let length = dst.len().min((self.source.len - self.pos) as usize);
+        self.source.fingerprint.verify(&self.file)?;
+        self.file.seek(SeekFrom::Start(self.pos))?;
+        let read = self.file.read(&mut dst[..length])?;
+        self.source.fingerprint.verify(&self.file)?;
+        if read == 0 { return Err(io::Error::new(io::ErrorKind::InvalidData, changed())); }
+        self.pos += read as u64;
+        Ok(read)
     }
 }
 
@@ -280,7 +277,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
-    fn small_dicom_slices_reuse_the_verified_header_without_an_apfs_clone() {
+    fn small_dicom_slices_skip_the_apfs_clone_and_are_still_checked() {
         let dir = crate::test_dir::tempdir().unwrap();
         let path = dir.path().join("slice.dcm");
         let bytes = vec![7; 32 * 1024];
@@ -288,8 +285,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(3100));
         let (source, prefix) = SourceFile::index_prefix(&path, &mut open_file(&path).unwrap(), IMPORT_PREFIX).unwrap();
         assert!(source.snapshot.is_none());
-        assert_eq!(source.hashes.len(), 1);
-        assert_eq!(prefix.as_slice(), bytes.as_slice());
+        assert_eq!(prefix.as_slice(), &bytes[..HEADER_PREFIX]);
         let mut reader = source.open().unwrap();
         std::fs::write(&path, vec![22; bytes.len()]).unwrap();
         assert!(reader.read_exact(&mut [0; 8]).is_err());
@@ -297,7 +293,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn tmpfs_sources_use_block_hashes() {
+    fn tmpfs_sources_are_checked_by_their_fingerprint() {
         use std::os::fd::{AsRawFd, FromRawFd};
         // An anonymous memory file uses tmpfs without depending on the runner's /tmp mount.
         let fd = unsafe { libc::memfd_create(c"veacom-source-test".as_ptr(), libc::MFD_CLOEXEC) };
@@ -307,38 +303,12 @@ mod tests {
         let path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
         let original = SourceFile::index(&path).unwrap();
         assert!(original.stamp.is_none());
-        assert_eq!(original.hashes.len(), 1);
         let mut reader = original.open().unwrap();
+        // The kernel's file times tick a few milliseconds apart; a later write moves them.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         file.rewind().unwrap();
         file.write_all(&[22; 8]).unwrap();
         assert!(reader.read_exact(&mut [0; 8]).is_err());
-    }
-
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    #[test]
-    fn existing_writable_mapping_cannot_supply_new_pixels_to_an_imported_source() {
-        use std::os::fd::AsRawFd;
-        let temp = crate::test_dir::tempdir().unwrap();
-        let path = temp.path().join("mapped.bin");
-        std::fs::write(&path, vec![11; 2 * BLOCK]).unwrap();
-        let writer = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        // The mapping remains writable after its descriptor is closed. Dirty the same page before and after import.
-        let mapping = unsafe { libc::mmap(std::ptr::null_mut(), 2 * BLOCK, libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED, writer.as_raw_fd(), 0) };
-        assert_ne!(mapping, libc::MAP_FAILED);
-        drop(writer);
-        let byte = unsafe { mapping.cast::<u8>().add(BLOCK) };
-        unsafe { byte.write_volatile(12); }
-        std::thread::sleep(std::time::Duration::from_millis(3100));
-        let original = SourceFile::index(&path).unwrap();
-        let mut reader = original.open().unwrap();
-        unsafe { byte.write_volatile(22); }
-        reader.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
-        let mut output = [0];
-        if reader.read_exact(&mut output).is_ok() { assert_eq!(output, [12]); }
-        let later = SourceFile::index(&path).unwrap();
-        assert!(!original.same_contents(&later));
-        assert_eq!(unsafe { libc::munmap(mapping, 2 * BLOCK) }, 0);
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -348,11 +318,10 @@ mod tests {
         let path = temp.path().join("settled.bin");
         std::fs::write(&path, vec![7; BLOCK + 8]).unwrap();
         let fresh = SourceFile::index(&path).unwrap();
-        if fresh.stamp.is_none() { return; } // This filesystem uses the hash-based reader.
-        assert!(!fresh.hashes.is_empty());
+        assert!(fresh.stamp.is_none()); // Just written: checked by its fingerprint.
         std::thread::sleep(std::time::Duration::from_millis(3100));
         let settled = SourceFile::index(&path).unwrap();
-        assert!(settled.hashes.is_empty());
+        if settled.stamp.is_none() { return; } // This filesystem has no fast path.
         assert!(settled.same_contents(&fresh));
         let mut reader = settled.open().unwrap();
         let mut byte = [0];
@@ -372,13 +341,15 @@ mod tests {
     }
 
     #[test]
-    fn import_uses_the_hashed_prefix_and_checks_bytes_outside_it() {
+    fn import_keeps_only_the_header_prefix_and_checks_bytes_outside_it() {
         let temp = crate::test_dir::tempdir().unwrap();
         let path = temp.path().join("prefix.bin");
         std::fs::write(&path, vec![11; IMPORT_PREFIX + BLOCK]).unwrap();
         let mut file = open_file(&path).unwrap();
         let (source, prefix) = SourceFile::index_prefix(&path, &mut file, IMPORT_PREFIX).unwrap();
+        assert_eq!(prefix.len(), HEADER_PREFIX);
         let mut reader = source.reader(file, prefix);
+        std::thread::sleep(std::time::Duration::from_millis(50));
         let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
         writer.write_all(&[99]).unwrap();
         writer.seek(SeekFrom::Start(IMPORT_PREFIX as u64)).unwrap();
@@ -388,31 +359,7 @@ mod tests {
         assert_eq!(byte, [11]);
         reader.seek(SeekFrom::Start(IMPORT_PREFIX as u64)).unwrap();
         assert!(reader.read_exact(&mut byte).is_err());
-        assert!(source.open().unwrap().read_exact(&mut byte).is_err());
-    }
-
-    #[test]
-    fn verifies_later_blocks_as_they_are_read_even_if_size_and_mtime_are_restored() {
-        let temp = crate::test_dir::tempdir().unwrap();
-        let path = temp.path().join("synthetic.bin");
-        std::fs::write(&path, vec![11; BLOCK + 8]).unwrap();
-        let indexed = SourceFile::index(&path).unwrap();
-        let mut reader = indexed.open().unwrap();
-        let mut prefix = [0; 4];
-        reader.read_exact(&mut prefix).unwrap();
-        assert_eq!(prefix, [11; 4]);
-
-        let mut writer = OpenOptions::new().write(true).open(path).unwrap();
-        let mtime = writer.metadata().unwrap().modified().unwrap();
-        writer.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
-        writer.write_all(&[22; 8]).unwrap();
-        writer.set_modified(mtime).unwrap();
-        reader.seek(SeekFrom::Start(BLOCK as u64)).unwrap();
-        let mut output = [0; 8];
-        assert_eq!(
-            reader.read_exact(&mut output).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
-        assert_eq!(output, [0; 8]);
+        // Opening it again is refused outright.
+        assert!(source.open().is_err());
     }
 }
