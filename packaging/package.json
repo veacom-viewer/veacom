@@ -4,6 +4,7 @@
   "license": "GPL-3.0-or-later",
   "description": "electron-builder for VEAcom's packages and installers, installed apart from the root so laptops and Linux CI never fetch it",
   "devDependencies": {
+    "@electron/asar": "3.4.1",
     "electron-builder": "26.18.0"
   },
   "packageManager": "pnpm@12.18.0"

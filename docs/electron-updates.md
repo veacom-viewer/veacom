@@ -13,7 +13,9 @@ The release configuration keeps the app identity `com.veacom.electron` and displ
 | Windows x64 | `VEAcom-Electron-0.1.0-beta.3-win-x64-Installer.exe` |
 | macOS Apple Silicon | `VEAcom-Electron-0.1.0-beta.3-mac-arm64.dmg` |
 
-Use `pnpm install --frozen-lockfile`, `pnpm run setup:runtime`, `pnpm run build:core`, and `pnpm run build:web`. On Windows, run `scripts/windows-runtime.ps1` for the packaged native runtime. electron-builder installs apart from the root: run `pnpm --dir packaging install --frozen-lockfile`, then, from the repository root, `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win nsis --x64 --publish never` or `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac dmg --arm64 --publish never`, only with the approved signing setup. Verify the packaged viewer and signatures before attaching installers. Signing or publishing a release requires owner approval.
+Use `pnpm install --frozen-lockfile`, `pnpm run setup:runtime`, `pnpm run build:core`, and `pnpm run build:web`. Run `telemetry/write-endpoint.sh` before packaging. It reads the write-only ingest token from Google Secret Manager. The Windows release workflow uses the GitHub Actions secret `VEACOM_RELEASE_INGEST_TOKEN` on tags and when `keep_installer` is selected. Release builds check the config inside `app.asar` before making the installer.
+
+On Windows, run `scripts/windows-runtime.ps1` for the packaged native runtime. electron-builder installs apart from the root: run `pnpm --dir packaging install --frozen-lockfile`, then, from the repository root, `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win nsis --x64 --publish never` or `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac dmg --arm64 --publish never`, only with the approved signing setup. Verify the packaged viewer and signatures before attaching installers. Signing or publishing a release requires owner approval.
 
 ## If public in-app updates are enabled later
 

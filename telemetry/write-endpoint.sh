@@ -6,8 +6,13 @@
 set -euo pipefail
 source "$(dirname "$0")/gcp/env.sh"
 FILE="$(cd "$(dirname "$0")/.." && pwd)/electron/telemetry-endpoint.json"
-URL="$(g run services describe otel-collector --region "$REGION" --format='value(status.url)')"
-TOKEN="$(g secrets versions access latest --secret ingest-token)"
+if [[ -n "${VEACOM_RELEASE_INGEST_TOKEN:-}" ]]; then
+    URL=https://otel-collector-5phqzw3wxq-nw.a.run.app
+    TOKEN=$VEACOM_RELEASE_INGEST_TOKEN
+else
+    URL="$(g run services describe otel-collector --region "$REGION" --format='value(status.url)')"
+    TOKEN="$(g secrets versions access latest --secret ingest-token)"
+fi
 umask 077
 [[ "$URL" == "https://otel-collector-5phqzw3wxq-nw.a.run.app" ]] || { echo "Unexpected collector address." >&2; exit 1; }
 TOKEN="$TOKEN" node -e 'const fs=require("fs"), f=process.argv[1]+".tmp"; try { fs.writeFileSync(f, JSON.stringify({endpoint: process.argv[2],token: process.env.TOKEN}), {mode:0o600,flag:"wx"}); fs.renameSync(f,process.argv[1]); } finally { fs.rmSync(f,{force:true}); }' "$FILE" "$URL"

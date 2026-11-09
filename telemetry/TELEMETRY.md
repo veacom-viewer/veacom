@@ -32,7 +32,7 @@ WHERE ServiceName = 'veacom-crash' AND ResourceAttributes['deployment.environmen
 GROUP BY ALL ORDER BY incidents DESC;
 ```
 
-The CI check forces crashes using an isolated profile, declines usage sharing, and verifies delivery to a local intake. To repeat it against the live backend, set `VEACOM_SMOKE_EXECUTABLE` to the packaged viewer and run `node tools/check-crash-reporting.cjs /tmp/crash-receipt.json --live`. With the read-only tunnel open, run `node telemetry/crashes/verify.cjs /tmp/crash-receipt.json`. It matches each incident ID, reason, OS status, recovery outcome and the complete stored set of attributes. It also checks that the valid usage event submitted during the test is absent from ClickHouse. Run `telemetry/write-endpoint.sh` before packaging to exercise a release with the optional usage collector configured.
+The CI check forces crashes using an isolated profile, declines usage sharing, and verifies delivery to a local intake. To repeat it against the live backend, set `VEACOM_SMOKE_EXECUTABLE` to the packaged viewer and run `node tools/check-crash-reporting.cjs /tmp/crash-receipt.json --live`. With the read-only tunnel open, run `node telemetry/crashes/verify.cjs /tmp/crash-receipt.json`. It matches each incident ID, reason, OS status, recovery outcome and the complete stored set of attributes. It also checks that the valid usage event submitted during the test is absent from ClickHouse. Run `telemetry/write-endpoint.sh` before packaging to configure the usage collector required by the release build.
 
 ## Querying it (agents)
 
