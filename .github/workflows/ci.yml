@@ -38,11 +38,12 @@ jobs:
       # actionlint also runs shellcheck, which the runner has, on each workflow's scripts.
       - name: Workflows (actionlint)
         run: node tools/pinned-tool.mjs actionlint
+      # After the install: the type-aware rules read tsconfig.json, whose types come from node_modules.
+      - run: pnpm install --frozen-lockfile
       # --type-aware adds the rules that need types (tsgolint reads tsconfig.json): floating promises, needless
       # assertions, switches that miss a case.
       - name: JavaScript and TypeScript (oxlint, .oxlintrc.json)
         run: node tools/pinned-tool.mjs oxlint --type-aware --format=github
-      - run: pnpm install --frozen-lockfile
       - name: Types (tsconfig.json, unused names included)
         run: pnpm exec tsc --noEmit
       - name: Check for manual React memoization

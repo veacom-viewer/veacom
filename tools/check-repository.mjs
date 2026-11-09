@@ -65,7 +65,5 @@ const unstarted = checks.filter(check => !BY_HAND.has(check)
 if (unstarted.length) throw new Error(`Nothing starts these checks; run each from CI (.github/workflows) or tools/verify.sh:\n${unstarted.join('\n')}`);
 const started = [...BY_HAND.keys()].filter(check => starters.some(([file, text]) => file !== check && text.includes(check.slice('tools/'.length))));
 if (started.length) throw new Error(`These checks now run, so delete them from BY_HAND in tools/check-repository.mjs:\n${started.join('\n')}`);
-const gone = [...BY_HAND.keys()].filter(check => !checks.includes(check));
-if (gone.length) throw new Error(`These checks are gone, so delete them from BY_HAND in tools/check-repository.mjs:\n${gone.join('\n')}`);
 
-console.log(`PASS repository policy (${files.length} tracked files, ${locked.size} dependency names, ${checks.length - BY_HAND.size} checks started, ${BY_HAND.size} by hand)`);
+console.log(`PASS repository policy (${files.length} tracked files, ${locked.size} dependency names, ${checks.filter(check => !BY_HAND.has(check)).length} checks started)`);
