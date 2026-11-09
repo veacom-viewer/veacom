@@ -1553,6 +1553,7 @@ mod tests {
         // A picture whose file changed to another size after the import is not shown with the old one's geometry.
         std::fs::write(&large, testing::picture(PNG, 2, 1, &[0; 6])).unwrap();
         let small = crate::ingest::import(&[large.to_string_lossy().into_owned()]).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(50));
         std::fs::write(&large, testing::picture(PNG, 1, 2, &[0; 6])).unwrap();
         let error = decode_frame(&small.sources[0], 0).err().unwrap();
         assert!(crate::source_file::is_changed(&error), "{error}");

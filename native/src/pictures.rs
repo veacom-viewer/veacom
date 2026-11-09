@@ -687,6 +687,8 @@ mod tests {
         let path = dir.path().join("synthetic.png");
         std::fs::write(&path, testing::picture(testing::PNG, 1, 1, &[1, 2, 3])).unwrap();
         let source = index(&path).unwrap();
+        // File times tick a few milliseconds apart on Linux and Windows; a later write moves them.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         std::fs::write(&path, testing::picture(testing::PNG, 1, 1, &[4, 5, 6])).unwrap();
         for want in [Want::Probe, Want::Size, Want::Pixels] {
             let error = read(&source, want, || Ok(())).err().unwrap();
