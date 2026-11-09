@@ -9,6 +9,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const exec = promisify(execFile);
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const equal = argument.indexOf('='); return [argument.slice(2, equal), argument.slice(equal + 1)];
@@ -189,7 +190,7 @@ async function main() {
       assert(releaseChecks.evictedBuffersCollectible, 'Evicted pixel buffers remain strongly reachable after collection.');
     }
   } finally {
-    if (desktop) await desktop.close();
+    await closeDesktop(desktop);
     await fs.rm(profile, { recursive: true, force: true });
   }
 }

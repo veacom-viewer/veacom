@@ -6,6 +6,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 async function main() {
   assert(process.argv[2] && process.argv[3], 'Pass a synthetic study folder and output JSON path.');
@@ -61,7 +62,7 @@ async function main() {
     await fs.writeFile(output, JSON.stringify({ passed: true, checks, errors, note: 'Completion status is deliberately held pending; this is a race/reliability check, not a timing benchmark.' }, null, 2));
     console.log(JSON.stringify({ passed: true, checks }));
   } finally {
-    if (desktop) await desktop.close();
+    await closeDesktop(desktop);
     await fs.rm(profile, { recursive: true, force: true });
   }
 }

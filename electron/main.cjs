@@ -1,6 +1,6 @@
 const { reviewExportPixels } = require('./export-review.cjs');
 const { createImportView } = require('./import-view.cjs');
-const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme, systemPreferences } = require('electron');
 const { registerUsageHandlers } = require('./usage.cjs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -16,6 +16,14 @@ const { t, coreErrorText } = i18n;
 protocol.registerSchemesAsPrivileged([{ scheme: 'veacom', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 app.setName('VEAcom');
 nativeTheme.themeSource = 'dark';
+// Once macOS has recorded a crash of the app, its next start asks "The last time you opened VEAcom, it unexpectedly quit
+// while reopening windows. Do you want to try to reopen its windows again?" before the app is ready: no window and no
+// engine until someone answers. VEAcom opens its own window at every start and has nothing for macOS to reopen, so it
+// ignores macOS's saved window state, as SDL does for every app (registerUserDefaults in
+// src/video/cocoa/SDL_cocoaevents.m) and Electron's own tests do (electron/electron#51488). Registered, so it holds only
+// while this process runs and nothing is written to disk. macOS logs "ApplePersistenceIgnoreState: Existing state will
+// not be touched" once per start.
+if (process.platform === 'darwin') systemPreferences.registerDefaults({ ApplePersistenceIgnoreState: true });
 // Linux CI has no GPU, and Chromium refuses WebGL on the Mesa software driver it finds there (llvmpipe) rather than
 // falling back as Windows does with WARP. VEACOM_SOFTWARE_GL=llvmpipe lets a development run use that driver, so the
 // desktop checks draw in .github/workflows/ci.yml. A packaged app ignores it.

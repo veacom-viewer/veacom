@@ -25,6 +25,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
@@ -148,7 +149,7 @@ async function main() {
     await launch(priorStudy);
     await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('veacom:pet-studies:v1') ?? '{}'))
       .some(study => Object.values(study.series).some(series => series.acquisition && !series.lesions)));
-    await desktop.close();
+    await closeDesktop(desktop);
     await launch();
     let s = await state();
     const ct = s.series.find(item => item.modality === 'CT'), pet = s.series.find(item => item.modality === 'PT');
@@ -284,7 +285,7 @@ async function main() {
     const legacySeries = digest(JSON.stringify([selectedPet.uid, selectedPet.previousPetId]));
     records[legacyStudy] = { ...record, patient: digest(selectedPet.patientId.trim() + '\u0000' + selectedPet.patientName.trim().toUpperCase()), series: { [legacySeries]: kept } };
     await page.evaluate(records => localStorage.setItem('veacom:pet-studies:v1', JSON.stringify(records)), records);
-    await desktop.close();
+    await closeDesktop(desktop);
 
     // A new session on this computer: the references and the lesion table are back, the lesion with its name, threshold
     // and confirmed score.
@@ -306,7 +307,7 @@ async function main() {
     await goTo(1, lesion.center[2]);
     await shot('4-reopened');
     check('In a new session the study\'s references and lesion table come back');
-    await desktop.close();
+    await closeDesktop(desktop);
 
     // Opened after its prior: the PET follow-up screen, this study's PET and the prior's, each over its MIP.
     await launch(priorStudy);
@@ -494,7 +495,7 @@ async function main() {
     assert.equal(await unnamed(), unnamedBefore, 'Typing the glucose records no action without an id.');
     check('In SUL, SULglu follows SUL: this study\'s from its file, and its change once the prior\'s glucose is typed', { sulGlu: Number(nowGlu.toFixed(2)), change: sulGluChange });
     await showPetValues('bw');
-    await desktop.close();
+    await closeDesktop(desktop);
 
     // The current study alone, in a new session: the change comes from what was kept for the prior.
     await launch();
@@ -549,7 +550,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'pet-voi-checks.json'), JSON.stringify({ checks, errors, failure: String(error.stack || error) }, null, 2));
     throw error;
   } finally {
-    await desktop?.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
 }

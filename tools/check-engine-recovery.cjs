@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { messages } = require('../electron/i18n.cjs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 
@@ -103,6 +104,6 @@ async function main() {
     await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
     await fs.writeFile(path.join(output, 'engine-recovery.json'), JSON.stringify({ passed: false, nativeSha256, checks, error: error.stack, errors }, null, 2));
     throw error;
-  } finally { await desktop.close(); await fs.rm(profile, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(profile, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

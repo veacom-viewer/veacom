@@ -14,6 +14,7 @@ const { ENDPOINT } = require('../electron/crash-reports.cjs');
 const { validReport } = require('../electron/crash-schema.cjs');
 const { createServer } = require('../telemetry/crashes/server.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const root = path.resolve(__dirname,'..');
 const sentinel = 'SYNTHETIC_PRIVATE_STUDY';
 async function waitFor(read, description, timeout = 20000) {
@@ -132,6 +133,8 @@ async function main() {
     assert.deepEqual([rendered.reason,rendered.code],[renderer.reason,renderer.code]);
 
     const exiting = once(desktop.process(),'exit');
+    // macOS records this crash a few seconds later and would then hold the app's next start with its "reopen windows?"
+    // alert; electron/main.cjs turns that alert off, so the checks that follow this one start.
     void desktop.evaluate(()=>process.crash()).catch(()=>{});
     let watchdog;
     let exit;
@@ -148,7 +151,7 @@ async function main() {
     const unclean = await find('main','unknown');
     assert.equal(unclean.id,mainId); assert.equal(unclean.reason,'unclean-exit'); assert.equal(unclean.signal,null);
     await waitFor(()=>JSON.parse(fs.readFileSync(queue,'utf8')).events.length===0,'delivery acknowledgements',60000);
-    await desktop.close(); desktop = null;
+    assert.equal(await closeDesktop(desktop),true,'the viewer must quit by itself'); desktop = null;
     assert.equal(JSON.parse(fs.readFileSync(queue,'utf8')).running,null,'normal quit must leave no crash marker');
     assert.equal(usageRequests,0,'usage opt-out still applies');
     const reports = [...events.values()];
@@ -165,7 +168,7 @@ async function main() {
     console.log('Verified ' + reports.length + ' crash incidents, native recovery, main-process relaunch, and rejection of a valid usage event.');
   } finally {
     monitor?.close();
-    await desktop?.close().catch(()=>{});
+    await closeDesktop(desktop);
     intake.close(); usage.close();
     await fs.promises.rm(temp,{recursive:true,force:true,maxRetries:4,retryDelay:100});
   }

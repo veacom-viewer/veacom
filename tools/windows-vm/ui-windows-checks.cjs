@@ -5,6 +5,7 @@
 // Electron draws over the page. Run in the logged-in desktop session (run-gui.ps1), never from SSH session 0.
 // Usage: node tools/windows-vm/ui-windows-checks.cjs <packaged-exe> <study> <output-dir>
 const { _electron: electron } = require('playwright');
+const { closeDesktop } = require('../lib/close-desktop.cjs');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs/promises');
 const os = require('node:os');
@@ -140,7 +141,7 @@ const grab = (file, r) => ps(`Add-Type -AssemblyName System.Drawing; ${USER32} $
     result.passed = false; result.error = String(error?.stack || error);
     console.error(error); process.exitCode = 1;
   } finally {
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
     await fs.writeFile(path.join(output, 'ui-windows-checks.json'), JSON.stringify(result, null, 2));
   }

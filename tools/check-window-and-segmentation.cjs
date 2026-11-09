@@ -13,6 +13,7 @@ const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 const positional = process.argv.slice(2).filter(value => !value.startsWith('--'));
 const [windowStudy, segmentationStudy] = positional.slice(0, 2).map(value => value && path.resolve(value));
@@ -207,6 +208,6 @@ async function main() {
     if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
     await fs.writeFile(path.join(output, 'window-and-segmentation.json'), JSON.stringify({ passed: false, error: error.stack, checks, errors }, null, 2));
     throw error;
-  } finally { await desktop.close(); await fs.rm(profile, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(profile, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

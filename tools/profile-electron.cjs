@@ -8,6 +8,7 @@ const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
 const assert = require('node:assert/strict');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const exec = promisify(execFile);
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
@@ -115,7 +116,7 @@ async function run(index, withStudy) {
       jsBytes: resources.reduce((sum, entry) => sum + entry.bytes, 0), rendererHeapUsedMiB: heap.usedSize / 1024 ** 2,
       memory: snapshot, scroll, errors };
   } finally {
-    if (desktop) await desktop.close();
+    await closeDesktop(desktop);
     await fs.rm(profile, { recursive: true, force: true });
   }
 }

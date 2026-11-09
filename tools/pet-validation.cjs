@@ -16,6 +16,7 @@ const os = require('node:os');
 const { createHash } = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const outsideInput = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const privileged = require('./privileged-imaging.cjs');
 const validation = require('./lib/pet-validation.cjs');
 const { axialPlacement } = require('./lib/pet-validation-geometry.cjs');
@@ -324,7 +325,7 @@ async function measureStudy(entry, context) {
     }
     return result;
   } finally {
-    await desktop?.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
 }

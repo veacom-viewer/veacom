@@ -36,7 +36,7 @@ async function start({ primary = true } = {}) {
   fs.mkdirSync(desktop); fs.mkdirSync(elsewhere);
   const paths: Record<string, string> = { userData: path.join(root, 'user-data'), desktop, temp: os.tmpdir() };
   const page = { holdsUnload: false, answer: 1, onPrompt: () => {} };
-  const state = { exited: false, prompts: 0, focused: 0, revealed: [] as string[] };
+  const state = { exited: false, prompts: 0, focused: 0, revealed: [] as string[], startup: [] as unknown[] };
   class WebContents extends EventEmitter {
     mainFrame = { url: 'veacom://app/index.html' };
     session = { setPermissionRequestHandler() {} };
@@ -57,7 +57,7 @@ async function start({ primary = true } = {}) {
   }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: false,
-    whenReady: () => Promise.resolve(),
+    whenReady: () => { state.startup.push('whenReady'); return Promise.resolve(); },
     setName() {}, getVersion: () => '0.1.0-test', getAppMetrics: () => [], getGPUFeatureStatus: () => ({}),
     setPath(name: string, value: string) { paths[name] = value; },
     getPath: (name: string) => paths[name] ?? os.tmpdir(),
@@ -86,6 +86,7 @@ async function start({ primary = true } = {}) {
       showSaveDialog: async () => ({ canceled: true }), showMessageBox: async () => ({ response: 0 }), showErrorBox() {},
     },
     clipboard: { writeText() {} }, nativeTheme: {}, net: { fetch: (...args: Parameters<typeof fetch>) => fetch(...args) },
+    systemPreferences: { registerDefaults: (defaults: object) => { state.startup.push(defaults); } },
     protocol: { registerSchemesAsPrivileged() {}, handle() {} },
     shell: { openPath: async (target: string) => { state.revealed.push(target); return ''; }, showItemInFolder: (target: string) => { state.revealed.push(target); }, openExternal: async () => {} },
     safeStorage: { isEncryptionAvailable: () => false },
@@ -139,6 +140,13 @@ afterEach(async () => {
 });
 
 describe('desktop app lifecycle', () => {
+  it('on macOS ignores the saved window state before it waits to be ready, so a recorded crash cannot hold its start', async () => {
+    const app = await start();
+    // AppKit's "reopen its windows again?" alert comes before Electron's ready, so the default must be in place by then.
+    assert.deepEqual(app.state.startup.slice(0, 2), process.platform === 'darwin'
+      ? [{ ApplePersistenceIgnoreState: true }, 'whenReady'] : ['whenReady']);
+  });
+
   it('asks before stopping anything when Cmd+Q meets a running export, and "Wait" leaves everything working', async () => {
     const app = await start();
     const job = await runningVideo(app);
