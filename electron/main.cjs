@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme, systemPreferences } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, protocol, net, shell, nativeTheme, systemPreferences } = require('electron');
 const path = require('node:path');
 app.setName('VEAcom');
 if (process.env.VEACOM_USER_DATA) app.setPath('userData', path.resolve(process.env.VEACOM_USER_DATA));
@@ -261,6 +261,8 @@ app.whenReady().then(async () => {
   handle('export:folder', () => exportFolder.folder());
   // Text for a report (the checklist's summary): the system clipboard, which the page itself may not reach.
   handle('clipboard:write', text => { if (typeof text !== 'string' || text.length > 100000) throw new Error('Invalid text.'); clipboard.writeText(text); });
+  // The picture on screen (Ctrl+C), as the pixels the page drew (clipboard-image.cjs).
+  handle('clipboard:write-image', picture => require('./clipboard-image.cjs').writeClipboardImage(picture, { clipboard, nativeImage }));
   handle('export:chooseFolder', () => exportFolder.choose());
   handle('export:reveal', async target => {
     if (typeof target !== 'string' || !(exported.has(target) || await exportFolder.holds(target))) throw new Error('Not an export of this session.');

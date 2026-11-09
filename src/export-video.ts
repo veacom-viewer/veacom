@@ -13,6 +13,8 @@ export interface ViewportVideoOptions {
   includeOverlays?: boolean;
   /** Basic overlays include only viewer-generated orientation and crosshair markings. */
   hideIdentity?: boolean;
+  /** Draws the corner texts as they read with patient details hidden, whatever the pane shows (a copied picture). */
+  hidePatientData?: boolean;
   /** From the range's last slice to its first (the other way through the body). */
   descending?: boolean;
   /** A slice's number as the reader sees it (pictures are named by it); the index + 1 if not given. */
@@ -76,7 +78,7 @@ const svgProperties = ['color', 'fill', 'fill-opacity', 'fill-rule', 'stroke', '
   'font-family', 'font-size', 'font-style', 'font-weight', 'letter-spacing', 'text-anchor',
   'dominant-baseline', 'paint-order', 'vector-effect', 'opacity', 'visibility', 'display'];
 
-async function svgImage(source: SVGSVGElement, hideIdentity = false): Promise<{ image: HTMLImageElement; release: () => void }> {
+async function svgImage(source: SVGSVGElement, hideIdentity = false, hidePatientData = false): Promise<{ image: HTMLImageElement; release: () => void }> {
   const copy = source.cloneNode(true) as SVGSVGElement;
   const originals = [source, ...source.querySelectorAll('*')];
   const copies = [copy, ...copy.querySelectorAll('*')];
@@ -85,6 +87,12 @@ async function svgImage(source: SVGSVGElement, hideIdentity = false): Promise<{ 
     for (const property of svgProperties) target.style.setProperty(property, style.getPropertyValue(property));
   });
   if (hideIdentity) copy.replaceChildren(...copy.querySelectorAll('.orientation-labels, [data-crosshair-marker]'));
+  // A pane that shows patient details keeps, undrawn, its corner texts as they read without them (Viewport.tsx): the
+  // picture takes those in place of the shown ones. A pane that hides the details already has no such pair.
+  else if (hidePatientData) for (const plain of copy.querySelectorAll<SVGElement>('[data-plain-corners]')) {
+    copy.querySelector('[data-patient-corners]')?.remove();
+    plain.style.setProperty('display', 'inline');
+  }
   const bounds = source.getBoundingClientRect();
   copy.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
   copy.setAttribute('width', String(bounds.width));
@@ -103,7 +111,7 @@ async function svgImage(source: SVGSVGElement, hideIdentity = false): Promise<{ 
 interface Expected { slice: number; seriesId?: string }
 
 /** Draws the displayed pixels and measurement/orientation overlays at the viewport's actual resolution. */
-async function captureViewportCanvas(viewport: HTMLElement, options: Pick<ViewportVideoOptions, 'outputSize' | 'includeOverlays' | 'hideIdentity'>, expected?: Expected): Promise<HTMLCanvasElement> {
+export async function captureViewportCanvas(viewport: HTMLElement, options: Pick<ViewportVideoOptions, 'outputSize' | 'includeOverlays' | 'hideIdentity' | 'hidePatientData'> = {}, expected?: Expected): Promise<HTMLCanvasElement> {
   const bounds = viewport.getBoundingClientRect();
   const source = viewport.querySelector('canvas');
   if (!viewport.isConnected || !source || !bounds.width || !bounds.height) throw videoError('video.viewportHidden', 'The image viewport is not visible.');
@@ -145,7 +153,7 @@ async function captureViewportCanvas(viewport: HTMLElement, options: Pick<Viewpo
     context.globalAlpha = Number(style.opacity);
     if (layer instanceof HTMLCanvasElement) context.drawImage(layer, x, y, rect.width, rect.height);
     else if (layer instanceof SVGSVGElement) {
-      const image = await svgImage(layer, options.hideIdentity);
+      const image = await svgImage(layer, options.hideIdentity, options.hidePatientData);
       try { context.drawImage(image.image, x, y, rect.width, rect.height); }
       finally { image.release(); }
     } else {
