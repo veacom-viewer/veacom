@@ -1,0 +1,36 @@
+# Only the crash intake may invoke this Cloud Run service. Its OTLP response is the viewer's delivery receipt.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:8080
+
+exporters:
+  clickhouse:
+    endpoint: tcp://10.10.0.2:9000?dial_timeout=3s
+    database: otel
+    username: collector
+    password: ${env:CH_PASSWORD}
+    create_schema: false
+    async_insert: false
+    timeout: 4s
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: false
+  googlecloudpubsub:
+    project: veacom-platform
+    topic: projects/veacom-platform/topics/telemetry-raw
+    compression: gzip
+    timeout: 4s
+    sending_queue:
+      enabled: false
+    retry_on_failure:
+      enabled: false
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      # Both exporters must finish before OTLP acknowledges. The viewer owns the retry queue.
+      exporters: [clickhouse, googlecloudpubsub]

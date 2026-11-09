@@ -65,11 +65,11 @@ class EngineProcess extends EventEmitter {
         run.child = this.spawnImpl(this.binary, this.args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
       } catch (error) { fail(error, 'launch-failed'); return; }
       run.timeout = setTimeout(() => fail(new Error(t('engine.startTimeout', { seconds: this.startupTimeoutMs / 1000 })), 'startup-timeout'), this.startupTimeoutMs);
-      const broken = (error, reason) => {
+      const broken = (error, reason, work) => {
         if (run.retired || this.current !== run) return;
         if (!run.connection) { fail(error, reason); return; }
         this.retire(run);
-        void this.afterFailure(run, reason).then(() => this.recover(error.message), cleanupError => {
+        void this.afterFailure(run, reason, work).then(() => this.recover(error.message), cleanupError => {
           if (!this.closed) this.publish('failed', cleanupError.message);
         });
       };
@@ -108,14 +108,14 @@ class EngineProcess extends EventEmitter {
     clearTimeout(run.timeout);
     if (this.current === run) this.current = null;
   }
-  async afterFailure(run, reason) {
+  async afterFailure(run, reason, work) {
     // stdout EOF commonly precedes the OS exit event. Let it supply the actual signal/code. A child that
     // closes its pipes but stays alive still goes through bounded termination and recovery.
     try { await this.cleanup(run, false, reason === 'pipe-closed' || reason === 'pipe-error'); }
     finally {
       const natural = !run.killedByManager && run.exited && ['pipe-closed', 'pipe-error', 'unexpected-exit'].includes(reason);
       this.emit('incident', { reason: natural ? (run.signal ? 'signal' : 'unexpected-exit') : reason,
-        code: natural ? run.code : null, signal: natural ? run.signal : null });
+        code: natural ? run.code : null, signal: natural ? run.signal : null, ...(work && { work }) });
     }
   }
   recover(message) {

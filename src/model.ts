@@ -342,6 +342,7 @@ export interface DesktopBridge {
   installUpdate(): Promise<UpdateStatus>;
   openUpdateNotes(): Promise<void>;
   onUpdateStatus(listener: (status: UpdateStatus) => void): () => void;
+  reportRendererFailure?: (reason: 'render-failed' | 'uncaught-exception' | 'unhandled-rejection', exception: import('../electron/crash-exception.mjs').ExceptionClass) => void;
   localUsageCheck?: boolean;
   usageStatus?(): Promise<UsageStatus>;
   usageConsent?(value: 'granted' | 'denied'): Promise<UsageStatus>;

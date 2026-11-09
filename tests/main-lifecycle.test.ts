@@ -73,13 +73,13 @@ async function start({ primary = true } = {}) {
         window.closed = true;
       }
       const willQuit = preventable(); app.emit('will-quit', willQuit);
-      if (!willQuit.defaultPrevented) state.exited = true;
+      if (!willQuit.defaultPrevented) { state.exited = true; app.emit('quit'); }
     },
   });
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const ipcMain = Object.assign(new EventEmitter(), { handle: (channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn), removeHandler() {} });
   const electron = {
-    app, BrowserWindow,
-    ipcMain: { handle: (channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn), on() {}, removeListener() {}, removeHandler() {} },
+    app, BrowserWindow, ipcMain,
     dialog: {
       showMessageBoxSync: () => { state.prompts++; page.onPrompt(); return page.answer; },
       showOpenDialog: async () => ({ canceled: false, filePaths: [elsewhere] }),
@@ -110,7 +110,7 @@ async function start({ primary = true } = {}) {
   const window = () => BrowserWindow.all[0];
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!({ senderFrame: window().webContents.mainFrame }, ...args);
   const invoke = async (channel: string, ...args: unknown[]) => call(channel, ...args);
-  const harness = { app, page, state, desktop, elsewhere, handlers, window, call, invoke,
+  const harness = { app, ipcMain, page, state, desktop, elsewhere, handlers, window, call, invoke,
     temporary: () => fs.readdirSync(desktop).filter(name => name.startsWith('.veacom-video-')) };
   cleanups.push(async () => {
     if (!state.exited) {
@@ -139,6 +139,54 @@ afterEach(async () => {
 });
 
 describe('desktop app lifecycle', () => {
+  it('reports only trusted renderer fault codes and coalesces repeated notifications', async test => {
+    const sent: Array<{process: string; reason: string; exception?: string}> = [];
+    test.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)));
+      return new Response(null, { status: 204 });
+    });
+    const original = process.env.VEACOM_CRASH_ENDPOINT;
+    process.env.VEACOM_CRASH_ENDPOINT = 'http://127.0.0.1:7711/v1/crashes';
+    try {
+      const harness = await start();
+      let now = 0;
+      test.mock.method(performance, 'now', () => now);
+      const senderFrame = harness.window().webContents.mainFrame;
+      const fault = (frame: typeof senderFrame, value: unknown, reason = 'render-failed') => harness.ipcMain.emit('fault:renderer', { senderFrame: frame }, reason, value);
+      fault({ ...senderFrame }, 'reference');
+      fault(senderFrame, 'SYNTHETIC_PRIVATE_PATH');
+      fault(senderFrame, { message: 'SYNTHETIC_PRIVATE_PATH' });
+      fault(senderFrame, 'type', 'SYNTHETIC_PRIVATE_PATH');
+      fault(senderFrame, 'type', 'unresponsive');
+      fault(senderFrame, 'range');
+      fault(senderFrame, 'range');
+      fault(senderFrame, 'type');
+      fault(senderFrame, 'type', 'uncaught-exception');
+      fault(senderFrame, 'unknown', 'unhandled-rejection');
+      harness.window().emit('unresponsive');
+      harness.window().emit('unresponsive');
+      harness.window().emit('responsive');
+      harness.window().emit('unresponsive');
+      await waitFor(() => sent.length >= 5, 'the renderer reports');
+      assert.deepEqual(sent.map(r => [r.process, r.reason, r.exception]), [
+        ['renderer', 'render-failed', 'range'], ['renderer', 'render-failed', 'type'], ['renderer', 'uncaught-exception', 'type'],
+        ['renderer', 'unhandled-rejection', 'unknown'], ['renderer', 'unresponsive', undefined]
+      ]);
+      now = 60_000;
+      fault(senderFrame, 'type');
+      harness.window().emit('unresponsive');
+      await waitFor(() => sent.length === 6, 'the next render failure');
+      harness.window().emit('responsive');
+      harness.window().emit('unresponsive');
+      await waitFor(() => sent.length === 7, 'a new hang after recovery');
+      assert.deepEqual(sent.slice(5).map(r => r.reason), ['render-failed', 'unresponsive']);
+      assert.ok(!JSON.stringify(sent).includes('SYNTHETIC_PRIVATE_PATH'));
+    } finally {
+      if (original === undefined) delete process.env.VEACOM_CRASH_ENDPOINT;
+      else process.env.VEACOM_CRASH_ENDPOINT = original;
+    }
+  });
+
   it('asks before stopping anything when Cmd+Q meets a running export, and "Wait" leaves everything working', async () => {
     const app = await start();
     const job = await runningVideo(app);
