@@ -1,0 +1,22 @@
+# wrangler installs here, apart from the root, so a root install on a laptop or in CI never fetches it. CI installs it
+# to check the site's configuration on every pull request and to publish viewer.veacom.app from main:
+# pnpm --dir web/site install --frozen-lockfile, then pnpm --dir web/site exec wrangler deploy.
+
+# The root's supply-chain policy, explained in ../../pnpm-workspace.yaml. This workspace inherits none of it.
+minimumReleaseAge: 4320
+minimumReleaseAgeIgnoreMissingTime: false
+trustPolicy: no-downgrade
+blockExoticSubdeps: true
+strictDepBuilds: true
+
+# Publishing needs neither install script: esbuild and workerd take their binaries from their platform packages, and
+# workerd runs only for wrangler dev.
+allowBuilds:
+  esbuild: false
+  workerd: false
+
+overrides:
+  # Miniflare's image binding for wrangler dev, a native libvips build per platform. Publishing never loads it.
+  sharp: '-'
+  # wrangler's optional macOS file watcher.
+  fsevents: '-'
