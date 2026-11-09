@@ -68,10 +68,6 @@ for (const name of options.studies.split(',')) {
 }
 const viewers = await viewerList();
 const served = new Map();
-for (const viewer of viewers) {
-  const server = await viewer.module.serve(viewer.serveWith);
-  served.set(viewer.id, { url: server.url, build: server.build, pinned: server.pinned, close: server.close });
-}
 const rounds = Number(options.rounds), warmup = Number(options.warmup);
 fs.writeFileSync(path.join(outDir, 'run.json'), `${JSON.stringify({ started: new Date().toISOString(), machine: describe(), options,
   repository: { commit: git('rev-parse', 'HEAD'), dirty: Boolean(git('status', '--porcelain')) },
@@ -80,7 +76,12 @@ fs.writeFileSync(path.join(outDir, 'run.json'), `${JSON.stringify({ started: new
 console.log(`Results: ${outDir}`);
 
 let count = 0;
+// The servers start inside the block whose finally closes them: if one fails to start, those already running stop.
 try {
+  for (const viewer of viewers) {
+    const server = await viewer.module.serve(viewer.serveWith);
+    served.set(viewer.id, { url: server.url, build: server.build, pinned: server.pinned, close: server.close });
+  }
   for (let round = 1 - warmup; round <= rounds; round++) {
     for (const study of studies) for (const viewer of order(viewers, round)) {
       const idle = await waitIdle();

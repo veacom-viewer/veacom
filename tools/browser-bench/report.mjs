@@ -45,7 +45,8 @@ const METRICS = [
 function pct(value) { return Number.isFinite(value) ? value * 100 : undefined; }
 
 const viewers = [...new Set(runs.flatMap(r => r.viewers))], studies = [...new Set(runs.flatMap(r => r.studies))];
-const rounds = new Set(counted.filter(l => l.runner === 1).map(l => l.round)).size;
+// Rounds counted on the runner that finished the most, so a runner whose trials all failed does not hide the others'.
+const rounds = Math.max(0, ...runs.map((_, i) => new Set(counted.filter(l => l.runner === i + 1).map(l => l.round)).size));
 const spanText = runs.length > 1 ? `${rounds} rounds on each of ${runs.length} runners` : `${rounds} rounds`;
 const runnerText = runs.length > 1 ? runs.map((r, i) => `runner ${i + 1}: ${r.machine.cpu ?? '?'} (${r.machine.cores} cores)`).join(' · ') : null;
 // How far the runners agree: each runner's own median of the first image, per viewer and study.
