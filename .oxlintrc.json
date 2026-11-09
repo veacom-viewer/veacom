@@ -1,6 +1,6 @@
 {
-  // oxlint (tools/oxlint.mjs runs the pinned release): its correctness rules, which find code that is wrong or does
-  // nothing, plus a few that keep slips out. CI fails on any finding.
+  // oxlint (tools/pinned-tool.mjs runs the pinned release; CI runs it with --type-aware): its correctness rules, which
+  // find code that is wrong or does nothing, plus a few that keep slips out. CI fails on any finding.
   "$schema": "https://raw.githubusercontent.com/oxc-project/oxc/apps_v1.84.0/npm/oxlint/configuration_schema.json",
   "plugins": ["eslint", "typescript", "unicorn", "oxc", "react", "import", "promise", "node"],
   "categories": { "correctness": "error" },
@@ -22,14 +22,64 @@
     // The effect dependencies and state set in effects are left to a review of the viewer's effects; the React Compiler
     // memoizes the rest (tools/check-react-memo.mjs).
     "react-hooks/exhaustive-deps": "off",
-    "react/set-state-in-effect": "off"
+    "react/set-state-in-effect": "off",
+
+    // Type-aware rules, with types from tsconfig.json (src/ and tests/) through tsgolint. A promise nobody awaits or
+    // catches; await on something that is not one; a switch that misses a member of a union; an assertion that changes
+    // nothing. node:test's describe() and it() return promises the runner itself awaits.
+    "typescript/no-floating-promises": ["error", { "allowForKnownSafeCalls": [
+      { "from": "package", "package": "node:test", "name": ["describe", "it", "test", "suite", "before", "after", "beforeEach", "afterEach"] }
+    ] }],
+    "typescript/await-thenable": "error",
+    "typescript/switch-exhaustiveness-check": "error",
+    "typescript/no-unnecessary-type-assertion": "error",
+    // String() of a DICOM value of unknown type, numbers and point lists in SVG path strings, ASCII text spread into
+    // characters: all on purpose here.
+    "typescript/no-base-to-string": "off",
+    "typescript/restrict-template-expressions": "off",
+    "typescript/no-misused-spread": "off",
+    // Each finding needs reading on its own: an async click handler, timer or worker message whose rejection nobody
+    // sees (11 in src/ on 9 Nov 2026). no-unnecessary-condition (114 in src/), not turned on yet, likewise: where the
+    // engine's reply is typed as always present but can lack a field, the type is what to fix.
+    "typescript/no-misused-promises": "off"
   },
   "overrides": [
-    // The renderer reports through the usage log and the app's own messages, not the console.
-    { "files": ["src/**"], "rules": { "no-console": ["error", { "allow": ["error", "warn"] }] } },
+    {
+      "files": ["src/**"],
+      "rules": {
+        // The renderer reports through the usage log and the app's own messages, not the console.
+        "no-console": ["error", { "allow": ["error", "warn"] }],
+        // The rules of React the compiler relies on to memoize a component safely.
+        "react/purity": "error",
+        "react/refs": "error",
+        "react/immutability": "error",
+        "react/static-components": "error",
+        "react/use-memo": "error",
+        "react/void-use-memo": "error",
+        "react/set-state-in-render": "error",
+        "react/preserve-manual-memoization": "error",
+        "react/incompatible-library": "error",
+        "react/unsupported-syntax": "error",
+        "react/error-boundaries": "error",
+        "react/globals": "error"
+      }
+    },
     // Expected values written as the formula they come from, such as 0 / scale.
     { "files": ["tests/**"], "rules": { "oxc/erasing-op": "off" } },
     // The ROI worker check sets a module variable from its test component.
-    { "files": ["tools/verify-roi-worker.tsx"], "rules": { "react/globals": "off" } }
+    { "files": ["tools/verify-roi-worker.tsx"], "rules": { "react/globals": "off" } },
+    // Plain JavaScript that no tsconfig covers: its types are guesses, so the type-aware rules stay off.
+    {
+      "files": ["electron/**", "tools/**", "web/**", "scripts/**", "telemetry/**", "packaging/**", ".agents/**", "tests/**/*.mjs", "electron-builder.release.cjs"],
+      "rules": {
+        "typescript/no-floating-promises": "off",
+        "typescript/await-thenable": "off",
+        "typescript/switch-exhaustiveness-check": "off",
+        "typescript/no-unnecessary-type-assertion": "off",
+        "typescript/require-array-sort-compare": "off",
+        "typescript/unbound-method": "off",
+        "typescript/no-implied-eval": "off"
+      }
+    }
   ]
 }

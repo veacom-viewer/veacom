@@ -38,8 +38,10 @@ jobs:
       # actionlint also runs shellcheck, which the runner has, on each workflow's scripts.
       - name: Workflows (actionlint)
         run: node tools/pinned-tool.mjs actionlint
+      # --type-aware adds the rules that need types (tsgolint reads tsconfig.json): floating promises, needless
+      # assertions, switches that miss a case.
       - name: JavaScript and TypeScript (oxlint, .oxlintrc.json)
-        run: node tools/pinned-tool.mjs oxlint --format=github
+        run: node tools/pinned-tool.mjs oxlint --type-aware --format=github
       - run: pnpm install --frozen-lockfile
       - name: Types (tsconfig.json, unused names included)
         run: pnpm exec tsc --noEmit

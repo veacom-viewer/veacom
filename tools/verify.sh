@@ -24,7 +24,7 @@ run() {
 run repository node tools/check-repository.mjs
 run fixture node tools/check-golden-study.mjs "$study"
 run react-memo node tools/check-react-memo.mjs
-run lint node tools/pinned-tool.mjs oxlint
+run lint node tools/pinned-tool.mjs oxlint --type-aware
 run workflows node tools/pinned-tool.mjs actionlint
 series="$study/S01"
 run runtime pnpm run setup:runtime

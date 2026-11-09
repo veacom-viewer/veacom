@@ -21,7 +21,7 @@ export function PreopChecklist({ series, onClose, onNote, onGoTo, headingRef }: 
   const { locale, t } = useTranslation();
   const key = studyKey(series);
   const detected = checklistKind(series);
-  const [state, setState] = useState(() => { const saved = kept.get(key); return saved ? { ...saved, kind: detected ?? saved.kind } : { kind: detected ?? 'pns' as ChecklistKind, answers: {}, notes: {} }; });
+  const [state, setState] = useState(() => { const saved = kept.get(key); return saved ? { ...saved, kind: detected ?? saved.kind } : { kind: detected ?? 'pns', answers: {}, notes: {} }; });
   const [copied, setCopied] = useState(false);
   const update = (next: typeof state) => { kept.set(key, next); setState(next); setCopied(false); };
   const list = CHECKLISTS[state.kind];

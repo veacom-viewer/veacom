@@ -102,7 +102,7 @@ export function storedAcquisition(pet: PetAcquisition | undefined): StoredAcquis
   if (positive(pet?.glucose)) kept.glucose = pet.glucose;
   return Object.keys(kept).length ? kept : undefined;
 }
-const readAcquisition = (value: unknown) => value && typeof value === 'object' ? storedAcquisition(value as PetAcquisition) : undefined;
+const readAcquisition = (value: unknown) => value && typeof value === 'object' ? storedAcquisition(value) : undefined;
 
 const holds = (record: PetSeriesRecord) => !!(record.acquisition || record.limitedView || record.lesions?.length || Object.keys(record.references).length);
 

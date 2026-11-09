@@ -279,7 +279,7 @@ export async function exportViewportVideo(options: ViewportVideoOptions): Promis
       const bytes = (ArrayBuffer.isView(source) ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength) : new Uint8Array(source)).slice();
       // The file holds one configuration, so a changed one would corrupt every frame after it.
       if (configuration && !sameBytes(configuration, bytes)) { fail(encodingFailed()); return; }
-      if (!configuration) { configuration = bytes; description = bytes.buffer as ArrayBuffer; }
+      if (!configuration) { configuration = bytes; description = bytes.buffer; }
     }
     queuedWrites++;
     writes = writes.then(async () => {

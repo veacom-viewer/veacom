@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
-import type { Annotation, Series, Volume } from '../src/model';
+import type { Annotation, Series } from '../src/model';
 import { glucoseInUnit, glucoseText, studyGlucose, sulGlu, sulGluGlucose, SULGLU_REFERENCE_MMOL, typedGlucoseMmol } from '../src/imaging/glucose';
 import { fusedPetSummary, sphereSummary } from '../src/imaging/annotations';
 import { formatSphereStatistics, type SphereStatistics } from '../src/imaging/voi';
@@ -14,7 +14,7 @@ const pet = (extra: Partial<Series> = {}): Series => ({ id: 'pet', uid: '1', stu
   windowCenter: 1, windowWidth: 2, valueUnit: 'Bq/ml', suvFactor: 1, sulFactor: 0.8, suvBsaFactor: 0.02, canReconstruct: true, warnings: [],
   photometricInterpretation: 'MONOCHROME2', spacingKnown: true, suvNormalization: 'lbm', petAcquisition: { tracer: 'Fludeoxyglucose F^18^', glucose: 5.4 }, ...extra });
 const sphere: Annotation = { id: 'l1', type: 'sphere', label: 'L1', plane: 'axial', slice: 4, mode: 'mpr', points: [[8, 8, 8], [16, 8, 8]] };
-const summary = (series: Series) => sphereSummary(sphere, { series, data: new Float32Array(9 ** 3).fill(2) } as Volume);
+const summary = (series: Series) => sphereSummary(sphere, { series, data: new Float32Array(9 ** 3).fill(2) });
 
 describe('SULglu', () => {
   it('is SUL × glucose / 5.0 mmol/l (EANM 2025, section 13): the same at 5.0, higher with a higher glucose', () => {
@@ -55,7 +55,7 @@ describe('SULglu', () => {
     assert.deepEqual(studyGlucose({}, 6.2), { mmol: 6.2, source: 'typed' });
     assert.equal(studyGlucose({}, undefined), null);
     assert.match(summary(pet({ typedGlucose: 6, petAcquisition: { tracer: 'FDG' } })), /SULglu max 1\.92, peak 1\.92/);
-    assert.match(fusedPetSummary(sphere, { series: pet(), data: new Float32Array(9 ** 3).fill(2) } as Volume),
+    assert.match(fusedPetSummary(sphere, { series: pet(), data: new Float32Array(9 ** 3).fill(2) }),
       /PET SUL max 1.60.*SULglu max 1.73, peak 1.73/);
     assert.deepEqual(withTypedGlucose({ tracer: 'FDG', glucose: 5.4 }, 12), { tracer: 'FDG', glucose: 5.4 });
     // The typed value also reads in the acquisition panel's flags.

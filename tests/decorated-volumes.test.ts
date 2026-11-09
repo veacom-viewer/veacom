@@ -8,7 +8,7 @@ const volume = (id: string) => ({ series: { id }, data: new Int16Array(8) }) as 
 
 describe('decorated volumes', () => {
   it('keeps one decorated object per volume and settings, so the 3D view does not start again when another series loads', () => {
-    const decorate = mock.fn((item: Volume, settings: Settings) => ({ ...item, series: { ...item.series, measurementScale: settings.scale, measurementUnits: settings.units } }) as Volume);
+    const decorate = mock.fn((item: Volume, settings: Settings) => ({ ...item, series: { ...item.series, measurementScale: settings.scale, measurementUnits: settings.units } }));
     const decorated = createVolumeDecorator(decorate, (a: Settings, b: Settings) => a.scale === b.scale && a.units === b.units);
     const ct = volume('ct'), mr = volume('mr');
     const first = decorated(ct, { units: 'auto' });
