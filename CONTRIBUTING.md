@@ -40,7 +40,7 @@ Once the agreement is adopted, follow its “How to agree” section before merg
 
 Claude reviews each PR for imaging correctness, security boundaries, data/privacy, accessibility, UI consistency, and meaningful tests. Provide a GitHub review or a review file with the checked commit and ranked findings.
 
-Changes to `main` go through a pull request. All merges require resolved conversations and a passing `Verify passed` check, which passes only when every Linux job of the Verify workflow passed: lint, web, browser, engine, secrets, the dependency review and the three desktop shards. Repository admins may merge a PR without an approving review. Other maintainers need one approval, and new commits dismiss stale approvals. Squash merge after local verification and any required Windows checks pass.
+Changes to `main` go through a pull request. All merges require resolved conversations and the web, engine, desktop and secrets checks that branch protection lists (`desktop` passes when its three shards passed). The `Verify passed` check passes only when every Linux job of the Verify workflow passed: lint, web, browser, engine, secrets, the dependency review and the desktop shards. Repository admins may merge a PR without an approving review. Other maintainers need one approval, and new commits dismiss stale approvals. Squash merge after local verification and any required Windows checks pass.
 
 ## Synthetic fixtures and golden images
 

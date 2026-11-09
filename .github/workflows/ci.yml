@@ -183,7 +183,7 @@ jobs:
   # (tools/windows-vm/README.md). The checks are split three ways, each shard on its own runner with its own build, so
   # they take a third of the time they took one after another: app (the viewer and its boundaries), pet (PET
   # quantification) and screens (reading screens and the renderer).
-  desktop:
+  desktop-shards:
     name: desktop (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -326,6 +326,20 @@ jobs:
           path: ${{ runner.temp }}/desktop-evidence
           if-no-files-found: warn
           retention-days: 7
+
+  # The check branch protection waits for under the name desktop: it passes when all three shards passed.
+  desktop:
+    if: always()
+    needs: desktop-shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every desktop shard passed
+        env:
+          RESULT: ${{ needs.desktop-shards.result }}
+        run: |
+          if [ "$RESULT" != success ]; then echo "The desktop shards ended as: $RESULT"; exit 1; fi
+          echo 'Every desktop shard passed.'
 
   # The packaged app on Apple Silicon, on every pull request and push to main like the desktop job: DICOM export, linked
   # paging and MPR in the packaged viewer, then desktop smoke and the video encoder. WebGL on this virtual Mac draws
