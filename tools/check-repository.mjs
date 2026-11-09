@@ -58,8 +58,13 @@ const BY_HAND = new Map([
   ['tools/check-window-and-segmentation.cjs', 'it needs public research studies (a mammogram without a stored window, a CT with DICOM SEG) that CI does not download'],
 ]);
 const checks = files.filter(file => /^tools\/check-[^/]+\.(?:cjs|mjs|ps1)$/.test(file));
+// What a file runs, its comments left out: a check that only a comment names is not started.
+const code = (file, text) => /\.(?:ya?ml|sh)$/.test(file) ? text.replace(/(^|\s)#.*$/gm, '$1')
+  : file.endsWith('.ps1') ? text.replace(/<#[\s\S]*?#>/g, '').replace(/(^|\s)#.*$/gm, '$1')
+  : file.endsWith('.json') ? text
+  : text.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
 const starters = files.filter(file => /\.(?:ya?ml|sh|json|[cm]?js|ts|html|ps1)$/.test(file) && file !== 'tools/check-repository.mjs' && existsSync(file))
-  .map(file => [file, readFileSync(file, 'utf8')]);
+  .map(file => [file, code(file, readFileSync(file, 'utf8'))]);
 const unstarted = checks.filter(check => !BY_HAND.has(check)
   && !starters.some(([file, text]) => file !== check && text.includes(check.slice('tools/'.length))));
 if (unstarted.length) throw new Error(`Nothing starts these checks; run each from CI (.github/workflows) or tools/verify.sh:\n${unstarted.join('\n')}`);

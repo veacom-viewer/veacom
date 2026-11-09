@@ -7,24 +7,10 @@ on:
   schedule:
     - cron: '47 2 * * *'
   workflow_dispatch:
+  # No path filter: GitHub would drop the label event of a pull request outside the paths, and the label would do
+  # nothing. The job condition below skips every pull request without the label.
   pull_request:
     types: [opened, synchronize, reopened, labeled]
-    paths:
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.cargo/config.toml'
-      - 'rust-toolchain.toml'
-      - 'native/Cargo.toml'
-      - 'native/src/**'
-      - 'electron/**'
-      - 'src/**'
-      - 'tools/check-beta-performance.cjs'
-      - 'tools/check-open-speed.cjs'
-      - 'tools/open-budgets.json'
-      - 'tools/lib/io-count.*'
-      - 'tools/lib/open-speed.cjs'
-      - 'tools/fixtures/**'
-      - '.github/workflows/beta-performance.yml'
 
 permissions:
   contents: read
