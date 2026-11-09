@@ -58,11 +58,37 @@ const BY_HAND = new Map([
   ['tools/check-window-and-segmentation.cjs', 'it needs public research studies (a mammogram without a stored window, a CT with DICOM SEG) that CI does not download'],
 ]);
 const checks = files.filter(file => /^tools\/check-[^/]+\.(?:cjs|mjs|ps1)$/.test(file));
-// What a file runs, its comments left out: a check that only a comment names is not started.
-const code = (file, text) => /\.(?:ya?ml|sh)$/.test(file) ? text.replace(/(^|\s)#.*$/gm, '$1')
-  : file.endsWith('.ps1') ? text.replace(/<#[\s\S]*?#>/g, '').replace(/(^|\s)#.*$/gm, '$1')
-  : file.endsWith('.json') ? text
-  : text.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|\s)\/\/.*$/gm, '$1');
+// What a file runs, its comments left out: a check that only a comment names is not started. Quoted text is kept
+// whole, so a # or // inside a string does not cut off the command after it. A quote ends at the line's end, except a
+// JavaScript template literal; a backslash escapes in JavaScript strings and in double-quoted shell text.
+function code(file, text) {
+  if (file.endsWith('.json')) return text;
+  const js = !/\.(?:ya?ml|sh|ps1)$/.test(file), ps1 = file.endsWith('.ps1');
+  const skipTo = (from, end) => { const at = text.indexOf(end, from); return at < 0 ? text.length : at + end.length; };
+  let out = '', quote = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quote) {
+      out += c;
+      if (c === '\\' && (js || quote === '"')) out += text[++i] ?? '';
+      else if (c === quote || (c === '\n' && quote !== '`')) quote = null;
+      continue;
+    }
+    const afterSpace = i === 0 || /\s/.test(text[i - 1]);
+    if (js && text.startsWith('/*', i)) { i = skipTo(i + 2, '*/') - 1; continue; }
+    if (js && text.startsWith('<!--', i)) { i = skipTo(i + 4, '-->') - 1; continue; }
+    if (ps1 && text.startsWith('<#', i)) { i = skipTo(i + 2, '#>') - 1; continue; }
+    if ((js && text.startsWith('//', i)) || (!js && c === '#' && afterSpace)) {
+      const end = text.indexOf('\n', i);
+      if (end < 0) break;
+      i = end - 1; // the newline itself is kept
+      continue;
+    }
+    if (c === '"' || c === "'" || (js && c === '`')) quote = c;
+    out += c;
+  }
+  return out;
+}
 const starters = files.filter(file => /\.(?:ya?ml|sh|json|[cm]?js|ts|html|ps1)$/.test(file) && file !== 'tools/check-repository.mjs' && existsSync(file))
   .map(file => [file, code(file, readFileSync(file, 'utf8'))]);
 const unstarted = checks.filter(check => !BY_HAND.has(check)

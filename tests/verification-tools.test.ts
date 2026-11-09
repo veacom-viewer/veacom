@@ -129,6 +129,16 @@ it('counts a check as started when something runs it, not when only a comment na
   git('add', '.');
   let result = check();
   assert.equal(result.status, 1); assert.ok(result.stderr.includes('Nothing starts these checks')); assert.ok(result.stderr.includes('tools/check-new.cjs'));
+  // A # or // inside quotes is no comment: the command after it still counts.
+  await writeFile(path.join(dir, 'tools/run.sh'), 'echo "ticket #42"; node tools/check-new.cjs\n');
+  git('add', '.');
+  result = check();
+  assert.equal(result.status, 0, result.stderr);
+  await writeFile(path.join(dir, 'tools/run.sh'), "echo 'see https://example.com/#top'\n");
+  await writeFile(path.join(dir, 'tools/other.mjs'), "const url = 'https://example.com/a'; spawn('node', ['tools/check-new.cjs']);\n");
+  result = check();
+  assert.equal(result.status, 0, result.stderr);
+  await writeFile(path.join(dir, 'tools/other.mjs'), 'export {};\n');
   await writeFile(path.join(dir, '.github/workflows/ci.yml'), 'jobs:\n  test:\n    steps:\n      - run: node tools/check-new.cjs # the new check\n');
   result = check();
   assert.equal(result.status, 0, result.stderr);
