@@ -15,7 +15,7 @@ export function actionId(element: Element): string {
   const test = element.getAttribute('data-testid');
   if (!test) return 'other';
   // Series cards are named by their series id: the action is choosing one, not which.
-  if (/^series-/.test(test) && !['series-find', 'series-open-study'].includes(test)) return 'series-pick';
+  if (test.startsWith('series-') && !['series-find', 'series-open-study'].includes(test)) return 'series-pick';
   const id = test.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
   return ACTION.test(id) ? id : 'other';
 }

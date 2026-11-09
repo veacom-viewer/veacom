@@ -474,6 +474,9 @@ impl PixelBuffer {
             Self::F64(v) => v.len(),
         }
     }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
     pub fn value(&self, index: usize) -> f64 {
         match self {
             Self::I16(v) => v[index] as f64,

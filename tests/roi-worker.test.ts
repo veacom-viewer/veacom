@@ -331,7 +331,7 @@ describe('source ROI worker protocol and bounded cache', () => {
       receive({ type: 'begin', id, descriptor: descriptor(key, version) });
       const reply = replies.at(-1);
       assert.equal(reply?.type, 'ready');
-      return (reply as Extract<RoiWorkerResult, { type: 'ready' }>).cached;
+      return (reply).cached;
     };
     const commit = (id: number) => {
       receive({ type: 'chunk', id, offset: 0, bytes: new Float32Array([0, 100, 100, 0]).buffer });

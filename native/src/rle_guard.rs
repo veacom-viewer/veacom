@@ -46,7 +46,7 @@ pub fn check(object: &DefaultDicomObject, frame: Option<u32>) -> Result<()> {
 
 fn check_frame(fragment: &[u8], segments: usize, pixels: usize) -> Result<()> {
     ensure!(
-        fragment.len() >= 64 && fragment.len() % 2 == 0,
+        fragment.len() >= 64 && fragment.len().is_multiple_of(2),
         "Invalid RLE header length"
     );
     let word =
@@ -128,7 +128,7 @@ mod tests {
             let offset = bytes.len() as u32;
             bytes[index * 4 + 4..index * 4 + 8].copy_from_slice(&offset.to_le_bytes());
             bytes.extend_from_slice(packet);
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 bytes.push(0)
             }
         }

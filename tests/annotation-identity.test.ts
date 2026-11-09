@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import type { Annotation, FrameMetadata, Series, Volume } from '../src/model';
 import { annotationSourceIndex, annotationSummary, roiStatistics } from '../src/imaging/annotations';

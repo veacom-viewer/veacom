@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
 import { roiStatistics } from '../src/imaging/annotations';
 import type { ClinicalVolumeDescriptor, ClinicalWorkerRequest, ClinicalWorkerResult } from '../src/domain/clinical.worker';

@@ -112,7 +112,8 @@ fn frame_ranges(
     );
     if offsets.is_empty() {
         if frames == 1 {
-            return Ok(vec![0..fragments.len()]);
+            // One frame made of every fragment.
+            return Ok(std::iter::once(0..fragments.len()).collect());
         }
         ensure!(
             fragments.len() == frames,
@@ -317,7 +318,7 @@ fn check_jpeg(reader: &mut Cursor<'_>, expected: &Expected, jpeg_ls: bool) -> Re
             expected.precision
         );
         let mut identifiers = [false; 256];
-        for component in payload[6..].chunks_exact(3) {
+        for component in payload[6..].as_chunks::<3>().0.iter() {
             ensure!(
                 !identifiers[component[0] as usize],
                 "Duplicate JPEG component identifier"
@@ -365,7 +366,7 @@ fn check_jpeg2000(reader: &mut Cursor<'_>, expected: &Expected) -> Result<()> {
         .checked_sub(y0)
         .context("Invalid JPEG 2000 image origin")?;
     dimensions(expected, width, height, count)?;
-    for component in siz[36..].chunks_exact(3) {
+    for component in siz[36..].as_chunks::<3>().0.iter() {
         let precision = u16::from(component[0] & 127) + 1;
         ensure!(
             precision == expected.precision || sample_width(expected, precision),

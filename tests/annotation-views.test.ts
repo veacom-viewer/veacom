@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { assertFields } from './support';
 import { shownOnView, viewOfAnnotation } from '../src/imaging/annotations';
 import { add, getPlaneFrame, scale } from '../src/imaging/geometry';

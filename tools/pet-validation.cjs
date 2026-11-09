@@ -296,9 +296,9 @@ async function measureStudy(entry, context) {
         reading.maxBqml = maxActivityBqml(shown, record?.values?.max, factor._compare.suvbwPerBqml);
         if (sul && shown.quantity === 'SUVbw') {
           await showPetValues('lbm');
-          reading.values.SUL = validation.parseSphereValues(await rowValues(id, text => /^SUL max/.test(text) && withMtv(text)));
+          reading.values.SUL = validation.parseSphereValues(await rowValues(id, text => text.startsWith('SUL max') && withMtv(text)));
           await showPetValues('bw');
-          await rowValues(id, text => /^SUVbw max/.test(text));
+          await rowValues(id, text => text.startsWith('SUVbw max'));
         }
         if (context.screenshots) {
           await cells().nth(pane).screenshot({ path: path.join(context.output, 'screenshots', `${fileSafe(entry.study)}-${fileSafe(sphere.name)}.png`) });

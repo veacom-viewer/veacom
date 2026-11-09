@@ -42,7 +42,7 @@ describe('picture export', () => {
   });
 
   it('keeps a finished export and records it, and never removes files it did not write', async () => {
-    const { parent, call, recorded, exports } = await fixture();
+    const { call, recorded, exports } = await fixture();
     const done = await call('images:begin', 'SYNTHETIC - CT', true);
     await call('images:append', done.id, '001.png', picture);
     assert.equal(await call('images:finish', done.id), done.directory);

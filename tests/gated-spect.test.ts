@@ -17,7 +17,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   seriesNumber: 1, dimensions: [128, 128, 95], spacing: [3, 3, 3], origin: [-190, -190, -282], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2',
   frameOfReferenceUid: 'frame', orientationKnown: true, positionKnown: true, ...overrides,
-} as Series);
+});
 const ct = series({ id: 'ct', description: 'CT', seriesNumber: 1 });
 /** The summed reconstruction, as the engine gives it: a volume in the CT's frame of reference. */
 const summed = series({ id: 'summed', modality: 'NM', valueUnit: 'a.u.', imageType: 'ORIGINAL\\PRIMARY\\RECON TOMO\\EMISSION', description: 'SPECT',

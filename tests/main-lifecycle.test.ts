@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, before, describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';

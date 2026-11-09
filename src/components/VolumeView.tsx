@@ -558,7 +558,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       }
 
       function drawFrame(renderer: THREE.WebGLRenderer) {
-        const { width, height } = host!.getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
+        const { width, height } = host.getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
         if (width < 1 || height < 1) return;
         if (width !== renderWidth || height !== renderHeight || ratio !== renderRatio) {
           renderWidth = width; renderHeight = height; renderRatio = ratio;
@@ -662,11 +662,11 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
 
       function pointerRay(event: PointerEvent) {
         updateCamera();
-        const rect = canvas!.getBoundingClientRect();
+        const rect = canvas.getBoundingClientRect();
         const point = new THREE.Vector3(2 * (event.clientX - rect.left) / rect.width - 1, 1 - 2 * (event.clientY - rect.top) / rect.height, 1).unproject(camera);
         const direction = point.sub(camera.position).normalize();
         const origin = camera.position.clone().add(center);
-        return { origin: origin.toArray() as Vec3, direction: direction.toArray() as Vec3 };
+        return { origin: origin.toArray(), direction: direction.toArray() };
       }
 
       function touchSurface(event: PointerEvent, carve: boolean) {
@@ -702,7 +702,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       let gesture: { handle: GestureHandle; id: string; moved: boolean; startX: number; startY: number } | null = null;
       const pointerDown = (event: PointerEvent) => {
         if (pointer) return;
-        event.preventDefault(); canvas!.focus(); canvas!.setPointerCapture(event.pointerId);
+        event.preventDefault(); canvas.focus(); canvas.setPointerCapture(event.pointerId);
         const id = event.button === 0 && session.mode === 'burr' ? 'view3d-burr' : event.button === 0 && session.mode === 'pick' ? 'view3d-pick'
           : event.button === 1 || event.shiftKey ? 'view3d-pan' : 'view3d-rotate';
         gesture = { handle: usage.begin(id, event.pointerType === 'touch' ? 'touch' : 'drag'), id, moved: false, startX: event.clientX, startY: event.clientY };
@@ -724,7 +724,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
           if (!pickFrame) pickFrame = requestAnimationFrame(() => { pickFrame = 0; if (pointer?.button === 0 && session.mode === 'pick') touchSurface(at as PointerEvent, false); });
         } else if (pointer.button === 1 || event.shiftKey) {
           updateCamera();
-          const scale = 2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(1, canvas!.clientHeight);
+          const scale = 2 * distance * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(1, canvas.clientHeight);
           const right = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 0);
           const up = new THREE.Vector3().setFromMatrixColumn(camera.matrixWorld, 1);
           target.addScaledVector(right, -dx * scale).addScaledVector(up, dy * scale); requestRender(true); usage.touch('scene');
@@ -735,7 +735,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       };
       const pointerUp = (event: PointerEvent) => {
         if (pointer?.id !== event.pointerId) return;
-        if (canvas!.hasPointerCapture(event.pointerId)) canvas!.releasePointerCapture(event.pointerId);
+        if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
         pointer = null; finishStroke(); requestRender(false);
         // Without movement a rotation or pan is just a click; a pick or a burr touch is the action itself.
         if (gesture) gesture.handle.end(gesture.moved ? {} : { input: event.pointerType === 'touch' ? 'touch' : 'mouse', ...(gesture.id === 'view3d-rotate' || gesture.id === 'view3d-pan' ? { id: 'view3d-click' } : {}) });

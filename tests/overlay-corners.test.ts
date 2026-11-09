@@ -12,7 +12,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   windowCenter: 40, windowWidth: 400, valueUnit: '', suvFactor: null, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2',
   patientAgeText: '045Y', patientSex: 'F', patientBirthDate: '19790102', studyTime: '101530.25', studyDescription: 'Beyin MR',
   institutionName: 'Deneme Hastanesi', magneticFieldStrength: 1.5, repetitionTime: 500, echoTime: 14.999999999, ...overrides,
-} as Series);
+});
 
 afterEach(() => setLocale('tr'));
 

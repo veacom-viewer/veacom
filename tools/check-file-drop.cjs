@@ -104,7 +104,7 @@ async function main() {
     const drop = async (name, inputId, expectedPaths, target = '[data-testid="veacom-app"]', duplicateFirst = false) => {
       const capabilities = await fileCapabilities(inputId);
       assert.equal(capabilities.length, new Set(expectedPaths.map(normalize)).size);
-      assert(capabilities.every(value => /^import:/.test(value)), 'The renderer must receive opaque capabilities.');
+      assert(capabilities.every(value => value.startsWith('import:')), 'The renderer must receive opaque capabilities.');
       const beforeImports = (await importEvents()).length;
       const gate = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('volume'));
       const events = await page.evaluate(({ inputId, target, duplicateFirst }) => {

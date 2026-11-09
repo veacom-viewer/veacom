@@ -2,7 +2,7 @@
 //! the session's catalog, volume cache and job queues.
 
 // The engine's modules under the names this transport has always used.
-#[allow(unused_imports)]
+#[allow(unused_imports, reason = "the transport keeps every module name it has always used, used or not")]
 use veacom_core::{
     archive_temp, catalog, codec_guard, coded, color, decode, export, gamma_camera, geometry, import_budget, ingest,
     input_guard, measure, message, modality_lut, model, note, palette, parallel, pictures, progress, random,
@@ -51,10 +51,10 @@ impl Cache {
         if self.handoff.as_ref().is_some_and(|(k, _)| k == id) {
             self.handoff = None;
         }
-        if let Some(at) = self.entries.iter().position(|(k, _)| k == id) {
-            if let Some((_, v)) = self.entries.remove(at) {
-                self.bytes -= v.allocated_bytes();
-            }
+        if let Some(at) = self.entries.iter().position(|(k, _)| k == id)
+            && let Some((_, v)) = self.entries.remove(at)
+        {
+            self.bytes -= v.allocated_bytes();
         }
     }
     fn put(&mut self, id: String, value: Arc<PixelBuffer>) {
@@ -187,7 +187,7 @@ impl Queue {
     /// waits leaves the line without its turn (paging cancels frame requests by the dozen; each would decode a whole
     /// file). Work is done on the thread that holds the turn, so the turn lasts until the work ends: a cancelled
     /// request never frees it early, and a job's progress record is never left "running" with nobody to finish it.
-    #[allow(clippy::disallowed_methods)] // the one place a queue's turn is waited for (clippy.toml)
+    #[allow(clippy::disallowed_methods, reason = "the one place a queue's turn is waited for (clippy.toml)")]
     fn turn(&self, cancelled: &AtomicBool) -> ApiResult<Turn<'_>> {
         let mut state = self.lock();
         let ticket = state.next;
@@ -913,6 +913,7 @@ mod cache_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "a test plays the part of the pipe workers with its own threads")]
 mod job_tests {
     use super::*;
     use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
@@ -1194,7 +1195,7 @@ mod job_tests {
                 directory: destination.to_string_lossy().into_owned(),
                 anonymize: false, dicomdir: false, decompress: false, root: false, full: false, zip, smallest: false,
             };
-            let error = export::export_series(std::slice::from_ref(&source), &options).err().expect("cancelled");
+            let error = export::export_series(std::slice::from_ref(&source), &options).expect_err("cancelled");
             assert_eq!(error.to_string(), "Export cancelled; nothing was kept");
             assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0, "nothing written (zip: {zip})");
         }
@@ -1204,6 +1205,7 @@ mod job_tests {
 }
 
 #[cfg(test)]
+#[allow(clippy::disallowed_methods, reason = "a test plays the part of the pipe workers with its own threads")]
 mod protocol_tests {
     use super::*;
     use std::{io::{PipeReader, PipeWriter}, thread};

@@ -342,7 +342,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       <h3>{t('assessment.findings')}</h3>
       {FEATURES.map(feature => <label className="assessment-finding" key={feature}><span>{featureName(feature)}</span>
         <select data-action="assessment-feature" value={overrides[feature] ?? ''} onChange={e => setOverrides(current => ({ ...current, [feature]: e.target.value }))}>
-          <option value="">{feature === 'yayilim' ? t('assessment.notAssessed') : t('assessment.auto', { value: measurement.findings[feature] ? words(measurement.findings[feature]!) : t('assessment.unknownValue') })}</option>
+          <option value="">{feature === 'yayilim' ? t('assessment.notAssessed') : t('assessment.auto', { value: measurement.findings[feature] ? words(measurement.findings[feature]) : t('assessment.unknownValue') })}</option>
           <option value="unknown">{t('assessment.leaveUnknown')}</option>{choices[feature].map(choice => <option key={choice} value={choice}>{t('assessment.manual', { value: word(choice) })}</option>)}
         </select></label>)}
       <p className="assessment-help">{t('assessment.growthHelp')}</p>

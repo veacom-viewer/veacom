@@ -252,14 +252,14 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       </svg></div>`);
     const result = await page.evaluate(async javascript => {
       const url = URL.createObjectURL(new Blob([javascript], { type: 'text/javascript' }));
-      const { exportViewportVideo, captureViewportPng } = await new Function('url', 'return import(url)')(url);
+      const { exportViewportVideo, captureViewportPng } = await import(url);
       URL.revokeObjectURL(url);
       const viewport = document.getElementById('viewport')!;
       const canvas = viewport.querySelector('canvas')!;
       const overlay = viewport.querySelector('svg')!;
       const colors = ['#ff0000', '#00ff00', '#0000ff'];
       let current = 2, cancelled = false, fail = false;
-      const captured: number[][] = [], progress: number[] = [];
+      const progress: number[] = [];
       const setSlice = (slice: number) => {
         current = slice;
         canvas.dataset.slice = String(slice);

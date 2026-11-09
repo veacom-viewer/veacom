@@ -437,10 +437,10 @@ pub fn measure_with_plane(
     plane: Option<&Plane>,
 ) -> Result<Value> {
     let kind = if kind == "rect" { "rectangle" } else { kind };
-    if let Some(plane) = plane {
-        if matches!(kind, "rectangle" | "ellipse" | "polygon") {
-            return plane_roi(source, pixels, points, kind, plane);
-        }
+    if let Some(plane) = plane
+        && matches!(kind, "rectangle" | "ellipse" | "polygon")
+    {
+        return plane_roi(source, pixels, points, kind, plane);
     }
     measure(source, pixels, points, kind)
 }

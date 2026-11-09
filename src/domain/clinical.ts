@@ -312,7 +312,7 @@ export function inferStudySequences(seriesList: Series[], translate = t): Record
       if (first !== undefined && taking.when - first > 30 && contrastEvidence(taking.series, translate).state !== 'pre') { injected = taking.when; break; }
       if (first === undefined) firstSeen.set(taking.same, taking.when);
     }
-    if (injected === null || others.some(when => when >= injected!) || new Set(takings.filter(t => t.when >= injected!).map(t => t.same)).size < 2) continue;
+    if (injected === null || others.some(when => when >= injected) || new Set(takings.filter(t => t.when >= injected).map(t => t.same)).size < 2) continue;
     for (const taking of takings) if (taking.when >= injected && contrastEvidence(taking.series, translate).state !== 'pre' && choices[taking.series.id].role === 't1') {
       choices[taking.series.id] = { ...choices[taking.series.id], role: 't1c', basis: translate('clinical.basis.assumedRepeat') };
     }
@@ -531,7 +531,7 @@ export function assessmentSummary(input: { region: string; patient: Patient; fin
     t('clinical.summary.sequences', { sequences: [...new Set(measurement.readings.map(r => ROLE_NAMES[r.role]))].join(', ') || t('clinical.unknown') }),
     input.lesionSlices && input.lesionSlices > 1 ? t('clinical.summary.lesionSlices', { count: input.lesionSlices }) : '',
     t('clinical.summary.reference', { tissue: referenceTissue(region) }),
-    ...FEATURES.map(f => t('clinical.summary.finding', { feature: featureName(f), value: findings[f] ? words(findings[f]!) : t('clinical.unknown'),
+    ...FEATURES.map(f => t('clinical.summary.finding', { feature: featureName(f), value: findings[f] ? words(findings[f]) : t('clinical.unknown'),
       basis: t(input.manualFeatures?.includes(f) ? 'clinical.summary.clinicianSelected' : findings[f] ? 'clinical.summary.measured' : 'clinical.summary.unavailable') })),
     ...measurement.readings.filter(r => r.ratio !== null).map(r => t('clinical.summary.reading', {
       role: ROLE_NAMES[r.role], b: r.bValue === null ? '' : t('clinical.summary.bValue', { value: r.bValue }), ratio: r.ratio!.toFixed(3),
