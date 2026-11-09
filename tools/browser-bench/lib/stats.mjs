@@ -41,7 +41,9 @@ export function compare(a, b, { noise = 0, resamples = 2000, seed = 0xc0de } = {
     if (my) ratios.push(mx / my);
   }
   ratios.sort((p, q) => p - q);
-  const ratio = median(y) ? median(x) / median(y) : null, low = ratios[Math.floor(ratios.length * 0.025)], high = ratios[Math.ceil(ratios.length * 0.975) - 1];
+  // No ratio against a reference whose median is zero (a lag of 0 ms, say): the comparison is unavailable.
+  if (!median(y) || !ratios.length) return null;
+  const ratio = median(x) / median(y), low = ratios[Math.floor(ratios.length * 0.025)], high = ratios[Math.ceil(ratios.length * 0.975) - 1];
   const differs = ratio !== null && (low > 1 || high < 1) && Math.abs(ratio - 1) > noise;
   return { ratio, low, high, differs };
 }

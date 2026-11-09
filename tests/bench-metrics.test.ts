@@ -61,4 +61,8 @@ describe('bench statistics', () => {
     assert.equal(compare(a, b).differs, true);
     assert.equal(compare(a, a.map(v => v * 1.01), { noise: 0.03 }).differs, false);
   });
+
+  it('calls a comparison against an all-zero reference unavailable', () => {
+    assert.equal(compare([5, 6, 7], [0, 0, 0]), null);
+  });
 });

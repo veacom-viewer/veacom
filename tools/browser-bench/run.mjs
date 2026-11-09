@@ -45,6 +45,8 @@ export function order(viewers, round) {
 function runTrial(spec) {
   const file = path.join(spec.outDir, 'specs', `${spec.order}.json`);
   fs.writeFileSync(file, JSON.stringify(spec));
+  // Only this trial's own result may be read back.
+  fs.rmSync(spec.result, { force: true });
   return new Promise((resolve, reject) => {
     const child = spawn(electron, [path.join(here, 'trial.mjs'), file], { stdio: ['ignore', 'ignore', 'pipe'] });
     let errors = '';
@@ -59,6 +61,10 @@ function runTrial(spec) {
 }
 
 const outDir = path.resolve(options.out ?? path.join(here, 'results', new Date().toISOString().replace(/[:.]/g, '-')));
+// A run's folder holds that run alone: an earlier run's trials would be pooled into this one's medians.
+if (fs.existsSync(path.join(outDir, 'run.json')) || fs.existsSync(path.join(outDir, 'results.jsonl'))) {
+  throw new Error(`${outDir} already holds a run; choose a new --out folder.`);
+}
 for (const sub of ['shots', 'specs', 'trials']) fs.mkdirSync(path.join(outDir, sub), { recursive: true });
 const studies = [];
 for (const name of options.studies.split(',')) {

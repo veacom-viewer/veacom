@@ -161,6 +161,8 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     // The window showed a slice but the trace's small screenshots never read it: keep the last one to see why.
     else if (frames.length) fs.writeFileSync(path.join(outDir, 'shots', `${line.viewer}-${study.name}-r${round}-unread.jpg`), Buffer.from(frames.at(-1).jpeg, 'base64'));
     if (!seen) throw new Error('No slice marker appeared on screen.');
+    // The window showed a slice that no trace screenshot read: the opening was not measured, so the trial fails.
+    if (line.firstImageMs === null) throw new Error('The trace screenshots never read the slice marker the window showed (picture kept as -unread.jpg).');
 
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
