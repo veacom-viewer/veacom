@@ -448,7 +448,8 @@ jobs:
   # run publishes after its checks.
   deploy:
     name: Publish viewer.veacom.app
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Dependency review is skipped on main. Check the verification gate explicitly so that skip does not suppress deployment.
+    if: ${{ !cancelled() && needs.passed.result == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
     needs: passed
     runs-on: ubuntu-24.04
     timeout-minutes: 10
