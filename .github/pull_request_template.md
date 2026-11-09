@@ -39,5 +39,6 @@ Write "not applicable" when nothing waits.
 - [ ] Synthetic data only; no patient data, endpoints, or tokens in this PR or evidence.
 - [ ] Contributor agreement checked for each author, if in effect (see `CLA.md`).
 - [ ] Claude reviewed the current commit; blocking findings resolved.
+- [ ] Anti-slop audit (`.agents/skills/anti-slop/SKILL.md`) of the current commit; high and medium findings fixed.
 - [ ] CI and local verification passed; Windows checks passed where required.
 - [ ] Owner approval recorded for any signing, publishing, or release telemetry.
