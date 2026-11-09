@@ -22,8 +22,8 @@ const ended = child => new Promise(resolve => { if (running(child)) child.once('
 function killTree(child) {
   const gone = ended(child);
   // Playwright starts the app as the leader of a process group of its own, except on Windows, where Playwright too
-  // stops the whole tree with taskkill.
-  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+  // stops the whole tree with taskkill. taskkill can stall itself, so it is stopped after 5 s.
+  if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', timeout: 5000 });
   else try { process.kill(-child.pid, 'SIGKILL'); } catch { child.kill('SIGKILL'); }
   return gone;
 }
