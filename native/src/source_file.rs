@@ -4,6 +4,7 @@ mod snapshot;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod stamp;
 use crate::vfs::{File, OpenOptions};
+use sha2::{Digest, Sha256};
 use std::{
     io::{self, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -120,13 +121,17 @@ fn windows_identity(file: &File) -> io::Result<(u32, u64, i64)> {
 }
 
 /// Stable local files on Linux and APFS are checked on the open descriptor as they are read (see `stamp`). Other
-/// sources are checked against their import fingerprint before and after every read. Nothing reads a whole file to
-/// import it: the first image does not wait for the study to be read.
+/// sources are checked against their import fingerprint before and after every read, and against the digest of the
+/// headers import read whenever they are opened again. Nothing reads a whole file to import it: the first image does
+/// not wait for the study to be read.
 #[derive(Debug)]
 pub struct SourceFile {
     pub path: PathBuf,
     pub len: u64,
     fingerprint: Fingerprint,
+    /// SHA-256 of the file's first 8 KiB (or all of a smaller file), for sources without a fast path. A copy over the
+    /// file can keep every time Windows reports, but not the patient, study and image identity in these headers.
+    head: Option<[u8; 32]>,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     stamp: Option<stamp::Stamp>,
     #[cfg(target_os = "macos")]
@@ -186,6 +191,7 @@ impl SourceFile {
                     path: path.to_owned(),
                     len,
                     fingerprint,
+                    head: None,
                     stamp,
                     #[cfg(target_os = "macos")]
                     snapshot,
@@ -193,15 +199,19 @@ impl SourceFile {
                 Arc::new(prefix),
             ));
         }
-        // Only the headers' prefix is read now, as on the fast path; later reads are checked against the fingerprint.
-        let mut prefix = vec![0; keep.min(HEADER_PREFIX).min(len as usize)];
+        // Only the headers are read now, as on the fast path; later reads are checked against the fingerprint, and the
+        // headers' digest when the file is opened again.
+        let mut prefix = vec![0; HEADER_PREFIX.min(len as usize)];
         file.read_exact(&mut prefix)?;
         ensure!(Fingerprint::of(file)? == fingerprint, changed());
+        let head = Sha256::digest(&prefix).into();
+        prefix.truncate(keep.min(prefix.len()));
         Ok((
             Arc::new(Self {
                 path: path.to_owned(),
                 len,
                 fingerprint,
+                head: Some(head),
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 stamp: None,
                 #[cfg(target_os = "macos")]
@@ -279,7 +289,15 @@ impl SourceFile {
             return Ok(self.reader(file, Arc::default()));
         }
         self.fingerprint.verify(&file)?;
-        Ok(self.reader(file, Arc::default()))
+        let Some(expected) = &self.head else {
+            return Ok(self.reader(file, Arc::default()));
+        };
+        // The headers are read again and served from this check, so what follows reads past them.
+        let mut head = vec![0; HEADER_PREFIX.min(self.len as usize)];
+        let mut file = file;
+        ensure!(file.read_exact(&mut head).is_ok(), changed());
+        ensure!(Sha256::digest(&head)[..] == expected[..], changed());
+        Ok(self.reader(file, Arc::new(head)))
     }
 
     fn reader(self: &Arc<Self>, file: File, prefix: Arc<Vec<u8>>) -> SourceReader {
@@ -380,7 +398,13 @@ mod tests {
         assert_eq!(prefix.as_slice(), &bytes[..HEADER_PREFIX]);
         let mut reader = source.open().unwrap();
         std::fs::write(&path, vec![22; bytes.len()]).unwrap();
+        // The headers come from the copy checked against their import digest when the file was opened.
+        let mut first = [0; 8];
+        reader.read_exact(&mut first).unwrap();
+        assert_eq!(first, [7; 8]);
+        reader.seek(SeekFrom::Start(HEADER_PREFIX as u64)).unwrap();
         assert!(reader.read_exact(&mut [0; 8]).is_err());
+        assert!(source.open().is_err());
     }
 
     #[cfg(target_os = "linux")]
