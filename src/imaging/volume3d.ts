@@ -438,7 +438,7 @@ function voiFrame(volume: Volume, plane: Plane, mode: ViewMode = 'mpr') {
 
 function resampleOutline(outline: Vec3[], frame: ReturnType<typeof voiFrame>, slice: number, preservePrepared = false): Vec3[] {
   if (!Number.isInteger(slice) || slice < 0 || slice >= frame.slices) throw new Error(t('volume.keySlice'));
-  if (outline.length < 3 || outline.some(p => !p.every(Number.isFinite))) throw new Error(t('volume.threePoints'));
+  if (outline.length < 3 || outline.some((point: readonly number[]) => point.length !== 3 || !point.every(Number.isFinite))) throw new Error(t('volume.threePoints'));
   const offset = slice * frame.step;
   if (outline.some(p => Math.abs(dot(subtract(p, frame.center), frame.normal) - offset) > Math.max(1e-4, Math.abs(frame.step) * 1e-4))) {
     throw new Error(t('volume.offPlane'));
