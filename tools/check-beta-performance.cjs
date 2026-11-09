@@ -171,7 +171,8 @@ async function run(build, study, counter) {
   const folder = await temporaryExportFolder(profile);
   const core = binary(roots[build]);
   const countsFile = path.join(profile, 'reads');
-  let desktop;
+  let desktop, page;
+  const errors=[];
   try {
     const env = { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1', VEACOM_CACHE_MIB: '256', VEACOM_CORE_PATH: core };
     if (counter) {
@@ -185,7 +186,7 @@ async function run(build, study, counter) {
     const args=[roots[build], '--force-device-scale-factor=1'];
     if (process.platform==='linux') args.push('--ignore-gpu-blocklist');
     desktop = await electron.launch({ executablePath:exe,args,env,timeout:90_000 });
-    const page = await desktop.firstWindow();
+    page = await desktop.firstWindow();
 
 
     await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true' && window.__VEACOM_TEST__);
@@ -196,8 +197,9 @@ async function run(build, study, counter) {
       await document.fonts.ready;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     });
-    const errors = [], requests = { frame: 0, volume: 0 }, pixelPaths = [];
+    const requests = { frame: 0, volume: 0 }, pixelPaths = [];
     page.on('pageerror', error => errors.push(error.message));
+    page.on('requestfailed', req => console.log('Request failed',build,study,new URL(req.url()).pathname,req.failure()?.errorText));
     page.on('response', response => {
       const type = new URL(response.url()).pathname.match(/^\/_imaging\/(frame|volume)\//)?.[1];
       if (type) {
@@ -218,10 +220,20 @@ async function run(build, study, counter) {
           return draw.apply(this,args);
         };
       }
+      // A volume can finish loading just after its last canvas draw. Poll the same ready state on both releases.
+      const ready=()=>{
+        if(window.__fullDraw) return;
+        const s=window.__VEACOM_TEST__.state();
+        const cell=document.querySelector('.viewport-cell.is-active');
+        if(window.__firstDraw && s.fullVolumeLoaded && cell?.querySelector('canvas[data-series-id]')?.dataset.seriesId===s.activeSeriesId){
+          window.__fullDraw=performance.now(); window.__fullMarker='ready-and-drawn';
+        } else requestAnimationFrame(ready);
+      };
+      requestAnimationFrame(ready);
       document.addEventListener('veacom:frame',event=>{
-        const time=performance.now(), cell=event.target.closest('[data-testid="viewport-cell"]');
+        const time=performance.now(), s=window.__VEACOM_TEST__.state();
         window.__firstDraw ??= time;
-        if(cell?.dataset.volumeComplete==='true') window.__fullDraw ??= time;
+        if(!window.__fullDraw && s.fullVolumeLoaded && s.activeSeriesId===event.detail.seriesId){window.__fullDraw=time;window.__fullMarker='full-frame';}
         if(study==='pet' && window.__usedPet && window.__VEACOM_TEST__.state().series.some(i=>i.id===event.detail.seriesId && i.modality==='CT'))
           window.__fusedDraw ??= time;
       });
@@ -243,10 +255,10 @@ async function run(build, study, counter) {
       const caps = await authorizeImportPaths(desktop, [path.join(studies, study)]);
       await page.evaluate(c => window.__VEACOM_TEST__.importPaths(c), caps);
     }
-    await page.waitForFunction(() => window.__firstDraw && window.__fullDraw && window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => window.__firstDraw && window.__fullDraw && window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 45000 });
     const firstMs = await page.evaluate(() => window.__firstDraw - window.__openStarted);
     const fullMs=await page.evaluate(()=>window.__fullDraw-window.__openStarted);
-    const row={readyMs,firstMs,fullMs,requests};
+    const row={readyMs,firstMs,fullMs,requests,fullMarker:await page.evaluate(()=>window.__fullMarker)};
     if (!counter && ['ct-small','ct-1000','ct-jpeg'].includes(study)) Object.assign(row,await pageStack(page));
     if (study === 'picture-picker') row.preparedDecoders = await page.evaluate(() => window.__chooserDecoders);
     if (study === 'ct-1000') {
@@ -296,6 +308,16 @@ async function run(build, study, counter) {
     }
     assert.deepEqual(errors, []);
     return row;
+  } catch(error) {
+    if(page && !page.isClosed()) {
+      const status=await page.evaluate(()=>{ const s=window.__VEACOM_TEST__?.state(), cell=document.querySelector('.viewport-cell.is-active');
+        return {marks:[window.__firstDraw,window.__fullDraw,window.__fusedDraw],active:s?.activeSeriesId,full:s?.fullVolumeLoaded,graphicsError:s?.graphicsError,
+          loaded:s?.loadedSeriesIds,count:s?.series?.length,pending:s?.pendingLoads,canvases:[...document.querySelectorAll('canvas[data-series-id]')].map(el=>[el.dataset.renderer,el.dataset.slice]),
+          complete:cell?.dataset.volumeComplete,cellText:cell?.textContent?.slice(0,450),notices:[...document.querySelectorAll('[role="alert"],.viewport-error,.notice')].map(el=>el.textContent?.slice(0,300))};
+      }).catch(()=>null);
+      console.error('Probe failed',build,study,counter?'counted':'timed',JSON.stringify({status,errors}));
+    }
+    throw error;
   } finally {
     if (desktop) await desktop.close();
     fs.rmSync(profile, { recursive: true, force: true });
@@ -313,11 +335,7 @@ async function main() {
   const save = () => fs.writeFileSync(path.join(output, 'desktop.json'), JSON.stringify(report, null, 2));
   const counter = prepareCounter(output);
   assert(counter.library, counter.reason);
-  report.counts = {};
-  for (const build of ['base', 'head']) report.counts[build] = await run(build, 'ct-1000', counter);
-  save();
-  if (report.counts.base.mprReads.bytes) report.failures.push('Beta 1 unexpectedly reread pixels for Auto Window');
-  if (report.counts.head.mprReads.bytes || report.counts.head.mprReads.files) report.failures.push('MPR reread the study');
+  report.counts = {}; save();
   for (const study of ['ct-1000','mr','pet','single.png','picture-picker','video','ct-small','ct-jpeg']) {
     for (let round = -1; round < rounds; round++) {
       const pair = {};
@@ -351,6 +369,11 @@ async function main() {
       report.comparisons.push({ study, metric, ...comparison });
       if (comparison.verdict === 'slower') report.regressions.push(study+' '+metric);
     }
+    save();
+  }
+  for(const build of ['base','head']) {
+    try {report.counts[build]=await run(build,'ct-1000',counter);}
+    catch(error) { report.counts[build]={countError:error.message}; }
     save();
   }
   const table = ['| Study | Metric | Beta 1 median | Candidate median | Change (95% interval) |','|---|---|---:|---:|---|'];

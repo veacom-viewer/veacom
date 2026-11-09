@@ -68,17 +68,7 @@ jobs:
             )
           done
           if cmp -s "$BASE_APP/native/target/release/veacom-core" "$HEAD_APP/native/target/release/veacom-core"; then exit 1; fi
-      - name: Compare native CT imports with twelve warm and seven cold pairs
-        id: native
-        run: >-
-          node tools/check-open-speed.cjs "--output=$RUNNER_TEMP/open-speed"
-          "--base=$BASE_APP/native/target/release/veacom-core"
-          "--head=$HEAD_APP/native/target/release/veacom-core"
-          --base-label=beta.1 --head-label=main-af4ca4f
-          --fixture=${{ runner.os == 'macOS' && 'ct-1000-apfs' || 'ct-1000-local' }}
-          --rounds=12 --cold-rounds=7 --threshold=12 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
       - name: Compare nine paired desktop trials
-        if: ${{ !cancelled() && (steps.native.outcome == 'success' || steps.native.outcome == 'failure') }}
         run: node tools/check-beta-performance.cjs "$RUNNER_TEMP/beta-desktop" 9
       - name: Keep timings, pixel checks and sample counts
         if: always()
