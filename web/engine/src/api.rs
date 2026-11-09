@@ -151,6 +151,7 @@ fn decode_volume_of(id: &str, revision: Option<u64>) -> anyhow::Result<Arc<Pixel
 #[wasm_bindgen(start)]
 fn start() {
     console_error_panic_hook::set_once();
+    veacom_core::clock::set_source(js_sys::Date::now);
     veacom_core::memory_fs::on_read(read_hook);
     #[cfg(feature = "threads")]
     crate::helpers::lend();

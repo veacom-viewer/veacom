@@ -19,3 +19,7 @@ mod libc_shim;
 /// The threads build's lent threads: Web Workers that call `helperMain` and work on the engine's parallel runs.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod helpers;
+
+/// The threads build's picture decoder: a Web Worker that answers the PNG, JPEG and BMP pictures the engine reads.
+#[cfg(all(target_arch = "wasm32", feature = "threads"))]
+mod pictures;
