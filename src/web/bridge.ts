@@ -279,7 +279,7 @@ export function createWebBridge(): DesktopBridge {
     };
     // A module that does not load, or an error outside any request.
     own.onerror = () => { if (own === worker) crashed(); };
-    void call<EngineInfo>({ op: 'init', ...(cancel ? { cancel: cancel.buffer } : {}) }).then(info => {
+    void call<EngineInfo>({ op: 'init', ...(cancel ? { cancel: cancel.buffer as SharedArrayBuffer } : {}) }).then(info => {
       if (own !== worker) return;
       if (info.shared) shared = { cancel: new Int32Array(info.shared.buffer, info.shared.cancel, 1), progress: new Uint32Array(info.shared.buffer, info.shared.progress, 4) };
       // For the measurement tools (web/tools): how many threads decode.
@@ -328,7 +328,7 @@ export function createWebBridge(): DesktopBridge {
     const id = requestId;
     onQueued?.(id);
     return new Promise<T>((resolve, reject) => {
-      pending.set(id, { resolve: resolve, reject, busy, op: request.op });
+      pending.set(id, { resolve: resolve as (value: never) => void, reject, busy, op: request.op });
       // New files keep the engine busy again: no release waits any more.
       if (request.op === 'import') releaseWhenIdle = false;
       queue.push({ id, request });
@@ -396,7 +396,7 @@ export function createWebBridge(): DesktopBridge {
   }
 
   function catalog(result: ImportResult): ImportResult {
-    const series = result.series.map(item => ({ ...item, engineGeneration: generation }));
+    const series = result.series.map(item => ({ ...item, engineGeneration: generation }) as Series);
     for (const item of series) { known.set(item.id, generation); described.set(item.id, item); }
     return { ...result, series };
   }

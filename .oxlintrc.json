@@ -66,9 +66,10 @@
     },
     // Expected values written as the formula they come from, such as 0 / scale.
     { "files": ["tests/**"], "rules": { "oxc/erasing-op": "off" } },
-    // Plain JavaScript that no tsconfig covers: its types are guesses, so the type-aware rules stay off.
+    // Plain JavaScript that no tsconfig covers, and the browser build's bridge, whose types come from the WebAssembly
+    // engine's generated modules (tsconfig.web.json) that the lint job does not build: the type-aware rules stay off.
     {
-      "files": ["electron/**", "tools/**", "web/**", "scripts/**", "telemetry/**", "packaging/**", ".agents/**", "tests/**/*.mjs", "electron-builder.release.cjs"],
+      "files": ["electron/**", "tools/**", "web/**", "scripts/**", "telemetry/**", "packaging/**", ".agents/**", "tests/**/*.mjs", "electron-builder.release.cjs", "src/web/**"],
       "rules": {
         "typescript/no-floating-promises": "off",
         "typescript/await-thenable": "off",

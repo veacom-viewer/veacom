@@ -36,7 +36,7 @@ async function load(): Promise<{ engine: Engine; threads: number; memory: WebAss
       const threaded: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
       const exports = await threaded.default();
       await startHelpers(threaded, THREADS - 1);
-      return { engine: threaded, threads: THREADS, memory: exports.memory };
+      return { engine: threaded as unknown as Engine, threads: THREADS, memory: exports.memory };
     } catch (error) {
       console.warn('The threaded engine could not start; using one thread.', error);
     }
