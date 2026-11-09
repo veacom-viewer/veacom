@@ -473,7 +473,22 @@ jobs:
         with:
           name: viewer-site-${{ github.run_id }}
           path: web/site/public
+      # A manual run and a push run do not cancel each other, so the one that finished last would publish, even an older
+      # commit. Only main's current commit is published; a newer commit's run publishes after this one.
+      - name: Is this main's current commit?
+        id: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo current=true >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now, so its own run publishes; not publishing $GITHUB_SHA."
+            echo current=false >> "$GITHUB_OUTPUT"
+          fi
       - name: Publish
+        if: steps.main.outputs.current == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
@@ -482,6 +497,7 @@ jobs:
       # The new version is live within seconds: the home page must name this build's entry script and come with the
       # headers the threads and the content policy depend on.
       - name: The site serves this build with its headers
+        if: steps.main.outputs.current == 'true'
         run: |
           set -euo pipefail
           entry=$(grep -o 'src="\./assets/[^"]*\.js"' web/site/public/index.html | head -n 1)
