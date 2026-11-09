@@ -1394,10 +1394,10 @@ export const en = {
   'viewport.linearExact': 'LINEAR_EXACT',
 
   'usage.title': 'Usage and performance',
-  'usage.question': 'Share tool use, timings, and CPU and memory use? VEAcom sends technical crash reports whichever option you choose. Neither report includes images, patient details, file names or typed text.',
+  'usage.question': 'Share tool use, timings, and CPU and memory use? The desktop viewer sends technical fault reports whichever option you choose. Neither report includes images, patient details, file names or typed text.',
   'usage.share': 'Share',
   'usage.decline': "Don't share",
   'usage.section': 'PRIVACY',
   'usage.setting': 'Share usage and performance data',
-  'usage.settingHelp': 'Shares tool use, timings and CPU and memory peaks under a random installation ID. Turning this off stops usage recording and deletes its local copy and ID. Previously sent data stays on the server. Automatic crash reports are separate. They contain the app version, platform, affected process, exit reason and recovery outcome.',
+  'usage.settingHelp': 'Shares tool use, timings and CPU and memory peaks under a random installation ID. Turning this off stops usage recording and deletes its local copy and ID. Previously sent data stays on the server. The desktop viewer always reports technical faults. Reports identify the build, platform, affected process, stage and recovery. They can include an exit code, an error category or the kind of engine work in progress. They contain no error text, file paths or installation ID.',
 } as const;

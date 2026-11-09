@@ -8,6 +8,21 @@ set -euo pipefail
 source "$(dirname "$0")/env.sh"
 CONFIG="$(dirname "$0")/../collector/config.yaml"
 
+# The public pipeline drops the crash service name. An older intake still sending here would receive a false success.
+intake=$(g run services list --region="$REGION" --filter='metadata.name=veacom-crashes' --format='value(metadata.name)')
+if [[ -n "$intake" ]]; then
+    g run services describe "$intake" --region="$REGION" --format=json | python3 -c '
+import json, sys
+s = json.load(sys.stdin)
+status = s["status"]
+ready = status.get("latestReadyRevisionName")
+uses_private_storage = any(e.get("name") == "CRASH_STORAGE_URL" and e.get("value") for e in s["spec"]["template"]["spec"]["containers"][0].get("env", []))
+current_traffic = [t for t in status.get("traffic", []) if t.get("percent", 0) > 0]
+if not (ready and ready == status.get("latestCreatedRevisionName") and uses_private_storage and current_traffic and all(t.get("revisionName") == ready for t in current_traffic)):
+    sys.exit("Switch crash intake to private storage with 08-crashes.sh before updating the public collector.")
+'
+fi
+
 if g secrets describe otelcol-config >/dev/null 2>&1; then
     g secrets versions add otelcol-config --data-file="$CONFIG" >/dev/null
 else

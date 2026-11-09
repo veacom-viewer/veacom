@@ -56,7 +56,7 @@ async function main() {
   };
   let usageRequests = 0;
   const usage = http.createServer((_req,res)=>{ usageRequests++; res.writeHead(200);res.end('{}'); });
-  const intake = createServer({ token:'local-test-token', fetchImpl:async (_url,options)=>{
+  const intake = createServer({ storageUrl:'https://storage.invalid', getToken:async ()=>'local-test-token', fetchImpl:async (_url,options)=>{
     const trace = JSON.parse(options.body).resourceSpans[0].scopeSpans[0].spans[0];
     assert.ok(!options.body.includes(sentinel));
     accepted.set(trace.traceId,trace);
@@ -74,8 +74,8 @@ async function main() {
     if (executablePath) delete env.VEACOM_CORE_PATH;
     async function launch() {
       desktop = await electron.launch({ cwd:root, executablePath:executablePath || require('electron'),
-        args:executablePath ? [] : [root], env, timeout:60000 });
-      const page = await desktop.firstWindow(); await ignoreOutsideInput(desktop);
+        args:[...(executablePath ? [] : [root]), ...(process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState','YES'] : [])], env, timeout:60000 });
+      const page = await desktop.firstWindow({timeout:90000}); await ignoreOutsideInput(desktop);
       await page.waitForFunction(async()=>(await window.veacom?.getCoreState())?.status === 'ready');
       const status = await page.evaluate(()=>window.veacom.usageStatus());
       assert.equal(status.consent,'denied'); assert.equal(status.sending,false);
@@ -100,15 +100,28 @@ async function main() {
     monitor = fs.watch(path.dirname(queue),sample);
     const mainId = JSON.parse(fs.readFileSync(queue,'utf8')).running.id;
     await page.evaluate(text=>{document.title=text;},sentinel);
+    const find = (role, recovery, reason) => waitFor(()=>{
+      sample(); return [...events.values()].find(r=>r.process===role && r.recovery===recovery && (!reason || r.reason===reason));
+    },role + ' report');
+    await page.evaluate(text=>{
+      window.veacom.reportRendererFailure('render-failed',text);
+      window.veacom.reportRendererFailure('render-failed','type');
+      window.veacom.reportRendererFailure('render-failed','type');
+    }, sentinel);
+    const failedRender = await find('renderer','unknown','render-failed');
+    assert.equal(failedRender.exception,'type');
+    await page.evaluate(text=>{
+      setTimeout(()=>{ throw new TypeError(text); },0);
+      void Promise.reject(new RangeError(text));
+    }, sentinel);
+    assert.equal((await find('renderer','unknown','uncaught-exception')).exception,'type');
+    assert.equal((await find('renderer','unknown','unhandled-rejection')).exception,'range');
     // On Windows the Playwright launcher can have a different PID from Electron main.
     const mainPid = await desktop.evaluate(()=>process.pid);
     process.kill(enginePid(mainPid),process.platform === 'win32' ? 'SIGKILL' : 'SIGABRT');
     await page.waitForFunction(async()=>{
       const state = await window.veacom.getCoreState(); return state.status==='ready' && state.generation===2;
     });
-    const find = (role, recovery) => waitFor(()=>{
-      sample(); return [...events.values()].find(r=>r.process===role && r.recovery===recovery);
-    },role + ' report');
     const engine = await find('engine','restarted');
     if (process.platform === 'win32') assert.ok(engine.code !== null || engine.signal);
     else { assert.equal(engine.reason,'signal'); assert.equal(engine.signal,'SIGABRT'); }
@@ -128,7 +141,7 @@ async function main() {
       const contents=BrowserWindow.getAllWindows()[0].webContents;
       contents.once('render-process-gone',(_event,d)=>resolve({reason:d.reason,code:d.exitCode})); contents.forcefullyCrashRenderer();
     }));
-    const rendered = await find('renderer','unknown');
+    const rendered = await find('renderer','unknown',renderer.reason);
     assert.deepEqual([rendered.reason,rendered.code],[renderer.reason,renderer.code]);
 
     const exiting = once(desktop.process(),'exit');
@@ -146,6 +159,7 @@ async function main() {
     assert.ok(signal || code !== 0,'the test main process must really crash');
     await launch();
     const unclean = await find('main','unknown');
+    assert.equal(unclean.stage,'running');
     assert.equal(unclean.id,mainId); assert.equal(unclean.reason,'unclean-exit'); assert.equal(unclean.signal,null);
     await waitFor(()=>JSON.parse(fs.readFileSync(queue,'utf8')).events.length===0,'delivery acknowledgements',60000);
     await desktop.close(); desktop = null;
@@ -153,6 +167,7 @@ async function main() {
     assert.equal(usageRequests,0,'usage opt-out still applies');
     const reports = [...events.values()];
     assert.ok(reports.every(r=>validReport(r) && r.environment==='lab'));
+    assert.equal(reports.filter(r=>r.reason==='render-failed').length,1);
     assert.ok(!JSON.stringify(reports).includes(sentinel));
     if (!live) for (const r of reports) {
       const span = accepted.get(r.id);

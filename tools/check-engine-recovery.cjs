@@ -18,7 +18,9 @@ async function main() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-recovery-'));
   const checks = [], errors = [];
   const nativeSha256 = hash(await fs.readFile(process.env.VEACOM_CORE_PATH || path.resolve(__dirname, '../native/target/release/veacom-core')));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study],
+  // The preceding crash test can trigger macOS's restore-windows prompt before Electron is ready.
+  const restoreArgs = process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [];
+  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study, ...restoreArgs],
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
   let page;
   const check = (name, detail) => { checks.push({ name, passed: true, detail }); console.log(`PASS ${name}`); };
