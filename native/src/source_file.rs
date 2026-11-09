@@ -424,7 +424,11 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(50));
         file.rewind().unwrap();
         file.write_all(&[22; 8]).unwrap();
-        assert!(reader.read_exact(&mut [0; 8]).is_err());
+        // The whole file is within the headers checked against their import digest when it was opened.
+        let mut bytes = [0; 8];
+        reader.read_exact(&mut bytes).unwrap();
+        assert_eq!(bytes, [11; 8]);
+        assert!(original.open().is_err());
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
