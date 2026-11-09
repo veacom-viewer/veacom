@@ -127,9 +127,11 @@ jobs:
           if [ "$AA" = true ]; then args+=(--aa); fi
           if [ -n "${BASE_DIST:-}" ]; then args+=(--base "$BASE_DIST"); fi
           node tools/browser-bench/bench.mjs run "${args[@]}"
+      # hashFiles() sees only the workspace, so the results folder in the runner's temp is checked here instead.
       - name: Report
-        if: ${{ !cancelled() && hashFiles(format('{0}/bench-results/results.jsonl', runner.temp)) != '' }}
+        if: ${{ !cancelled() }}
         run: |
+          if [ ! -s "$RESULTS/results.jsonl" ]; then echo 'No trial finished.'; exit 0; fi
           node tools/browser-bench/bench.mjs report "$RESULTS"
           cat "$RESULTS/report.md" >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the results
