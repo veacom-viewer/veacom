@@ -1,0 +1,4 @@
+# Commits that only reformat code, which git blame skips. GitHub reads this file; locally, run
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# cargo fmt --all over the Rust code (#17)
+2a2103ec0ec357bc231d4f6d7cbebed3e3f2f2e7
