@@ -66,8 +66,6 @@
     },
     // Expected values written as the formula they come from, such as 0 / scale.
     { "files": ["tests/**"], "rules": { "oxc/erasing-op": "off" } },
-    // The ROI worker check sets a module variable from its test component.
-    { "files": ["tools/verify-roi-worker.tsx"], "rules": { "react/globals": "off" } },
     // Plain JavaScript that no tsconfig covers: its types are guesses, so the type-aware rules stay off.
     {
       "files": ["electron/**", "tools/**", "web/**", "scripts/**", "telemetry/**", "packaging/**", ".agents/**", "tests/**/*.mjs", "electron-builder.release.cjs"],
