@@ -84,7 +84,7 @@ export function match(arrangements: readonly Arrangement[], trigger: Trigger, co
  * next SPECT, as a PET without its CT gives way to the next PET. */
 export function resolveRoles(arrangement: Arrangement, series: readonly Series[], picked?: Series, session: readonly Series[] = series): Record<string, Series> | null {
   const roles: Record<string, Series> = {};
-  const pickedSpec = arrangement.roles.picked;
+  const pickedSpec = Object.hasOwn(arrangement.roles, 'picked') ? arrangement.roles.picked : undefined;
   if (pickedSpec) { if (!picked || !ofKind(pickedSpec, picked)) return null; roles.picked = picked; }
   else if (picked) roles.picked = picked;
   const pending = Object.entries(arrangement.roles).filter(([name]) => name !== 'picked');
@@ -124,8 +124,9 @@ function planFor(arrangement: Arrangement, context: MatchContext): Plan | null {
   const roles = resolveRoles(arrangement, context.series, picked[0], context.session ?? context.series);
   if (!roles) return null;
   const grid = Array.isArray(arrangement.grid) ? [arrangement.grid[0], arrangement.grid[1]] as [number, number] : null;
-  const panes = arrangement.panes.map(spec => ({ spec, series: roles[spec.role] }));
-  return panes.every(pane => pane.series) ? { arrangement, roles, grid, panes } : null;
+  // Pane roles are plain strings the types do not tie to `roles`: a pane whose role is unfilled leaves no plan.
+  if (!arrangement.panes.every(spec => Object.hasOwn(roles, spec.role))) return null;
+  return { arrangement, roles, grid, panes: arrangement.panes.map(spec => ({ spec, series: roles[spec.role] })) };
 }
 
 /** A repeat study can share a quantitative window only if both PETs can be displayed in SUVbw. */
@@ -218,8 +219,8 @@ export function readKept(raw: string | null, builtins: readonly Arrangement[] = 
 /** A saved opt-out controls automatic opening. An explicit request can always open the built-in screen. */
 export function withKept(kept: Kept, builtins: readonly Arrangement[] = BUILTIN_ARRANGEMENTS): Arrangement[] {
   return builtins.flatMap(arrangement => {
+    if (!Object.hasOwn(kept, arrangement.id) || !keepable(arrangement)) return [arrangement];
     const variant = kept[arrangement.id];
-    if (!variant || !keepable(arrangement)) return [arrangement];
     if ('off' in variant) return arrangement.when === 'screen' ? [arrangement] : [];
     return [{ ...arrangement, grid: variant.grid, panes: variant.panes, kept: true }];
   });

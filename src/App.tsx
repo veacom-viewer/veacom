@@ -124,7 +124,7 @@ const measureIcon = (tool: Tool, size = 18, tagged = false) => { const Icon = ME
 /** softTissue → soft-tissue: action ids and window classes are kebab-case. */
 const kebab = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 // The engine reports progress by stage name; unknown stages are shown as reported.
-const STAGES: Record<string, MessageKey> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
+const STAGES: Partial<Record<string, MessageKey>> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
 const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
 const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
 /** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
@@ -374,7 +374,7 @@ export default function App() {
   const { locale, t } = useTranslation();
   const toolLabel = (tool: Tool) => t(`tool.${tool}` as const);
   const presetName = (preset: typeof PRESETS[number]) => t(`preset.${preset.key}` as const);
-  const stageLabel = (stage: string) => STAGES[stage] ? t(STAGES[stage]) : stage;
+  const stageLabel = (stage: string) => { const key = STAGES[stage]; return key ? t(key) : stage; };
   const planeLabel = (plane: Plane) => t(`planeLower.${plane}` as const);
   const [series, setSeries] = useState<Series[]>([]);
   const seriesById = new Map(series.map(item => [item.id, item]));
@@ -612,7 +612,7 @@ export default function App() {
   const pictureNote = activeSeries?.warningNotes?.find(note => note.code === 'series.ordinaryImage');
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
-  const activeVolume = activeSlot ? volumeForSlot(activeSlot) : undefined;
+  const activeVolume = volumeForSlot(activeSlot);
   if (activeVolume?.series.sourceFramesOnly) {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
@@ -622,7 +622,7 @@ export default function App() {
   const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
-  const activeAnnotations = activeSlot?.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
+  const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
   const inspectorShown = Boolean(settings.panel) && (!showAssessment || assessmentBehind);
@@ -842,10 +842,12 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
+    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
+    const previewWanted = () => !complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
     if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
-      if (complete || !mounted.current || !isCurrent() || fullyLoaded.current.has(item.id)) return;
+      if (!previewWanted()) return;
       await prepareSourceProgram(volume);
-      if (!complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id)) storeVolume(volume);
+      if (previewWanted()) storeVolume(volume);
     }).catch(() => { /* The full decoder supplies the actionable error. */ });
     return full;
   };
@@ -952,15 +954,17 @@ export default function App() {
     // the first opens at once and the others join the list. The import's own result is the final word on them.
     const early = new Map<string, Series>();
     let watching = true, opened = false;
+    // Asked after each wait: the import's own result ends the watch, and so does the app unmounting.
+    const stillWatching = () => watching && mounted.current;
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
     void (async () => {
       let after = 0;
-      while (watching) {
+      while (stillWatching()) {
         await new Promise(resolve => setTimeout(resolve, 40));
-        if (!watching || !mounted.current) return;
+        if (!stillWatching()) return;
         let found: Series[];
         try { found = await importEarly(paths, after); } catch { return; /* An engine restart: the import's own result reports it. */ }
-        if (!watching || !mounted.current) return;
+        if (!stillWatching()) return;
         after += found.length;
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
@@ -988,13 +992,15 @@ export default function App() {
       setAnnotations(current => {
         const next = { ...current }; let changed = false;
         for (const item of result.series) {
-          if (!current[item.id]) continue;
-          next[item.id] = current[item.id].map(annotation => {
+          if (!Object.hasOwn(current, item.id)) continue;
+          const kept = current[item.id];
+          const moved = kept.map(annotation => {
             if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
             const index = annotationSourceIndex(annotation, item);
             if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
-            changed = true; return { ...annotation, sourceFrame: index, slice: index };
+            return { ...annotation, sourceFrame: index, slice: index };
           });
+          if (moved.some((annotation, i) => annotation !== kept[i])) { next[item.id] = moved; changed = true; }
         }
         return changed ? next : current;
       });
@@ -1059,7 +1065,7 @@ export default function App() {
   const restoreCatalog = async () => {
     // A launch-time study may already be importing in the main process; it opens through importStudies,
     // so the catalog must not open its first series as well.
-    const startupPaths = await window.veacom?.takeStartupPaths?.();
+    const startupPaths = await window.veacom?.takeStartupPaths();
     const result = await listSeries(); if (!mounted.current) return;
     setSeries(current => {
       const merged = new Map(current.map(item => [item.id, item]));
@@ -1098,7 +1104,9 @@ export default function App() {
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     };
-    const drop = async (event: DragEvent) => {
+    // Up to its first await (the checks and preventDefault) this runs while the drop is dispatched; a failed import is
+    // reported in the notice.
+    const dropFiles = async (event: DragEvent) => {
       if (link(event)) { event.preventDefault(); return; }
       if (!externalFiles(event)) return;
       event.preventDefault();
@@ -1116,6 +1124,7 @@ export default function App() {
         void onImport(paths, 'drop');
       } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
     };
+    const drop = (event: DragEvent) => { void dropFiles(event); };
     document.addEventListener('dragover', dragOver); document.addEventListener('drop', drop);
     return () => { document.removeEventListener('dragover', dragOver); document.removeEventListener('drop', drop); };
   }, []);
@@ -1312,7 +1321,7 @@ export default function App() {
     beforeMpr.current = null; setIsMpr(false); setMenu(null); setLayout([rows, columns]);
     const current = slotsRef.current;
     const panes = Array.from({ length: rows * columns }, (_, index) => {
-      const item = items[index], slot = current[index] ?? makeSlot();
+      const item = items.at(index), slot = current[index] ?? makeSlot();
       return item ? { ...slot, seriesId: item.id, view: defaultView(item) } : { ...slot, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] as [number, number] } };
     });
     setSlots(panes); activateSlot(panes[0].id);
@@ -1486,17 +1495,17 @@ export default function App() {
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
     const separateScales = plan.arrangement.scale === 'shared' && !sharesSuvScale(plan);
     let panes: Slot[] = Array.from({ length: rows * columns }, (_, index) => {
-      const pane = plan.panes[index], id = current[index]?.id ?? crypto.randomUUID();
+      const pane = plan.panes.at(index), id = current[index]?.id ?? crypto.randomUUID();
       if (!pane) return { id, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } };
       const spec = separateScales && !plan.arrangement.kept ? { ...pane.spec, display: { ...pane.spec.display, window: undefined } } : pane.spec;
       return { id, seriesId: pane.series.id, view: paneView(pane.series, spec, defaultView(pane.series)), unfused: spec.show !== 'fused' };
     });
     // The panes in one frame of reference start where the first one opens, so they page together from there.
-    const lead = plan.panes[0];
+    const lead = plan.panes.at(0);
     if (lead) {
       const at = getPlaneFrame(lead.series, panes[0].view).center;
       panes = panes.map((slot, index) => {
-        const pane = plan.panes[index];
+        const pane = plan.panes.at(index);
         return index && pane && !pane.spec.view && shareFrame(lead.series, pane.series) && !isProjection(pane.series, slot.view) ? { ...slot, view: { ...slot.view, slice: sliceAtWorld(pane.series, slot.view, at) } } : slot;
       });
     }
@@ -1676,7 +1685,7 @@ export default function App() {
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
     if ((mode === 'video' || mode === 'images') && activeVolume?.sourceFrameIndex !== undefined) { say('notice.videoAfterLoad', 'info'); return; }
-    if ((mode === 'video' || mode === 'images') && activeSlot && activeVolume) {
+    if ((mode === 'video' || mode === 'images') && activeVolume) {
       const viewport = gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
       if (!viewport) return;
       const id = activeSlot.id;
@@ -1819,7 +1828,7 @@ export default function App() {
     if (plainKey) {
       // VEAcom 1.x's window keys: 0 the series' own window, 1 the slice's full range, 2-9 the CT presets,
       // Shift+A the automatic window, I invert.
-      if (activeSlot && activeVolume && activeVolume.series.components !== 3) {
+      if (activeVolume && activeVolume.series.components !== 3) {
         if (event.shiftKey && event.key.toLowerCase() === 'a') { event.preventDefault(); key('preset-auto'); applyAutoWindow(); return; }
         if (!event.shiftKey && /^[0-9]$/.test(event.key)) {
           event.preventDefault();
@@ -1831,22 +1840,23 @@ export default function App() {
         }
         if (!event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); key('invert'); updateView(activeSlot.id, { inverted: !activeSlot.view.inverted }); return; }
       }
-      const tools: Record<string, Tool> = { s: 'scroll', w: 'window', p: 'pan', z: 'zoom', l: 'length', a: 'angle', e: 'ellipse', r: 'rectangle', c: 'crosshair', t: 'text', v: 'sphere' };
-      if (tools[event.key.toLowerCase()]) {
-        const chosen = tools[event.key.toLowerCase()]; key(`tool-${chosen}`);
+      const tools: Partial<Record<string, Tool>> = { s: 'scroll', w: 'window', p: 'pan', z: 'zoom', l: 'length', a: 'angle', e: 'ellipse', r: 'rectangle', c: 'crosshair', t: 'text', v: 'sphere' };
+      const chosen = tools[event.key.toLowerCase()];
+      if (chosen) {
+        key(`tool-${chosen}`);
         if (MEASURE_TOOLS.includes(chosen)) toggleMeasure(chosen); else setTool(chosen);
         return;
       }
       if (event.key === 'm') { key('tool-mpr'); mpr(); return; }
       if (event.key === '?') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
-      if (activeSlot && activeVolume && ['+', '=', '-', '_'].includes(event.key)) {
+      if (activeVolume && ['+', '=', '-', '_'].includes(event.key)) {
         const view = activeSlot.view, zoom = Math.max(0.1, Math.min(30, view.zoom * (event.key === '-' || event.key === '_' ? 1 / 1.25 : 1.25))), scale = zoom / view.zoom;
         key('key-zoom', true); updateView(activeSlot.id, { zoom, pan: [view.pan[0] * scale, view.pan[1] * scale] }); return;
       }
     }
     // Slice keys belong to the image: panels, lists and the toolbar keep their own arrow keys and scrolling.
     if (target.closest('.inspector, .series-browser, .assessment-overlay, [role="toolbar"], [role="tablist"], [role="dialog"], .popover-menu')) return;
-    if (activeSlot && activeVolume && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
+    if (activeVolume && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
       key('key-slice', true);
       event.preventDefault(); const direction = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (pagesBackwards(activeVolume.series, activeSlot.view) ? -1 : 1);
       const stride = event.key.startsWith('Page') ? 10 : 1;
@@ -1859,15 +1869,15 @@ export default function App() {
   }, []);
 
   const testState = useEffectEvent(() => ({
-    activeSeriesId: activeSlot?.seriesId ?? null, dimensions: activeVolume?.series.dimensions ?? null,
+    activeSeriesId: activeSlot.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
     fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
-    sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume && activeSlot ? renderedView(activeVolume, activeSlot.view) : null,
+    sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
     sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
     series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
       ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
       // For the gated SPECT check: each gate's phase and where its slices lie.
       ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
-    shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot?.view ?? null,
+    shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot.view,
     // For the arrangement checks: the panes on screen and what each one shows.
     layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
       projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
@@ -1899,14 +1909,14 @@ export default function App() {
       return { slot, volume, shown, plane, index: slot.seriesId ? series.findIndex(item => item.id === slot.seriesId) + 1 : 0 };
     });
     const active = panes.find(pane => pane.slot.id === activeId) ?? panes[0];
-    const count = active?.volume ? sliceCount(active.volume.series, active.shown) : 0;
+    const count = active.volume ? sliceCount(active.volume.series, active.shown) : 0;
     const join = (values: unknown[]) => values.map(value => String(value ?? '')).join('|');
     return {
       surface, layout: isMpr ? 'mpr' : `${layout[0]}x${layout[1]}`, tool, modality: activeSeries?.modality ?? 'none',
-      plane: active?.plane ?? 'none', window: active ? windowClass(active.volume, active.slot.view, autoWindows.current, active.slot.id) : 'none',
-      wl: active?.volume && active.volume.series.components !== 3 ? `${Math.round(active.shown.windowWidth)}/${Math.round(active.shown.windowCenter)}` : undefined,
-      zoom: active?.volume ? active.shown.zoom : undefined, seriesIndex: active?.index ?? 0,
-      slicePct: !active?.volume ? -1 : count > 1 ? Math.round(Math.min(1, Math.max(0, active.shown.slice / (count - 1))) * 100) : 0,
+      plane: active.plane, window: windowClass(active.volume, active.slot.view, autoWindows.current, active.slot.id),
+      wl: active.volume && active.volume.series.components !== 3 ? `${Math.round(active.shown.windowWidth)}/${Math.round(active.shown.windowCenter)}` : undefined,
+      zoom: active.volume ? active.shown.zoom : undefined, seriesIndex: active.index,
+      slicePct: !active.volume ? -1 : count > 1 ? Math.round(Math.min(1, Math.max(0, active.shown.slice / (count - 1))) * 100) : 0,
       facets: {
         // A PET fused over the images is a series on screen too.
         series: `${join(panes.map(pane => pane.index))}${fusion ? `+${series.findIndex(item => item.id === fusion.volume.series.id) + 1}` : ''}`, plane: join(panes.map(pane => pane.plane)),
@@ -1936,7 +1946,7 @@ export default function App() {
     void bridge?.usageStatus?.().then(status => { if (mounted.current) { setUsageConsent(status.consent); usage.setSharing(status.consent === 'granted'); } })
       .catch(() => { /* Nothing is shared without an answer. */ });
     const removeListeners = installUsageListeners(document);
-    const frame = (event: Event) => usage.frameShown((event as CustomEvent<{ seriesId?: string }>).detail?.seriesId);
+    const frame = (event: Event) => usage.frameShown((event as CustomEvent<{ seriesId?: string }>).detail.seriesId);
     const unload = () => { usage.closeStudy('quit'); usage.flush(true); };
     window.addEventListener('veacom:frame', frame);
     window.addEventListener('pagehide', unload);
@@ -2052,7 +2062,7 @@ export default function App() {
     const window = activeVolume ? windowFor(activeVolume.series, { unit: 'SUV', from: 0, to }) : null;
     if (window) { updateView(activeSlot.id, { ...window, windowMode: 'manual' }); offerKeep.current(activeSlot.id); }
   };
-  const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : (activeVolume && suvWindowText(activeVolume.series, activeDisplayView)) || t('toolbar.customWindow'))
+  const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : suvWindowText(activeVolume.series, activeDisplayView) || t('toolbar.customWindow'))
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
   const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
@@ -2291,7 +2301,7 @@ export default function App() {
       </main>
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
-      {checklistShown && activeSeries && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
+      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
         onNote={() => {
@@ -2349,7 +2359,6 @@ export default function App() {
             const neighbour = activeAnnotations[index + 1]?.id ?? activeAnnotations[index - 1]?.id;
             const sphere = sphereOf(annotation);
             return <li className={`annotation-row${annotation.type === 'sphere' ? ' has-details' : ''}`} key={annotation.id} data-annotation-row={annotation.id}><button data-action="measurement-go" type="button" className="annotation-main" disabled={unavailable} onClick={event => {
-              if (!activeSlot) return;
               // A sphere: every linked pane goes to its centre, each in its own plane.
               if (sphere) {
                 if (activeVolume && !isProjection(activeVolume.series, activeSlot.view)) updateView(activeSlot.id, { slice: sliceAtWorld(activeVolume.series, activeSlot.view, sphere.center) });

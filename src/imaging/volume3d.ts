@@ -59,7 +59,7 @@ function paddingFrames(volume: Volume): Array<Series | null> {
   return Array.from({ length: series.dimensions[2] }, (_, frame) => {
     const range = series.frameMetadata?.[frame]?.paddingRange ?? series.paddingRange;
     if (!range) return null;
-    if (range.length !== 2 || !range.every(Number.isFinite)) throw new Error(t('volume.paddingRange'));
+    if (!range.every(Number.isFinite)) throw new Error(t('volume.paddingRange'));
     return { ...series, pixelType, frameMetadata: undefined, paddingRange: range };
   });
 }
@@ -399,7 +399,6 @@ function voiFrame(volume: Volume, plane: Plane, mode: ViewMode = 'mpr') {
   const { forward } = geometry(volume.series);
   if (!volume.series.canReconstruct) throw new Error(t('volume.noGeometry'));
   if (!['axial', 'coronal', 'sagittal'].includes(plane)) throw new Error(t('volume.choosePlane'));
-  if (mode !== 'source' && mode !== 'mpr') throw new Error(t('volume.chooseMode'));
   if (mode === 'mpr') return getPlaneFrame(volume.series, { plane, slice: 0, mode });
   if (plane !== 'axial') throw new Error(t('volume.sourceAxial'));
   const { series } = volume, count = series.dimensions[2];
@@ -439,7 +438,7 @@ function voiFrame(volume: Volume, plane: Plane, mode: ViewMode = 'mpr') {
 
 function resampleOutline(outline: Vec3[], frame: ReturnType<typeof voiFrame>, slice: number, preservePrepared = false): Vec3[] {
   if (!Number.isInteger(slice) || slice < 0 || slice >= frame.slices) throw new Error(t('volume.keySlice'));
-  if (outline.length < 3 || outline.some(p => p.length !== 3 || !p.every(Number.isFinite))) throw new Error(t('volume.threePoints'));
+  if (outline.length < 3 || outline.some((point: readonly number[]) => point.length !== 3 || !point.every(Number.isFinite))) throw new Error(t('volume.threePoints'));
   const offset = slice * frame.step;
   if (outline.some(p => Math.abs(dot(subtract(p, frame.center), frame.normal) - offset) > Math.max(1e-4, Math.abs(frame.step) * 1e-4))) {
     throw new Error(t('volume.offPlane'));

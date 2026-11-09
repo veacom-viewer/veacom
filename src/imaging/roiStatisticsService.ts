@@ -165,14 +165,14 @@ export class RoiStatisticsService {
     const generation = ++this.generation;
     const current = () => this.worker === worker && this.generation === generation;
     worker.onerror = event => {
-      event.preventDefault?.();
+      event.preventDefault();
       if (current()) this.failWorker(new Error(event.message || 'Background ROI calculation failed.'));
     };
     worker.onmessageerror = () => { if (current()) this.failWorker(new Error('The ROI worker returned an unreadable response.')); };
     worker.onmessage = ({ data }) => {
       if (!current()) return;
       const waiting = this.waiting;
-      if (!waiting || !data || data.id !== waiting.id) return;
+      if (!waiting || data.id !== waiting.id) return;
       if (data.type === 'error') {
         this.waiting = null; clearTimeout(waiting.timer);
         waiting.reject(new Error(data.message || 'Background ROI calculation failed.'));

@@ -53,7 +53,7 @@ function createEntry(annotation: Annotation, volume: Volume, locale: Locale): Su
   let entry = entries.get(key);
   if (!entry) {
     if (entries.size >= 128) {
-      const idle = [...entries].filter(([, value]) => value.listeners.size === 0).sort((a, b) => a[1].touched - b[1].touched)[0];
+      const idle = [...entries].filter(([, value]) => value.listeners.size === 0).sort((a, b) => a[1].touched - b[1].touched).at(0);
       if (idle) { idle[1].cancel?.(); entries.delete(idle[0]); }
     }
     entry = { text: t('annotation.calculating'), state: 'idle', listeners: new Set(), annotation, volume, generation: 0, touched: performance.now() };
