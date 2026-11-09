@@ -149,6 +149,9 @@ describe('contrast phase and MR acquisition metadata', () => {
     assert.ok(result.repeat.basis.includes('Assumed'));
     const datetime = repeatedStudy().map(series => ({ ...series, acquisitionDateTime: `20261103${series.acquisitionTime}`, acquisitionTime: undefined }));
     assert.equal(inferStudySequences(datetime).repeat.role, 't1c');
+    // A DICOM TM may stop at the minutes (HHMM).
+    const minutes = repeatedStudy().map(series => ({ ...series, acquisitionTime: series.acquisitionTime?.slice(0, 4) }));
+    assert.equal(inferStudySequences(minutes).repeat.role, 't1c');
   });
   it('rejects a motion repeat, same-time reformats, and a later non-T1 acquisition', () => {
     assert.equal(inferStudySequences(repeatedStudy().filter(s => s.id !== 'coronal')).repeat.role, 't1');
