@@ -1397,10 +1397,10 @@ export const tr: Record<keyof typeof en, string> = {
   'viewport.linearExact': 'LINEAR_EXACT',
 
   'usage.title': 'Kullanım ve performans',
-  'usage.question': 'Araç kullanımı, işlem süreleri, işlemci ve bellek kullanımı paylaşılsın mı? Seçiminiz ne olursa olsun VEAcom teknik çökme raporları gönderir. Bu raporlarda görüntüler, hasta bilgileri, dosya adları veya yazdığınız metinler yer almaz.',
+  'usage.question': 'Araç kullanımı, işlem süreleri, işlemci ve bellek kullanımı paylaşılsın mı? Seçiminiz ne olursa olsun masaüstü uygulaması teknik hata raporları gönderir. Bu raporlarda görüntüler, hasta bilgileri, dosya adları veya yazdığınız metinler yer almaz.',
   'usage.share': 'Paylaş',
   'usage.decline': 'Paylaşma',
   'usage.section': 'GİZLİLİK',
   'usage.setting': 'Kullanım ve performans verilerini paylaş',
-  'usage.settingHelp': 'Araç kullanımı, süreler ve işlemci ve bellek kullanımındaki artışlar rastgele bir kurulum kimliğiyle paylaşılır. Kapatırsanız kullanım kaydı durur, yerel kopyası ve kimliği silinir. Daha önce gönderilen veriler sunucuda kalır. Otomatik çökme raporları ayrıdır. Raporda uygulama sürümü, platform, etkilenen süreç, kapanma nedeni ve yeniden başlatma sonucu yer alır.',
+  'usage.settingHelp': 'Araç kullanımı, süreler ve işlemci ve bellek kullanımındaki artışlar rastgele bir kurulum kimliğiyle paylaşılır. Kapatırsanız kullanım kaydı durur, yerel kopyası ve kimliği silinir. Daha önce gönderilen veriler sunucuda kalır. Masaüstü uygulaması teknik hataları her zaman bildirir. Raporda uygulama sürümü, platform, etkilenen süreç, hatanın oluştuğu aşama ve kurtarma sonucu yer alır. Çıkış kodu, hata türü veya motorun yürüttüğü işin türü de gönderilebilir. Raporda hata metni, dosya yolu veya kurulum kimliği bulunmaz.',
 };

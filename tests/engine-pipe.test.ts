@@ -10,9 +10,9 @@ const MiB = 1024 * 1024;
 
 // The channel against a stand-in engine in this process: what main writes is parsed into `sent`, and the test plays the
 // engine's side with head(), data() and end().
-function fixture(handshake = true) {
+function fixture(handshake = true, onFailure?: (error: Error, reason: string, work: string) => void) {
   const fromEngine = new PassThrough(), toEngine = new PassThrough();
-  const channel = new EngineChannel(fromEngine, toEngine);
+  const channel = new EngineChannel(fromEngine, toEngine, { onFailure });
   const sent: Array<{ kind: number; id: number; op?: string; body?: unknown; data?: Buffer; credit?: number }> = [];
   const reader = new MessageReader((kind: number, id: number, payload: Buffer) => {
     if (kind === TO_ENGINE.request) { const call = decodeRequest(payload); sent.push({ kind, id, op: call.op, body: call.body, data: Buffer.from(call.data) }); }
@@ -38,6 +38,53 @@ function fixture(handshake = true) {
 const bytes = (length: number, seed = 0) => { const piece = Buffer.alloc(length, seed % 251); if (length >= 8) piece.writeDoubleLE(seed, 0); return piece; };
 
 describe('the imaging engine channel (stdin and stdout)', () => {
+  it('reports only sent work categories when the channel closes', async () => {
+    for (const [ops, expected] of [
+      [['pictureNext', 'health', 'progress', 'processCounters', 'importEarly'], 'idle'],
+      [['frame', 'volume', 'warm', 'pictureNext'], 'pixels'],
+      [['import', 'pictureNext'], 'import'],
+      [['export', 'exportEstimate'], 'export'],
+      [['SYNTHETIC_PRIVATE_OP'], 'other'],
+      [['import', 'volume'], 'multiple'],
+      [[...Array<string>(16).fill('tags'), 'export'], 'other'], // The export is queued behind the 16 sent requests.
+    ] as const) {
+      const faults: string[] = [];
+      const f = fixture(true, (_error, _reason, work) => faults.push(work));
+      const calls = Promise.allSettled(ops.map(op => f.channel.request(op, { path: 'SYNTHETIC_PRIVATE' })));
+      f.channel.close(new Error('closed'), 'pipe-closed');
+      await calls;
+      assert.deepEqual(faults, [expected]);
+    }
+  });
+
+  it('excludes the request whose pipe write threw', async () => {
+    const faults: string[] = [];
+    const f = fixture(true, (_error, _reason, work) => faults.push(work));
+    const importing = f.channel.request('import');
+    f.channel.output.write = () => { throw new Error('Pipe closed'); };
+    const exporting = f.channel.request('export');
+    await Promise.all([assert.rejects(importing, /Pipe closed/), assert.rejects(exporting, /Pipe closed/)]);
+    assert.deepEqual(faults, ['import']);
+  });
+
+  it('counts a pixel stream until its body finishes or the caller cancels it', async () => {
+    for (const state of ['open', 'finished', 'cancelled']) {
+      const faults: string[] = [];
+      const f = fixture(true, (_error, _reason, work) => faults.push(work));
+      const pixels = f.channel.request('frame');
+      f.engine.head(1, 1);
+      const response: Response = await pixels;
+      if (state === 'finished') {
+        const read = response.arrayBuffer();
+        await f.settle();
+        f.engine.data(1, bytes(1));
+        await read;
+      } else if (state === 'cancelled') await response.body!.cancel();
+      f.channel.close(new Error('stopped'));
+      assert.deepEqual(faults, [state === 'open' ? 'pixels' : 'idle']);
+    }
+  });
+
   it('answers as fetch does: status, headers, Content-Length and body, request by request', async () => {
     const f = fixture(false);
     f.engine.hello({ protocol: PROTOCOL, version: '0.1.0' });

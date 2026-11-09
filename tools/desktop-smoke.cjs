@@ -20,7 +20,8 @@ async function main() {
   const started = performance.now();
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-smoke-'));
   const packaged = process.env.VEACOM_SMOKE_EXECUTABLE;
-  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study], env: { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_ENVIRONMENT: 'lab' }, timeout: 90_000 });
+  const restoreArgs = process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [];
+  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study, ...restoreArgs], env: { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_ENVIRONMENT: 'lab' }, timeout: 90_000 });
   let page;
   const screenshot = async name => {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));

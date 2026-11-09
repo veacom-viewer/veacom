@@ -212,6 +212,11 @@ jobs:
         id: installed
         if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.study.outcome == 'success' }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Install -Output "$env:EVIDENCE\installed"
+      - name: Installed release sends lab faults with usage off
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' && env.BUILDER_CONFIG == 'electron-builder.release.cjs' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ steps.installed.outputs.executable }}
+        run: node tools/check-crash-reporting.cjs "$env:EVIDENCE\installed\crash-receipt.json" --live
       - name: Installed DICOM export, linked paging and MPR
         if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
         env:

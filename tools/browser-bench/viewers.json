@@ -1,0 +1,50 @@
+{
+  "about": "Pinned copies of the browser viewers the benchmark compares with VEAcom. `node tools/browser-bench/fetch-viewers.mjs` downloads each into ~/.cache/veacom-bench/viewers/<name>@<version> and checks it against `tree` (the SHA-256 of the sorted lines '<file sha256>  <relative path>'). Pinned 8 Nov 2026.",
+  "viewers": [
+    {
+      "name": "ohif", "title": "OHIF Viewer", "version": "3.13.14", "released": "2026-11-03", "licence": "MIT",
+      "homepage": "https://github.com/OHIF/Viewers",
+      "source": { "type": "tarball", "url": "https://registry.npmjs.org/@ohif/app/-/app-3.13.14.tgz", "sha256": "6b9e98bb6412e0418bf472d65c400da5d6cbbc05c2c3ead810862bce65c77d9a", "folder": "package/dist", "commit": "e4cd86153a1aaa429ef749330eaeefd4df96a88a" },
+      "tree": { "files": 246, "bytes": 213305194, "sha256": "d093e7a34678bf69b27ce94a14dda3fe2e95f3e8d824bb65916a6a2966c1d333" },
+      "serve": { "rootOnly": true, "spa": true, "isolation": false, "entry": "localbasic", "overlay": { "app-config.js": "viewers/ohif-app-config.js" } },
+      "notes": "The shipped app-config.js has no local-files source and points at OHIF's demo server; tools/browser-bench/viewers/ohif-app-config.js is the same config with only the local-files source and without the investigational-use dialog."
+    },
+    {
+      "name": "volview", "title": "Kitware VolView", "version": "4.5.3", "released": "2026-10-27", "licence": "Apache-2.0",
+      "homepage": "https://github.com/Kitware/VolView",
+      "source": { "type": "tarball", "url": "https://registry.npmjs.org/volview/-/volview-4.5.3.tgz", "sha256": "f7f4b9eb1131074195cfcec7e76f241c9fd88bbcaa564a2fcd4c03ea3f539b12", "folder": "package/dist", "commit": "8b02743158dee776c6b5d78b8c53ccd6161b63fe" },
+      "tree": { "files": 271, "bytes": 85139368, "sha256": "60b819261fffa61757bdc719196584e5a1a04fdd15bd6bfb73527f725bdc07b3" },
+      "serve": { "spa": false, "isolation": false, "entry": "index.html" }
+    },
+    {
+      "name": "dwv", "title": "DWV (DICOM Web Viewer) demo", "version": "0.36.4", "released": "2026-08-05", "licence": "GPL-3.0-only",
+      "homepage": "https://github.com/ivmartel/dwv",
+      "source": { "type": "git-tree", "repo": "ivmartel/dwv", "commit": "8450fc0fe7b9389fa9b01c16ca483df6c03590ca", "path": "demo/stable", "gitTree": "721b553e4d99e12dab802caec684c0fc5e42c4b3" },
+      "tree": { "files": 17, "bytes": 5261836, "sha256": "a38882a2bbee0d43e6e1d55ded5d9b73864da1dda6b96cbd4b1931981ef5ccb3" },
+      "serve": { "spa": false, "isolation": false, "entry": "viewer.html" }
+    },
+    {
+      "name": "niivue", "title": "NiiVue with dcm2niix (official demo)", "version": "cce6c2a", "released": "2025-06-18", "licence": "BSD-2-Clause (NiiVue, dcm2niix); the demo repository's LICENSE file is empty",
+      "homepage": "https://github.com/niivue/niivue-dcm2niix",
+      "source": { "type": "git-tree", "repo": "niivue/niivue-dcm2niix", "commit": "cce6c2aae8e4f894b7060d9b14e81d2cae2dc1db", "path": "", "gitTree": "c45a50dbacfbd1eb321c084746f86812e1556a13" },
+      "tree": { "files": 12, "bytes": 4057342, "sha256": "0eb5e5b54ffc5964d0d077717c88734412ee6eaf4b847f992d0df35ffd2df00b" },
+      "serve": { "spa": false, "isolation": false, "entry": "index.html" },
+      "notes": "NiiVue 0.57.0 with @niivue/dcm2niix 1.3.0-dev.0: the only prebuilt official page that opens DICOM folders. It converts the whole folder to NIfTI before showing anything, and has no window/level drag."
+    },
+    {
+      "name": "bluelight", "title": "BlueLight", "version": "1.1.0", "released": "2026-01-30", "licence": "MIT",
+      "homepage": "https://github.com/cylab-tw/bluelight",
+      "source": { "type": "tarball", "url": "https://codeload.github.com/cylab-tw/bluelight/tar.gz/79da73ba091c4997f2354081717b4eace5628cb4", "folder": "bluelight-79da73ba091c4997f2354081717b4eace5628cb4", "commit": "79da73ba091c4997f2354081717b4eace5628cb4" },
+      "tree": { "files": 333, "bytes": 12206784, "sha256": "900621967eb6cdfeda7b092950ba23413e9861dda45eadf75d7d9a50e1c2b4fa" },
+      "serve": { "spa": false, "isolation": false, "entry": "bluelight/html/start.html" },
+      "notes": "GitHub does not promise byte-stable archives, so the tarball has no SHA-256 here: the commit and the tree hash pin it."
+    },
+    {
+      "name": "plexusmd", "title": "PlexusMD (live site)", "version": "1.1.0", "released": "2026-10-07", "licence": "Proprietary (free to use on its site; source not distributed)",
+      "homepage": "https://viewer.plexusmd.org/",
+      "source": { "type": "live", "url": "https://viewer.plexusmd.org/", "assets": ["assets/accountKeys-DU8NTPfd.js", "assets/main-BGnySVtI.css", "assets/main-C7C6anoC.js", "assets/modulepreload-polyfill-P2Xu9kJm.js", "assets/pricing-BJFDCn9x.js", "assets/rolldown-runtime-hePW80VL.js", "assets/vendor-cornerstone-5hOVmGA8.js", "assets/vendor-m3fvfA68.js", "assets/vendor-vtk-asMes2zI.js"], "mainSha256": "241f780a2d2d2be0b75147ec2c03f1e14cced76f044cbf0d95316d17648827c7" },
+      "serve": { "live": true, "entry": "" },
+      "notes": "Unpinned: it cannot be copied, so its timings include the internet and it may change between runs. The harness records the live build's asset names with every trial and flags a change. It loads Cloudflare analytics and sends usage statistics to its own server."
+    }
+  ]
+}
