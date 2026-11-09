@@ -233,7 +233,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Uninstall -Output "$env:EVIDENCE\installed"
 
       - name: Keep the tested installer
-        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.keep_installer }}
+        if: ${{ success() && env.BUILDER_CONFIG == 'electron-builder.release.cjs' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-installer-${{ github.sha }}
