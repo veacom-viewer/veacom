@@ -8,6 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { validReport } = require('../../electron/crash-schema.cjs');
 async function main() {
   const receipt = JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+  assert.equal(receipt.packaged,true); assert.equal(receipt.usageCollectorConfigured,true);
   assert.equal(receipt.live,true); assert.equal(receipt.usageConsent,'denied'); assert.equal(receipt.localUsageRequests,0);
   assert.equal(receipt.usageControlAccepted,0); assert.match(receipt.usageControlId,/^[0-9a-f]{32}$/);
   assert.ok(receipt.reports.length >= 3 && receipt.reports.every(r=>validReport(r) && r.environment==='lab'));
