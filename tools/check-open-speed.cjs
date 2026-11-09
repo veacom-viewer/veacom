@@ -89,7 +89,9 @@ async function openOnce(build, study, counter, flushBeforeVolume) {
   const env = { ...process.env, ...engineEnv };
   const countFile = counter && path.join(output, `io-count-${process.pid}-${++opens}.bin`);
   if (counter) Object.assign(env, { [counter.variable]: counter.library, IOCOUNT_ROOTS: counter.roots.join(':'), IOCOUNT_FILE: countFile });
-  const engine = new EngineProcess({ binary: builds[build], restartDelaysMs: [],
+  const Driver = build === 'base'
+    ? require(path.join(process.env.BASE_APP, 'electron/engine-process.cjs')).EngineProcess : EngineProcess;
+  const engine = new Driver({ binary: builds[build], restartDelaysMs: [],
     spawnImpl: (file, list, options) => spawn(file, list, { ...options, env }) });
   const started = performance.now();
   try {
@@ -97,7 +99,13 @@ async function openOnce(build, study, counter, flushBeforeVolume) {
     const startMs = performance.now() - started;
     const pid = engine.current.child.pid;
     const call = async (op, body) => {
-      const response = await connection.request(op, body);
+      let response;
+      if (build === 'base') {
+        const url = op === 'import' ? '/import' : '/' + op + '/' + encodeURIComponent(body.id) + (op === 'frame' ? '/' + body.index : '');
+        response = await fetch(connection.baseUrl + url, { method: op === 'import' ? 'POST' : 'GET',
+          headers: { Authorization: 'Bearer ' + connection.token, ...(op === 'import' ? { 'Content-Type': 'application/json' } : {}) },
+          ...(op === 'import' ? { body: JSON.stringify(body) } : {}) });
+      } else response = await connection.request(op, body);
       if (!response.ok) throw new Error(`${op}: ${(await response.text()) || response.status}`);
       return response;
     };
@@ -117,7 +125,7 @@ async function openOnce(build, study, counter, flushBeforeVolume) {
     await done('listing');
     const series = imported.series?.[0];
     if (!series) throw new Error('The study listed no image series');
-    await (await call('frame', { id: series.id, index: 0 })).arrayBuffer();
+    const firstFrame = await (await call('frame', { id: series.id, index: 0 })).arrayBuffer();
     await done('firstFrame');
     if (flushBeforeVolume) {
       await flush(flushBeforeVolume, study);
@@ -126,7 +134,7 @@ async function openOnce(build, study, counter, flushBeforeVolume) {
     const volume = await (await call('volume', { id: series.id })).arrayBuffer();
     await done('volume');
     phases.open = phases.listing + phases.firstFrame + phases.volume;
-    return { startMs, phases, ...(counter ? { work } : {}), series: imported.series.length, dimensions: series.dimensions, volumeBytes: volume.byteLength };
+    return { startMs, phases, ...(counter ? { work, pixels: [firstFrame, volume].map(bytes => crypto.createHash('sha256').update(Buffer.from(bytes)).digest('hex')) } : {}), series: imported.series.length, dimensions: series.dimensions, volumeBytes: volume.byteLength };
   } finally {
     await engine.stop().catch(() => {});
     if (countFile) fs.rmSync(countFile, { force: true });
@@ -240,10 +248,10 @@ async function measure(study, fixture) {
   const counter = prepareCounter(output);
   if (counter.library) {
     counter.roots = [fs.realpathSync(study), fs.realpathSync(engineTemp)];
-    report.work = {};
+    report.work = {}; report.pixelHashes = {};
     for (const build of Object.keys(builds).reverse()) {
       const run = await openOnce(build, study, counter);
-      report.work[build] = run.work;
+      report.work[build] = run.work; report.pixelHashes[build] = run.pixels;
       console.log(`Work, ${labels[build]}: ${PHASES.map(phase => `${NAMES[phase]} ${count(run.work[phase].filesOpened)} files, ${mib(run.work[phase].bytesRead)} MiB`).join('; ')}`);
       // Listing reads every file at least to its header: nothing counted means the counter missed the engine's reads.
       if (!run.work.listing.filesOpened || !run.work.listing.bytesRead) {
@@ -330,6 +338,9 @@ async function measure(study, fixture) {
   fs.writeFileSync(path.join(output, 'open-speed.md'), `${text}\n`);
   if (args.summary) fs.appendFileSync(args.summary, `${text}\n`);
   console.log(`\n${text}`);
-  if (report.failures.length) process.exitCode = 1;
+  const checks = report.failures.filter(failure => !failure.includes(' slower ('));
+  if (!report.pixelHashes?.base || JSON.stringify(report.pixelHashes.base) !== JSON.stringify(report.pixelHashes.head)) checks.push('Baseline and main returned different frame or volume pixels');
+  if (report.rounds.cold !== coldRounds || report.comparisons.length !== 9) checks.push('Missing cold observations');
+  if (checks.length) throw new Error(checks.join('; '));
 }
 

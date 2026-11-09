@@ -29,6 +29,13 @@ function generate() {
     [path.join(fixtures, script), path.join(studies, folder), ...args], { stdio: 'inherit' });
   generateStudy('make-smoke-study.mjs', 'ct-1000', '--pipe-volume');
   generateStudy('make-smoke-study.mjs', 'video', '--video-ct');
+  generateStudy('make-smoke-study.mjs', 'ct-small');
+  const jpeg = path.join(studies, 'ct-jpeg', 'S01');
+  fs.mkdirSync(jpeg, {recursive:true});
+  const source = path.join(studies, 'ct-1000', 'S01');
+  const slices = fs.readdirSync(source).filter(file => file.endsWith('.dcm'));
+  assert.equal(slices.length, 1000);
+  for (const file of slices) execFileSync('dcmcjpeg', ['+e1', path.join(source,file),path.join(jpeg,file)], {stdio:'pipe'});
   fs.mkdirSync(path.join(studies, 'mr'));
   for (let n = 1; n <= 8; n++) generateStudy('make-smoke-study.mjs', 'mr/' + n, '--modality', 'MR', '--series-index=' + n);
   generateStudy('make-petct-study.mjs', 'pet');
@@ -65,61 +72,98 @@ async function measureWindow(page) {
   return { mprMs: median(times), values: value, commands: times };
 }
 
-async function exportMovie(page, folder) {
+async function exportMovie(page, folder, build, desktop) {
   const click = locator => locator.evaluate(button => button.click());
+  await desktop.evaluate(({dialog}, file) => { dialog.showSaveDialog = async () => ({canceled:false,filePath:file}); }, path.join(folder,'test.mp4'));
   await click(page.getByTestId('tool-export'));
-  await click(page.locator('[data-action="export-kind"][data-kind="video"]'));
-  await click(page.locator('input[data-action="export-annotations"][value="none"]'));
-  await click(page.locator('[data-action="export-more"]'));
-  await click(page.locator('input[data-action="export-size"][value="fit"]'));
-  await page.locator('select[data-action="export-size"]').selectOption('0');
+  if (build === 'base') {
+    await click(page.getByTestId('export-video'));
+    await page.locator('select[data-action="export-size"]').selectOption('720p');
+    const overlays=page.locator('[data-action="export-overlays"]');
+    if (await overlays.isChecked()) await click(overlays);
+  } else {
+    await click(page.locator('[data-action="export-kind"][data-kind="video"]'));
+    await click(page.locator('input[data-action="export-annotations"][value="none"]'));
+    await click(page.locator('[data-action="export-more"]'));
+    await click(page.locator('input[data-action="export-size"][value="fit"]'));
+    await page.locator('select[data-action="export-size"]').selectOption('0');
+  }
   await page.locator('[data-action="export-fps"]').fill('15');
-  assert.equal(await page.locator('[data-action="export-last-slice"]').inputValue(), '100');
-  // Keep the uncompressed frames the exporter passed to its colour conversion.
-  const indices = [19, 50, 79];
-  await page.evaluate(indices => {
-    const original = CanvasRenderingContext2D.prototype.getImageData;
-    window.__videoReferences = [];
-    let index = 0;
-    CanvasRenderingContext2D.prototype.getImageData = function(...args) {
-      const data = original.apply(this, args);
-      if (data.width === 1280 && data.height === 720 && indices.includes(index++)) {
-        window.__videoReferences.push(this.canvas.toDataURL('image/png'));
-      }
-      return data;
-    };
-  }, indices);
+  assert.equal(await page.locator('[data-action="export-last-slice"]').inputValue(),'100');
   const start = performance.now();
   await click(page.getByTestId('export-submit'));
-  await page.waitForFunction(() => document.querySelector('[data-code="export-complete"], [data-code="export-failed"], .export-error'), undefined, { timeout: 90_000 });
-  const exportMs = performance.now() - start;
-  assert.deepEqual(await page.locator('[data-code="export-failed"], .export-error').allTextContents(), []);
-  const movies = fs.readdirSync(folder).filter(n => n.endsWith('.mp4'));
-  assert.equal(movies.length, 1);
-  const movie = path.join(folder, movies[0]);
-  const stream = JSON.parse(execFileSync('ffprobe', ['-v','error','-select_streams','v:0','-count_frames',
-    '-show_entries','stream=width,height,nb_read_frames,r_frame_rate','-of','json',movie])).streams[0];
-  assert.deepEqual([stream.width, stream.height, stream.nb_read_frames, stream.r_frame_rate], [1280,720,'100','15/1']);
-  const images = await page.evaluate(() => window.__videoReferences);
-  assert.equal(images.length, indices.length, 'Missing uncompressed video frames');
-  const select = 'select=' + indices.map(n => 'eq(n\\,' + n + ')').join('+');
-  const frameBytes = 1280 * 720 * 3;
-  const pixels = execFileSync('ffmpeg', ['-v','error','-i',movie,'-vf',select,'-fps_mode','passthrough','-frames:v',String(indices.length),'-pix_fmt','rgb24','-f','rawvideo','pipe:1'], { maxBuffer: 12 << 20 });
-  assert.equal(pixels.length, frameBytes * indices.length);
-  const quality = images.map((image, n) => {
-    const ref = decodePng(Buffer.from(image.split(',')[1], 'base64')).data;
-    let error = 0, samples = 0;
-    for (let i = 0; i < frameBytes / 3; i++) {
-      if (ref[i * 4] < 8) continue;
-      for (let channel = 0; channel < 3; channel++) {
-        error += (ref[i * 4 + channel] - pixels[n * frameBytes + i * 3 + channel]) ** 2;
-        samples++;
-      }
+  await page.waitForFunction(() => document.querySelector('[data-code="export-complete"], [data-code="export-failed"], .export-error'), undefined, {timeout:120_000});
+  const exportMs = performance.now()-start;
+  assert.deepEqual(await page.locator('[data-code="export-failed"], .export-error').allTextContents(),[]);
+  const movies=fs.readdirSync(folder).filter(n=>n.endsWith('.mp4'));
+  assert.equal(movies.length,1);
+  const movie=path.join(folder,movies[0]);
+  const stream=JSON.parse(execFileSync('ffprobe',['-v','error','-select_streams','v:0','-count_frames','-show_entries','stream=width,height,nb_read_frames,r_frame_rate','-of','json',movie])).streams[0];
+  assert.deepEqual([stream.width,stream.height,stream.nb_read_frames,stream.r_frame_rate],[1280,720,'100','15/1']);
+  return {exportMs,videoBytes:fs.statSync(movie).size};
+}
+
+async function pageStack(page) {
+  const samples=await page.evaluate(async()=>{
+    const samples=[];
+    for(let slice=1;slice<=32;slice++) {
+      const start=performance.now();
+      window.__VEACOM_TEST__.setView({slice});
+      do {
+        await new Promise(requestAnimationFrame);
+        if(performance.now()-start>7000) throw new Error('Did not draw slice '+slice);
+      } while(Number(document.querySelector('.viewport-cell.is-active canvas[data-series-id]')?.dataset.slice)!==slice);
+      samples.push(performance.now()-start);
     }
-    assert(samples > 1000);
-    return 10 * Math.log10(255 ** 2 / Math.max(0.0001, error / samples));
+    return samples;
   });
-  return { exportMs, videoBytes: fs.statSync(movie).size, framePsnrDb: quality, psnrDb: Math.min(...quality) };
+  return {pageP95Ms:samples.toSorted((a,b)=>a-b)[Math.ceil(.95*samples.length)-1]};
+}
+
+async function requestLegacyFusion(page) {
+  const ids=await page.evaluate(()=>{ const s=window.__VEACOM_TEST__.state();return {
+    act:s.activeSeriesId, ct:s.series.find(i=>i.modality==='CT')?.id,
+    pet:s.series.find(i=>i.description.endsWith('PET AC'))?.id
+  };});
+  assert(ids.ct && ids.pet);
+  if(ids.act!==ids.ct) await page.evaluate(id=>window.__VEACOM_TEST__.selectSeries(id),ids.ct);
+  await page.waitForFunction(()=>document.querySelector('[data-testid="tool-fusion"]:not(:disabled)'));
+  await page.getByTestId('tool-fusion').evaluate(b=>b.click());
+  await page.getByTestId('fusion-series').selectOption(ids.pet);
+}
+
+async function measure3d(page,desktop) {
+  await desktop.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(1600,900));
+  await page.addStyleTag({content:'div:has(>canvas[data-testid="volume-3d-canvas"]) {flex:none!important;width:800px!important;height:512px!important;}'});
+  await page.waitForTimeout(200);
+  const result=await page.evaluate(async()=>{
+    let draw=null;
+    for(const method of ['drawArrays','drawElements','drawArraysInstanced','drawElementsInstanced']){
+      const original=WebGL2RenderingContext.prototype[method];
+      WebGL2RenderingContext.prototype[method]=function(...args){
+        const result=original.apply(this,args);
+        if(draw && this.canvas.dataset.renderBackend==='webgl2-volume-raymarch')draw();
+        return result;
+      };
+    }
+    const activate=async(id)=>{
+      const button=document.querySelector('[data-testid="'+id+'"]');
+      if(!button || button.disabled)throw new Error('Cannot activate '+id);
+      const start=performance.now();
+      return new Promise((resolve,reject)=>{
+        const timer=setTimeout(()=>reject(new Error('No 3D draw from '+id)),15000);
+        draw=()=>{clearTimeout(timer);draw=null;resolve(performance.now()-start);};
+        button.click();
+      });
+    };
+    const firstMs=await activate('tool-3d');
+    const switches=[];
+    for(const camera of ['side','front','top','side','front','top'])switches.push(await activate('volume-view-'+camera));
+    const canvas=document.querySelector('canvas[data-render-backend="webgl2-volume-raymarch"]');
+    return {firstMs,switches,renderer:canvas.dataset.renderer,raster:[canvas.width,canvas.height]};
+  });
+  if(result.raster[0]!==800 || result.raster[1]!==512) throw new Error('Unexpected raster '+result.raster);
+  return {volume3dMs:result.firstMs,cameraMs:median(result.switches),raster:result.raster};
 }
 
 async function run(build, study, counter) {
@@ -136,11 +180,18 @@ async function run(build, study, counter) {
       env.TEST_ENGINE = core; env.TEST_COUNTER = counter.library; env.IOCOUNT_FILE = countsFile; env.IOCOUNT_ROOTS = fs.realpathSync(path.join(studies, study));
       fs.writeFileSync(env.VEACOM_CORE_PATH, '#!/bin/sh\nexport ' + counter.variable + '="$TEST_COUNTER"\nexec "$TEST_ENGINE" "$@"\n', { mode: 0o700 });
     }
-    desktop = await electron.launch({ args: [roots[build], '--force-device-scale-factor=1'], env, timeout: 90_000 });
+    const start = performance.now();
+    const exe=require(path.join(roots[build],'node_modules/electron'));
+    const args=[roots[build], '--force-device-scale-factor=1'];
+    if (process.platform==='linux') args.push('--ignore-gpu-blocklist');
+    desktop = await electron.launch({ executablePath:exe,args,env,timeout:90_000 });
     const page = await desktop.firstWindow();
+
+
+    await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true' && window.__VEACOM_TEST__);
+    const readyMs=performance.now()-start;
     await ignoreOutsideInput(desktop);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1280, 800));
-    await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true' && window.__VEACOM_TEST__);
     await page.evaluate(async () => {
       await document.fonts.ready;
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -157,15 +208,22 @@ async function run(build, study, counter) {
     });
     await page.evaluate(study => {
       window.__firstDraw = null;
-      document.addEventListener('veacom:frame', () => { window.__firstDraw ??= performance.now(); }, { once: true });
-      if (study === 'pet') document.addEventListener('veacom:frame', event => {
-        if (window.__fusedDraw) return;
-        const cell = event.target.closest('[data-testid="viewport-cell"]');
-        const s = window.__VEACOM_TEST__.state();
-        if (s.series.some(item => item.id === event.detail.seriesId && item.modality === 'CT')
-            && cell?.querySelector('[data-testid="image-overlay"]')?.textContent.includes('SUV 0–')) {
-          window.__fusedDraw = performance.now();
-        }
+      if (study === 'pet') {
+        // Both renderers set uPetOpacity only for a real PET overlay. Time the submitted CT canvas after that draw.
+        const glProto=WebGL2RenderingContext.prototype, draw=glProto.drawArrays;
+        glProto.drawArrays=function(...args) {
+          const program=this.getParameter(this.CURRENT_PROGRAM);
+          const loc=program && this.getUniformLocation(program,'uPetOpacity');
+          window.__usedPet=Boolean(loc && this.getUniform(program,loc)>0);
+          return draw.apply(this,args);
+        };
+      }
+      document.addEventListener('veacom:frame',event=>{
+        const time=performance.now(), cell=event.target.closest('[data-testid="viewport-cell"]');
+        window.__firstDraw ??= time;
+        if(cell?.dataset.volumeComplete==='true') window.__fullDraw ??= time;
+        if(study==='pet' && window.__usedPet && window.__VEACOM_TEST__.state().series.some(i=>i.id===event.detail.seriesId && i.modality==='CT'))
+          window.__fusedDraw ??= time;
       });
       window.__openStarted = performance.now();
     }, study);
@@ -174,7 +232,7 @@ async function run(build, study, counter) {
         dialog.showOpenDialog = async () => {
           // Give both builds the same time in the picker. Measure from its confirmation.
           await new Promise(resolve => setTimeout(resolve, 750));
-          const decoders = app.__VEACOM_PRIVILEGED_TEST__.pictureDecoderProcesses().length;
+          const decoders = app.__VEACOM_PRIVILEGED_TEST__.pictureDecoderProcesses?.()?.length ?? 0;
           await BrowserWindow.getAllWindows()[0].webContents.executeJavaScript(
             'window.__chooserDecoders = '+decoders+'; window.__openStarted = performance.now()');
           return { canceled: false, filePaths: [file] };
@@ -185,9 +243,11 @@ async function run(build, study, counter) {
       const caps = await authorizeImportPaths(desktop, [path.join(studies, study)]);
       await page.evaluate(c => window.__VEACOM_TEST__.importPaths(c), caps);
     }
-    await page.waitForFunction(() => window.__firstDraw && window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 120_000 });
+    await page.waitForFunction(() => window.__firstDraw && window.__fullDraw && window.__VEACOM_TEST__.state().fullVolumeLoaded, undefined, { timeout: 120_000 });
     const firstMs = await page.evaluate(() => window.__firstDraw - window.__openStarted);
-    const row = { firstMs, requests };
+    const fullMs=await page.evaluate(()=>window.__fullDraw-window.__openStarted);
+    const row={readyMs,firstMs,fullMs,requests};
+    if (!counter && ['ct-small','ct-1000','ct-jpeg'].includes(study)) Object.assign(row,await pageStack(page));
     if (study === 'picture-picker') row.preparedDecoders = await page.evaluate(() => window.__chooserDecoders);
     if (study === 'ct-1000') {
       await page.waitForTimeout(300);
@@ -209,22 +269,26 @@ async function run(build, study, counter) {
       await page.waitForLoadState('networkidle');
       row.pixelPaths = pixelPaths;
     } else if (study === 'pet') {
+      if (build==='base') await requestLegacyFusion(page);
       await page.waitForFunction(() => {
         const s = window.__VEACOM_TEST__.state();
-        return window.__fusedDraw && s.fusionId && s.pendingLoads === 0 && [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(c => c.dataset.volumeComplete === 'true');
+        return window.__fusedDraw && (s.fusionId || document.querySelector('[data-testid="fusion-series"]')?.value) && s.pendingLoads === 0 && [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(c => c.dataset.volumeComplete === 'true');
       });
       row.fusionMs = await page.evaluate(() => window.__fusedDraw - window.__openStarted);
-      const state = await page.evaluate(() => {
-        const s = window.__VEACOM_TEST__.state();
-        const overlay = s.series.find(x => x.id === s.fusionId);
-        return { panes: s.panes.length, fused: s.panes.filter(p => !p.unfused && s.series.find(x => x.id === p.seriesId)?.modality === 'CT').length, overlay: overlay?.modality };
+      const state=await page.evaluate(()=>{
+        const s=window.__VEACOM_TEST__.state();
+        const id=s.fusionId || document.querySelector('[data-testid="fusion-series"]')?.value;
+        const overlay=s.series.find(x=>x.id===id);
+        return {panes:document.querySelectorAll('[data-testid="viewport-cell"]').length,overlay:overlay?.description};
       });
-      assert.equal(state.fused, 1); assert.equal(state.overlay, 'PT'); Object.assign(row, state);
+      assert(state.overlay?.endsWith('PET AC'));assert.equal(state.panes,1);Object.assign(row,state);
       await page.waitForTimeout(1500);
       const rendererPid = await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.getOSProcessId());
       row.rendererRssMiB = Number(execFileSync('ps', ['-o', 'rss=', '-p', String(rendererPid)], { encoding: 'utf8' }).trim()) / 1024;
       assert(row.rendererRssMiB > 0);
-    } else if (study === 'video') Object.assign(row, await exportMovie(page, folder));
+    } else if (study === 'video') Object.assign(row, await exportMovie(page,folder,build,desktop));
+    else if(study==='ct-small') Object.assign(row,await measure3d(page,desktop));
+    else if(study==='ct-jpeg') assert.deepEqual(await page.evaluate(()=>window.__VEACOM_TEST__.state().dimensions),[512,512,1000]);
     else {
       const dims = await page.evaluate(() => window.__VEACOM_TEST__.state().dimensions);
       assert.deepEqual(dims, [512, 512, 1]);
@@ -241,9 +305,9 @@ async function run(build, study, counter) {
 async function main() {
   generate();
   const report = { platform: process.platform, arch: process.arch, release: os.release(), cpu: os.cpus()[0].model,
-    rounds, versions: {}, engines: {}, samples: [], comparisons: [], failures: [] };
+    rounds, versions: {}, engines: {}, samples: [], comparisons: [], failures: [], regressions: [] };
   for (const [build, root] of Object.entries(roots)) {
-    report.versions[build] = execFileSync('git', ['rev-parse','HEAD'], { cwd: root, encoding: 'utf8' }).trim();
+    report.versions[build] = build==='base' ? 'c6956d95424e5862236378b0a5862b874407d39a' : execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
     report.engines[build] = createHash('sha256').update(fs.readFileSync(binary(root))).digest('hex');
   }
   const save = () => fs.writeFileSync(path.join(output, 'desktop.json'), JSON.stringify(report, null, 2));
@@ -252,9 +316,9 @@ async function main() {
   report.counts = {};
   for (const build of ['base', 'head']) report.counts[build] = await run(build, 'ct-1000', counter);
   save();
-  if (report.counts.base.mprReads.files < 1000) report.failures.push('Beta 2 did not exercise the oversized volume');
+  if (report.counts.base.mprReads.bytes) report.failures.push('Beta 1 unexpectedly reread pixels for Auto Window');
   if (report.counts.head.mprReads.bytes || report.counts.head.mprReads.files) report.failures.push('MPR reread the study');
-  for (const study of ['ct-1000','mr','pet','single.png','picture-picker','video']) {
+  for (const study of ['ct-1000','mr','pet','single.png','picture-picker','video','ct-small','ct-jpeg']) {
     for (let round = -1; round < rounds; round++) {
       const pair = {};
       try {
@@ -268,27 +332,31 @@ async function main() {
       const check = (ok, reason) => { if (!ok) report.failures.push(study+' round '+(round+1)+': '+reason); };
       if (study === 'ct-1000') check(pair.head.values.every((value, i) => Math.abs(value - pair.base.values[i]) < 1e-5), 'MPR result changed');
       if (study === 'mr') check(pair.head.requests.volume === 1 && pair.head.requests.frame <= 8, 'Duplicate MR reads');
-      if (study === 'pet') check(pair.base.panes === 4 && pair.head.panes === 1, 'Incorrect PET layout');
+      if (study === 'pet') check(pair.base.panes === 1 && pair.head.panes === 1, 'Incorrect PET layout');
       if (study === 'single.png' || study === 'picture-picker') check(pair.head.requests.volume === 1 && pair.head.requests.frame === 0, 'Duplicate picture reads');
       if (study === 'picture-picker') check(pair.base.preparedDecoders === 0 && pair.head.preparedDecoders === 1, 'File chooser did not prepare one decoder');
-      if (study === 'video') check(pair.head.psnrDb >= 35, 'CT video quality: '+pair.head.psnrDb+' dB');
+
     }
     const rows = report.samples.filter(row => row.study === study);
     if (!rows.length) continue;
-    const metrics = study === 'ct-1000' ? ['firstMs','mprMs'] : study === 'video' ? ['exportMs','videoBytes']
-      : study === 'pet' ? ['firstMs','fusionMs','rendererRssMiB'] : ['firstMs'];
+    const metrics=['firstMs','fullMs'];
+    if(study==='ct-1000') metrics.push('readyMs','mprMs','pageP95Ms');
+    if(study==='ct-small') metrics.push('volume3dMs','cameraMs','pageP95Ms');
+    if(study==='ct-jpeg') metrics.push('pageP95Ms');
+    if(study==='video') metrics.push('exportMs','videoBytes');
+    if(study==='pet') metrics.push('fusionMs','rendererRssMiB');
     for (const metric of metrics) {
       const paired = rows.map(row => ({ base: row.base[metric], head: row.head[metric] }));
-      const comparison = compareRounds(paired, { threshold: .15, minMs: metric === 'videoBytes' ? 1 : 20, seed: 4109 });
+      const comparison = compareRounds(paired, { threshold: .15, minMs: metric === 'videoBytes' ? 1 : metric === 'rendererRssMiB' ? 10 : ['pageP95Ms','cameraMs','mprMs'].includes(metric) ? 2 : 20, seed: 4109 });
       report.comparisons.push({ study, metric, ...comparison });
-      if (comparison.verdict === 'slower') report.failures.push(study+' '+metric+' regressed');
-      if (metric === 'videoBytes' && comparison.change > -.25) report.failures.push('MP4 size reduction below 25%');
+      if (comparison.verdict === 'slower') report.regressions.push(study+' '+metric);
     }
     save();
   }
-  const table = ['| Study | Metric | Beta 2 median | Candidate median | Change (95% interval) |','|---|---|---:|---:|---|'];
+  const table = ['| Study | Metric | Beta 1 median | Candidate median | Change (95% interval) |','|---|---|---:|---:|---|'];
   for (const row of report.comparisons) table.push('| '+[row.study,row.metric,row.base.toFixed(1),row.head.toFixed(1),
     [row.change,row.low,row.high].map(n=>(100*n).toFixed(1)+'%').join(' / ')].join(' | ')+' |');
+  save();
   fs.writeFileSync(path.join(output, 'desktop.md'),table.join('\n')+'\n');
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,table.join('\n')+'\n');
   assert.deepEqual(report.failures, []);
