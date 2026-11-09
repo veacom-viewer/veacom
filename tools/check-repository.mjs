@@ -60,7 +60,8 @@ const BY_HAND = new Map([
 const checks = files.filter(file => /^tools\/check-[^/]+\.(?:cjs|mjs|ps1)$/.test(file));
 // What a file runs, its comments left out: a check that only a comment names is not started. Quoted text is kept
 // whole, so a # or // inside a string does not cut off the command after it. A quote ends at the line's end, except a
-// JavaScript template literal; a backslash escapes in JavaScript strings and in double-quoted shell text.
+// JavaScript template literal; a backslash escapes in JavaScript strings, in double-quoted shell text and outside quotes
+// in shell. In shell, YAML and PowerShell a # starts a comment where a word starts: after a space or ; & | ( ).
 function code(file, text) {
   if (file.endsWith('.json')) return text;
   const js = !/\.(?:ya?ml|sh|ps1)$/.test(file), ps1 = file.endsWith('.ps1');
@@ -74,11 +75,12 @@ function code(file, text) {
       else if (c === quote || (c === '\n' && quote !== '`')) quote = null;
       continue;
     }
-    const afterSpace = i === 0 || /\s/.test(text[i - 1]);
+    const wordStart = i === 0 || /[\s;&|()]/.test(text[i - 1]);
+    if (!js && c === '\\') { out += c + (text[i + 1] ?? ''); i++; continue; }
     if (js && text.startsWith('/*', i)) { i = skipTo(i + 2, '*/') - 1; continue; }
     if (js && text.startsWith('<!--', i)) { i = skipTo(i + 4, '-->') - 1; continue; }
     if (ps1 && text.startsWith('<#', i)) { i = skipTo(i + 2, '#>') - 1; continue; }
-    if ((js && text.startsWith('//', i)) || (!js && c === '#' && afterSpace)) {
+    if ((js && text.startsWith('//', i)) || (!js && c === '#' && wordStart)) {
       const end = text.indexOf('\n', i);
       if (end < 0) break;
       i = end - 1; // the newline itself is kept

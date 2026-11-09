@@ -126,6 +126,7 @@ it('counts a check as started when something runs it, not when only a comment na
   await writeFile(path.join(dir, 'tools/check-new.cjs'), "console.log('checked');\n");
   await writeFile(path.join(dir, 'tools/other.mjs'), '// check-new.cjs runs in CI.\n/* see check-new.cjs */\nexport {};\n');
   await writeFile(path.join(dir, '.github/workflows/ci.yml'), 'jobs:\n  test:\n    steps:\n      # tools/check-new.cjs\n      - run: echo hello\n');
+  await writeFile(path.join(dir, 'tools/run.sh'), 'echo ready;# tools/check-new.cjs\necho \\" # tools/check-new.cjs\n');
   git('add', '.');
   let result = check();
   assert.equal(result.status, 1); assert.ok(result.stderr.includes('Nothing starts these checks')); assert.ok(result.stderr.includes('tools/check-new.cjs'));
