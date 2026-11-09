@@ -7,16 +7,21 @@
 // a run that lent this thread work would otherwise wait for it for ever.
 type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
 
-const scope = self as unknown as { postMessage(message: unknown): void; onmessage: ((event: MessageEvent<{ module: WebAssembly.Module; memory: WebAssembly.Memory }>) => void) | null };
+type Shared = { module: WebAssembly.Module; memory: WebAssembly.Memory };
+const scope = self as unknown as { postMessage(message: unknown): void; onmessage: ((event: MessageEvent<Shared>) => void) | null };
 
-scope.onmessage = async ({ data }) => {
-  scope.onmessage = null;
+async function help({ module, memory }: Shared): Promise<void> {
   try {
     const engine: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
-    engine.initSync({ module: data.module, memory: data.memory });
+    engine.initSync({ module, memory });
     scope.postMessage({ type: 'ready' });
     engine.helperMain();
   } catch (error) {
-    scope.postMessage({ type: 'failed', error: String((error as Error)?.message ?? error) });
+    scope.postMessage({ type: 'failed', error: error instanceof Error ? error.message : String(error) });
   }
+}
+
+scope.onmessage = ({ data }) => {
+  scope.onmessage = null;
+  void help(data);
 };

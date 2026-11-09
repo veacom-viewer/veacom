@@ -10,11 +10,11 @@ type Words = { tr: string; en: string };
 export interface ChecklistItem { id: string; label: Words; hint: Words; sided: boolean; options?: Array<{ value: string } & Words> }
 export interface ChecklistGroup { title: Words; items: ChecklistItem[] }
 export type Side = 'right' | 'left' | 'both';
-export type Answers = Record<string, Partial<Record<Side, string>>>;
+export type Answers = Partial<Record<string, Partial<Record<Side, string>>>>;
 export interface SliceNote { seriesId: string; slice: number; shown: string; plane: string; mode: string;
   /** A tilted reconstruction: its pitch and yaw, and the tilt from the plain plane in degrees. */
   oblique?: [number, number]; tilt?: number }
-export type Notes = Record<string, SliceNote>;
+export type Notes = Partial<Record<string, SliceNote>>;
 
 /** Present, absent, not assessable: the default answers of a finding. */
 export const FINDING: Array<{ value: string } & Words> = [

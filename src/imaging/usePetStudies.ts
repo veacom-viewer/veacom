@@ -25,6 +25,9 @@ function writeRecords(records: PetStudyRecords): boolean {
   try { localStorage.setItem(PET_STUDIES_STORAGE, JSON.stringify(records)); return true; } catch { return false; }
 }
 
+/** What this computer keeps for one series of a study, if anything. */
+const keptRecord = (records: PetStudyRecords, study: string, series: string): PetSeriesRecord | undefined => records[study]?.series[series];
+
 export const reconstructedSeriesDigest = (series: Pick<Series, 'uid' | 'id'>) => uidDigest(JSON.stringify([series.uid, series.id]));
 
 export async function petStorageKeys(item: Series): Promise<Keys> {
@@ -38,13 +41,13 @@ export async function petStorageKeys(item: Series): Promise<Keys> {
 
 /** Older builds used both reconstruction-specific and series-UID-only records. The reader confirms the destination. */
 export function previousMeasurements(records: PetStudyRecords, key: Keys) {
-  const old = records[key.previousStudy];
+  const old = Object.hasOwn(records, key.previousStudy) ? records[key.previousStudy] : undefined;
   const locations = [{ study: key.study, series: key.uidOnly }];
   if (old && (!old.patient || old.patient === key.previousPatient) && (!old.date || !key.date || old.date === key.date)) {
     locations.push({ study: key.previousStudy, series: key.previousSeries }, { study: key.previousStudy, series: key.uidOnly });
   }
   return locations.find(({ study, series }) => {
-    const record = records[study]?.series[series];
+    const record = keptRecord(records, study, series);
     return record && (Object.keys(record.references).length || record.lesions?.length);
   });
 }
@@ -126,7 +129,7 @@ export function usePetRecords(series: readonly Series[], setAnnotations: Dispatc
       if (!records) { setSaveFailed(true); return; }
       const nextKeys = new Map(keys);
       for (const { item, keys: own } of found) {
-        const record = records[own.study]?.series[own.series];
+        const record = keptRecord(records, own.study, own.series);
         nextKeys.set(item.id, own);
         back[item.id] = record ? keptAnnotations(record, item) : [];
       }
@@ -192,7 +195,7 @@ export function usePetStudies(series: readonly Series[], annotations: Annotation
       if (!records) records = readRecords();
       if (!records) { save(null); return; }
       pending.set(item.id, record);
-      const previous = records[key.study]?.series[key.series];
+      const previous = keptRecord(records, key.study, key.series);
       const updated = previous?.limitedView ? { ...record, limitedView: true as const } : record;
       if (sameSeriesRecord(updated, previous)) continue;
       records = withPetSeries(records, key.study, key.series, updated, Date.now(), key);

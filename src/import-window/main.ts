@@ -224,7 +224,7 @@ async function start() {
   const drive = places.drives.find(item => item.kind === 'disc' && item.ready);
   if (disc && drive) void go(drive.path);
   // A last folder that is gone, or no longer allowed, falls back to home.
-  else if (!(await shown)) void go(places.home[0]?.path ?? places.drives[0]?.path ?? '/');
+  else if (!(await shown)) void go(places.home.at(0)?.path ?? places.drives.at(0)?.path ?? '/');
 }
 
 void start();

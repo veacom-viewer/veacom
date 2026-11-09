@@ -183,9 +183,9 @@ export function sliceAtWorld(series: Series, selection: PlaneSelection, point: V
   if (usesSourceFrames(series, selectionView(selection))) {
     if (!series.frameMetadata?.length) return Math.round(clamp(worldToIndex(series, point)[2], 0, series.dimensions[2] - 1));
     let nearest = 0, distance = Infinity;
+    // The engine gives frame metadata to every frame of the stack or to none (native/src/ingest.rs).
     for (let i = 0; i < series.dimensions[2]; i++) {
-      const metadata = series.frameMetadata[i], origin = metadata?.origin ?? indexToWorld(series, [0, 0, i]);
-      const m = metadata?.direction ?? series.direction;
+      const { origin, direction: m } = series.frameMetadata[i];
       const nx = m[3] * m[7] - m[6] * m[4], ny = m[6] * m[1] - m[0] * m[7], nz = m[0] * m[4] - m[3] * m[1];
       const magnitude = Math.hypot(nx, ny, nz); if (magnitude < 1e-10) continue;
       const candidate = Math.abs((point[0] - origin[0]) * nx + (point[1] - origin[1]) * ny + (point[2] - origin[2]) * nz) / magnitude;

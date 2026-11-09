@@ -16,8 +16,9 @@ export function iconMarkup(markup: string): string {
   TOKEN.lastIndex = 0;
   let end = 0;
   for (let match = TOKEN.exec(markup); match; match = TOKEN.exec(markup)) {
-    const [, open, attributes = '', , close] = match;
-    if (!SHAPES.has(open ?? close)) throw new TypeError('Only icon shapes may be inserted as markup.');
+    // A tag is either opening or closing: the other one's name group is undefined.
+    const [, , attributes = ''] = match, tag = match.at(1) ?? match.at(4);
+    if (!tag || !SHAPES.has(tag)) throw new TypeError('Only icon shapes may be inserted as markup.');
     for (const [, name, value] of attributes.matchAll(ATTRIBUTE)) {
       if (!ATTRIBUTES.has(name) || !VALUE.test(value) || /url\s*\(/i.test(value)) throw new TypeError('Only icon shapes may be inserted as markup.');
     }
