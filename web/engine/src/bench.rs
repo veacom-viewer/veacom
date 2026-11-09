@@ -8,7 +8,12 @@ use veacom_core::model::PixelBuffer;
 /// from lossless copies in other transfer syntaxes, must give the same value. Not a cryptographic hash; the
 /// measurement page takes SHA-1 of the browser's pixels itself.
 fn checksum(pixels: &PixelBuffer) -> String {
-    let hash = pixels.bytes().iter().fold(0xcbf2_9ce4_8422_2325u64, |hash, &byte| (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3));
+    let hash = pixels
+        .bytes()
+        .iter()
+        .fold(0xcbf2_9ce4_8422_2325u64, |hash, &byte| {
+            (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01b3)
+        });
     format!("{}:{hash:016x}", pixels.type_name())
 }
 

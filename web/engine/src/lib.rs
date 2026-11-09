@@ -9,12 +9,12 @@ mod view;
 mod allocator;
 #[cfg(target_arch = "wasm32")]
 mod api;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod bench;
 #[cfg(target_arch = "wasm32")]
 mod blob;
 #[cfg(target_arch = "wasm32")]
 mod libc_shim;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod bench;
 
 /// The threads build's lent threads: Web Workers that call `helperMain` and work on the engine's parallel runs.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]

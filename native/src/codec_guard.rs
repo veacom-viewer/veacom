@@ -686,11 +686,29 @@ mod tests {
         let mut ct = expected();
         (ct.precision, ct.allocated) = (12, 16);
         for ls in [false, true] {
-            check_jpeg(&mut Cursor::new(&[jpeg(1, 1, 16, ls, 0x11)]).unwrap(), &ct, ls).unwrap();
-            check_jpeg(&mut Cursor::new(&[jpeg(1, 1, 12, ls, 0x11)]).unwrap(), &ct, ls).unwrap();
+            check_jpeg(
+                &mut Cursor::new(&[jpeg(1, 1, 16, ls, 0x11)]).unwrap(),
+                &ct,
+                ls,
+            )
+            .unwrap();
+            check_jpeg(
+                &mut Cursor::new(&[jpeg(1, 1, 12, ls, 0x11)]).unwrap(),
+                &ct,
+                ls,
+            )
+            .unwrap();
             // Eight-bit samples would not fill the 16-bit buffer.
-            let error = check_jpeg(&mut Cursor::new(&[jpeg(1, 1, 8, ls, 0x11)]).unwrap(), &ct, ls).unwrap_err();
-            assert!(format!("{error:#}").contains("8-bit precision"), "{error:#}");
+            let error = check_jpeg(
+                &mut Cursor::new(&[jpeg(1, 1, 8, ls, 0x11)]).unwrap(),
+                &ct,
+                ls,
+            )
+            .unwrap_err();
+            assert!(
+                format!("{error:#}").contains("8-bit precision"),
+                "{error:#}"
+            );
         }
         let mut j2k_ct = ct;
         check_jpeg2000(&mut Cursor::new(&[j2k(1, 1, 16, 0)]).unwrap(), &j2k_ct).unwrap();

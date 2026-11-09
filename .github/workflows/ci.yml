@@ -145,9 +145,9 @@ jobs:
       # threads start only in the pipe and ZIP encoder pools.
       - name: Clippy, warnings as errors
         run: cargo clippy --release --locked --all-targets -- -D warnings
-      - name: Formatting (advisory until the code base is formatted once)
-        continue-on-error: true
-        run: cargo fmt --check
+      # Both crates, the WebAssembly engine's too.
+      - name: Formatting
+        run: cargo fmt --all --check
 
   secrets:
     runs-on: ubuntu-24.04

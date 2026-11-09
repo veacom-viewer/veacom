@@ -2,7 +2,10 @@ use super::changed;
 use std::{
     fs::{File, Metadata},
     io,
-    os::{fd::AsRawFd, unix::fs::{FileExt, MetadataExt}},
+    os::{
+        fd::AsRawFd,
+        unix::fs::{FileExt, MetadataExt},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,7 +22,9 @@ pub(super) struct Stamp {
 impl Stamp {
     fn from(metadata: &Metadata) -> Self {
         Self {
-            device: metadata.dev(), inode: metadata.ino(), len: metadata.len(),
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            len: metadata.len(),
             modified: (metadata.mtime(), metadata.mtime_nsec()),
             changed: (metadata.ctime(), metadata.ctime_nsec()),
         }
@@ -28,26 +33,43 @@ impl Stamp {
     pub(super) fn capture(file: &File, metadata: &Metadata) -> Option<Self> {
         let mut info = std::mem::MaybeUninit::<libc::statfs>::uninit();
         // fstatfs writes one statfs value on success. The descriptor stays open for the call.
-        if unsafe { libc::fstatfs(file.as_raw_fd(), info.as_mut_ptr()) } != 0 { return None; }
+        if unsafe { libc::fstatfs(file.as_raw_fd(), info.as_mut_ptr()) } != 0 {
+            return None;
+        }
         let info = unsafe { info.assume_init() };
         #[cfg(target_os = "linux")]
-        let local = matches!(info.f_type, libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | 0x58465342 /* XFS */);
+        let local = matches!(
+            info.f_type,
+            libc::EXT4_SUPER_MAGIC | libc::BTRFS_SUPER_MAGIC | 0x58465342 /* XFS */
+        );
         #[cfg(target_os = "macos")]
-        let local = info.f_fstypename.starts_with(&[b'a' as _, b'p' as _, b'f' as _, b's' as _, 0]);
+        let local = info
+            .f_fstypename
+            .starts_with(&[b'a' as _, b'p' as _, b'f' as _, b's' as _, 0]);
         (local && metadata.ino() != 0).then(|| Self::from(metadata))
     }
 
     pub(super) fn settled(&self) -> bool {
         // A write in the same filesystem clock tick could keep the same ctime. Recently written files use block hashes.
-        SystemTime::now().duration_since(UNIX_EPOCH).is_ok_and(|now| now.as_secs() as i64 - self.changed.0 > 2)
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .is_ok_and(|now| now.as_secs() as i64 - self.changed.0 > 2)
     }
 
     pub(super) fn verify(&self, file: &File) -> io::Result<()> {
-        if *self == Self::from(&file.metadata()?) { return Ok(()); }
+        if *self == Self::from(&file.metadata()?) {
+            return Ok(());
+        }
         Err(io::Error::new(io::ErrorKind::InvalidData, changed()))
     }
 
-    pub(super) fn read(&self, original: &File, contents: &File, dst: &mut [u8], offset: u64) -> io::Result<usize> {
+    pub(super) fn read(
+        &self,
+        original: &File,
+        contents: &File,
+        dst: &mut [u8],
+        offset: u64,
+    ) -> io::Result<usize> {
         self.verify(original)?;
         let n = contents.read_at(dst, offset)?;
         self.verify(original)?;

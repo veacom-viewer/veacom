@@ -543,9 +543,14 @@ fn roi(
                 index[fixed] = slice.round() as usize;
                 index[axes[0]] = u;
                 index[axes[1]] = v;
-                let value=pixels.value(offset(index, dimensions));
-                if value.is_nan() && source.frames.get(index[2]).is_some_and(|frame|frame.metadata.padding_is_nan) {
-                    excluded_padding+=1;
+                let value = pixels.value(offset(index, dimensions));
+                if value.is_nan()
+                    && source
+                        .frames
+                        .get(index[2])
+                        .is_some_and(|frame| frame.metadata.padding_is_nan)
+                {
+                    excluded_padding += 1;
                 } else {
                     statistics.push(value)?;
                 }

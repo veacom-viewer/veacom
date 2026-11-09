@@ -1,5 +1,6 @@
 use crate::archive_temp::ArchiveTempDir;
 use crate::source_file::SourceFile;
+use crate::vfs::{self as fs, File};
 use crate::{
     geometry::{self, FrameGeometry},
     model::{
@@ -11,7 +12,6 @@ use anyhow::{Context, Result, bail, ensure};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use dicom_core::{PrimitiveValue, Tag};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
-use crate::vfs::{self as fs, File};
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     io::{Read, Write},
@@ -22,8 +22,16 @@ use std::{
 pub const MAX_FILES: usize = 50_000;
 /// Extracted archive entries are held in memory in WebAssembly, where everything shares 4 GB: 1 GiB in all and
 /// 512 MiB per entry there, so a ZIP bomb stops long before memory runs out.
-const MAX_ARCHIVE_BYTES: u64 = if cfg!(target_arch = "wasm32") { 1024 * 1024 * 1024 } else { 8 * 1024 * 1024 * 1024 };
-const MAX_ARCHIVE_FILE_BYTES: u64 = if cfg!(target_arch = "wasm32") { 512 * 1024 * 1024 } else { 2 * 1024 * 1024 * 1024 };
+const MAX_ARCHIVE_BYTES: u64 = if cfg!(target_arch = "wasm32") {
+    1024 * 1024 * 1024
+} else {
+    8 * 1024 * 1024 * 1024
+};
+const MAX_ARCHIVE_FILE_BYTES: u64 = if cfg!(target_arch = "wasm32") {
+    512 * 1024 * 1024
+} else {
+    2 * 1024 * 1024 * 1024
+};
 /// The threads that read an import's files (crate::parallel names them dicom-index-1…).
 fn index_readers() -> usize {
     crate::parallel::available(2).min(8)
@@ -551,7 +559,12 @@ fn phase_split(frames: &[Frame]) -> Option<(PhaseSource, Vec<Vec<usize>>)> {
 fn runs_through_places(frames: &[Frame]) -> Option<Vec<Vec<usize>>> {
     let places = frames
         .iter()
-        .map(|f| f.geometry.position.filter(|p| p.iter().all(|v| v.is_finite())).map(place))
+        .map(|f| {
+            f.geometry
+                .position
+                .filter(|p| p.iter().all(|v| v.is_finite()))
+                .map(place)
+        })
         .collect::<Option<Vec<_>>>()?;
     let mut order: Vec<usize> = (0..frames.len()).collect();
     order.sort_by_key(|&i| (frames[i].instance_number, i));
@@ -568,9 +581,17 @@ fn runs_through_places(frames: &[Frame]) -> Option<Vec<Vec<usize>>> {
     if !(2..=8).contains(&runs.len()) {
         return None;
     }
-    let held = |run: &Vec<usize>| run.iter().map(|&i| places[i]).collect::<std::collections::BTreeSet<_>>();
+    let held = |run: &Vec<usize>| {
+        run.iter()
+            .map(|&i| places[i])
+            .collect::<std::collections::BTreeSet<_>>()
+    };
     let first = held(&runs[0]);
-    (first.len() >= 5 && runs.iter().all(|run| run.len() == first.len() && held(run) == first)).then_some(runs)
+    (first.len() >= 5
+        && runs
+            .iter()
+            .all(|run| run.len() == first.len() && held(run) == first))
+    .then_some(runs)
 }
 
 /// Dimension index values are ordinals within one dimension organization (PS3.3
@@ -582,7 +603,10 @@ fn dimensions_comparable(frames: &[Frame]) -> bool {
     };
     let scope = first.phase_hints.dimension_scope;
     if frames.iter().any(|f| f.source.path != first.source.path)
-        && (scope.is_none() || frames.iter().any(|f| f.phase_hints.dimension_scope != scope))
+        && (scope.is_none()
+            || frames
+                .iter()
+                .any(|f| f.phase_hints.dimension_scope != scope))
     {
         return false;
     }
@@ -603,7 +627,10 @@ fn dimensions_comparable(frames: &[Frame]) -> bool {
 fn phase_acquisition(frames: &[Frame]) -> (String, String) {
     let hints = || frames.iter().map(|f| &f.phase_hints);
     fn earliest(keyed: Vec<(f64, &PhaseHints)>) -> Option<&PhaseHints> {
-        keyed.into_iter().min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, h)| h)
+        keyed
+            .into_iter()
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, h)| h)
     }
     let chosen = hints()
         .map(|h| dt_seconds(&h.acquisition_date_time).map(|key| (key, h)))
@@ -639,17 +666,27 @@ fn dt_seconds(value: &str) -> Option<f64> {
     {
         return None;
     }
-    let field = |at: usize, default: u32| whole.get(at..at + 2).map_or(Some(default), |v| v.parse().ok());
+    let field = |at: usize, default: u32| {
+        whole
+            .get(at..at + 2)
+            .map_or(Some(default), |v| v.parse().ok())
+    };
     let instant = NaiveDate::from_ymd_opt(whole[..4].parse().ok()?, field(4, 1)?, field(6, 1)?)?
         .and_hms_opt(field(8, 0)?, field(10, 0)?, field(12, 0)?)?;
-    let mut seconds = instant.and_utc().timestamp() as f64 + format!("0.{fraction}0").parse::<f64>().ok()?;
+    let mut seconds =
+        instant.and_utc().timestamp() as f64 + format!("0.{fraction}0").parse::<f64>().ok()?;
     if let Some(offset) = offset {
         let digits = &offset[1..];
         if digits.len() != 4 || !digits.bytes().all(|b| b.is_ascii_digit()) {
             return None;
         }
-        let minutes = f64::from(digits[..2].parse::<u32>().ok()? * 60 + digits[2..].parse::<u32>().ok()?);
-        seconds -= if offset.starts_with('-') { -minutes } else { minutes } * 60.;
+        let minutes =
+            f64::from(digits[..2].parse::<u32>().ok()? * 60 + digits[2..].parse::<u32>().ok()?);
+        seconds -= if offset.starts_with('-') {
+            -minutes
+        } else {
+            minutes
+        } * 60.;
     }
     Some(seconds)
 }
@@ -696,10 +733,18 @@ const MAX_STACKS: usize = 8;
 fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Frame>)>) {
     let mut alike: BTreeMap<(String, String, String), Vec<GroupKey>> = BTreeMap::new();
     for key in groups.keys() {
-        alike.entry((key.stack.clone(), key.temporal.clone(), key.tail.clone())).or_default().push(key.clone());
+        alike
+            .entry((key.stack.clone(), key.temporal.clone(), key.tail.clone()))
+            .or_default()
+            .push(key.clone());
     }
     for keys in alike.into_values() {
-        if keys.len() < 2 || (keys.len() <= MAX_STACKS && keys.iter().all(|key| groups[key].1.len() >= MIN_STACK_IMAGES)) {
+        if keys.len() < 2
+            || (keys.len() <= MAX_STACKS
+                && keys
+                    .iter()
+                    .all(|key| groups[key].1.len() >= MIN_STACK_IMAGES))
+        {
             continue;
         }
         let mut keys = keys.into_iter();
@@ -774,7 +819,10 @@ fn phase_family(
             .as_ref()
             .map(|explicit| explicit.value.clone())
             .unwrap_or_default();
-        let rank = positions.binary_search_by(|p| p.total_cmp(&position)).unwrap_or(0) + 1;
+        let rank = positions
+            .binary_search_by(|p| p.total_cmp(&position))
+            .unwrap_or(0)
+            + 1;
         let trigger = triggers.next();
         // The frames of a group share their gate, as its number is their explicit temporal position.
         let gate = frames[0].phase_hints.gate;
@@ -887,9 +935,14 @@ fn split_phases(
             let total = runs.len();
             let mut frames: Vec<_> = frames.into_iter().map(Some).collect();
             for (index, run) in runs.into_iter().enumerate() {
-                let part: Vec<Frame> = run.into_iter().map(|i| frames[i].take().expect("each frame is in one run")).collect();
+                let part: Vec<Frame> = run
+                    .into_iter()
+                    .map(|i| frames[i].take().expect("each frame is in one run"))
+                    .collect();
                 let mut info = info.clone();
-                info.description = format!("{} ({}/{total})", info.description, index + 1).trim().to_string();
+                info.description = format!("{} ({}/{total})", info.description, index + 1)
+                    .trim()
+                    .to_string();
                 parts.push((format!("{key}|run={}", index + 1), info, part));
             }
             return;
@@ -915,8 +968,10 @@ fn split_phases(
         let value = source.value(hints);
         let mut info = info.clone();
         // Each phase carries its own timing, which contrast inference reads.
-        (info.acquisition.acquisition_time, info.acquisition.acquisition_date_time) =
-            phase_acquisition(&part);
+        (
+            info.acquisition.acquisition_time,
+            info.acquisition.acquisition_date_time,
+        ) = phase_acquisition(&part);
         info.phase = Some(PhaseIdentity {
             kind: source.kind().into(),
             label: source.label(
@@ -1201,11 +1256,20 @@ fn segmentation(obj: &InMemDicomObject) -> Segmentation {
         .unwrap_or_default();
     let mut series = None;
     let mut instances = None;
-    segmentation_references(obj, &reference_uid(obj, Tag(0x0020, 0x000d)), &mut series, &mut instances);
+    segmentation_references(
+        obj,
+        &reference_uid(obj, Tag(0x0020, 0x000d)),
+        &mut series,
+        &mut instances,
+    );
     let references: Option<Vec<_>> = series.map(|s| s.into_iter().collect());
     Segmentation {
         kind: hint_text(&text(obj, Tag(0x0062, 0x0001))),
-        referenced_series_uid: references.as_ref().and_then(|items| items.first()).map(|(_, uid)| uid.clone()).unwrap_or_default(),
+        referenced_series_uid: references
+            .as_ref()
+            .and_then(|items| items.first())
+            .map(|(_, uid)| uid.clone())
+            .unwrap_or_default(),
         referenced_series: references,
         referenced_instances: instances.map(|s| s.into_iter().collect()),
         segments,
@@ -1214,39 +1278,75 @@ fn segmentation(obj: &InMemDicomObject) -> Segmentation {
 
 fn reference_uid(obj: &InMemDicomObject, tag: Tag) -> String {
     let uid = text(obj, tag);
-    if uid.len() <= 64 && uid.bytes().all(|c| c.is_ascii_digit() || c == b'.') { uid } else { String::new() }
+    if uid.len() <= 64 && uid.bytes().all(|c| c.is_ascii_digit() || c == b'.') {
+        uid
+    } else {
+        String::new()
+    }
 }
 
 // An explicit but empty or malformed reference must not turn into a geometry-only match.
 fn segmentation_references(
-    obj: &InMemDicomObject, study: &str,
+    obj: &InMemDicomObject,
+    study: &str,
     series: &mut Option<std::collections::BTreeSet<(String, String)>>,
     instances: &mut Option<std::collections::BTreeSet<(String, Option<u32>)>>,
 ) {
-    for tag in [Tag(0x0008, 0x1115), Tag(0x0008, 0x1200), Tag(0x5200, 0x9229), Tag(0x5200, 0x9230), Tag(0x0008, 0x9124)] {
-        let Some(sequence) = obj.get(tag) else { continue };
-        if matches!(tag, Tag(0x0008, 0x1115 | 0x1200)) { series.get_or_insert_with(Default::default); }
+    for tag in [
+        Tag(0x0008, 0x1115),
+        Tag(0x0008, 0x1200),
+        Tag(0x5200, 0x9229),
+        Tag(0x5200, 0x9230),
+        Tag(0x0008, 0x9124),
+    ] {
+        let Some(sequence) = obj.get(tag) else {
+            continue;
+        };
+        if matches!(tag, Tag(0x0008, 0x1115 | 0x1200)) {
+            series.get_or_insert_with(Default::default);
+        }
         for item in sequence.items().into_iter().flatten() {
             if tag == Tag(0x0008, 0x1115) {
-                series.as_mut().unwrap().insert((study.to_owned(), reference_uid(item, Tag(0x0020, 0x000e))));
+                series
+                    .as_mut()
+                    .unwrap()
+                    .insert((study.to_owned(), reference_uid(item, Tag(0x0020, 0x000e))));
             }
             if tag == Tag(0x0008, 0x1200) {
-                segmentation_references(item, &reference_uid(item, Tag(0x0020, 0x000d)), series, instances);
+                segmentation_references(
+                    item,
+                    &reference_uid(item, Tag(0x0020, 0x000d)),
+                    series,
+                    instances,
+                );
             } else {
                 segmentation_references(item, study, series, instances);
             }
         }
     }
-    for tag in [Tag(0x0008, 0x1140), Tag(0x0008, 0x114a), Tag(0x0008, 0x2112)] {
-        let Some(sequence) = obj.get(tag) else { continue };
+    for tag in [
+        Tag(0x0008, 0x1140),
+        Tag(0x0008, 0x114a),
+        Tag(0x0008, 0x2112),
+    ] {
+        let Some(sequence) = obj.get(tag) else {
+            continue;
+        };
         let references = instances.get_or_insert_with(Default::default);
         for item in sequence.items().into_iter().flatten() {
             let uid = reference_uid(item, Tag(0x0008, 0x1155));
             if let Some(element) = item.get(Tag(0x0008, 0x1160)) {
                 let frames = element.to_multi_int::<u32>().unwrap_or_default();
-                if frames.is_empty() { references.insert((uid, Some(0))); }
-                else { for number in frames { references.insert((uid.clone(), Some(number))); } }
-            } else { references.insert((uid, None)); }
+                if frames.is_empty() {
+                    references.insert((uid, Some(0)));
+                } else {
+                    for number in frames {
+                        references.insert((uid.clone(), Some(number)));
+                    }
+                }
+            } else {
+                references.insert((uid, None));
+            }
         }
     }
 }
@@ -1310,8 +1410,13 @@ struct ImageRoot {
 
 impl ImageRoot {
     fn new(dir: &Path, name: Option<&std::ffi::OsStr>) -> Arc<Self> {
-        let name = name.map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty());
-        Arc::new(Self { dir: dir.to_owned(), name: name.unwrap_or_else(|| dir.display().to_string()) })
+        let name = name
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty());
+        Arc::new(Self {
+            dir: dir.to_owned(),
+            name: name.unwrap_or_else(|| dir.display().to_string()),
+        })
     }
 }
 
@@ -1335,7 +1440,11 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
             (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
                 let (left, right) = (digits(&mut a), digits(&mut b));
                 let (l, r) = (left.trim_start_matches('0'), right.trim_start_matches('0'));
-                let order = l.len().cmp(&r.len()).then_with(|| l.cmp(r)).then_with(|| left.len().cmp(&right.len()));
+                let order = l
+                    .len()
+                    .cmp(&r.len())
+                    .then_with(|| l.cmp(r))
+                    .then_with(|| left.len().cmp(&right.len()));
                 if order != Ordering::Equal {
                     return order;
                 }
@@ -1357,8 +1466,15 @@ fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
 fn number_image_series(sources: &mut [SourceSeries]) {
     let mut studies: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, source) in sources.iter().enumerate() {
-        if source.frames.first().is_some_and(|frame| frame.ordinary_image) {
-            studies.entry(source.info.study_uid.clone()).or_default().push(index);
+        if source
+            .frames
+            .first()
+            .is_some_and(|frame| frame.ordinary_image)
+        {
+            studies
+                .entry(source.info.study_uid.clone())
+                .or_default()
+                .push(index);
         }
     }
     for mut members in studies.into_values() {
@@ -1370,8 +1486,19 @@ fn number_image_series(sources: &mut [SourceSeries]) {
             .iter()
             .map(|&index| {
                 let info = &sources[index].info;
-                let shared = members.iter().filter(|&&other| sources[other].info.description == info.description).count() > 1;
-                if shared { format!("{} ({}×{})", info.description, info.dimensions[0], info.dimensions[1]) } else { info.description.clone() }
+                let shared = members
+                    .iter()
+                    .filter(|&&other| sources[other].info.description == info.description)
+                    .count()
+                    > 1;
+                if shared {
+                    format!(
+                        "{} ({}×{})",
+                        info.description, info.dimensions[0], info.dimensions[1]
+                    )
+                } else {
+                    info.description.clone()
+                }
             })
             .collect();
         for (rank, (&index, name)) in members.iter().zip(names).enumerate() {
@@ -1402,21 +1529,45 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
     // image (a series is one stack).
     let within = folder
         .strip_prefix(&root.dir)
-        .map(|p| p.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/"))
-        .unwrap_or_else(|_| folder.file_name().unwrap_or_default().to_string_lossy().into_owned());
-    let key = format!("image:{}|{}|{}x{}", root.dir.display(), within, width, height);
+        .map(|p| {
+            p.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+        })
+        .unwrap_or_else(|_| {
+            folder
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned()
+        });
+    let key = format!(
+        "image:{}|{}|{}x{}",
+        root.dir.display(),
+        within,
+        width,
+        height
+    );
     let info = Series {
-            catalog_revision: 0,
+        catalog_revision: 0,
         source_revision: 0,
         id: String::new(),
         uid: crate::random::uuid_v5(&crate::random::NAMESPACE_URL, key.as_bytes()),
-        study_uid: crate::random::uuid_v5(&crate::random::NAMESPACE_URL, format!("image-study:{}", root.dir.display()).as_bytes()),
+        study_uid: crate::random::uuid_v5(
+            &crate::random::NAMESPACE_URL,
+            format!("image-study:{}", root.dir.display()).as_bytes(),
+        ),
         patient_key: String::new(),
         previous_pet_id: None,
         patient_id: String::new(),
         patient_name: root.name.clone(),
         study_date: String::new(),
-        description: if within.is_empty() { root.name.clone() } else { within },
+        description: if within.is_empty() {
+            root.name.clone()
+        } else {
+            within
+        },
         modality: "OT".into(),
         series_number: 0,
         dimensions: [width as usize, height as usize, 1],
@@ -1435,7 +1586,12 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
             "series.ordinaryImage",
             "Ordinary image: physical spacing and patient geometry are unavailable",
             // Which kind of picture, for the notice that says these are not DICOM.
-            format = match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            format = match path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_ascii_lowercase())
+                .as_deref()
+            {
                 Some("jpg" | "jpeg") => "JPEG",
                 Some("png") => "PNG",
                 Some("bmp") => "BMP",
@@ -1498,7 +1654,12 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
 
 #[cfg(test)]
 fn read_frames(path: &Path) -> Result<Vec<(GroupKey, Series, Frame)>> {
-    match read_frames_budget(path, &crate::import_budget::ImportBudget::default(), None, None)? {
+    match read_frames_budget(
+        path,
+        &crate::import_budget::ImportBudget::default(),
+        None,
+        None,
+    )? {
         IndexedFile::Images(frames) => Ok(frames),
         IndexedFile::Document(..) => Ok(Vec::new()),
     }
@@ -1511,7 +1672,12 @@ fn reserve_picture(budget: &crate::import_budget::ImportBudget) -> Result<Indexe
     Ok(IndexedFile::Images(Vec::new()))
 }
 fn is_ordinary_image(path: &Path) -> bool {
-    path.extension().is_some_and(|s| matches!(s.to_string_lossy().to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "bmp"))
+    path.extension().is_some_and(|s| {
+        matches!(
+            s.to_string_lossy().to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "bmp"
+        )
+    })
 }
 fn read_frames_budget(
     path: &Path,
@@ -1527,7 +1693,10 @@ fn read_frames_budget(
         return Ok(IndexedFile::Images(ordinary));
     }
     let (source, input, header) = match reference {
-        Some(reference) => SourceFile::dicom_handle(path, crate::media_directory::open_referenced(&reference.root, path)?)?,
+        Some(reference) => SourceFile::dicom_handle(
+            path,
+            crate::media_directory::open_referenced(&reference.root, path)?,
+        )?,
         None => SourceFile::dicom(path)?,
     };
     budget.reserve_index(1, source.retained_bytes())?;
@@ -1536,14 +1705,18 @@ fn read_frames_budget(
         .read_until(Tag(0x7fe0, 0x0008))
         .from_reader(header)?;
     if let Some(reference) = reference {
-        ensure!(text(&obj, Tag(0x0008, 0x0016)) == reference.class
-            && text(&obj, Tag(0x0008, 0x0018)) == reference.instance,
-            "DICOMDIR reference does not match the source instance");
+        ensure!(
+            text(&obj, Tag(0x0008, 0x0016)) == reference.class
+                && text(&obj, Tag(0x0008, 0x0018)) == reference.instance,
+            "DICOMDIR reference does not match the source instance"
+        );
     }
     let rows = number(&obj, Tag(0x0028, 0x0010)).unwrap_or(0.) as usize;
     let columns = number(&obj, Tag(0x0028, 0x0011)).unwrap_or(0.) as usize;
     let class = text(&obj, Tag(0x0008, 0x0016));
-    if obj.meta().media_storage_sop_class_uid() == dicom_dictionary_std::uids::MEDIA_STORAGE_DIRECTORY_STORAGE {
+    if obj.meta().media_storage_sop_class_uid()
+        == dicom_dictionary_std::uids::MEDIA_STORAGE_DIRECTORY_STORAGE
+    {
         return Ok(IndexedFile::Images(Vec::new()));
     }
     if crate::export::document_record_type(&class).is_some() {
@@ -1560,21 +1733,38 @@ fn read_frames_budget(
             ..Series::default()
         };
         if info.study_uid.is_empty() || info.uid.is_empty() {
-            bail!(coded!("file.missingUids", "Missing StudyInstanceUID or SeriesInstanceUID"));
+            bail!(coded!(
+                "file.missingUids",
+                "Missing StudyInstanceUID or SeriesInstanceUID"
+            ));
         }
-        budget.reserve_index(1, 2 * crate::import_budget::serialized_size(&info)? + path.as_os_str().as_encoded_bytes().len())?;
+        budget.reserve_index(
+            1,
+            2 * crate::import_budget::serialized_size(&info)?
+                + path.as_os_str().as_encoded_bytes().len(),
+        )?;
         return Ok(IndexedFile::Document(Box::new(info), source));
     }
     if rows == 0 || columns == 0 {
-        bail!(coded!("file.unsupportedObject", "DICOM object has no supported image or document (SOP Class {uid})", uid = class));
+        bail!(coded!(
+            "file.unsupportedObject",
+            "DICOM object has no supported image or document (SOP Class {uid})",
+            uid = class
+        ));
     }
 
     if rows > 32768 || columns > 32768 {
-        bail!(coded!("file.dimensionsLimit", "Image dimensions exceed the supported limit"));
+        bail!(coded!(
+            "file.dimensionsLimit",
+            "Image dimensions exceed the supported limit"
+        ));
     }
     let samples = number(&obj, Tag(0x0028, 0x0002)).unwrap_or(1.);
     if samples != 1. && samples != 3. {
-        bail!(coded!("file.unsupportedColor", "Only monochrome and three-component color DICOM are supported"));
+        bail!(coded!(
+            "file.unsupportedColor",
+            "Only monochrome and three-component color DICOM are supported"
+        ));
     }
     let bits = number(&obj, Tag(0x0028, 0x0101))
         .or_else(|| number(&obj, Tag(0x0028, 0x0100)))
@@ -1588,7 +1778,10 @@ fn read_frames_budget(
     let uid = text(&obj, Tag(0x0020, 0x000e));
     let study_uid = text(&obj, Tag(0x0020, 0x000d));
     if uid.is_empty() || study_uid.is_empty() {
-        bail!(coded!("file.missingUids", "Missing StudyInstanceUID or SeriesInstanceUID"));
+        bail!(coded!(
+            "file.missingUids",
+            "Missing StudyInstanceUID or SeriesInstanceUID"
+        ));
     }
     let patient_id = text(&obj, Tag(0x0010, 0x0020));
     let patient_key = crate::patient::patient_key(&obj).digest();
@@ -1609,15 +1802,18 @@ fn read_frames_budget(
     let activity = camera
         .is_some()
         .then(|| crate::gamma_camera::activity(&obj))
-        .flatten().map(Arc::new);
+        .flatten()
+        .map(Arc::new);
     let has_mapping = camera.is_some() && obj.get(Tag(0x0040, 0x9096)).is_some();
     let pet_units = text(&obj, Tag(0x0054, 0x1001));
     let value_unit = if modality == "PT" {
         pet_value_unit(&obj)
-    } else if camera.is_some() && (activity.is_some() || (!has_mapping && text(&obj, Tag(0x0054, 0x1001)) == "BQML"))
+    } else if camera.is_some()
+        && (activity.is_some() || (!has_mapping && text(&obj, Tag(0x0054, 0x1001)) == "BQML"))
     {
         "Bq/ml".into()
-    } else if has_mapping { "a.u.".into()
+    } else if has_mapping {
+        "a.u.".into()
     } else if !raw_unit.is_empty() {
         raw_unit
     } else if modality == "CT" {
@@ -1642,7 +1838,8 @@ fn read_frames_budget(
     let syntax = obj.meta().transfer_syntax();
     let little_endian = syntax != "1.2.840.10008.1.2.2";
     let jpeg_component_threads = match syntax {
-        dicom_dictionary_std::uids::JPEG_BASELINE8_BIT | dicom_dictionary_std::uids::JPEG_EXTENDED12_BIT => samples as u8,
+        dicom_dictionary_std::uids::JPEG_BASELINE8_BIT
+        | dicom_dictionary_std::uids::JPEG_EXTENDED12_BIT => samples as u8,
         _ => 0,
     };
     let frame_vois = obj
@@ -1653,7 +1850,11 @@ fn read_frames_budget(
                 group
                     .get(Tag(0x0028, 0x9132))
                     .and_then(|element| element.items())
-                    .is_some_and(|items| items.iter().any(|item| item.get(Tag(0x0028, 0x3010)).is_some()))
+                    .is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item.get(Tag(0x0028, 0x3010)).is_some())
+                    })
             })
         });
     let shared_voi = if segmentation.is_none() && !frame_vois {
@@ -1708,8 +1909,18 @@ fn read_frames_budget(
             number(v, Tag(0x0028, 0x1052))
         })
         .unwrap_or(0.);
-        let lut = if activity.is_some() { None } else { crate::modality_lut::descriptor(&obj, index)? };
-        if lut.is_some() && (samples != 1. || !matches!(text(&obj, Tag(0x0028,0x0004)).as_str(), "MONOCHROME1" | "MONOCHROME2")) {
+        let lut = if activity.is_some() {
+            None
+        } else {
+            crate::modality_lut::descriptor(&obj, index)?
+        };
+        if lut.is_some()
+            && (samples != 1.
+                || !matches!(
+                    text(&obj, Tag(0x0028, 0x0004)).as_str(),
+                    "MONOCHROME1" | "MONOCHROME2"
+                ))
+        {
             bail!("Modality LUT requires a monochrome scalar image");
         }
         if activity.is_none() && lut.is_none() && slope == 0. {
@@ -1723,28 +1934,53 @@ fn read_frames_budget(
         })
         .filter(|n| *n >= 1.);
         // A stored window's own curve; LINEAR, absent or unknown values keep the linear window.
-        let voi_function = window_width.and_then(|_| {
-            frame_value(&obj, index, Tag(0x0028, 0x9132), |v| nonempty_text(v, Tag(0x0028, 0x1056)))
-        })
-        .and_then(|function| match function.to_ascii_uppercase().as_str() {
-            "SIGMOID" => Some("SIGMOID"),
-            "LINEAR_EXACT" => Some("LINEAR_EXACT"),
-            _ => None,
-        });
-        let padding_is_nan = activity.is_some() || lut.is_some() && padding_range(&obj,index,1.,0.,signed,
-            number(&obj,Tag(0x0028,0x0100)).unwrap_or(bits as f64) as u32).is_some();
-        let padding = if activity.is_some() || lut.is_some() { None } else { padding_range(
-            &obj,
-            index,
-            slope,
-            intercept,
-            signed,
-            number(&obj, Tag(0x0028, 0x0100)).unwrap_or(bits as f64) as u32,
-        ) };
-        let value_unit = lut.as_ref().map(|v|if v.unit=="OD" {"mOD".into()} else {v.unit.clone()}).unwrap_or_else(||value_unit.clone());
+        let voi_function = window_width
+            .and_then(|_| {
+                frame_value(&obj, index, Tag(0x0028, 0x9132), |v| {
+                    nonempty_text(v, Tag(0x0028, 0x1056))
+                })
+            })
+            .and_then(|function| match function.to_ascii_uppercase().as_str() {
+                "SIGMOID" => Some("SIGMOID"),
+                "LINEAR_EXACT" => Some("LINEAR_EXACT"),
+                _ => None,
+            });
+        let padding_is_nan = activity.is_some()
+            || lut.is_some()
+                && padding_range(
+                    &obj,
+                    index,
+                    1.,
+                    0.,
+                    signed,
+                    number(&obj, Tag(0x0028, 0x0100)).unwrap_or(bits as f64) as u32,
+                )
+                .is_some();
+        let padding = if activity.is_some() || lut.is_some() {
+            None
+        } else {
+            padding_range(
+                &obj,
+                index,
+                slope,
+                intercept,
+                signed,
+                number(&obj, Tag(0x0028, 0x0100)).unwrap_or(bits as f64) as u32,
+            )
+        };
+        let value_unit = lut
+            .as_ref()
+            .map(|v| {
+                if v.unit == "OD" {
+                    "mOD".into()
+                } else {
+                    v.unit.clone()
+                }
+            })
+            .unwrap_or_else(|| value_unit.clone());
         let lut_suv_compatible = lut.as_ref().is_none_or(|v| v.unit == pet_units);
-        let mut warnings=crate::message::Notes::from(pet_warnings.clone());
-        if modality=="PT" && !lut_suv_compatible && suv_factor.is_some() {
+        let mut warnings = crate::message::Notes::from(pet_warnings.clone());
+        if modality == "PT" && !lut_suv_compatible && suv_factor.is_some() {
             warnings.push(note!("series.suvLutUnits", "SUV conversion is unavailable because Modality LUT output units differ from the PET calibration units"));
         }
         // A gated SPECT's gate is its frame's time: each gate becomes a phase of its own, in the file's order.
@@ -1799,14 +2035,21 @@ fn read_frames_budget(
         let gated_file = gate
             .map(|_| {
                 let instance = text(&obj, Tag(0x0008, 0x0018));
-                let file = if instance.is_empty() { path.display().to_string() } else { instance };
+                let file = if instance.is_empty() {
+                    path.display().to_string()
+                } else {
+                    instance
+                };
                 format!("|gated={file}")
             })
             .unwrap_or_default();
         let orientation_key = orientation.map(|v| v.map(|x| (x * 10000.).round() as i64));
         let reference = text(&obj, Tag(0x0020, 0x0052));
         let photometric = text(&obj, Tag(0x0028, 0x0004));
-        let segmentation_instance = segmentation.as_ref().map(|_| format!("SEG|{}", text(&obj, Tag(0x0008, 0x0018)))).unwrap_or_default();
+        let segmentation_instance = segmentation
+            .as_ref()
+            .map(|_| format!("SEG|{}", text(&obj, Tag(0x0008, 0x0018))))
+            .unwrap_or_default();
         let key = GroupKey {
             head: format!(
                 "{patient_key}|{study_uid}|{uid}|{rows}|{columns}|{orientation_key:?}|{}",
@@ -1830,7 +2073,12 @@ fn read_frames_budget(
         let value_unit = match (modality.as_str(), value_unit.as_str()) {
             ("PT", "GML") if lut_suv_compatible => pet_value_unit(&obj),
             ("PT", "GML") => "g/ml".into(),
-            ("PT", unit) if crate::model::is_suv_unit(unit) && (pet_units != "GML" || !lut_suv_compatible) => "a.u.".into(),
+            ("PT", unit)
+                if crate::model::is_suv_unit(unit)
+                    && (pet_units != "GML" || !lut_suv_compatible) =>
+            {
+                "a.u.".into()
+            }
             _ => value_unit,
         };
         let info = Series {
@@ -1855,8 +2103,12 @@ fn read_frames_budget(
             window_width: window_width.unwrap_or(default_window.1),
             value_unit,
             suv_factor: if lut_suv_compatible { suv_factor } else { None },
-            sul_factor: suv.and_then(|factors| factors.lbm).filter(|_| lut_suv_compatible),
-            suv_bsa_factor: suv.and_then(|factors| factors.bsa).filter(|_| lut_suv_compatible),
+            sul_factor: suv
+                .and_then(|factors| factors.lbm)
+                .filter(|_| lut_suv_compatible),
+            suv_bsa_factor: suv
+                .and_then(|factors| factors.bsa)
+                .filter(|_| lut_suv_compatible),
             can_reconstruct: false,
             warnings,
             photometric_interpretation: text(&obj, Tag(0x0028, 0x0004)),
@@ -1871,9 +2123,14 @@ fn read_frames_budget(
                 if bits <= 8 { "uint8" } else { "uint16" }.into()
             } else if samples == 3. || photometric == "PALETTE COLOR" {
                 "uint8".into()
-            } else if activity.is_some() { "float32".into()
+            } else if activity.is_some() {
+                "float32".into()
             } else if lut.is_some() {
-                if padding_is_nan { "float32".into() } else { "uint16".into() }
+                if padding_is_nan {
+                    "float32".into()
+                } else {
+                    "uint16".into()
+                }
             } else {
                 storage_type(bits, signed, slope, intercept).into()
             },
@@ -1922,7 +2179,10 @@ fn read_frames_budget(
             .map(|n| n as u16);
             if let Some((uid, frame)) = frame_value(&obj, index, Tag(0x0008, 0x9124), |v| {
                 first(v, Tag(0x0008, 0x2112)).map(|source| {
-                    (text(source, Tag(0x0008, 0x1155)), number(source, Tag(0x0008, 0x1160)))
+                    (
+                        text(source, Tag(0x0008, 0x1155)),
+                        number(source, Tag(0x0008, 0x1160)),
+                    )
                 })
             }) {
                 metadata.referenced_sop_instance_uid = hint_text(&uid);
@@ -1967,15 +2227,24 @@ fn read_frames_budget(
                         + path.as_os_str().as_encoded_bytes().len()
                         + frame.sop_uid.len()
                         + frame.phase_hints.heap_bytes()
-                        + if frame_vois { frame.voi_lut.as_ref().map_or(0, |lut| lut.data.len() * 12) } else { 0 },
+                        + if frame_vois {
+                            frame.voi_lut.as_ref().map_or(0, |lut| lut.data.len() * 12)
+                        } else {
+                            0
+                        },
                 )
             })
             .context("Frame metadata size overflow")?;
         if index == 0 {
-            if let Some(mapping) = &activity { budget.reserve_index(1, mapping.heap_bytes())?; }
+            if let Some(mapping) = &activity {
+                budget.reserve_index(1, mapping.heap_bytes())?;
+            }
             if let Some(lut) = &shared_voi {
                 // Shared by every frame of the file and kept once per series.
-                budget.reserve_index(1, crate::import_budget::serialized_size(&**lut)?.saturating_mul(2))?;
+                budget.reserve_index(
+                    1,
+                    crate::import_budget::serialized_size(&**lut)?.saturating_mul(2),
+                )?;
             }
             if let Some(segmentation) = &segmentation {
                 // Shared by every frame of the file and kept once per series.
@@ -2025,12 +2294,10 @@ fn pixel_window(source: &SourceSeries, index: usize) -> Option<(f64, f64)> {
     let metadata = &source.frames[index].metadata;
     let padding = metadata.padding_range;
     let padding_is_nan = metadata.padding_is_nan;
-    display_window(
-        (0..pixels.len()).map(|i| pixels.value(i)).filter(|value| {
-            !(padding_is_nan && value.is_nan())
-                && !padding.is_some_and(|[low, high]| *value >= low && *value <= high)
-        }),
-    )
+    display_window((0..pixels.len()).map(|i| pixels.value(i)).filter(|value| {
+        !(padding_is_nan && value.is_nan())
+            && !padding.is_some_and(|[low, high]| *value >= low && *value <= high)
+    }))
 }
 
 /// A display window for pixels that come with none: the 1st to 99th percentile of the
@@ -2053,8 +2320,13 @@ pub fn display_window(values: impl Iterator<Item = f64> + Clone) -> Option<(f64,
     }
     // Integer data within 65536 values fall one value to a bin; wider or fractional
     // data fall into equal bins across the range.
-    let integral = high - low < BINS as f64 && values.clone().all(|v| !v.is_finite() || v.fract() == 0.);
-    let step = if integral { 1. } else { (high - low) / (BINS - 1) as f64 };
+    let integral =
+        high - low < BINS as f64 && values.clone().all(|v| !v.is_finite() || v.fract() == 0.);
+    let step = if integral {
+        1.
+    } else {
+        (high - low) / (BINS - 1) as f64
+    };
     let mut histogram = vec![0usize; BINS];
     for value in values.filter(|v| v.is_finite()) {
         histogram[(((value - low) / step) as usize).min(BINS - 1)] += 1;
@@ -2106,12 +2378,21 @@ pub fn import_with(paths: &[String], early: Option<EarlySink>) -> Result<Importe
 
 /// A ZIP import extracts a file with a .zip extension.
 pub fn is_zip_file(path: &Path) -> bool {
-    path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("zip")) && fs::is_file(path)
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
+        && fs::is_file(path)
 }
 
-pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64) -> Result<Imported> {
+pub fn import_session(
+    paths: &[String],
+    early: Option<EarlySink>,
+    revision: u64,
+) -> Result<Imported> {
     if paths.is_empty() {
-        bail!(coded!("import.chooseFiles", "Choose DICOM files, a folder, or a ZIP archive"));
+        bail!(coded!(
+            "import.chooseFiles",
+            "Choose DICOM files, a folder, or a ZIP archive"
+        ));
     }
     let mut files = Vec::new();
     let mut media_files = HashMap::new();
@@ -2124,7 +2405,11 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
         crate::progress::check()?;
         let path = Path::new(raw);
         if !fs::exists(path) {
-            bail!(coded!("import.pathMissing", "Selected path does not exist: {path}", path = path.display().to_string()));
+            bail!(coded!(
+                "import.pathMissing",
+                "Selected path does not exist: {path}",
+                path = path.display().to_string()
+            ));
         }
         let before = files.len();
         let root = if is_zip_file(path) {
@@ -2138,14 +2423,23 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
             .extension()
             .is_some_and(|x| x.eq_ignore_ascii_case("rar"))
         {
-            bail!(coded!("rar.unsupported", "RAR archives cannot be opened. Extract the archive, then open the folder."));
-        } else if fs::is_file(path) && path.file_name().is_some_and(|x| x.eq_ignore_ascii_case("DICOMDIR"))
+            bail!(coded!(
+                "rar.unsupported",
+                "RAR archives cannot be opened. Extract the archive, then open the folder."
+            ));
+        } else if fs::is_file(path)
+            && path
+                .file_name()
+                .is_some_and(|x| x.eq_ignore_ascii_case("DICOMDIR"))
         {
             let parent = path.parent().context("DICOMDIR has no parent directory")?;
             let root = fs::canonicalize(parent)?;
             for (path, reference) in crate::media_directory::references(path, &root)? {
                 if let Some(previous) = media_files.get(&path) {
-                    ensure!(reference.agrees_with(previous), "Conflicting DICOMDIR references to the same file");
+                    ensure!(
+                        reference.agrees_with(previous),
+                        "Conflicting DICOMDIR references to the same file"
+                    );
                 }
                 media_files.insert(path.clone(), reference);
                 files.push(path);
@@ -2155,13 +2449,20 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
         } else if fs::is_file(path) {
             collect_files(path, &mut files)?;
             // A loose file belongs to its folder (collect_files keeps it canonical).
-            let folder = files.last().and_then(|file| file.parent()).unwrap_or(Path::new("")).to_owned();
+            let folder = files
+                .last()
+                .and_then(|file| file.parent())
+                .unwrap_or(Path::new(""))
+                .to_owned();
             ImageRoot::new(&folder, folder.file_name())
         } else {
             collect_files(path, &mut files)?;
             ImageRoot::new(path, path.file_name())
         };
-        for file in files[before..].iter().filter(|file| is_ordinary_image(file)) {
+        for file in files[before..]
+            .iter()
+            .filter(|file| is_ordinary_image(file))
+        {
             roots.entry(file.clone()).or_insert_with(|| root.clone());
         }
     }
@@ -2169,7 +2470,11 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     files.dedup();
     crate::progress::set_stage("indexing", files.len());
     let budget = crate::import_budget::ImportBudget::default();
-    let slot_of: HashMap<&Path, usize> = files.iter().enumerate().map(|(index, file)| (file.as_path(), index)).collect();
+    let slot_of: HashMap<&Path, usize> = files
+        .iter()
+        .enumerate()
+        .map(|(index, file)| (file.as_path(), index))
+        .collect();
     // An archive's sidecar files are told apart once written, as a folder's are while it is listed (collect_files).
     let archived: HashSet<usize> = extractions
         .iter()
@@ -2181,7 +2486,14 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
         if is_ordinary_image(path) && !media_files.contains_key(path) {
             return crate::progress::check().and_then(|_| reserve_picture(&budget));
         }
-        let result = crate::progress::check().and_then(|_| read_frames_budget(path, &budget, roots.get(path).map(|root| root.as_ref()), media_files.get(path)));
+        let result = crate::progress::check().and_then(|_| {
+            read_frames_budget(
+                path,
+                &budget,
+                roots.get(path).map(|root| root.as_ref()),
+                media_files.get(path),
+            )
+        });
         let step = crate::progress::step();
         step.and(result)
     };
@@ -2207,17 +2519,28 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
     let (extractions_ref, slot_of_ref, unplanned_ref) = (&extractions, &slot_of, &unplanned);
     let extract = move || -> Result<()> {
         for (archive, dir, _) in extractions_ref {
-            extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| match slot_of_ref.get(target) {
-                Some(&index) => {
-                    let _ = send.send(index);
+            extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| {
+                match slot_of_ref.get(target) {
+                    Some(&index) => {
+                        let _ = send.send(index);
+                    }
+                    None if !hidden_entry(dir, target) => {
+                        unplanned_ref.lock().unwrap().push(target.to_owned())
+                    }
+                    None => {}
                 }
-                None if !hidden_entry(dir, target) => unplanned_ref.lock().unwrap().push(target.to_owned()),
-                None => {}
             })?;
         }
         Ok(())
     };
-    let read_all = move || crate::parallel::for_each("dicom-index", index_readers(), receive.into_iter(), read_slot);
+    let read_all = move || {
+        crate::parallel::for_each(
+            "dicom-index",
+            index_readers(),
+            receive.into_iter(),
+            read_slot,
+        )
+    };
     // WebAssembly cannot start a thread of its own: there the archives are extracted first and the files read after
     // (on the threads the page lends, parallel.rs), and no series is published early.
     let extracted = if cfg!(target_arch = "wasm32") {
@@ -2238,7 +2561,9 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
             });
             if let Some(sink) = early {
                 let mut watch = EarlyWatch::new(&files);
-                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = reading_over.recv_timeout(std::time::Duration::from_millis(20)) {
+                while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+                    reading_over.recv_timeout(std::time::Duration::from_millis(20))
+                {
                     watch.publish(&files, &slots, sink, revision);
                 }
                 // Tests read small studies before the first look: one more, so they see the hand-over too.
@@ -2246,7 +2571,9 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
                 watch.publish(&files, &slots, sink, revision);
             }
             let reading = reading.join();
-            let extracted = extraction.join().unwrap_or_else(|_| Err(anyhow::anyhow!("Archive extraction stopped unexpectedly")));
+            let extracted = extraction.join().unwrap_or_else(|_| {
+                Err(anyhow::anyhow!("Archive extraction stopped unexpectedly"))
+            });
             if let Err(panic) = reading {
                 std::panic::resume_unwind(panic);
             }
@@ -2259,7 +2586,11 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
         .iter()
         .zip(slots)
         // A slot left empty is an archive entry the extraction never wrote under its planned name.
-        .filter_map(|(file, slot)| slot.into_inner().flatten().map(|result| (file.as_path(), result)))
+        .filter_map(|(file, slot)| {
+            slot.into_inner()
+                .flatten()
+                .map(|result| (file.as_path(), result))
+        })
         .collect();
     let unplanned = unplanned.into_inner().unwrap();
     for path in unplanned.iter().filter(|path| is_candidate(path)) {
@@ -2269,33 +2600,53 @@ pub fn import_session(paths: &[String], early: Option<EarlySink>, revision: u64)
         read.sort_by(|a, b| a.0.cmp(b.0));
         read.dedup_by(|a, b| a.0 == b.0);
     }
-    let has_dicom = read.iter().any(|(_, result)| result.as_ref().is_ok_and(IndexedFile::contains_dicom));
-    let pictures: Vec<_> = read.iter_mut()
-        .filter(|(path, result)| is_ordinary_image(path) && !media_files.contains_key(*path) && result.is_ok())
+    let has_dicom = read
+        .iter()
+        .any(|(_, result)| result.as_ref().is_ok_and(IndexedFile::contains_dicom));
+    let pictures: Vec<_> = read
+        .iter_mut()
+        .filter(|(path, result)| {
+            is_ordinary_image(path) && !media_files.contains_key(*path) && result.is_ok()
+        })
         .collect();
     if has_dicom {
-        for _ in pictures { crate::progress::step()?; }
+        for _ in pictures {
+            crate::progress::step()?;
+        }
     } else {
         // Only pictures: count each file when its size request finishes.
         let workers = index_readers().min(pictures.len());
-        crate::parallel::for_each("picture-size", workers, pictures.into_iter(), |(path, entry)| {
-            let path = *path;
-            let result = crate::progress::check().and_then(|_| {
-                let frames = read_ordinary(path, roots.get(path).map(|root| root.as_ref()))?;
-                budget.reserve_index(1, frames[0].2.source.retained_bytes())?;
-                Ok(IndexedFile::Images(frames))
-            });
-            *entry = crate::progress::step().and(result);
-        });
+        crate::parallel::for_each(
+            "picture-size",
+            workers,
+            pictures.into_iter(),
+            |(path, entry)| {
+                let path = *path;
+                let result = crate::progress::check().and_then(|_| {
+                    let frames = read_ordinary(path, roots.get(path).map(|root| root.as_ref()))?;
+                    budget.reserve_index(1, frames[0].2.source.retained_bytes())?;
+                    Ok(IndexedFile::Images(frames))
+                });
+                *entry = crate::progress::step().and(result);
+            },
+        );
         crate::progress::check()?;
     }
     budget.check()?;
     if read.len() > MAX_FILES {
-        bail!(coded!("import.tooManyFiles", "Import contains more than {count} files; choose a narrower folder", count = MAX_FILES.to_string()));
+        bail!(coded!(
+            "import.tooManyFiles",
+            "Import contains more than {count} files; choose a narrower folder",
+            count = MAX_FILES.to_string()
+        ));
     }
     let (sources, warnings) = catalogue(read, true, revision)?;
     if sources.is_empty() {
-        bail!(coded!("import.noImages", "No supported images were found. {details}", details = warnings.clone()));
+        bail!(coded!(
+            "import.noImages",
+            "No supported images were found. {details}",
+            details = warnings.clone()
+        ));
     }
     Ok(Imported {
         sources,
@@ -2344,11 +2695,19 @@ fn catalogue(
     for (path, result) in read {
         match result {
             Ok(IndexedFile::Document(mut info, source)) => {
-                let key = format!("document|{}|{}|{}", info.patient_key, info.study_uid, info.uid);
+                let key = format!(
+                    "document|{}|{}|{}",
+                    info.patient_key, info.study_uid, info.uid
+                );
                 let entry = documents.entry(key.clone()).or_insert_with(|| {
                     info.id = crate::random::uuid_v5(&crate::random::NAMESPACE_URL, key.as_bytes());
                     info.source_revision = revision;
-                    SourceSeries { info: *info, frames: Vec::new(), geometry: geometry::assemble(&[]), documents: Vec::new() }
+                    SourceSeries {
+                        info: *info,
+                        frames: Vec::new(),
+                        geometry: geometry::assemble(&[]),
+                        documents: Vec::new(),
+                    }
                 });
                 entry.documents.push(source);
             }
@@ -2374,7 +2733,11 @@ fn catalogue(
                     warnings.push(note!(
                         "import.fileUnreadable",
                         "{file}: {reason}",
-                        file = path.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+                        file = path
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .into_owned(),
                         reason = crate::message::Param::error(&error),
                     ));
                 }
@@ -2395,7 +2758,12 @@ fn catalogue(
         frames.sort_by_key(|f| (f.instance_number, f.source.path.clone(), f.index));
         if frames.first().is_some_and(|f| f.ordinary_image) {
             // Images in their names' order: "kesit2" before "kesit10".
-            frames.sort_by(|a, b| natural_cmp(&a.source.path.to_string_lossy(), &b.source.path.to_string_lossy()));
+            frames.sort_by(|a, b| {
+                natural_cmp(
+                    &a.source.path.to_string_lossy(),
+                    &b.source.path.to_string_lossy(),
+                )
+            });
         }
         let mut seen = HashSet::new();
         frames.retain(|f| {
@@ -2429,7 +2797,8 @@ fn catalogue(
         for frame in &mut frames {
             std::mem::take(&mut frame.phase_hints);
             if let Some(segmentation) = frame.segmentation.take() {
-                info.segmentation.get_or_insert_with(|| (*segmentation).clone());
+                info.segmentation
+                    .get_or_insert_with(|| (*segmentation).clone());
             }
         }
         let geom = geometry::assemble(
@@ -2445,11 +2814,17 @@ fn catalogue(
             .collect::<Vec<_>>();
         info.id = crate::random::uuid_v5(&crate::random::NAMESPACE_OID, key.as_bytes());
         // Older PET records used the reconstruction ID made with the local patient ID in this prefix.
-        if info.modality == "PT" && info.segmentation.is_none()
-            && let Some(suffix) = key.strip_prefix(&info.patient_key).filter(|s| s.starts_with('|'))
+        if info.modality == "PT"
+            && info.segmentation.is_none()
+            && let Some(suffix) = key
+                .strip_prefix(&info.patient_key)
+                .filter(|s| s.starts_with('|'))
         {
             let old_key = format!("{}{suffix}", info.patient_id);
-            info.previous_pet_id = Some(crate::random::uuid_v5(&crate::random::NAMESPACE_OID, old_key.as_bytes()));
+            info.previous_pet_id = Some(crate::random::uuid_v5(
+                &crate::random::NAMESPACE_OID,
+                old_key.as_bytes(),
+            ));
         }
         info.dimensions[2] = ordered.len();
         info.spacing = geom.spacing;
@@ -2459,29 +2834,45 @@ fn catalogue(
         // VOI LUTs, once each, for the frames that store no window (a window takes precedence).
         let mut luts: Vec<Arc<crate::model::VoiLut>> = Vec::new();
         for (frame, metadata) in ordered.iter_mut().zip(info.frame_metadata.iter_mut()) {
-            let Some(lut) = frame.voi_lut.take() else { continue };
+            let Some(lut) = frame.voi_lut.take() else {
+                continue;
+            };
             if metadata.window_width.is_some() {
                 continue;
             }
-            let index = luts.iter().position(|known| Arc::ptr_eq(known, &lut) || **known == *lut).unwrap_or_else(|| {
-                luts.push(lut);
-                luts.len() - 1
-            });
+            let index = luts
+                .iter()
+                .position(|known| Arc::ptr_eq(known, &lut) || **known == *lut)
+                .unwrap_or_else(|| {
+                    luts.push(lut);
+                    luts.len() - 1
+                });
             metadata.voi_lut = Some(index as u32);
         }
         if luts.len() > 16 {
             luts.clear();
-            info.frame_metadata.iter_mut().for_each(|metadata| metadata.voi_lut = None);
+            info.frame_metadata
+                .iter_mut()
+                .for_each(|metadata| metadata.voi_lut = None);
             info.warnings.push(note!(
                 "series.tooManyVoiLuts",
                 "VOI LUTs not applied: the frames carry more than 16 different tables"
             ));
         }
         info.voi_luts = luts.iter().map(|lut| (**lut).clone()).collect();
-        let first_lut = info.frame_metadata.iter().find_map(|metadata| metadata.voi_lut);
-        if let (Some(index), true) = (first_lut, info.frame_metadata.iter().all(|metadata| metadata.window_width.is_none())) {
+        let first_lut = info
+            .frame_metadata
+            .iter()
+            .find_map(|metadata| metadata.voi_lut);
+        if let (Some(index), true) = (
+            first_lut,
+            info.frame_metadata
+                .iter()
+                .all(|metadata| metadata.window_width.is_none()),
+        ) {
             // Manual window changes start from the LUT's own range rather than a modality default.
-            (info.window_center, info.window_width) = crate::modality_lut::voi_window(&info.voi_luts[index as usize]);
+            (info.window_center, info.window_width) =
+                crate::modality_lut::voi_window(&info.voi_luts[index as usize]);
         }
         if let Some(first) = info.frame_metadata.first() {
             info.window_center = first.window_center.unwrap_or(info.window_center);
@@ -2541,25 +2932,37 @@ fn catalogue(
     sources.extend(documents.into_values());
     number_image_series(&mut sources);
     crate::progress::check()?;
-    let windows: Vec<_> = sources.iter_mut()
+    let windows: Vec<_> = sources
+        .iter_mut()
         .filter(|source| needs_pixel_window(source))
         .map(|source| {
             let middle = (source.frames.len() - 1) / 2;
             (source, middle)
         })
         .collect();
-    let threads = if pooled { index_readers().min(windows.len()) } else { 1 };
+    let threads = if pooled {
+        index_readers().min(windows.len())
+    } else {
+        1
+    };
     let workers = crate::decode::frame_workers(
         threads,
-        windows.iter().map(|(source, middle)| source.frames[*middle].jpeg_component_threads),
+        windows
+            .iter()
+            .map(|(source, middle)| source.frames[*middle].jpeg_component_threads),
     );
-    crate::parallel::for_each("dicom-index", workers, windows.into_iter(), |(source, middle)| {
-        if let Some((center, width)) = pixel_window(source, middle) {
-            source.info.window_center = center;
-            source.info.window_width = width;
-            source.info.window_from_pixels = true;
-        }
-    });
+    crate::parallel::for_each(
+        "dicom-index",
+        workers,
+        windows.into_iter(),
+        |(source, middle)| {
+            if let Some((center, width)) = pixel_window(source, middle) {
+                source.info.window_center = center;
+                source.info.window_width = width;
+                source.info.window_from_pixels = true;
+            }
+        },
+    );
     share_gate_windows(&mut sources);
     crate::progress::check()?;
     let mut sources: Vec<_> = sources.into_iter().map(Arc::new).collect();
@@ -2598,14 +3001,24 @@ impl EarlyWatch {
             .iter()
             .map(|file| {
                 let next = folders.len();
-                *folders.entry(file.parent().unwrap_or(Path::new(""))).or_insert(next)
+                *folders
+                    .entry(file.parent().unwrap_or(Path::new("")))
+                    .or_insert(next)
             })
             .collect();
         let mut unread = vec![0; folders.len()];
         for &index in &folder {
             unread[index] += 1;
         }
-        Self { counted: vec![false; files.len()], folder, unread, finished: Vec::new(), done: HashSet::new(), folders_of: HashMap::new(), handed: HashSet::new() }
+        Self {
+            counted: vec![false; files.len()],
+            folder,
+            unread,
+            finished: Vec::new(),
+            done: HashSet::new(),
+            folders_of: HashMap::new(),
+            handed: HashSet::new(),
+        }
     }
 
     /// Counts the files read since the last look; when that finishes folders, builds their series as the final
@@ -2621,7 +3034,10 @@ impl EarlyWatch {
             let folder = self.folder[index];
             if let Some(Ok(IndexedFile::Images(frames))) = result {
                 for (_, info, _) in frames {
-                    self.folders_of.entry(info.uid.clone()).or_default().insert(folder);
+                    self.folders_of
+                        .entry(info.uid.clone())
+                        .or_default()
+                        .insert(folder);
                 }
             }
             self.unread[folder] -= 1;
@@ -2635,7 +3051,11 @@ impl EarlyWatch {
         let fresh: HashSet<usize> = self.finished.drain(..).collect();
         self.done.extend(&fresh);
         let mut folders = fresh.clone();
-        for spread in self.folders_of.values().filter(|spread| !spread.is_disjoint(&fresh)) {
+        for spread in self
+            .folders_of
+            .values()
+            .filter(|spread| !spread.is_disjoint(&fresh))
+        {
             folders.extend(spread.intersection(&self.done));
         }
         let read = slots
@@ -2643,21 +3063,32 @@ impl EarlyWatch {
             .enumerate()
             .filter(|(index, _)| folders.contains(&self.folder[*index]))
             .filter_map(|(index, slot)| match slot.get() {
-                Some(Some(Ok(file @ IndexedFile::Images(_)))) => Some((files[index].as_path(), Ok(file.clone()))),
+                Some(Some(Ok(file @ IndexedFile::Images(_)))) => {
+                    Some((files[index].as_path(), Ok(file.clone())))
+                }
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let Ok((sources, _)) = catalogue(read, false, revision) else { return };
+        let Ok((sources, _)) = catalogue(read, false, revision) else {
+            return;
+        };
         let ready: Vec<_> = sources
             .into_iter()
             .filter(|source| {
-                !source.frames.first().is_some_and(|frame| frame.ordinary_image)
+                !source
+                    .frames
+                    .first()
+                    .is_some_and(|frame| frame.ordinary_image)
                     && source.info.segmentation.is_none()
                     && !self.handed.contains(&source.info.id)
-                    && self.folders_of.get(&source.info.uid).is_some_and(|spread| spread.is_subset(&self.done))
+                    && self
+                        .folders_of
+                        .get(&source.info.uid)
+                        .is_some_and(|spread| spread.is_subset(&self.done))
             })
             .collect();
-        self.handed.extend(ready.iter().map(|source| source.info.id.clone()));
+        self.handed
+            .extend(ready.iter().map(|source| source.info.id.clone()));
         if !ready.is_empty() {
             sink(ready);
         }
@@ -2675,7 +3106,10 @@ fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
     // The selected folder itself may be a link; nothing inside it is followed. Hidden entries are
     // skipped and hidden folders never entered. Each folder is listed whole before its first
     // entry is visited, so a deeply nested tree doesn't hold one open handle per level.
-    if !fs::metadata(path).map_err(|error| walk_error(path, error))?.is_dir() {
+    if !fs::metadata(path)
+        .map_err(|error| walk_error(path, error))?
+        .is_dir()
+    {
         return Ok(());
     }
     let mut pending = vec![list_folder(path)?];
@@ -2689,14 +3123,20 @@ fn collect_files(path: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
             continue;
         }
         let entry_path = entry.path();
-        let file_type = entry.file_type().map_err(|error| walk_error(&entry_path, error))?;
+        let file_type = entry
+            .file_type()
+            .map_err(|error| walk_error(&entry_path, error))?;
         if file_type.is_dir() {
             pending.push(list_folder(&entry_path)?);
         } else if file_type.is_file() && is_candidate(&entry_path) {
             files.push(entry_path);
         }
         if files.len() > MAX_FILES {
-            bail!(coded!("import.tooManyFiles", "Import contains more than {count} files; choose a narrower folder", count = MAX_FILES.to_string()));
+            bail!(coded!(
+                "import.tooManyFiles",
+                "Import contains more than {count} files; choose a narrower folder",
+                count = MAX_FILES.to_string()
+            ));
         }
     }
     Ok(())
@@ -2770,7 +3210,10 @@ fn is_candidate(path: &Path) -> bool {
 fn plan_zip(path: &Path) -> Result<(ArchiveTempDir, Vec<PathBuf>)> {
     let archive = zip::ZipArchive::new(File::open(path)?)?;
     if archive.len() > MAX_FILES {
-        bail!(coded!("zip.tooManyEntries", "ZIP contains too many entries"));
+        bail!(coded!(
+            "zip.tooManyEntries",
+            "ZIP contains too many entries"
+        ));
     }
     let dir = crate::archive_temp::create("veacom-import-")?;
     let entries = (0..archive.len())
@@ -2808,24 +3251,38 @@ fn planned_target(dir: &Path, name: &str) -> Option<PathBuf> {
 
 /// Whether an extracted file is hidden, or inside a hidden folder, below the extraction folder.
 fn hidden_entry(dir: &Path, target: &Path) -> bool {
-    target
-        .strip_prefix(dir)
-        .is_ok_and(|inside| inside.components().any(|part| part.as_os_str().to_string_lossy().starts_with('.')))
+    target.strip_prefix(dir).is_ok_and(|inside| {
+        inside
+            .components()
+            .any(|part| part.as_os_str().to_string_lossy().starts_with('.'))
+    })
 }
 
 /// Where an entry is extracted to under `dir`; None for a folder entry. A name that would leave `dir`, a symbolic
 /// link, or an entry over the per-file limit is an error. The path is rebuilt from plain names only, in this system's
 /// separators, as a folder listing gives it.
-fn zip_target(dir: &Path, name: Option<PathBuf>, unix_mode: Option<u32>, is_dir: bool, size: u64) -> Result<Option<PathBuf>> {
+fn zip_target(
+    dir: &Path,
+    name: Option<PathBuf>,
+    unix_mode: Option<u32>,
+    is_dir: bool,
+    size: u64,
+) -> Result<Option<PathBuf>> {
     let name = name.context("ZIP entry escapes its directory")?;
     if unix_mode.is_some_and(|m| m & 0o170000 == 0o120000) {
-        bail!(coded!("zip.symbolicLink", "ZIP symbolic links are not accepted"));
+        bail!(coded!(
+            "zip.symbolicLink",
+            "ZIP symbolic links are not accepted"
+        ));
     }
     if is_dir {
         return Ok(None);
     }
     if size > MAX_ARCHIVE_FILE_BYTES {
-        bail!(coded!("zip.entryTooLarge", "ZIP entry exceeds the per-file limit"));
+        bail!(coded!(
+            "zip.entryTooLarge",
+            "ZIP entry exceeds the per-file limit"
+        ));
     }
     let mut target = dir.to_path_buf();
     for part in name.components() {
@@ -2856,10 +3313,18 @@ fn available_archive_bytes() -> u64 {
 /// written whole. Each entry is checked as it is written: a name that would leave `dir`, a symbolic link, a local
 /// header that disagrees with the central directory, or an entry or the archive over its size limit stops the
 /// extraction with an error.
-fn extract_zip_into(path: &Path, dir: &Path, mut remaining: u64, extracted: &mut dyn FnMut(&Path)) -> Result<()> {
+fn extract_zip_into(
+    path: &Path,
+    dir: &Path,
+    mut remaining: u64,
+    extracted: &mut dyn FnMut(&Path),
+) -> Result<()> {
     let mut archive = zip::ZipArchive::new(File::open(path)?)?;
     if archive.len() > MAX_FILES {
-        bail!(coded!("zip.tooManyEntries", "ZIP contains too many entries"));
+        bail!(coded!(
+            "zip.tooManyEntries",
+            "ZIP contains too many entries"
+        ));
     }
     for index in 0..archive.len() {
         crate::progress::check()?;
@@ -2867,18 +3332,31 @@ fn extract_zip_into(path: &Path, dir: &Path, mut remaining: u64, extracted: &mut
             index,
             zip::ZipReadOptions::new().enforce_header_consistency(true),
         )?;
-        let Some(target) = zip_target(dir, entry.enclosed_name(), entry.unix_mode(), entry.is_dir(), entry.size())? else {
+        let Some(target) = zip_target(
+            dir,
+            entry.enclosed_name(),
+            entry.unix_mode(),
+            entry.is_dir(),
+            entry.size(),
+        )?
+        else {
             continue;
         };
         if entry.size() > remaining {
-            bail!(coded!("zip.tooLarge", "ZIP expanded data exceeds the import limit"));
+            bail!(coded!(
+                "zip.tooLarge",
+                "ZIP expanded data exceeds the import limit"
+            ));
         }
         fs::create_dir_all(target.parent().context("Invalid ZIP path")?)?;
         let mut output = File::options().write(true).create_new(true).open(&target)?;
         let limit = remaining.min(MAX_ARCHIVE_FILE_BYTES);
         let copied = std::io::copy(&mut entry.by_ref().take(limit), &mut output)?;
         if copied == limit && entry.read(&mut [0])? != 0 {
-            bail!(coded!("zip.tooLarge", "ZIP expanded data exceeds the import limit"));
+            bail!(coded!(
+                "zip.tooLarge",
+                "ZIP expanded data exceeds the import limit"
+            ));
         }
         remaining -= copied;
         output.flush()?;
@@ -3121,8 +3599,14 @@ fn injection_elapsed(
     scan_day: &str,
     offset: &str,
 ) -> Option<f64> {
-    elapsed_from_injection(&text(drug, Tag(0x0018, 0x1078)), &text(drug, Tag(0x0018, 0x1072)),
-        scan, scan_day, offset, !offset.is_empty())
+    elapsed_from_injection(
+        &text(drug, Tag(0x0018, 0x1078)),
+        &text(drug, Tag(0x0018, 0x1072)),
+        scan,
+        scan_day,
+        offset,
+        !offset.is_empty(),
+    )
 }
 
 fn elapsed_from_injection(
@@ -3530,30 +4014,56 @@ fn merge_pet_acquisition(group: &mut Series, info: &Series) {
 mod tests {
     use super::*;
     // The tests write real files on the desktop's own file system.
-    use std::fs;
     use dicom_core::{DataElement, VR};
+    use std::fs;
     #[test]
     fn folder_walk_skips_hidden_entries_and_never_follows_links_inside() {
         let root = crate::test_dir::tempdir().unwrap();
         let outside = crate::test_dir::tempdir().unwrap();
-        let write = |path: &Path| { std::fs::create_dir_all(path.parent().unwrap()).unwrap(); std::fs::write(path, b"synthetic").unwrap(); };
-        for name in ["a.dcm", "sub/b.dcm", "sub/deeper/c", "sub/notes.txt", ".hidden.dcm", ".cache/d.dcm", "sub/.e.dcm"] {
+        let write = |path: &Path| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"synthetic").unwrap();
+        };
+        for name in [
+            "a.dcm",
+            "sub/b.dcm",
+            "sub/deeper/c",
+            "sub/notes.txt",
+            ".hidden.dcm",
+            ".cache/d.dcm",
+            "sub/.e.dcm",
+        ] {
             write(&root.path().join(name));
         }
         write(&outside.path().join("f.dcm"));
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(outside.path(), root.path().join("linked-folder")).unwrap();
-            std::os::unix::fs::symlink(outside.path().join("f.dcm"), root.path().join("linked.dcm")).unwrap();
+            std::os::unix::fs::symlink(
+                outside.path().join("f.dcm"),
+                root.path().join("linked.dcm"),
+            )
+            .unwrap();
         }
         let relative = |files: &[PathBuf], base: &Path| {
-            let mut names = files.iter().map(|file| file.strip_prefix(base).unwrap().to_string_lossy().replace('\\', "/")).collect::<Vec<_>>();
+            let mut names = files
+                .iter()
+                .map(|file| {
+                    file.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect::<Vec<_>>();
             names.sort();
             names
         };
         let mut files = Vec::new();
         collect_files(root.path(), &mut files).unwrap();
-        assert_eq!(relative(&files, root.path()), ["a.dcm", "sub/b.dcm", "sub/deeper/c"]);
+        assert_eq!(
+            relative(&files, root.path()),
+            ["a.dcm", "sub/b.dcm", "sub/deeper/c"]
+        );
         // The selected folder itself is followed when it is a link.
         #[cfg(unix)]
         {
@@ -3863,8 +4373,20 @@ mod tests {
         obj.put(sequence(
             Tag(0x5200, 0x9230),
             vec![
-                InMemDicomObject::from_element_iter([sequence(Tag(0x0028, 0x9110), vec![InMemDicomObject::from_element_iter([ds(Tag(0x0018, 0x0050), "3")])])]),
-                InMemDicomObject::from_element_iter([sequence(Tag(0x0028, 0x9110), vec![InMemDicomObject::from_element_iter([ds(Tag(0x0018, 0x0050), "0")])])]),
+                InMemDicomObject::from_element_iter([sequence(
+                    Tag(0x0028, 0x9110),
+                    vec![InMemDicomObject::from_element_iter([ds(
+                        Tag(0x0018, 0x0050),
+                        "3",
+                    )])],
+                )]),
+                InMemDicomObject::from_element_iter([sequence(
+                    Tag(0x0028, 0x9110),
+                    vec![InMemDicomObject::from_element_iter([ds(
+                        Tag(0x0018, 0x0050),
+                        "0",
+                    )])],
+                )]),
             ],
         ));
         assert_eq!(acquisition_metadata(&obj, 0).slice_thickness, Some(3.));
@@ -4200,21 +4722,28 @@ mod tests {
             ("GML", ["DECY", "ATTN\\DECY"], None, "g/ml"),
             ("SUV", ["ATTN\\DECY", "ATTN\\DECY"], None, "a.u."),
         ] {
-            let slices = corrections.into_iter().enumerate().map(|(i, corrected)| {
-                let mut obj = classic_slice(i + 1, 2. * i as f64);
-                obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.128");
-                obj.put_str(Tag(0x0008, 0x0060), VR::CS, "PT");
-                obj.put_str(Tag(0x0054, 0x1001), VR::CS, dicom_units);
-                obj.put_str(Tag(0x0028, 0x0051), VR::CS, corrected);
-                obj
-            }).collect();
+            let slices = corrections
+                .into_iter()
+                .enumerate()
+                .map(|(i, corrected)| {
+                    let mut obj = classic_slice(i + 1, 2. * i as f64);
+                    obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.128");
+                    obj.put_str(Tag(0x0008, 0x0060), VR::CS, "PT");
+                    obj.put_str(Tag(0x0054, 0x1001), VR::CS, dicom_units);
+                    obj.put_str(Tag(0x0028, 0x0051), VR::CS, corrected);
+                    obj
+                })
+                .collect();
             let imported = import_dir(&write_slices(slices));
             assert_eq!(imported.sources.len(), 1);
             let source = &imported.sources[0];
             assert_eq!(source.frames.len(), 2);
             assert_eq!(source.info.suv_factor, factor);
             assert_eq!(source.info.value_unit, unit);
-            assert_eq!(crate::sampling::Normalization::Bw.quantity(source), (1., unit));
+            assert_eq!(
+                crate::sampling::Normalization::Bw.quantity(source),
+                (1., unit)
+            );
         }
     }
     #[test]
@@ -4364,15 +4893,23 @@ mod tests {
     }
     #[test]
     fn enhanced_pet_starts_with_the_earliest_recorded_frame() {
-        let frame = |at: &str| InMemDicomObject::from_element_iter([sequence(
-            Tag(0x0020, 0x9111), vec![InMemDicomObject::from_element_iter([
-                DataElement::new(Tag(0x0018, 0x9074), VR::DT, at),
-            ])],
-        )]);
+        let frame = |at: &str| {
+            InMemDicomObject::from_element_iter([sequence(
+                Tag(0x0020, 0x9111),
+                vec![InMemDicomObject::from_element_iter([DataElement::new(
+                    Tag(0x0018, 0x9074),
+                    VR::DT,
+                    at,
+                )])],
+            )])
+        };
         let mut obj = reprocessed_pet("SIEMENS");
         obj.remove_element(Tag(0x0008, 0x0032));
         obj.put_str(Tag(0x0008, 0x0201), VR::SH, "+0100");
-        obj.put(sequence(Tag(0x5200, 0x9230), vec![frame("20240101111500"), frame("20240101110000")]));
+        obj.put(sequence(
+            Tag(0x5200, 0x9230),
+            vec![frame("20240101111500"), frame("20240101110000")],
+        ));
         let pet = pet_acquisition(&obj);
         assert_eq!(pet.scan_start, "20240101110000+0100");
         assert_eq!(pet.uptake_seconds, Some(3600.));
@@ -4406,11 +4943,20 @@ mod tests {
                 < 1e-12
         );
         let blood = glucose_item("14749-6", "5", "mmol/L");
-        assert_eq!(with(vec![glucose_item("2350-7", "270", "mg/dL"), blood.clone()]), Some(5.));
+        assert_eq!(
+            with(vec![glucose_item("2350-7", "270", "mg/dL"), blood.clone()]),
+            Some(5.)
+        );
         let mut private = blood.clone();
-        private.put(sequence(Tag(0x0040, 0xa043), vec![code("14749-6", "99LOCAL", "Glucose")]));
+        private.put(sequence(
+            Tag(0x0040, 0xa043),
+            vec![code("14749-6", "99LOCAL", "Glucose")],
+        ));
         assert_eq!(with(vec![private]), None);
-        assert_eq!(with(vec![glucose_item("14749-6", "9", "mmol/L"), blood]), None);
+        assert_eq!(
+            with(vec![glucose_item("14749-6", "9", "mmol/L"), blood]),
+            None
+        );
         assert_eq!(with(vec![glucose_item("14749-6", "5.4", "%")]), None);
         assert_eq!(with(vec![glucose_item("14749-6", "0", "mmol/l")]), None);
         // Another numeric item first (a cardiac state, say), and the value in a Measured Value Sequence.
@@ -4543,13 +5089,25 @@ mod tests {
             obj.put(sequence(Tag(0x0054, 0x0016), vec![drug]));
             obj
         };
-        let dir = write_slices(vec![bed(1, 0., "110000", average), bed(2, 2., "110200", 120_000. + average)]);
+        let dir = write_slices(vec![
+            bed(1, 0., "110000", average),
+            bed(2, 2., "110200", 120_000. + average),
+        ]);
         let imported = import_dir(&dir);
         assert_eq!(imported.sources.len(), 1);
         let info = &imported.sources[0].info;
-        assert!((info.suv_factor.unwrap() / 0.0014 - 1.).abs() < 2e-4, "{:?}", info.suv_factor);
+        assert!(
+            (info.suv_factor.unwrap() / 0.0014 - 1.).abs() < 2e-4,
+            "{:?}",
+            info.suv_factor
+        );
         assert!(info.sul_factor.is_some() && info.suv_bsa_factor.is_some());
-        assert!(info.warnings.0.iter().all(|note| note.code != "series.suvDiffers"));
+        assert!(
+            info.warnings
+                .0
+                .iter()
+                .all(|note| note.code != "series.suvDiffers")
+        );
     }
     #[test]
     fn folder_scan_skips_sidecars_but_preserves_dicom_magic_and_extensionless() {
@@ -4579,8 +5137,13 @@ mod tests {
         let temp = crate::test_dir::tempdir().unwrap();
         let file = temp.path().join("study.rar");
         fs::write(&file, b"Rar!\x1a\x07\x00").unwrap();
-        let error = import(&[file.to_string_lossy().into_owned()]).err().unwrap();
-        assert_eq!(crate::message::coded(&error).map(|note| note.code), Some("rar.unsupported"));
+        let error = import(&[file.to_string_lossy().into_owned()])
+            .err()
+            .unwrap();
+        assert_eq!(
+            crate::message::coded(&error).map(|note| note.code),
+            Some("rar.unsupported")
+        );
     }
     #[test]
     fn zip_traversal_is_rejected() {
@@ -4601,7 +5164,8 @@ mod tests {
         let file = temp.path().join("study.zip");
         let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
         for name in ["first", "second"] {
-            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
             zip.write_all(b"1234").unwrap();
         }
         drop(zip.finish().unwrap());
@@ -4619,11 +5183,15 @@ mod tests {
         let temp = crate::test_dir::tempdir().unwrap();
         let file = temp.path().join("study.zip");
         let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
-        zip.start_file("scan.dcm", zip::write::SimpleFileOptions::default()).unwrap();
+        zip.start_file("scan.dcm", zip::write::SimpleFileOptions::default())
+            .unwrap();
         zip.write_all(b"synthetic slice").unwrap();
         drop(zip.finish().unwrap());
         let imported = extract_zip(&file).unwrap();
-        assert_eq!(fs::read(imported.path().join("scan.dcm")).unwrap(), b"synthetic slice");
+        assert_eq!(
+            fs::read(imported.path().join("scan.dcm")).unwrap(),
+            b"synthetic slice"
+        );
 
         // Change only the local header name; the central directory still says scan.dcm.
         let mut bytes = fs::read(&file).unwrap();
@@ -4648,8 +5216,16 @@ mod tests {
             }
         }
         fs::create_dir_all(study.path().join(".thumbs")).unwrap();
-        fs::copy(study.path().join("Seri1/IM0"), study.path().join(".thumbs/IM0")).unwrap();
-        fs::copy(study.path().join("Seri1/IM0"), study.path().join("Seri2/.IM9")).unwrap();
+        fs::copy(
+            study.path().join("Seri1/IM0"),
+            study.path().join(".thumbs/IM0"),
+        )
+        .unwrap();
+        fs::copy(
+            study.path().join("Seri1/IM0"),
+            study.path().join("Seri2/.IM9"),
+        )
+        .unwrap();
         fs::write(study.path().join("Seri1/notes.txt"), b"not an image").unwrap();
         study
     }
@@ -4658,7 +5234,11 @@ mod tests {
         fn walk(folder: &Path, files: &mut Vec<PathBuf>) {
             for entry in fs::read_dir(folder).unwrap() {
                 let path = entry.unwrap().path();
-                if path.is_dir() { walk(&path, files) } else { files.push(path) }
+                if path.is_dir() {
+                    walk(&path, files)
+                } else {
+                    files.push(path)
+                }
             }
         }
         let mut files = Vec::new();
@@ -4668,19 +5248,30 @@ mod tests {
         let mut zip = zip::ZipWriter::new(File::create(file).unwrap());
         zip.add_directory("Seri1/", options).unwrap();
         for path in files {
-            let name = path.strip_prefix(folder).unwrap().to_string_lossy().replace('\\', "/");
+            let name = path
+                .strip_prefix(folder)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
             zip.start_file(name, options).unwrap();
             zip.write_all(&fs::read(&path).unwrap()).unwrap();
         }
         zip.finish().unwrap();
     }
     /// Each series as JSON with its frames' paths below `root`, and the import's warnings.
-    fn summary(imported: &Imported, root: &Path) -> (Vec<(serde_json::Value, Vec<PathBuf>)>, serde_json::Value) {
+    fn summary(
+        imported: &Imported,
+        root: &Path,
+    ) -> (Vec<(serde_json::Value, Vec<PathBuf>)>, serde_json::Value) {
         let series = imported
             .sources
             .iter()
             .map(|source| {
-                let frames = source.frames.iter().map(|frame| frame.source.path.strip_prefix(root).unwrap().to_owned()).collect();
+                let frames = source
+                    .frames
+                    .iter()
+                    .map(|frame| frame.source.path.strip_prefix(root).unwrap().to_owned())
+                    .collect();
                 (serde_json::to_value(&source.info).unwrap(), frames)
             })
             .collect();
@@ -4699,7 +5290,10 @@ mod tests {
         let from_folder = import(&[study.path().to_string_lossy().into_owned()]).unwrap();
         let from_archive = import(&[file.to_string_lossy().into_owned()]).unwrap();
         assert_eq!(from_folder.sources.len(), 2);
-        assert_eq!(summary(&from_archive, &archive_root(&from_archive)), summary(&from_folder, study.path()));
+        assert_eq!(
+            summary(&from_archive, &archive_root(&from_archive)),
+            summary(&from_folder, study.path())
+        );
         // Hidden entries are extracted but not read, as a folder listing never shows them.
         assert!(archive_root(&from_archive).join(".thumbs/IM0").is_file());
     }
@@ -4718,17 +5312,40 @@ mod tests {
             let handed = handed.into_inner().unwrap();
             assert_eq!(handed.len(), 2, "{path:?}");
             for early in &handed {
-                let last = imported.sources.iter().find(|source| source.info.id == early.info.id).unwrap();
-                assert_eq!(serde_json::to_value(&early.info).unwrap(), serde_json::to_value(&last.info).unwrap());
+                let last = imported
+                    .sources
+                    .iter()
+                    .find(|source| source.info.id == early.info.id)
+                    .unwrap();
                 assert_eq!(
-                    early.frames.iter().map(|frame| &frame.source.path).collect::<Vec<_>>(),
-                    last.frames.iter().map(|frame| &frame.source.path).collect::<Vec<_>>()
+                    serde_json::to_value(&early.info).unwrap(),
+                    serde_json::to_value(&last.info).unwrap()
+                );
+                assert_eq!(
+                    early
+                        .frames
+                        .iter()
+                        .map(|frame| &frame.source.path)
+                        .collect::<Vec<_>>(),
+                    last.frames
+                        .iter()
+                        .map(|frame| &frame.source.path)
+                        .collect::<Vec<_>>()
                 );
             }
             // The catalogue is the one an import without a hand-over makes.
             let plain = import(&paths).unwrap();
-            let root = |imported: &Imported| if imported.archives.is_empty() { path.clone() } else { archive_root(imported) };
-            assert_eq!(summary(&imported, &root(&imported)), summary(&plain, &root(&plain)));
+            let root = |imported: &Imported| {
+                if imported.archives.is_empty() {
+                    path.clone()
+                } else {
+                    archive_root(imported)
+                }
+            };
+            assert_eq!(
+                summary(&imported, &root(&imported)),
+                summary(&plain, &root(&plain))
+            );
         }
     }
 
@@ -4737,7 +5354,13 @@ mod tests {
         // Slices 0-1 of one series in A, slices 2-3 of it in B, with a second series.
         let study = crate::test_dir::tempdir().unwrap();
         let mut files = Vec::new();
-        for (folder, series, index) in [("A", "1.2.3.4.1", 0), ("A", "1.2.3.4.1", 1), ("B", "1.2.3.4.1", 2), ("B", "1.2.3.4.1", 3), ("B", "1.2.3.4.2", 0)] {
+        for (folder, series, index) in [
+            ("A", "1.2.3.4.1", 0),
+            ("A", "1.2.3.4.1", 1),
+            ("B", "1.2.3.4.1", 2),
+            ("B", "1.2.3.4.1", 3),
+            ("B", "1.2.3.4.2", 0),
+        ] {
             fs::create_dir_all(study.path().join(folder)).unwrap();
             let mut obj = classic_slice(index + 1, index as f64 * 2.);
             obj.put_str(Tag(0x0020, 0x000e), VR::UI, series);
@@ -4749,13 +5372,20 @@ mod tests {
         files.sort();
         let budget = crate::import_budget::ImportBudget::default();
         let slots: Vec<Slot> = files.iter().map(|_| OnceLock::new()).collect();
-        let read = |index: usize| { let _ = slots[index].set(Some(read_frames_budget(&files[index], &budget, None, None))); };
+        let read = |index: usize| {
+            let _ = slots[index].set(Some(read_frames_budget(&files[index], &budget, None, None)));
+        };
         let handed = std::sync::Mutex::new(Vec::new());
         let sink = |found: Vec<Arc<SourceSeries>>| handed.lock().unwrap().extend(found);
         let mut watch = EarlyWatch::new(&files);
         // A is read whole, and one file of B that belongs to the same series: it is not whole yet.
-        let in_b = files.iter().position(|file| file.ends_with("1.2.3.4.1-2")).unwrap();
-        for index in (0..files.len()).filter(|&index| files[index].parent().unwrap().ends_with("A") || index == in_b) {
+        let in_b = files
+            .iter()
+            .position(|file| file.ends_with("1.2.3.4.1-2"))
+            .unwrap();
+        for index in (0..files.len())
+            .filter(|&index| files[index].parent().unwrap().ends_with("A") || index == in_b)
+        {
             read(index);
         }
         watch.publish(&files, &slots, &sink, 0);
@@ -4765,9 +5395,15 @@ mod tests {
         }
         watch.publish(&files, &slots, &sink, 0);
         let handed = handed.into_inner().unwrap();
-        let mut counts = handed.iter().map(|source| (source.info.uid.clone(), source.frames.len())).collect::<Vec<_>>();
+        let mut counts = handed
+            .iter()
+            .map(|source| (source.info.uid.clone(), source.frames.len()))
+            .collect::<Vec<_>>();
         counts.sort();
-        assert_eq!(counts, [("1.2.3.4.1".to_owned(), 4), ("1.2.3.4.2".to_owned(), 1)]);
+        assert_eq!(
+            counts,
+            [("1.2.3.4.1".to_owned(), 4), ("1.2.3.4.2".to_owned(), 1)]
+        );
     }
 
     #[test]
@@ -4779,7 +5415,10 @@ mod tests {
         // The last entry's local header names another file than the central directory does.
         let mut bytes = fs::read(&file).unwrap();
         let name = b"Seri2/IM3";
-        let at = bytes.windows(name.len()).position(|window| window == name).unwrap();
+        let at = bytes
+            .windows(name.len())
+            .position(|window| window == name)
+            .unwrap();
         bytes[at + 8] = b'9';
         fs::write(&file, bytes).unwrap();
         let handed = std::sync::Mutex::new(Vec::new());
@@ -5012,7 +5651,10 @@ mod tests {
         assert_eq!(written_phases(sources[0]), BTreeSet::from([1]));
         assert_eq!(written_phases(sources[1]), BTreeSet::from([0]));
         // Each phase reports its own acquisition, not the first phase's.
-        let times: Vec<_> = sources.iter().map(|s| s.info.acquisition.acquisition_time.as_str()).collect();
+        let times: Vec<_> = sources
+            .iter()
+            .map(|s| s.info.acquisition.acquisition_time.as_str())
+            .collect();
         assert_eq!(times, ["101000", "101530"]);
     }
 
@@ -5025,19 +5667,31 @@ mod tests {
                 if numbered {
                     obj.put_str(Tag(0x0020, 0x0012), VR::IS, (phase + 1).to_string());
                 }
-                obj.put_str(Tag(0x0008, 0x002a), VR::DT, ["202611041010", "202611041015"][phase]);
+                obj.put_str(
+                    Tag(0x0008, 0x002a),
+                    VR::DT,
+                    ["202611041010", "202611041015"][phase],
+                );
             }));
             let imported = import_dir(&dir);
             let sources = phase_order(&imported);
             assert_eq!(
                 phase(sources[0]).kind,
-                if numbered { "acquisitionNumber" } else { "acquisitionTime" }
+                if numbered {
+                    "acquisitionNumber"
+                } else {
+                    "acquisitionTime"
+                }
             );
             let times: Vec<_> = sources
                 .iter()
                 .map(|s| s.info.acquisition.acquisition_date_time.as_str())
                 .collect();
-            assert_eq!(times, ["202611041010", "202611041015"], "numbered: {numbered}");
+            assert_eq!(
+                times,
+                ["202611041010", "202611041015"],
+                "numbered: {numbered}"
+            );
         }
     }
 
@@ -5049,7 +5703,15 @@ mod tests {
         assert_eq!(at("20261104101530.25"), at("20261104101530") + 0.25);
         assert_eq!(at("20261104101530+0100"), at("20261104091530"));
         assert_eq!(at("20261104101530-0030"), at("20261104104530"));
-        for invalid in ["", "20261", "2026110410103", "20261304", "202611041010.5", "2026+01", "x2026"] {
+        for invalid in [
+            "",
+            "20261",
+            "2026110410103",
+            "20261304",
+            "202611041010.5",
+            "2026+01",
+            "x2026",
+        ] {
             assert!(dt_seconds(invalid).is_none(), "{invalid}");
         }
     }
@@ -5059,7 +5721,13 @@ mod tests {
         // Acquisition numbers part the phases; within each, times run backwards through
         // the slices, so the earliest frame is not the first.
         let dir = write_slices(multiphase(2, 6, |obj, phase| {
-            let slice = (obj.get(Tag(0x0020, 0x0013)).unwrap().to_int::<u32>().unwrap() - 1) / 2;
+            let slice = (obj
+                .get(Tag(0x0020, 0x0013))
+                .unwrap()
+                .to_int::<u32>()
+                .unwrap()
+                - 1)
+                / 2;
             obj.put_str(Tag(0x0020, 0x0012), VR::IS, (phase + 1).to_string());
             let time = format!("{}{:02}", ["1015", "1010"][phase], 50 - slice);
             obj.put_str(Tag(0x0008, 0x002a), VR::DT, format!("20261104{time}"));
@@ -5069,14 +5737,28 @@ mod tests {
         assert_eq!(phase(sources[0]).kind, "acquisitionNumber");
         let times: Vec<_> = sources
             .iter()
-            .map(|s| (s.info.acquisition.acquisition_time.as_str(), s.info.acquisition.acquisition_date_time.as_str()))
+            .map(|s| {
+                (
+                    s.info.acquisition.acquisition_time.as_str(),
+                    s.info.acquisition.acquisition_date_time.as_str(),
+                )
+            })
             .collect();
-        assert_eq!(times, [("101545", "20261104101545"), ("101045", "20261104101045")]);
+        assert_eq!(
+            times,
+            [("101545", "20261104101545"), ("101045", "20261104101045")]
+        );
     }
 
     /// One Enhanced MR slab: two dimension ordinals at each of two positions, the
     /// ordinals indexing the given cardiac trigger delays. Returns each frame's delay.
-    fn trigger_slab(path: &Path, instance: &str, organization: &str, positions: [u32; 2], delays: [f64; 2]) -> Vec<f64> {
+    fn trigger_slab(
+        path: &Path,
+        instance: &str,
+        organization: &str,
+        positions: [u32; 2],
+        delays: [f64; 2],
+    ) -> Vec<f64> {
         const CONTENT: Tag = Tag(0x0020, 0x9111);
         const CARDIAC: Tag = Tag(0x0018, 0x9118);
         let mut obj = metadata_object(4);
@@ -5090,16 +5772,28 @@ mod tests {
             .map(|(ordinal, z)| {
                 frames.push(delays[ordinal as usize]);
                 InMemDicomObject::from_element_iter([
-                    sequence(CONTENT, vec![InMemDicomObject::from_element_iter([ul(Tag(0x0020, 0x9157), &[ordinal + 1])])]),
-                    sequence(CARDIAC, vec![InMemDicomObject::from_element_iter([DataElement::new(
-                        Tag(0x0020, 0x9153),
-                        VR::FD,
-                        PrimitiveValue::F64(vec![delays[ordinal as usize]].into()),
-                    )])]),
-                    sequence(Tag(0x0020, 0x9113), vec![InMemDicomObject::from_element_iter([ds(
-                        Tag(0x0020, 0x0032),
-                        &format!("0\\0\\{}", z * 2),
-                    )])]),
+                    sequence(
+                        CONTENT,
+                        vec![InMemDicomObject::from_element_iter([ul(
+                            Tag(0x0020, 0x9157),
+                            &[ordinal + 1],
+                        )])],
+                    ),
+                    sequence(
+                        CARDIAC,
+                        vec![InMemDicomObject::from_element_iter([DataElement::new(
+                            Tag(0x0020, 0x9153),
+                            VR::FD,
+                            PrimitiveValue::F64(vec![delays[ordinal as usize]].into()),
+                        )])],
+                    ),
+                    sequence(
+                        Tag(0x0020, 0x9113),
+                        vec![InMemDicomObject::from_element_iter([ds(
+                            Tag(0x0020, 0x0032),
+                            &format!("0\\0\\{}", z * 2),
+                        )])],
+                    ),
                 ])
             })
             .collect();
@@ -5124,7 +5818,11 @@ mod tests {
                 trigger_slab(&a, "2.25.81", organizations[0], [0, 1], [100., 200.]),
                 trigger_slab(&b, "2.25.82", organizations[1], [2, 3], second),
             ];
-            let imported = import(&[a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned()]).unwrap();
+            let imported = import(&[
+                a.to_string_lossy().into_owned(),
+                b.to_string_lossy().into_owned(),
+            ])
+            .unwrap();
             let sources = phase_order(&imported);
             assert_eq!(sources.len(), 2, "{organizations:?}");
             for (source, expected) in sources.iter().zip([100., 200.]) {
@@ -5132,7 +5830,10 @@ mod tests {
                 assert_eq!(source.frames.len(), 4);
                 for frame in &source.frames {
                     let file = usize::from(frame.source.path.file_name() == b.file_name());
-                    assert_eq!(delays[file][frame.index as usize], expected, "{organizations:?}");
+                    assert_eq!(
+                        delays[file][frame.index as usize], expected,
+                        "{organizations:?}"
+                    );
                 }
                 assert!(source.info.can_reconstruct, "{:?}", source.info.warnings);
             }
@@ -5298,7 +5999,11 @@ mod tests {
             assert_eq!(source.frames.len(), count);
             assert!(!source.info.can_reconstruct);
             assert!(
-                source.info.warnings.iter().any(|w| w.text.contains("Duplicate")),
+                source
+                    .info
+                    .warnings
+                    .iter()
+                    .any(|w| w.text.contains("Duplicate")),
                 "{:?}",
                 source.info.warnings
             );
@@ -5377,7 +6082,6 @@ mod tests {
         }
     }
 
-
     fn scalar_image(modality: &str, columns: u16, rows: u16, pixels: Vec<u16>) -> InMemDicomObject {
         assert_eq!(pixels.len(), usize::from(columns) * usize::from(rows));
         let mut obj = InMemDicomObject::from_element_iter([
@@ -5447,8 +6151,16 @@ mod tests {
         stored.put(ds(Tag(0x0028, 0x1051), "4000"));
         let (source, _dir) = import_object(stored);
         assert!(!source.info.window_from_pixels);
-        assert_eq!((source.info.window_center, source.info.window_width), (2000., 4000.));
-        assert!(serde_json::to_value(&source.info).unwrap().get("windowFromPixels").is_none());
+        assert_eq!(
+            (source.info.window_center, source.info.window_width),
+            (2000., 4000.)
+        );
+        assert!(
+            serde_json::to_value(&source.info)
+                .unwrap()
+                .get("windowFromPixels")
+                .is_none()
+        );
 
         let mut voi = scalar_image("MG", 100, 10, mammogram_pixels());
         let mut lut = InMemDicomObject::new_empty();
@@ -5467,12 +6179,26 @@ mod tests {
         assert!(!source.info.window_from_pixels);
         // The file's VOI LUT is shown; manual changes start from the window equal to it, a step at 1.
         assert_eq!(source.info.frame_metadata[0].voi_lut, Some(0));
-        assert_eq!(source.info.voi_luts, [crate::model::VoiLut { first: 0, bits: 16, data: vec![0, 65535], explanation: String::new() }]);
-        assert_eq!((source.info.window_center, source.info.window_width), (1.5, 1.));
+        assert_eq!(
+            source.info.voi_luts,
+            [crate::model::VoiLut {
+                first: 0,
+                bits: 16,
+                data: vec![0, 65535],
+                explanation: String::new()
+            }]
+        );
+        assert_eq!(
+            (source.info.window_center, source.info.window_width),
+            (1.5, 1.)
+        );
 
         let (source, _dir) = import_object(scalar_image("CT", 100, 10, mammogram_pixels()));
         assert!(!source.info.window_from_pixels);
-        assert_eq!((source.info.window_center, source.info.window_width), (40., 400.));
+        assert_eq!(
+            (source.info.window_center, source.info.window_width),
+            (40., 400.)
+        );
     }
 
     #[test]
@@ -5486,9 +6212,17 @@ mod tests {
         // 98.9, to within one of the 65536 bins across the range.
         let fractional = (0..=1000).map(|i| f64::from(i) / 10.);
         let (center, width) = display_window(fractional).unwrap();
-        assert!((center - 50.).abs() < 0.01 && (width - 97.8).abs() < 0.01, "{center} {width}");
+        assert!(
+            (center - 50.).abs() < 0.01 && (width - 97.8).abs() < 0.01,
+            "{center} {width}"
+        );
         // The viewer draws no window narrower than one unit.
-        assert_eq!(display_window((0..=10).map(|i| f64::from(i) / 100.)).unwrap().1, 1.);
+        assert_eq!(
+            display_window((0..=10).map(|i| f64::from(i) / 100.))
+                .unwrap()
+                .1,
+            1.
+        );
     }
 
     fn pack_bits(masks: &[[u8; 9]]) -> Vec<u8> {
@@ -5540,7 +6274,11 @@ mod tests {
                 VR::LO,
                 label,
             )]);
-            item.put(DataElement::new(Tag(0x0062, 0x0004), VR::US, PrimitiveValue::from(number)));
+            item.put(DataElement::new(
+                Tag(0x0062, 0x0004),
+                VR::US,
+                PrimitiveValue::from(number),
+            ));
             item.put(DataElement::new(
                 Tag(0x0062, 0x000d),
                 VR::US,
@@ -5620,7 +6358,11 @@ mod tests {
         let (source, _dir) = import_object(obj);
         let info = &source.info;
         assert_eq!(info.modality, "SEG");
-        assert_eq!(info.dimensions, [3, 3, 4], "repeated planes stay one series");
+        assert_eq!(
+            info.dimensions,
+            [3, 3, 4],
+            "repeated planes stay one series"
+        );
         assert!(!info.can_reconstruct);
         assert!(info.warnings.is_empty(), "{:?}", info.warnings);
         assert_eq!(info.pixel_type, "uint8");
@@ -5629,15 +6371,24 @@ mod tests {
         let segmentation = info.segmentation.as_ref().unwrap();
         assert_eq!(segmentation.kind, "BINARY");
         assert_eq!(segmentation.referenced_series_uid, "2.25.90");
-        assert_eq!(segmentation.referenced_series.as_deref().unwrap(), [(info.study_uid.clone(), "2.25.90".to_owned())]);
-        assert_eq!(segmentation.referenced_instances.as_deref().unwrap(), [("2.25.90".to_owned(), None), ("2.25.92".to_owned(), None)]);
+        assert_eq!(
+            segmentation.referenced_series.as_deref().unwrap(),
+            [(info.study_uid.clone(), "2.25.90".to_owned())]
+        );
+        assert_eq!(
+            segmentation.referenced_instances.as_deref().unwrap(),
+            [("2.25.90".to_owned(), None), ("2.25.92".to_owned(), None)]
+        );
         assert_eq!(
             segmentation
                 .segments
                 .iter()
                 .map(|s| (s.number, s.label.as_str(), s.color))
                 .collect::<Vec<_>>(),
-            [(1, "Nodule", Some([255, 255, 255])), (2, "Vessel", Some([255, 255, 255]))]
+            [
+                (1, "Nodule", Some([255, 255, 255])),
+                (2, "Vessel", Some([255, 255, 255]))
+            ]
         );
         assert!(source.frames.iter().all(|f| f.segmentation.is_none()));
         let volume = crate::decode::decode_volume(&source).unwrap();
@@ -5649,9 +6400,14 @@ mod tests {
             assert_eq!(metadata.referenced_sop_instance_uid, format!("2.25.9{z}"));
             let expected = masks[frame.index as usize].map(f64::from);
             let decoded = crate::decode::decode_frame(&source, position).unwrap();
-            assert_eq!((0..9).map(|i| decoded.value(i)).collect::<Vec<_>>(), expected);
             assert_eq!(
-                (0..9).map(|i| volume.value(position * 9 + i)).collect::<Vec<_>>(),
+                (0..9).map(|i| decoded.value(i)).collect::<Vec<_>>(),
+                expected
+            );
+            assert_eq!(
+                (0..9)
+                    .map(|i| volume.value(position * 9 + i))
+                    .collect::<Vec<_>>(),
                 expected
             );
         }
@@ -5664,7 +6420,6 @@ mod tests {
         // 3D Slicer's "tissue" green, as the autoPET segmentation recommends it.
         assert_eq!(cielab_to_srgb([43803, 26565, 37722]), [128, 174, 128]);
     }
-
 
     /// A SEG object with two segments on 2 mm planes, its frames given as (segment, z), and the
     /// pixel data element as given.
@@ -5701,16 +6456,36 @@ mod tests {
             obj.put(DataElement::new(tag, VR::US, PrimitiveValue::from(value)));
         }
         let segments = [(1u16, "Nodule"), (2, "Vessel")].map(|(number, label)| {
-            let mut item = InMemDicomObject::from_element_iter([DataElement::new(Tag(0x0062, 0x0005), VR::LO, label)]);
-            item.put(DataElement::new(Tag(0x0062, 0x0004), VR::US, PrimitiveValue::from(number)));
+            let mut item = InMemDicomObject::from_element_iter([DataElement::new(
+                Tag(0x0062, 0x0005),
+                VR::LO,
+                label,
+            )]);
+            item.put(DataElement::new(
+                Tag(0x0062, 0x0004),
+                VR::US,
+                PrimitiveValue::from(number),
+            ));
             item
         });
         obj.put(sequence(Tag(0x0062, 0x0002), segments.to_vec()));
         obj.put(sequence(
             Tag(0x5200, 0x9229),
             vec![InMemDicomObject::from_element_iter([
-                sequence(Tag(0x0020, 0x9116), vec![InMemDicomObject::from_element_iter([ds(Tag(0x0020, 0x0037), "1\\0\\0\\0\\1\\0")])]),
-                sequence(Tag(0x0028, 0x9110), vec![InMemDicomObject::from_element_iter([ds(Tag(0x0028, 0x0030), "0.5\\0.5"), ds(Tag(0x0018, 0x0050), "2")])]),
+                sequence(
+                    Tag(0x0020, 0x9116),
+                    vec![InMemDicomObject::from_element_iter([ds(
+                        Tag(0x0020, 0x0037),
+                        "1\\0\\0\\0\\1\\0",
+                    )])],
+                ),
+                sequence(
+                    Tag(0x0028, 0x9110),
+                    vec![InMemDicomObject::from_element_iter([
+                        ds(Tag(0x0028, 0x0030), "0.5\\0.5"),
+                        ds(Tag(0x0018, 0x0050), "2"),
+                    ])],
+                ),
             ])],
         ));
         let per_frame = frames
@@ -5718,11 +6493,18 @@ mod tests {
             .map(|&(segment, z)| {
                 let mut group = InMemDicomObject::from_element_iter([sequence(
                     Tag(0x0020, 0x9113),
-                    vec![InMemDicomObject::from_element_iter([ds(Tag(0x0020, 0x0032), &format!("0\\0\\{z}"))])],
+                    vec![InMemDicomObject::from_element_iter([ds(
+                        Tag(0x0020, 0x0032),
+                        &format!("0\\0\\{z}"),
+                    )])],
                 )]);
                 if let Some(number) = segment {
                     let mut identification = InMemDicomObject::new_empty();
-                    identification.put(DataElement::new(Tag(0x0062, 0x000b), VR::US, PrimitiveValue::from(number)));
+                    identification.put(DataElement::new(
+                        Tag(0x0062, 0x000b),
+                        VR::US,
+                        PrimitiveValue::from(number),
+                    ));
                     group.put(sequence(Tag(0x0062, 0x000a), vec![identification]));
                 }
                 group
@@ -5750,7 +6532,10 @@ mod tests {
         DataElement::new(
             Tag(0x7fe0, 0x0010),
             VR::OB,
-            dicom_core::value::Value::PixelSequence(dicom_core::value::PixelFragmentSequence::new(Vec::<u32>::new(), fragments)),
+            dicom_core::value::Value::PixelSequence(dicom_core::value::PixelFragmentSequence::new(
+                Vec::<u32>::new(),
+                fragments,
+            )),
         )
     }
 
@@ -5762,7 +6547,10 @@ mod tests {
             .enumerate()
             .map(|(position, frame)| {
                 let pixels = crate::decode::decode_frame(source, position).unwrap();
-                (frame.index, (0..pixels.len()).map(|i| pixels.value(i)).collect())
+                (
+                    frame.index,
+                    (0..pixels.len()).map(|i| pixels.value(i)).collect(),
+                )
             })
             .collect()
     }
@@ -5774,7 +6562,11 @@ mod tests {
         let fragments = masks
             .iter()
             .map(|mask| {
-                let mut fragment = [1u32, 64].iter().chain([0u32; 14].iter()).flat_map(|word| word.to_le_bytes()).collect::<Vec<u8>>();
+                let mut fragment = [1u32, 64]
+                    .iter()
+                    .chain([0u32; 14].iter())
+                    .flat_map(|word| word.to_le_bytes())
+                    .collect::<Vec<u8>>();
                 for row in mask.chunks(3) {
                     fragment.push(2);
                     fragment.extend_from_slice(row);
@@ -5786,7 +6578,15 @@ mod tests {
         let path = dir.path().join("rle.dcm");
         let frames = [(Some(1), 0), (Some(1), 2)];
         write_with_syntax(
-            segmentation_object(SEGMENTATION_STORAGE, "BINARY", 3, 1, "MONOCHROME2", &frames, encapsulated(fragments)),
+            segmentation_object(
+                SEGMENTATION_STORAGE,
+                "BINARY",
+                3,
+                1,
+                "MONOCHROME2",
+                &frames,
+                encapsulated(fragments),
+            ),
             &path,
             "1.2.840.10008.1.2.5",
         );
@@ -5795,15 +6595,29 @@ mod tests {
         assert_eq!(source.info.pixel_type, "uint8");
         assert_eq!(
             decoded_frames(source),
-            BTreeMap::from([(0, masks[0].map(f64::from).to_vec()), (1, masks[1].map(f64::from).to_vec())])
+            BTreeMap::from([
+                (0, masks[0].map(f64::from).to_vec()),
+                (1, masks[1].map(f64::from).to_vec())
+            ])
         );
         assert_eq!(
-            (0..18).map(|i| crate::decode::decode_volume(source).unwrap().value(i)).collect::<Vec<_>>(),
-            masks.iter().flatten().map(|v| f64::from(*v)).collect::<Vec<_>>()
+            (0..18)
+                .map(|i| crate::decode::decode_volume(source).unwrap().value(i))
+                .collect::<Vec<_>>(),
+            masks
+                .iter()
+                .flatten()
+                .map(|v| f64::from(*v))
+                .collect::<Vec<_>>()
         );
 
         // JPEG 2000 lossless (CP-2301), 32x32 codestreams of precision 1 made by OpenJPEG.
-        let hex = |text: &str| (0..text.len()).step_by(2).map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap()).collect::<Vec<u8>>();
+        let hex = |text: &str| {
+            (0..text.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>()
+        };
         let fragments = ["ff4fff510029000000000020000000200000000000000000000000200000002000000000000000000001000101ff52000c00000001000504040001ff5c00134008101018101018101018101018101018ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e32ff90000a00000000003a0001ff9380c86433a08007070380dd0a453a1014bf150f155fc8e4511010e85f0fed0f05c9245110145f0e6714e71581ffd9", "ff4fff510029000000000020000000200000000000000000000000200000002000000000000000000001000101ff52000c00000001000504040001ff5c00134008101018101018101018101018101018ff640025000143726561746564206279204f70656e4a5045472076657273696f6e20322e352e32ff90000a00000000001e0001ff93d08007808080a4402dcba48085bf44b5ffd9"]
             .map(|code| {
                 let mut bytes = hex(code);
@@ -5815,18 +6629,35 @@ mod tests {
             .to_vec();
         let path = dir.path().join("j2k.dcm");
         write_with_syntax(
-            segmentation_object(SEGMENTATION_STORAGE, "BINARY", 32, 1, "MONOCHROME2", &frames, encapsulated(fragments)),
+            segmentation_object(
+                SEGMENTATION_STORAGE,
+                "BINARY",
+                32,
+                1,
+                "MONOCHROME2",
+                &frames,
+                encapsulated(fragments),
+            ),
             &path,
             "1.2.840.10008.1.2.4.90",
         );
         let imported = import(&[path.to_string_lossy().into_owned()]).unwrap();
-        let set = |values: &Vec<f64>| values.iter().enumerate().filter(|(_, v)| **v == 1.).map(|(i, _)| (i / 32, i % 32)).collect::<Vec<_>>();
+        let set = |values: &Vec<f64>| {
+            values
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v == 1.)
+                .map(|(i, _)| (i / 32, i % 32))
+                .collect::<Vec<_>>()
+        };
         let decoded = decoded_frames(&imported.sources[0]);
         assert!(decoded.values().flatten().all(|v| *v == 0. || *v == 1.));
         let mut first = vec![(1, 1)];
         first.extend((2..5).flat_map(|row| (3..6).map(move |column| (row, column))));
         assert_eq!(set(&decoded[&0]), first);
-        let mut second: Vec<_> = (10..12).flat_map(|row| (20..25).map(move |column| (row, column))).collect();
+        let mut second: Vec<_> = (10..12)
+            .flat_map(|row| (20..25).map(move |column| (row, column)))
+            .collect();
         second.push((31, 0));
         assert_eq!(set(&decoded[&1]), second);
     }
@@ -5840,30 +6671,71 @@ mod tests {
                 VR::OB,
                 PrimitiveValue::U8(labels.iter().flatten().copied().collect::<Vec<_>>().into()),
             );
-            let mut obj = segmentation_object(LABEL_MAP_SEGMENTATION_STORAGE, "LABELMAP", 3, 8, photometric, &[(None, 0), (None, 2)], pixels);
+            let mut obj = segmentation_object(
+                LABEL_MAP_SEGMENTATION_STORAGE,
+                "LABELMAP",
+                3,
+                8,
+                photometric,
+                &[(None, 0), (None, 2)],
+                pixels,
+            );
             if photometric == "PALETTE COLOR" {
-                for (descriptor, data, level) in [(0x1101, 0x1201, [0u16, 65535, 0]), (0x1102, 0x1202, [0, 0, 0]), (0x1103, 0x1203, [0, 0, 65535])] {
-                    obj.put(DataElement::new(Tag(0x0028, descriptor), VR::US, PrimitiveValue::U16(vec![3, 0, 16].into())));
-                    obj.put(DataElement::new(Tag(0x0028, data), VR::OW, PrimitiveValue::U16(level.to_vec().into())));
+                for (descriptor, data, level) in [
+                    (0x1101, 0x1201, [0u16, 65535, 0]),
+                    (0x1102, 0x1202, [0, 0, 0]),
+                    (0x1103, 0x1203, [0, 0, 65535]),
+                ] {
+                    obj.put(DataElement::new(
+                        Tag(0x0028, descriptor),
+                        VR::US,
+                        PrimitiveValue::U16(vec![3, 0, 16].into()),
+                    ));
+                    obj.put(DataElement::new(
+                        Tag(0x0028, data),
+                        VR::OW,
+                        PrimitiveValue::U16(level.to_vec().into()),
+                    ));
                 }
             }
             let (source, _dir) = import_object(obj);
             assert_eq!(source.info.components, 1, "{photometric}");
             assert_eq!(source.info.pixel_type, "uint8");
             assert_eq!(source.info.segmentation.as_ref().unwrap().kind, "LABELMAP");
-            assert!(source.info.frame_metadata.iter().all(|frame| frame.segment_number.is_none()));
+            assert!(
+                source
+                    .info
+                    .frame_metadata
+                    .iter()
+                    .all(|frame| frame.segment_number.is_none())
+            );
             assert_eq!(
                 decoded_frames(&source),
-                BTreeMap::from([(0, labels[0].map(f64::from).to_vec()), (1, labels[1].map(f64::from).to_vec())]),
+                BTreeMap::from([
+                    (0, labels[0].map(f64::from).to_vec()),
+                    (1, labels[1].map(f64::from).to_vec())
+                ]),
                 "{photometric}"
             );
         }
     }
 
-
-    fn voi_item(descriptor: [u16; 3], vr: VR, data: PrimitiveValue, explanation: &str) -> InMemDicomObject {
-        let mut item = InMemDicomObject::from_element_iter([DataElement::new(Tag(0x0028, 0x3003), VR::LO, explanation)]);
-        let first = if vr == VR::SS { PrimitiveValue::I16(descriptor.map(|v| v as i16).to_vec().into()) } else { PrimitiveValue::U16(descriptor.to_vec().into()) };
+    fn voi_item(
+        descriptor: [u16; 3],
+        vr: VR,
+        data: PrimitiveValue,
+        explanation: &str,
+    ) -> InMemDicomObject {
+        let mut item = InMemDicomObject::from_element_iter([DataElement::new(
+            Tag(0x0028, 0x3003),
+            VR::LO,
+            explanation,
+        )]);
+        let first = if vr == VR::SS {
+            PrimitiveValue::I16(descriptor.map(|v| v as i16).to_vec().into())
+        } else {
+            PrimitiveValue::U16(descriptor.to_vec().into())
+        };
         item.put(DataElement::new(Tag(0x0028, 0x3002), vr, first));
         item.put(DataElement::new(Tag(0x0028, 0x3006), VR::OW, data));
         item
@@ -5879,12 +6751,25 @@ mod tests {
             VR::OW,
             PrimitiveValue::U16(vec![1000; 12].into()),
         ));
-        let shared = voi_item([4, (-2i16) as u16, 8], VR::SS, PrimitiveValue::U16(vec![0x4000, 0xff80].into()), "SOFT");
-        let own = voi_item([2, 100, 16], VR::US, PrimitiveValue::U16(vec![0, 4095].into()), "");
+        let shared = voi_item(
+            [4, (-2i16) as u16, 8],
+            VR::SS,
+            PrimitiveValue::U16(vec![0x4000, 0xff80].into()),
+            "SOFT",
+        );
+        let own = voi_item(
+            [2, 100, 16],
+            VR::US,
+            PrimitiveValue::U16(vec![0, 4095].into()),
+            "",
+        );
         let group = |z: &str, voi: Option<&InMemDicomObject>, window: bool| {
             let mut group = InMemDicomObject::from_element_iter([sequence(
                 Tag(0x0020, 0x9113),
-                vec![InMemDicomObject::from_element_iter([ds(Tag(0x0020, 0x0032), z)])],
+                vec![InMemDicomObject::from_element_iter([ds(
+                    Tag(0x0020, 0x0032),
+                    z,
+                )])],
             )]);
             let mut frame_voi = InMemDicomObject::new_empty();
             if let Some(voi) = voi {
@@ -5899,32 +6784,63 @@ mod tests {
         };
         obj.put(sequence(
             Tag(0x5200, 0x9230),
-            vec![group("0\\0\\0", Some(&shared), false), group("0\\0\\2", Some(&shared), false), group("0\\0\\4", Some(&own), true)],
+            vec![
+                group("0\\0\\0", Some(&shared), false),
+                group("0\\0\\2", Some(&shared), false),
+                group("0\\0\\4", Some(&own), true),
+            ],
         ));
         let (source, _dir) = import_object(obj);
         let info = &source.info;
         assert_eq!(info.voi_luts.len(), 1);
-        assert_eq!(info.voi_luts[0], crate::model::VoiLut { first: -2, bits: 8, data: vec![0, 64, 128, 255], explanation: "SOFT".into() });
-        assert_eq!(info.frame_metadata.iter().map(|frame| frame.voi_lut).collect::<Vec<_>>(), [Some(0), Some(0), None]);
+        assert_eq!(
+            info.voi_luts[0],
+            crate::model::VoiLut {
+                first: -2,
+                bits: 8,
+                data: vec![0, 64, 128, 255],
+                explanation: "SOFT".into()
+            }
+        );
+        assert_eq!(
+            info.frame_metadata
+                .iter()
+                .map(|frame| frame.voi_lut)
+                .collect::<Vec<_>>(),
+            [Some(0), Some(0), None]
+        );
         assert_eq!(info.frame_metadata[2].window_center, Some(40.));
         assert!(!info.window_from_pixels);
     }
 
     #[test]
     fn voi_window_spans_where_the_table_rises() {
-        let ramp = |data: Vec<u16>| crate::model::VoiLut { first: 1000, bits: 12, data, explanation: String::new() };
+        let ramp = |data: Vec<u16>| crate::model::VoiLut {
+            first: 1000,
+            bits: 12,
+            data,
+            explanation: String::new(),
+        };
         // Flat at both ends, rising over inputs 1010..1019.
         let mut data = vec![0u16; 10];
         data.extend((1..=10).map(|n| n * 400));
         data.extend([4000; 10]);
         assert_eq!(crate::modality_lut::voi_window(&ramp(data)), (1015., 10.));
         // A falling or flat table falls back to its whole input range.
-        assert_eq!(crate::modality_lut::voi_window(&ramp(vec![4095, 0])), (1001., 2.));
-        assert_eq!(crate::modality_lut::voi_window(&ramp(vec![7; 4])), (1002., 4.));
+        assert_eq!(
+            crate::modality_lut::voi_window(&ramp(vec![4095, 0])),
+            (1001., 2.)
+        );
+        assert_eq!(
+            crate::modality_lut::voi_window(&ramp(vec![7; 4])),
+            (1002., 4.)
+        );
         // A step is a one-unit window at the step.
-        assert_eq!(crate::modality_lut::voi_window(&ramp(vec![0, 0, 4095, 4095])), (1002.5, 1.));
+        assert_eq!(
+            crate::modality_lut::voi_window(&ramp(vec![0, 0, 4095, 4095])),
+            (1002.5, 1.)
+        );
     }
-
 
     #[test]
     fn a_stored_window_keeps_its_voi_lut_function() {
@@ -5935,7 +6851,10 @@ mod tests {
         obj.put_str(Tag(0x0028, 0x1056), VR::CS, "SIGMOID");
         let (source, _dir) = import_object(obj);
         assert_eq!(source.info.frame_metadata[0].voi_function, Some("SIGMOID"));
-        assert_eq!(serde_json::to_value(&source.info.frame_metadata[0]).unwrap()["voiFunction"], "SIGMOID");
+        assert_eq!(
+            serde_json::to_value(&source.info.frame_metadata[0]).unwrap()["voiFunction"],
+            "SIGMOID"
+        );
         // Per frame in Frame VOI LUT functional groups: LINEAR_EXACT on one frame, LINEAR on the other,
         // and none without a window.
         let mut obj = metadata_object(3);
@@ -5947,17 +6866,32 @@ mod tests {
             }
             frame_voi.put_str(Tag(0x0028, 0x1056), VR::CS, function);
             InMemDicomObject::from_element_iter([
-                sequence(Tag(0x0020, 0x9113), vec![InMemDicomObject::from_element_iter([ds(Tag(0x0020, 0x0032), z)])]),
+                sequence(
+                    Tag(0x0020, 0x9113),
+                    vec![InMemDicomObject::from_element_iter([ds(
+                        Tag(0x0020, 0x0032),
+                        z,
+                    )])],
+                ),
                 sequence(Tag(0x0028, 0x9132), vec![frame_voi]),
             ])
         };
         obj.put(sequence(
             Tag(0x5200, 0x9230),
-            vec![group("0\\0\\0", "LINEAR_EXACT", true), group("0\\0\\2", "LINEAR", true), group("0\\0\\4", "SIGMOID", false)],
+            vec![
+                group("0\\0\\0", "LINEAR_EXACT", true),
+                group("0\\0\\2", "LINEAR", true),
+                group("0\\0\\4", "SIGMOID", false),
+            ],
         ));
         let (source, _dir) = import_object(obj);
         assert_eq!(
-            source.info.frame_metadata.iter().map(|frame| frame.voi_function).collect::<Vec<_>>(),
+            source
+                .info
+                .frame_metadata
+                .iter()
+                .map(|frame| frame.voi_function)
+                .collect::<Vec<_>>(),
             [Some("LINEAR_EXACT"), None, None]
         );
     }
@@ -5973,10 +6907,18 @@ mod tests {
 
     #[test]
     fn a_localizer_facing_three_ways_stays_one_series_in_the_scanners_order() {
-        let temp = write_slices(vec![facing(1, SAGITTAL, 0.), facing(2, CORONAL, 0.), facing(3, AXIAL, 0.)]);
+        let temp = write_slices(vec![
+            facing(1, SAGITTAL, 0.),
+            facing(2, CORONAL, 0.),
+            facing(3, AXIAL, 0.),
+        ]);
         let imported = import_dir(&temp);
         assert_eq!(imported.sources.len(), 1);
-        let numbers: Vec<_> = imported.sources[0].frames.iter().map(|f| f.instance_number).collect();
+        let numbers: Vec<_> = imported.sources[0]
+            .frames
+            .iter()
+            .map(|f| f.instance_number)
+            .collect();
         assert_eq!(numbers, [1, 2, 3]);
     }
 
@@ -6009,15 +6951,36 @@ mod tests {
         crate::pictures::testing::serve();
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         let grey = vec![128; width as usize * height as usize * 3];
-        fs::write(path, crate::pictures::testing::picture(crate::pictures::testing::PNG, width, height, &grey)).unwrap();
+        fs::write(
+            path,
+            crate::pictures::testing::picture(crate::pictures::testing::PNG, width, height, &grey),
+        )
+        .unwrap();
     }
     fn image_series(imported: &Imported) -> Vec<(String, String, i32, Vec<String>)> {
-        let mut series: Vec<_> = imported.sources.iter().filter(|s| s.frames[0].ordinary_image).map(|s| (
-            s.info.patient_name.clone(),
-            s.info.description.clone(),
-            s.info.series_number,
-            s.frames.iter().map(|f| f.source.path.file_name().unwrap().to_string_lossy().into_owned()).collect::<Vec<_>>(),
-        )).collect();
+        let mut series: Vec<_> = imported
+            .sources
+            .iter()
+            .filter(|s| s.frames[0].ordinary_image)
+            .map(|s| {
+                (
+                    s.info.patient_name.clone(),
+                    s.info.description.clone(),
+                    s.info.series_number,
+                    s.frames
+                        .iter()
+                        .map(|f| {
+                            f.source
+                                .path
+                                .file_name()
+                                .unwrap()
+                                .to_string_lossy()
+                                .into_owned()
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect();
         series.sort_by_key(|s| s.2);
         series
     }
@@ -6034,20 +6997,45 @@ mod tests {
         picture(&root.join("kapak.png"), 8, 8);
         let imported = import(&[root.to_string_lossy().into_owned()]).unwrap();
         let series = image_series(&imported);
-        let named = |name: &str, number, files: &[&str]| ("Ahmet Yilmaz".to_string(), name.to_string(), number, files.iter().map(|f| f.to_string()).collect::<Vec<_>>());
-        assert_eq!(series, [
-            named("Ahmet Yilmaz", 1, &["kapak.png"]),
-            named("Seri 2 (8×8)", 2, &["a.png"]),
-            named("Seri 2 (16×16)", 3, &["b.png"]),
-            named("Seri 10", 4, &["img1.png", "img2.png", "img10.png"]),
-        ]);
+        let named = |name: &str, number, files: &[&str]| {
+            (
+                "Ahmet Yilmaz".to_string(),
+                name.to_string(),
+                number,
+                files.iter().map(|f| f.to_string()).collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            series,
+            [
+                named("Ahmet Yilmaz", 1, &["kapak.png"]),
+                named("Seri 2 (8×8)", 2, &["a.png"]),
+                named("Seri 2 (16×16)", 3, &["b.png"]),
+                named("Seri 10", 4, &["img1.png", "img2.png", "img10.png"]),
+            ]
+        );
         // Each says once that it is a picture; no geometry warnings repeat it.
         for source in &imported.sources {
-            assert_eq!(source.info.warnings.iter().map(|w| w.code).collect::<Vec<_>>(), ["series.ordinaryImage"]);
-            assert_eq!(serde_json::to_value(&source.info.warnings[0]).unwrap()["params"]["format"], "PNG");
+            assert_eq!(
+                source
+                    .info
+                    .warnings
+                    .iter()
+                    .map(|w| w.code)
+                    .collect::<Vec<_>>(),
+                ["series.ordinaryImage"]
+            );
+            assert_eq!(
+                serde_json::to_value(&source.info.warnings[0]).unwrap()["params"]["format"],
+                "PNG"
+            );
         }
         // One study for the folder: the list shows one patient, not one per picture.
-        let studies: HashSet<_> = imported.sources.iter().map(|s| s.info.study_uid.clone()).collect();
+        let studies: HashSet<_> = imported
+            .sources
+            .iter()
+            .map(|s| s.info.study_uid.clone())
+            .collect();
         assert_eq!(studies.len(), 1);
         assert!(!studies.iter().next().unwrap().is_empty());
     }
@@ -6057,11 +7045,25 @@ mod tests {
         let temp = crate::test_dir::tempdir().unwrap();
         picture(&temp.path().join("Ayse").join("1.png"), 8, 8);
         picture(&temp.path().join("Mehmet").join("1.png"), 8, 8);
-        let both = import(&[temp.path().join("Ayse").to_string_lossy().into_owned(), temp.path().join("Mehmet").to_string_lossy().into_owned()]).unwrap();
-        let mut patients: Vec<_> = both.sources.iter().map(|s| s.info.patient_name.clone()).collect();
+        let both = import(&[
+            temp.path().join("Ayse").to_string_lossy().into_owned(),
+            temp.path().join("Mehmet").to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+        let mut patients: Vec<_> = both
+            .sources
+            .iter()
+            .map(|s| s.info.patient_name.clone())
+            .collect();
         patients.sort();
         assert_eq!(patients, ["Ayse", "Mehmet"]);
-        let loose = import(&[temp.path().join("Ayse").join("1.png").to_string_lossy().into_owned()]).unwrap();
+        let loose = import(&[temp
+            .path()
+            .join("Ayse")
+            .join("1.png")
+            .to_string_lossy()
+            .into_owned()])
+        .unwrap();
         assert_eq!(image_series(&loose)[0].0, "Ayse");
         assert_eq!(image_series(&loose)[0].1, "Ayse");
     }
@@ -6070,7 +7072,10 @@ mod tests {
     fn pictures_beside_dicom_are_a_viewers_own_and_are_not_series() {
         let temp = crate::test_dir::tempdir().unwrap();
         fs::create_dir(temp.path().join("DICOM")).unwrap();
-        write_metadata(classic_slice(1, 0.), &temp.path().join("DICOM").join("slice001.dcm"));
+        write_metadata(
+            classic_slice(1, 0.),
+            &temp.path().join("DICOM").join("slice001.dcm"),
+        );
         // A size no other test uses, to tell this icon apart among the pictures the tests' decoder has had.
         let icon = temp.path().join("viewer").join("icon.png");
         picture(&icon, 61, 67);
@@ -6079,7 +7084,12 @@ mod tests {
         assert!(!imported.sources[0].frames[0].ordinary_image);
         // Its size was never asked for: a DICOM import does not wait for the picture decoder.
         let bytes = fs::read(&icon).unwrap();
-        assert!(!crate::pictures::testing::decoded().lock().unwrap().contains(&bytes));
+        assert!(
+            !crate::pictures::testing::decoded()
+                .lock()
+                .unwrap()
+                .contains(&bytes)
+        );
     }
 
     #[test]
@@ -6089,15 +7099,24 @@ mod tests {
         let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
         crate::pictures::testing::serve();
         for name in ["Seri 1/2.png", "Seri 1/10.png"] {
-            let bytes = crate::pictures::testing::picture(crate::pictures::testing::PNG, 8, 8, &[90; 8 * 8 * 3]);
-            zip.start_file(name, zip::write::SimpleFileOptions::default()).unwrap();
+            let bytes = crate::pictures::testing::picture(
+                crate::pictures::testing::PNG,
+                8,
+                8,
+                &[90; 8 * 8 * 3],
+            );
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
             zip.write_all(&bytes).unwrap();
         }
         zip.finish().unwrap();
         let imported = import(&[file.to_string_lossy().into_owned()]).unwrap();
         let series = image_series(&imported);
         assert_eq!(series.len(), 1);
-        assert_eq!((series[0].0.as_str(), series[0].1.as_str()), ("Zeynep Kaya", "Seri 1"));
+        assert_eq!(
+            (series[0].0.as_str(), series[0].1.as_str()),
+            ("Zeynep Kaya", "Seri 1")
+        );
         assert_eq!(series[0].3, ["2.png", "10.png"]);
     }
 

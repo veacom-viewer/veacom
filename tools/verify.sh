@@ -31,6 +31,7 @@ run runtime pnpm run setup:runtime
 run core-build pnpm run build:core
 run core-tests cargo test --release --locked --manifest-path native/Cargo.toml
 run core-clippy cargo clippy --release --locked --all-targets --manifest-path native/Cargo.toml -- -D warnings
+run rust-format cargo fmt --all --check
 run open-work node tools/check-open-speed.cjs --output="$out/open-work"
 run unit pnpm test
 run web-build pnpm run build:web

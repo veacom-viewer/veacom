@@ -16,9 +16,15 @@ fn layout(size: usize) -> Option<Layout> {
 }
 
 unsafe fn allocate(size: usize, zeroed: bool) -> *mut u8 {
-    let Some(layout) = layout(size) else { return null_mut() };
+    let Some(layout) = layout(size) else {
+        return null_mut();
+    };
     unsafe {
-        let block = if zeroed { alloc_zeroed(layout) } else { alloc(layout) };
+        let block = if zeroed {
+            alloc_zeroed(layout)
+        } else {
+            alloc(layout)
+        };
         if block.is_null() {
             return null_mut();
         }
@@ -57,7 +63,9 @@ pub unsafe extern "C" fn realloc(pointer: *mut u8, size: usize) -> *mut u8 {
     if pointer.is_null() {
         return unsafe { malloc(size) };
     }
-    let Some(new_layout) = layout(size) else { return null_mut() };
+    let Some(new_layout) = layout(size) else {
+        return null_mut();
+    };
     unsafe {
         let block = pointer.sub(HEADER);
         let old = (block as *const usize).read();

@@ -38,7 +38,11 @@ const KEPT_PIECES: usize = 64;
 type Piece = (u32, u64, Rc<Vec<u8>>);
 
 fn piece_size(length: u64) -> u64 {
-    if length > LARGE_FILE { LARGE_PIECE } else { PIECE }
+    if length > LARGE_FILE {
+        LARGE_PIECE
+    } else {
+        PIECE
+    }
 }
 
 static NEXT: AtomicU32 = AtomicU32::new(1);
@@ -75,7 +79,9 @@ struct BlobSource {
 static SOURCES: Mutex<BTreeMap<PathBuf, Arc<BlobSource>>> = Mutex::new(BTreeMap::new());
 
 fn sources() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Arc<BlobSource>>> {
-    SOURCES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    SOURCES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: its first 64 KiB, if read already.
@@ -83,9 +89,16 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let length = blob.size() as u64;
     // Kept only when it is exactly the file's first piece.
-    let head = head.filter(|head| head.len() as u64 == length.min(piece_size(length))).map(Arc::new);
+    let head = head
+        .filter(|head| head.len() as u64 == length.min(piece_size(length)))
+        .map(Arc::new);
     BLOBS.with_borrow_mut(|blobs| blobs.insert(id, blob));
-    let source = Arc::new(BlobSource { id, length, head: Mutex::new(head), whole: Mutex::new(None) });
+    let source = Arc::new(BlobSource {
+        id,
+        length,
+        head: Mutex::new(head),
+        whole: Mutex::new(None),
+    });
     memory_fs::add(path, source.clone());
     // Under the path the engine's series name it by (`.` and `..` resolved), so `retain` and `hold` find it.
     let key = memory_fs::canonicalize(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
@@ -98,7 +111,10 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) {
 /// reads go through the pieces kept below. Each file's head would otherwise stay for as long as its series is open.
 pub fn drop_heads() {
     for source in sources().values() {
-        *source.head.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *source
+            .head
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
@@ -107,7 +123,11 @@ pub fn drop_heads() {
 pub fn retain(keep: &HashSet<PathBuf>) {
     let gone: Vec<(PathBuf, u32)> = {
         let mut sources = sources();
-        let gone: Vec<_> = sources.iter().filter(|(path, _)| !keep.contains(*path)).map(|(path, source)| (path.clone(), source.id)).collect();
+        let gone: Vec<_> = sources
+            .iter()
+            .filter(|(path, _)| !keep.contains(*path))
+            .map(|(path, source)| (path.clone(), source.id))
+            .collect();
         for (path, _) in &gone {
             sources.remove(path);
         }
@@ -140,17 +160,26 @@ pub fn clear() {
 /// Reads these files whole into shared memory, so that any thread can read them; files that are not the page's (ZIP
 /// entries, already in memory) need nothing. Holds nothing and returns false when they come to more than `limit`
 /// bytes or memory runs short. Called on the thread that has the Blobs; `release` gives the memory back.
-#[cfg_attr(not(feature = "threads"), allow(dead_code, reason = "only the threaded build calls it"))]
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
 pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
     let wanted: Vec<Arc<BlobSource>> = {
         let sources = sources();
-        paths.iter().filter_map(|path| sources.get(*path).cloned()).collect()
+        paths
+            .iter()
+            .filter_map(|path| sources.get(*path).cloned())
+            .collect()
     };
     if wanted.iter().map(|source| source.length).sum::<u64>() > limit {
         return Ok(false);
     }
     for source in wanted {
-        let mut whole = source.whole.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut whole = source
+            .whole
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if whole.is_some() {
             continue;
         }
@@ -159,7 +188,11 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
             Ok(false)
         } else {
             bytes.resize(source.length as usize, 0);
-            if source.length > 0 { read_blob(source.id, 0, &mut bytes).map(|()| true) } else { Ok(true) }
+            if source.length > 0 {
+                read_blob(source.id, 0, &mut bytes).map(|()| true)
+            } else {
+                Ok(true)
+            }
         };
         if !matches!(read, Ok(true)) {
             drop(whole);
@@ -172,10 +205,16 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
 }
 
 /// Gives back the memory of every file held whole.
-#[cfg_attr(not(feature = "threads"), allow(dead_code, reason = "only the threaded build calls it"))]
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
 pub fn release() {
     for source in sources().values() {
-        *source.whole.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *source
+            .whole
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
     }
 }
 
@@ -192,13 +231,27 @@ fn js_error(error: wasm_bindgen::JsValue) -> io::Error {
 fn read_blob(id: u32, start: u64, output: &mut [u8]) -> io::Result<()> {
     let began = now();
     let part = BLOBS
-        .with_borrow(|blobs| blobs.get(&id).map(|blob| blob.slice_with_f64_and_f64(start as f64, (start + output.len() as u64) as f64)))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "this file is not available to this Worker"))?
+        .with_borrow(|blobs| {
+            blobs.get(&id).map(|blob| {
+                blob.slice_with_f64_and_f64(start as f64, (start + output.len() as u64) as f64)
+            })
+        })
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "this file is not available to this Worker",
+            )
+        })?
         .map_err(js_error)?;
-    let buffer = READER.with(|reader| reader.read_as_array_buffer(&part)).map_err(js_error)?;
+    let buffer = READER
+        .with(|reader| reader.read_as_array_buffer(&part))
+        .map_err(js_error)?;
     let bytes = js_sys::Uint8Array::new(&buffer);
     if bytes.length() as usize != output.len() {
-        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the file changed while it was read"));
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "the file changed while it was read",
+        ));
     }
     bytes.copy_to(output);
     STATS.with_borrow_mut(|stats| {
@@ -211,7 +264,12 @@ fn read_blob(id: u32, start: u64, output: &mut [u8]) -> io::Result<()> {
 
 impl BlobSource {
     fn piece(&self, index: u64) -> io::Result<Rc<Vec<u8>>> {
-        if let Some(found) = PIECES.with_borrow(|pieces| pieces.iter().find(|(id, n, _)| *id == self.id && *n == index).map(|(_, _, piece)| piece.clone())) {
+        if let Some(found) = PIECES.with_borrow(|pieces| {
+            pieces
+                .iter()
+                .find(|(id, n, _)| *id == self.id && *n == index)
+                .map(|(_, _, piece)| piece.clone())
+        }) {
             return Ok(found);
         }
         let size = piece_size(self.length);
@@ -234,7 +292,12 @@ impl Source for BlobSource {
         self.length
     }
     fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
-        if let Some(whole) = self.whole.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).as_ref() {
+        if let Some(whole) = self
+            .whole
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+        {
             let start = offset as usize;
             output.copy_from_slice(&whole[start..start + output.len()]);
             return Ok(());
@@ -243,7 +306,11 @@ impl Source for BlobSource {
         if output.len() as u64 >= size {
             return read_blob(self.id, offset, output);
         }
-        let head = self.head.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let head = self
+            .head
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         let mut done = 0;
         while done < output.len() {
             let position = offset + done as u64;
@@ -258,7 +325,10 @@ impl Source for BlobSource {
             let start = (position % size) as usize;
             let count = (output.len() - done).min(piece.len() - start);
             if count == 0 {
-                return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "read past the end of the file"));
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "read past the end of the file",
+                ));
             }
             output[done..done + count].copy_from_slice(&piece[start..start + count]);
             done += count;

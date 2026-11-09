@@ -1,19 +1,22 @@
 use crate::confidentiality::{self, Action};
 use crate::patient::{PatientKey, patient_key};
 use crate::source_file::SourceFile;
+use crate::vfs::{self as fs, OpenOptions};
 use anyhow::{Context, Result, ensure};
-use dicom_core::{DataElement, PrimitiveValue, Tag, VR, header::{HasLength, Header}};
+use dicom_core::{
+    DataElement, PrimitiveValue, Tag, VR,
+    header::{HasLength, Header},
+};
 use dicom_object::{DefaultDicomObject, InMemDicomObject, OpenFileOptions};
 use dicom_pixeldata::PixelDecoder;
 use serde::{Deserialize, Serialize};
-use crate::vfs::{self as fs, OpenOptions};
+use std::path::PathBuf;
 use std::{
     collections::{HashMap, HashSet},
     io::{Seek, SeekFrom, Write},
     path::Path,
     sync::Arc,
 };
-use std::path::PathBuf;
 
 #[path = "export_zip.rs"]
 mod export_zip;
@@ -56,9 +59,15 @@ impl ExportOptions {
     /// Stops the export between files when the engine shuts down or the caller cancels it; the failure paths then
     /// remove what this export wrote.
     pub fn check(&self) -> Result<()> {
-        ensure!(!crate::progress::is_stopping(), coded!("core.stopping", "Native core is shutting down"));
         ensure!(
-            !self.cancelled.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)),
+            !crate::progress::is_stopping(),
+            coded!("core.stopping", "Native core is shutting down")
+        );
+        ensure!(
+            !self
+                .cancelled
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)),
             coded!("export.cancelled", "Export cancelled; nothing was kept")
         );
         Ok(())
@@ -86,12 +95,18 @@ pub fn export_series(files: &[PathBuf], opts: &ExportOptions) -> Result<ExportRe
 }
 
 fn index_test_files(files: &[PathBuf]) -> Result<Vec<Arc<SourceFile>>> {
-    files.iter().map(|p| SourceFile::dicom(p).map(|(source, _, _)| source)).collect()
+    files
+        .iter()
+        .map(|p| SourceFile::dicom(p).map(|(source, _, _)| source))
+        .collect()
 }
 
 /// Writes each export to a new directory without replacing existing files.
 pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result<ExportResult> {
-    ensure!(!files.is_empty(), coded!("export.noSources", "The series has no source DICOM files"));
+    ensure!(
+        !files.is_empty(),
+        coded!("export.noSources", "The series has no source DICOM files")
+    );
     ensure!(
         !opts.directory.trim().is_empty(),
         coded!("export.chooseDirectory", "Choose an export directory")
@@ -102,7 +117,10 @@ pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result
         opts.check()?;
         let path = fs::canonicalize(&file.path)?;
         if let Some(previous) = seen.insert(path, file) {
-            ensure!(file.same_contents(previous), "Selected series refer to different versions of the same file. Reimport the study.");
+            ensure!(
+                file.same_contents(previous),
+                "Selected series refer to different versions of the same file. Reimport the study."
+            );
         } else {
             sources.push(file.clone());
         }
@@ -118,19 +136,31 @@ pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result
         if let Some(parent) = fs::canonicalize(&source.path)?.parent() {
             ensure!(
                 !destination.starts_with(parent),
-                coded!("export.insideSource", "Choose a destination outside the source DICOM directory")
+                coded!(
+                    "export.insideSource",
+                    "Choose a destination outside the source DICOM directory"
+                )
             );
         }
     }
     if opts.zip {
-        ensure!(!opts.dicomdir && !opts.root && !opts.decompress, "A ZIP export holds plain DICOM files only");
+        ensure!(
+            !opts.dicomdir && !opts.root && !opts.decompress,
+            "A ZIP export holds plain DICOM files only"
+        );
         return export_zip::write(&sources, opts, &destination);
     }
     if opts.root {
-        ensure!(opts.dicomdir, "Only media with a DICOMDIR is written at the destination's root");
+        ensure!(
+            opts.dicomdir,
+            "Only media with a DICOMDIR is written at the destination's root"
+        );
         ensure!(
             !fs::exists(&destination.join("DICOMDIR")) && !fs::exists(&destination.join("DICOM")),
-            coded!("export.rootOccupied", "The destination already has a DICOMDIR or a DICOM folder; nothing was overwritten")
+            coded!(
+                "export.rootOccupied",
+                "The destination already has a DICOMDIR or a DICOM folder; nothing was overwritten"
+            )
         );
         // On failure only what this export made there goes: its DICOM folder and DICOMDIR.
         return write_export(&sources, opts, &destination);
@@ -145,7 +175,11 @@ pub fn export_indexed(files: &[Arc<SourceFile>], opts: &ExportOptions) -> Result
     result
 }
 
-fn write_export(sources: &[Arc<SourceFile>], opts: &ExportOptions, output: &Path) -> Result<ExportResult> {
+fn write_export(
+    sources: &[Arc<SourceFile>],
+    opts: &ExportOptions,
+    output: &Path,
+) -> Result<ExportResult> {
     let image_dir = output.join("DICOM");
     // Made here, so it is this export's own: removed again if the export fails.
     fs::create_dir(&image_dir)?;
@@ -156,7 +190,12 @@ fn write_export(sources: &[Arc<SourceFile>], opts: &ExportOptions, output: &Path
     result
 }
 
-fn write_media(sources: &[Arc<SourceFile>], opts: &ExportOptions, output: &Path, image_dir: &Path) -> Result<ExportResult> {
+fn write_media(
+    sources: &[Arc<SourceFile>],
+    opts: &ExportOptions,
+    output: &Path,
+    image_dir: &Path,
+) -> Result<ExportResult> {
     let mut warnings = Vec::new();
     if opts.anonymize && opts.full {
         warnings.push(note!("export.fullCleanup", "Anonymised: identifiers, dates and times, age, weight, height, private tags, overlays and graphic annotations are removed. Pixels are retained: text burned into the image is not removed. Review exported files before sharing."));
@@ -180,7 +219,8 @@ fn write_media(sources: &[Arc<SourceFile>], opts: &ExportOptions, output: &Path,
         if opts.anonymize {
             clean_instance(&mut obj, opts, &mut identity, &mut warnings, &name)?;
         }
-        let decompress = opts.decompress && document_record_type(&value(&obj, Tag(0x0008, 0x0016))).is_none();
+        let decompress =
+            opts.decompress && document_record_type(&value(&obj, Tag(0x0008, 0x0016))).is_none();
         if decompress {
             decompress_instance(&mut obj)
                 .with_context(|| format!("Cannot decompress {}", source.path.display()))?;
@@ -207,20 +247,32 @@ fn write_media(sources: &[Arc<SourceFile>], opts: &ExportOptions, output: &Path,
                 InstanceRecord::from_object(&obj, format!("DICOM\\{name}"), &mut warnings)?;
             ensure!(
                 sop_instances.insert(record.sop_uid.clone()),
-                coded!("export.duplicateSop", "Duplicate SOPInstanceUID in different source files; media export cancelled")
+                coded!(
+                    "export.duplicateSop",
+                    "Duplicate SOPInstanceUID in different source files; media export cancelled"
+                )
             );
             key_bytes += record.keys.len() as u64;
-            ensure!(key_bytes <= crate::input_guard::MAX_META, "DICOMDIR exceeds the supported metadata size");
+            ensure!(
+                key_bytes <= crate::input_guard::MAX_META,
+                "DICOMDIR exceeds the supported metadata size"
+            );
             records.push(record);
         }
     }
     if opts.dicomdir {
         let bytes = build_dicomdir(&records)?;
         let path = output.join("DICOMDIR");
-        let mut file = OpenOptions::new().create_new(true).write(true).open(&path)?;
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&path)?;
         let written = file.write_all(&bytes).and_then(|_| file.flush());
         drop(file);
-        if let Err(error) = written.map_err(anyhow::Error::from).and_then(|_| verify_dicomdir(&path, &records)) {
+        if let Err(error) = written
+            .map_err(anyhow::Error::from)
+            .and_then(|_| verify_dicomdir(&path, &records))
+        {
             // Created a moment ago by this export: a half-written DICOMDIR does not stay.
             let _ = fs::remove_file(&path);
             return Err(error);
@@ -246,7 +298,13 @@ fn clean_instance(
     name: &str,
 ) -> Result<()> {
     if value(obj, Tag(0x0028, 0x0301)).eq_ignore_ascii_case("YES") {
-        ensure!(!opts.full, coded!("export.burnedReview", "This source declares burned-in text. Redact and review its pixels before a full cleanup export."));
+        ensure!(
+            !opts.full,
+            coded!(
+                "export.burnedReview",
+                "This source declares burned-in text. Redact and review its pixels before a full cleanup export."
+            )
+        );
         warnings.push(note!(
             "export.burnedIn",
             "{name}: source declares burned-in annotation; pixel text was not removed",
@@ -255,13 +313,28 @@ fn clean_instance(
     }
     ensure!(
         !uses_private_pet_calibration(obj),
-        coded!("export.privatePetCalibration", "Selected-identifier cleanup cannot preserve this instance's private PET SUV calibration. Export without metadata cleanup or use a validated de-identification workflow.")
+        coded!(
+            "export.privatePetCalibration",
+            "Selected-identifier cleanup cannot preserve this instance's private PET SUV calibration. Export without metadata cleanup or use a validated de-identification workflow."
+        )
     );
-    ensure!(!(opts.full && document_record_type(&value(obj, Tag(0x0008, 0x0016))).is_some()),
-        coded!("export.documentCleanup", "Full cleanup cannot remove identifying text from reports or presentation states. Export the originals or use a validated document de-identification workflow."));
+    ensure!(
+        !(opts.full && document_record_type(&value(obj, Tag(0x0008, 0x0016))).is_some()),
+        coded!(
+            "export.documentCleanup",
+            "Full cleanup cannot remove identifying text from reports or presentation states. Export the originals or use a validated document de-identification workflow."
+        )
+    );
     if opts.full {
-        ensure!(!obj.tags().any(|tag| (0x6000..=0x60ff).contains(&tag.0) && tag.1 == 0x0102 && obj.get(Tag(tag.0, 0x3000)).is_none()),
-            coded!("export.embeddedOverlay", "This source may contain an overlay embedded in its pixels. Review and redact the pixels before a full cleanup export."));
+        ensure!(
+            !obj.tags().any(|tag| (0x6000..=0x60ff).contains(&tag.0)
+                && tag.1 == 0x0102
+                && obj.get(Tag(tag.0, 0x3000)).is_none()),
+            coded!(
+                "export.embeddedOverlay",
+                "This source may contain an overlay embedded in its pixels. Review and redact the pixels before a full cleanup export."
+            )
+        );
     }
     identity.anonymize(obj, opts.full);
     if opts.full {
@@ -270,7 +343,10 @@ fn clean_instance(
     let sop_uid = value(obj, Tag(0x0008, 0x0018));
     ensure!(
         !sop_uid.is_empty(),
-        coded!("export.noSopUid", "Cannot anonymize an instance without SOPInstanceUID")
+        coded!(
+            "export.noSopUid",
+            "Cannot anonymize an instance without SOPInstanceUID"
+        )
     );
     obj.update_meta(|meta| {
         meta.media_storage_sop_instance_uid = sop_uid;
@@ -300,7 +376,10 @@ fn decompress_instance(obj: &mut DefaultDicomObject) -> Result<()> {
         let bits = attr(Tag(0x0028, 0x0100), 0)?;
         ensure!(
             matches!(bits, 8 | 16),
-            coded!("export.decompressBits", "Decompression export supports 8-bit or 16-bit stored samples")
+            coded!(
+                "export.decompressBits",
+                "Decompression export supports 8-bit or 16-bit stored samples"
+            )
         );
         let mut expected = 1u64;
         for value in [
@@ -369,9 +448,21 @@ fn reorder_big_endian_pixels(obj: &mut DefaultDicomObject) -> Result<()> {
     let Some(PrimitiveValue::U8(bytes)) = element.value().primitive() else {
         return Ok(());
     };
-    ensure!(bytes.len() % 2 == 0, "OW pixel data has an odd number of bytes");
-    let words = bytes.as_chunks::<2>().0.iter().flat_map(|w| [w[1], w[0]]).collect();
-    obj.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW, PrimitiveValue::U8(words)));
+    ensure!(
+        bytes.len() % 2 == 0,
+        "OW pixel data has an odd number of bytes"
+    );
+    let words = bytes
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .flat_map(|w| [w[1], w[0]])
+        .collect();
+    obj.put(DataElement::new(
+        Tag(0x7fe0, 0x0010),
+        VR::OW,
+        PrimitiveValue::U8(words),
+    ));
     Ok(())
 }
 
@@ -448,7 +539,14 @@ impl IdentityMap {
                 }
                 continue;
             }
-            if remap_uid(tag) || (full && vr == VR::UI && matches!(confidentiality::action(tag), Some(Action::Uid | Action::Dummy))) {
+            if remap_uid(tag)
+                || (full
+                    && vr == VR::UI
+                    && matches!(
+                        confidentiality::action(tag),
+                        Some(Action::Uid | Action::Dummy)
+                    ))
+            {
                 let original = value(obj, tag);
                 if !original.is_empty() {
                     let mapped: Vec<_> = original
@@ -485,7 +583,11 @@ fn remap_uid(tag: Tag) -> bool {
 /// The full anonymisation's further cleanup, after `IdentityMap::anonymize`.
 fn full_cleanup(obj: &mut InMemDicomObject) -> Result<()> {
     clean_attributes(obj, true)?;
-    obj.put_str(Tag(0x0012, 0x0063), VR::LO, "VEAcom full metadata cleanup; pixels retained");
+    obj.put_str(
+        Tag(0x0012, 0x0063),
+        VR::LO,
+        "VEAcom full metadata cleanup; pixels retained",
+    );
     Ok(())
 }
 
@@ -493,7 +595,9 @@ fn clean_attributes(obj: &mut InMemDicomObject, root: bool) -> Result<()> {
     let tags: Vec<_> = obj.tags().collect();
     for tag in tags {
         // The root patient name and ID were already replaced with this export's pseudonym.
-        if root && matches!(tag, Tag(0x0010, 0x0010 | 0x0020)) { continue; }
+        if root && matches!(tag, Tag(0x0010, 0x0010 | 0x0020)) {
+            continue;
+        }
         let vr = obj.element(tag)?.vr();
         let action = confidentiality::action(tag);
         if action == Some(Action::Remove) || tag == Tag(0x0070, 0x0001) {
@@ -501,29 +605,54 @@ fn clean_attributes(obj: &mut InMemDicomObject, root: bool) -> Result<()> {
             continue;
         }
         if let Some(value) = match vr {
-            VR::DA => Some("19000101"), VR::TM => Some("000000"), VR::DT => Some("19000101000000"), _ => None,
+            VR::DA => Some("19000101"),
+            VR::TM => Some("000000"),
+            VR::DT => Some("19000101000000"),
+            _ => None,
         } {
             obj.put_str(tag, vr, value);
             continue;
         }
         match action {
-            Some(Action::Uid) if vr != VR::UI => anyhow::bail!(coded!("export.unsupportedCleanup", "Full cleanup cannot safely replace DICOM attribute {tag}.", tag = tag.to_string())),
-            Some(Action::Empty) => { obj.put(DataElement::empty(tag, vr)); }
+            Some(Action::Uid) if vr != VR::UI => anyhow::bail!(coded!(
+                "export.unsupportedCleanup",
+                "Full cleanup cannot safely replace DICOM attribute {tag}.",
+                tag = tag.to_string()
+            )),
+            Some(Action::Empty) => {
+                obj.put(DataElement::empty(tag, vr));
+            }
             Some(Action::Dummy) if vr != VR::UI => {
                 let dummy = match vr {
-                    VR::AE | VR::CS | VR::LO | VR::LT | VR::PN | VR::SH | VR::ST | VR::UC | VR::UT => "REMOVED",
+                    VR::AE
+                    | VR::CS
+                    | VR::LO
+                    | VR::LT
+                    | VR::PN
+                    | VR::SH
+                    | VR::ST
+                    | VR::UC
+                    | VR::UT => "REMOVED",
                     VR::UR => "https://example.invalid",
                     VR::IS | VR::DS => "0",
-                    _ => anyhow::bail!(coded!("export.unsupportedCleanup", "Full cleanup cannot safely replace DICOM attribute {tag}.", tag = tag.to_string())),
+                    _ => anyhow::bail!(coded!(
+                        "export.unsupportedCleanup",
+                        "Full cleanup cannot safely replace DICOM attribute {tag}.",
+                        tag = tag.to_string()
+                    )),
                 };
                 obj.put_str(tag, vr, dummy);
             }
-            None if matches!(vr, VR::ST | VR::LT | VR::UT | VR::UC | VR::UN) => { obj.put(DataElement::empty(tag, vr)); }
+            None if matches!(vr, VR::ST | VR::LT | VR::UT | VR::UC | VR::UN) => {
+                obj.put(DataElement::empty(tag, vr));
+            }
             _ if vr == VR::SQ => {
                 let mut result = Ok(());
                 obj.update_value(tag, |value| {
                     if let Some(items) = value.items_mut() {
-                        result = items.iter_mut().try_for_each(|item| clean_attributes(item, false));
+                        result = items
+                            .iter_mut()
+                            .try_for_each(|item| clean_attributes(item, false));
                     }
                 });
                 result?;
@@ -634,7 +763,9 @@ pub fn document_record_type(class: &str) -> Option<&'static str> {
         Some("KEY OBJECT DOC")
     } else if class.starts_with("1.2.840.10008.5.1.4.1.1.88.") {
         Some("SR DOCUMENT")
-    } else if class.starts_with("1.2.840.10008.5.1.4.1.1.11.") || class == dicom_dictionary_std::uids::BASIC_STRUCTURED_DISPLAY_STORAGE {
+    } else if class.starts_with("1.2.840.10008.5.1.4.1.1.11.")
+        || class == dicom_dictionary_std::uids::BASIC_STRUCTURED_DISPLAY_STORAGE
+    {
         Some("PRESENTATION")
     } else {
         None
@@ -643,49 +774,89 @@ pub fn document_record_type(class: &str) -> Option<&'static str> {
 
 /// Encode only the leaf record keys. Sequence items keep their DICOM value types.
 fn directory_keys(obj: &DefaultDicomObject, kind: &str, number: String) -> Result<Vec<u8>> {
+    use dicom_core::value::DataSetSequence;
     use dicom_dictionary_std::tags::*;
     use dicom_encoding::text::SpecificCharacterSet;
-    use dicom_core::value::DataSetSequence;
     use dicom_encoding::transfer_syntax::TransferSyntaxIndex;
     use dicom_transfer_syntax_registry::TransferSyntaxRegistry;
 
     let mut keys = InMemDicomObject::new_empty();
     keys.put(DataElement::new(INSTANCE_NUMBER, VR::IS, number));
     let required = if kind == "PRESENTATION" {
-        &[PRESENTATION_CREATION_DATE, PRESENTATION_CREATION_TIME, CONTENT_LABEL][..]
+        &[
+            PRESENTATION_CREATION_DATE,
+            PRESENTATION_CREATION_TIME,
+            CONTENT_LABEL,
+        ][..]
     } else if kind == "SR DOCUMENT" {
-        &[CONTENT_DATE, CONTENT_TIME, COMPLETION_FLAG, VERIFICATION_FLAG, CONCEPT_NAME_CODE_SEQUENCE][..]
+        &[
+            CONTENT_DATE,
+            CONTENT_TIME,
+            COMPLETION_FLAG,
+            VERIFICATION_FLAG,
+            CONCEPT_NAME_CODE_SEQUENCE,
+        ][..]
     } else if kind == "KEY OBJECT DOC" {
         &[CONTENT_DATE, CONTENT_TIME, CONCEPT_NAME_CODE_SEQUENCE][..]
-    } else { &[][..] };
+    } else {
+        &[][..]
+    };
     for &tag in required {
-        let element = obj.get(tag).filter(|e| !e.is_empty())
+        let element = obj
+            .get(tag)
+            .filter(|e| !e.is_empty())
             .with_context(|| format!("DICOMDIR {kind} requires {tag}"))?;
         keys.put(element.clone());
     }
     if kind == "PRESENTATION" {
-        for (tag, vr) in [(CONTENT_DESCRIPTION, VR::LO), (CONTENT_CREATOR_NAME, VR::PN)] {
+        for (tag, vr) in [
+            (CONTENT_DESCRIPTION, VR::LO),
+            (CONTENT_CREATOR_NAME, VR::PN),
+        ] {
             keys.put(DataElement::new(tag, vr, value(obj, tag)));
         }
-        for tag in [REFERENCED_SERIES_SEQUENCE, BLENDING_SEQUENCE, ALTERNATE_CONTENT_DESCRIPTION_SEQUENCE, CONTENT_CREATOR_IDENTIFICATION_CODE_SEQUENCE] {
-            if let Some(element) = obj.get(tag) { keys.put(element.clone()); }
+        for tag in [
+            REFERENCED_SERIES_SEQUENCE,
+            BLENDING_SEQUENCE,
+            ALTERNATE_CONTENT_DESCRIPTION_SEQUENCE,
+            CONTENT_CREATOR_IDENTIFICATION_CODE_SEQUENCE,
+        ] {
+            if let Some(element) = obj.get(tag) {
+                keys.put(element.clone());
+            }
         }
     } else if matches!(kind, "SR DOCUMENT" | "KEY OBJECT DOC") {
         if let Some(items) = obj.get(CONTENT_SEQUENCE).and_then(|e| e.value().items()) {
-            let modifiers: Vec<_> = items.iter().filter(|i| value(i, RELATIONSHIP_TYPE) == "HAS CONCEPT MOD").cloned().collect();
+            let modifiers: Vec<_> = items
+                .iter()
+                .filter(|i| value(i, RELATIONSHIP_TYPE) == "HAS CONCEPT MOD")
+                .cloned()
+                .collect();
             if !modifiers.is_empty() {
-                keys.put(DataElement::new(CONTENT_SEQUENCE, VR::SQ, DataSetSequence::new(modifiers, dicom_core::Length::UNDEFINED)));
+                keys.put(DataElement::new(
+                    CONTENT_SEQUENCE,
+                    VR::SQ,
+                    DataSetSequence::new(modifiers, dicom_core::Length::UNDEFINED),
+                ));
             }
         }
         if kind == "SR DOCUMENT" && value(obj, VERIFICATION_FLAG) == "VERIFIED" {
-            let date = obj.get(VERIFYING_OBSERVER_SEQUENCE).and_then(|e| e.value().items())
-                .into_iter().flatten().map(|i| value(i, VERIFICATION_DATE_TIME)).filter(|s| !s.is_empty()).max()
+            let date = obj
+                .get(VERIFYING_OBSERVER_SEQUENCE)
+                .and_then(|e| e.value().items())
+                .into_iter()
+                .flatten()
+                .map(|i| value(i, VERIFICATION_DATE_TIME))
+                .filter(|s| !s.is_empty())
+                .max()
                 .context("Verified SR has no verification date and time")?;
             keys.put(DataElement::new(VERIFICATION_DATE_TIME, VR::DT, date));
         }
     }
     let mut bytes = Vec::new();
-    let ts = TransferSyntaxRegistry.get(dicom_dictionary_std::uids::EXPLICIT_VR_LITTLE_ENDIAN).unwrap();
+    let ts = TransferSyntaxRegistry
+        .get(dicom_dictionary_std::uids::EXPLICIT_VR_LITTLE_ENDIAN)
+        .unwrap();
     keys.write_dataset_with_ts_cs(&mut bytes, ts, SpecificCharacterSet::ISO_IR_192)?;
     Ok(bytes)
 }
@@ -718,11 +889,27 @@ impl InstanceRecord {
     ) -> Result<Self> {
         let class = value(obj, Tag(0x0008, 0x0016));
         let kind = document_record_type(&class).unwrap_or("IMAGE");
-        ensure!(kind != "IMAGE" || [Tag(0x7fe0, 0x0010), Tag(0x7fe0, 0x0008), Tag(0x7fe0, 0x0009)]
-            .iter().any(|&tag| obj.get(tag).is_some()), "Unsupported DICOMDIR SOP Class {class}");
+        ensure!(
+            kind != "IMAGE"
+                || [
+                    Tag(0x7fe0, 0x0010),
+                    Tag(0x7fe0, 0x0008),
+                    Tag(0x7fe0, 0x0009)
+                ]
+                .iter()
+                .any(|&tag| obj.get(tag).is_some()),
+            "Unsupported DICOMDIR SOP Class {class}"
+        );
         let required = |tag: Tag, name: &str| -> Result<String> {
             let v = value(obj, tag);
-            ensure!(!v.is_empty(), coded!("export.dicomdirRequires", "DICOMDIR requires {name}", name = name.to_string()));
+            ensure!(
+                !v.is_empty(),
+                coded!(
+                    "export.dicomdirRequires",
+                    "DICOMDIR requires {name}",
+                    name = name.to_string()
+                )
+            );
             Ok(v)
         };
         let mut fallback = |tag, default: &str, label: &str| {
@@ -747,7 +934,11 @@ impl InstanceRecord {
             series_number: fallback(Tag(0x0020, 0x0011), "1", "SeriesNumber"),
             modality: required(Tag(0x0008, 0x0060), "Modality")?,
             kind,
-            keys: directory_keys(obj, kind, fallback(Tag(0x0020, 0x0013), "1", "InstanceNumber"))?,
+            keys: directory_keys(
+                obj,
+                kind,
+                fallback(Tag(0x0020, 0x0013), "1", "InstanceNumber"),
+            )?,
             sop_uid: required(Tag(0x0008, 0x0018), "SOPInstanceUID")?,
             sop_class: required(Tag(0x0008, 0x0016), "SOPClassUID")?,
             transfer_syntax: obj.meta().transfer_syntax().to_string(),
@@ -900,7 +1091,10 @@ fn build_dicomdir(instances: &[InstanceRecord]) -> Result<Vec<u8>> {
             .checked_add(8 + node.encode(0, 0)?.len() + node.keys.len())
             .context("DICOMDIR size overflow")?;
     }
-    ensure!((cursor as u64) <= crate::input_guard::MAX_META, "DICOMDIR exceeds the supported metadata size");
+    ensure!(
+        (cursor as u64) <= crate::input_guard::MAX_META,
+        "DICOMDIR exceeds the supported metadata size"
+    );
     let mut siblings = vec![None; nodes.len()];
     for children in std::iter::once(&roots).chain(nodes.iter().map(|n| &n.children)) {
         for pair in children.windows(2) {
@@ -938,19 +1132,32 @@ fn verify_dicomdir(path: &Path, records: &[InstanceRecord]) -> Result<()> {
     use dicom_dictionary_std::tags::*;
     let (_, file) = crate::input_guard::open_metadata_checked(path)?;
     let index = OpenFileOptions::new().from_reader(file)?;
-    let items = index.element(DIRECTORY_RECORD_SEQUENCE)?.value().items().context("Missing directory records")?;
+    let items = index
+        .element(DIRECTORY_RECORD_SEQUENCE)?
+        .value()
+        .items()
+        .context("Missing directory records")?;
     let mut expected: HashMap<_, _> = records.iter().map(|r| (r.file_id.as_str(), r)).collect();
     for item in items {
-        let Some(id) = item.get(REFERENCED_FILE_ID) else { continue };
+        let Some(id) = item.get(REFERENCED_FILE_ID) else {
+            continue;
+        };
         let id = id.to_str()?;
-        let record = expected.remove(id.trim_end()).context("Unexpected file ID in saved DICOMDIR")?;
-        ensure!(value(item, DIRECTORY_RECORD_TYPE) == record.kind
-            && value(item, REFERENCED_SOP_CLASS_UID_IN_FILE) == record.sop_class
-            && value(item, REFERENCED_SOP_INSTANCE_UID_IN_FILE) == record.sop_uid
-            && value(item, REFERENCED_TRANSFER_SYNTAX_UID_IN_FILE) == record.transfer_syntax,
-            "Saved DICOMDIR references a different instance");
+        let record = expected
+            .remove(id.trim_end())
+            .context("Unexpected file ID in saved DICOMDIR")?;
+        ensure!(
+            value(item, DIRECTORY_RECORD_TYPE) == record.kind
+                && value(item, REFERENCED_SOP_CLASS_UID_IN_FILE) == record.sop_class
+                && value(item, REFERENCED_SOP_INSTANCE_UID_IN_FILE) == record.sop_uid
+                && value(item, REFERENCED_TRANSFER_SYNTAX_UID_IN_FILE) == record.transfer_syntax,
+            "Saved DICOMDIR references a different instance"
+        );
     }
-    ensure!(expected.is_empty(), "Missing file references in saved DICOMDIR");
+    ensure!(
+        expected.is_empty(),
+        "Missing file references in saved DICOMDIR"
+    );
     Ok(())
 }
 
@@ -979,9 +1186,9 @@ fn element(bytes: &mut Vec<u8>, tag: Tag, vr: &str, value: &[u8]) -> Result<()> 
 mod tests {
     use super::*;
     // The tests read and write real files on the desktop's own file system.
-    use std::fs;
-    use dicom_object::open_file;
     use dicom_core::{DataElement, PrimitiveValue};
+    use dicom_object::open_file;
+    use std::fs;
 
     #[test]
     fn full_cleanup_replaces_dates_and_drops_age_and_overlays() {
@@ -1004,7 +1211,9 @@ mod tests {
     #[test]
     fn full_cleanup_replaces_dates_inside_sequences() {
         use dicom_core::{Length, value::DataSetSequence};
-        let sequence = |tag, items| DataElement::new(tag, VR::SQ, DataSetSequence::new(items, Length::UNDEFINED));
+        let sequence = |tag, items| {
+            DataElement::new(tag, VR::SQ, DataSetSequence::new(items, Length::UNDEFINED))
+        };
         let mut code = InMemDicomObject::new_empty();
         code.put_str(Tag(0x0008, 0x0100), VR::SH, "C-B1031");
         code.put_str(Tag(0x0040, 0xA121), VR::DA, "20241028");
@@ -1023,7 +1232,11 @@ mod tests {
         assert!(radiopharm.get(Tag(0x0018, 0x1078)).is_none());
         assert_eq!(value(radiopharm, Tag(0x0018, 0x1074)), "250000000");
         assert!(radiopharm.get(Tag(0x0010, 0x1030)).is_none());
-        let code = &radiopharm.get(Tag(0x0054, 0x0304)).unwrap().items().unwrap()[0];
+        let code = &radiopharm
+            .get(Tag(0x0054, 0x0304))
+            .unwrap()
+            .items()
+            .unwrap()[0];
         assert_eq!(value(code, Tag(0x0040, 0xA121)), "19000101");
         assert_eq!(value(code, Tag(0x0008, 0x0100)), "C-B1031");
         assert_eq!(value(&obj, Tag(0x0008, 0x0020)), "19000101");
@@ -1084,21 +1297,36 @@ mod tests {
         let dir = crate::test_dir::tempdir().unwrap();
         for (pixels, expected) in [
             // 0x01020304 and 0xaabbccdd as read from big-endian OW: low word first (PS3.5 8.2).
-            (PrimitiveValue::U16(vec![0x0304, 0x0102, 0xccdd, 0xaabb].into()), [4, 3, 2, 1, 0xdd, 0xcc, 0xbb, 0xaa]),
+            (
+                PrimitiveValue::U16(vec![0x0304, 0x0102, 0xccdd, 0xaabb].into()),
+                [4, 3, 2, 1, 0xdd, 0xcc, 0xbb, 0xaa],
+            ),
             // The same cells if the parser kept the file's raw bytes.
-            (PrimitiveValue::U8(vec![3, 4, 1, 2, 0xcc, 0xdd, 0xaa, 0xbb].into()), [4, 3, 2, 1, 0xdd, 0xcc, 0xbb, 0xaa]),
+            (
+                PrimitiveValue::U8(vec![3, 4, 1, 2, 0xcc, 0xdd, 0xaa, 0xbb].into()),
+                [4, 3, 2, 1, 0xdd, 0xcc, 0xbb, 0xaa],
+            ),
         ] {
             let mut obj = InMemDicomObject::new_empty();
-            obj.put(DataElement::new(Tag(0x0028, 0x0100), VR::US, PrimitiveValue::from(32_u16)));
+            obj.put(DataElement::new(
+                Tag(0x0028, 0x0100),
+                VR::US,
+                PrimitiveValue::from(32_u16),
+            ));
             obj.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW, pixels));
             let mut file = obj
-                .with_meta(FileMetaTableBuilder::new()
-                    .transfer_syntax("1.2.840.10008.1.2.2")
-                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.7")
-                    .media_storage_sop_instance_uid("2.25.1"))
+                .with_meta(
+                    FileMetaTableBuilder::new()
+                        .transfer_syntax("1.2.840.10008.1.2.2")
+                        .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.7")
+                        .media_storage_sop_instance_uid("2.25.1"),
+                )
                 .unwrap();
             decompress_instance(&mut file).unwrap();
-            assert_eq!(file.meta().transfer_syntax().trim_end_matches('\0'), "1.2.840.10008.1.2.1");
+            assert_eq!(
+                file.meta().transfer_syntax().trim_end_matches('\0'),
+                "1.2.840.10008.1.2.1"
+            );
             let path = dir.path().join("le.dcm");
             file.write_to_file(&path).unwrap();
             let bytes = fs::read(&path).unwrap();
@@ -1108,9 +1336,18 @@ mod tests {
 
     #[test]
     fn reported_folders_drop_the_windows_verbatim_prefix() {
-        assert_eq!(reported(Path::new(r"\\?\C:\Users\a\export")), r"C:\Users\a\export");
-        assert_eq!(reported(Path::new(r"\\?\UNC\server\share\export")), r"\\server\share\export");
-        assert_eq!(reported(Path::new(r"\\?\Volume{1}\export")), r"\\?\Volume{1}\export");
+        assert_eq!(
+            reported(Path::new(r"\\?\C:\Users\a\export")),
+            r"C:\Users\a\export"
+        );
+        assert_eq!(
+            reported(Path::new(r"\\?\UNC\server\share\export")),
+            r"\\server\share\export"
+        );
+        assert_eq!(
+            reported(Path::new(r"\\?\Volume{1}\export")),
+            r"\\?\Volume{1}\export"
+        );
         assert_eq!(reported(Path::new("/tmp/export")), "/tmp/export");
     }
 
@@ -1121,7 +1358,9 @@ mod tests {
         fs::create_dir(&source_dir).unwrap();
         let source = source_dir.join("one.dcm");
         fixture(&source, "2.25.101");
-        let opts = ExportOptions { operation: None, cancelled: None,
+        let opts = ExportOptions {
+            operation: None,
+            cancelled: None,
             directory: dir.path().join("exports").to_string_lossy().into_owned(),
             anonymize: false,
             dicomdir: true,
@@ -1143,7 +1382,9 @@ mod tests {
         assert!(
             export_series(
                 &[source],
-                &ExportOptions { operation: None, cancelled: None,
+                &ExportOptions {
+                    operation: None,
+                    cancelled: None,
                     directory: source_dir.to_string_lossy().into_owned(),
                     anonymize: false,
                     dicomdir: false,
@@ -1169,9 +1410,18 @@ mod tests {
         fixture(&source, "2.25.401");
         let mut obj = open_file(&source).unwrap();
         let long = [
-            (Tag(0x0020, 0x0032), r"-123.456789012345678\-98.7654321098765432\12.3456789012345678"),
-            (Tag(0x0020, 0x0037), r"1.00000000000000000\0.000000000000000001\0\0\1.00000000000000000\0"),
-            (Tag(0x0028, 0x0030), r"0.488281250000000001\0.488281250000000001"),
+            (
+                Tag(0x0020, 0x0032),
+                r"-123.456789012345678\-98.7654321098765432\12.3456789012345678",
+            ),
+            (
+                Tag(0x0020, 0x0037),
+                r"1.00000000000000000\0.000000000000000001\0\0\1.00000000000000000\0",
+            ),
+            (
+                Tag(0x0028, 0x0030),
+                r"0.488281250000000001\0.488281250000000001",
+            ),
             (Tag(0x0018, 0x0050), "2.50000000000000001"),
             (Tag(0x0028, 0x1053), "1.00000000000000001"),
         ];
@@ -1182,8 +1432,14 @@ mod tests {
         for anonymize in [false, true] {
             let result = export_series(
                 std::slice::from_ref(&source),
-                &ExportOptions { operation: None, cancelled: None,
-                    directory: dir.path().join(format!("out-{anonymize}")).to_string_lossy().into_owned(),
+                &ExportOptions {
+                    operation: None,
+                    cancelled: None,
+                    directory: dir
+                        .path()
+                        .join(format!("out-{anonymize}"))
+                        .to_string_lossy()
+                        .into_owned(),
                     anonymize,
                     dicomdir: true,
                     decompress: false,
@@ -1214,7 +1470,9 @@ mod tests {
         let stick = dir.path().join("stick");
         fs::create_dir(&stick).unwrap();
         fs::write(stick.join("notes.txt"), b"left alone").unwrap();
-        let opts = |directory: &Path, dicomdir: bool| ExportOptions { operation: None, cancelled: None,
+        let opts = |directory: &Path, dicomdir: bool| ExportOptions {
+            operation: None,
+            cancelled: None,
             directory: directory.to_string_lossy().into_owned(),
             anonymize: false,
             dicomdir,
@@ -1226,14 +1484,21 @@ mod tests {
         };
         let written = export_series(std::slice::from_ref(&source), &opts(&stick, true)).unwrap();
         assert_eq!(written.directory, reported(&stick.canonicalize().unwrap()));
-        assert_eq!(fs::read(&source).unwrap(), fs::read(stick.join("DICOM/IM000001")).unwrap());
+        assert_eq!(
+            fs::read(&source).unwrap(),
+            fs::read(stick.join("DICOM/IM000001")).unwrap()
+        );
         let dicomdir = fs::read(stick.join("DICOMDIR")).unwrap();
 
         // A second copy is refused at the root: nothing there changes.
-        let refused = export_series(std::slice::from_ref(&source), &opts(&stick, true)).unwrap_err();
+        let refused =
+            export_series(std::slice::from_ref(&source), &opts(&stick, true)).unwrap_err();
         assert!(refused.to_string().contains("already has a DICOMDIR"));
         assert_eq!(fs::read(stick.join("DICOMDIR")).unwrap(), dicomdir);
-        let mut names: Vec<_> = fs::read_dir(&stick).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let mut names: Vec<_> = fs::read_dir(&stick)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         names.sort();
         assert_eq!(names, ["DICOM", "DICOMDIR", "notes.txt"]);
         assert_eq!(fs::read_dir(stick.join("DICOM")).unwrap().count(), 1);
@@ -1251,7 +1516,10 @@ mod tests {
         fs::create_dir(&other).unwrap();
         fs::write(other.join("notes.txt"), b"left alone").unwrap();
         assert!(export_series(&[source, broken], &opts(&other, true)).is_err());
-        let left: Vec<_> = fs::read_dir(&other).unwrap().map(|e| e.unwrap().file_name()).collect();
+        let left: Vec<_> = fs::read_dir(&other)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
         assert_eq!(left, ["notes.txt"]);
     }
 
@@ -1266,7 +1534,9 @@ mod tests {
         fixture(&b, "2.25.102");
         let result = export_series(
             &[a.clone(), b],
-            &ExportOptions { operation: None, cancelled: None,
+            &ExportOptions {
+                operation: None,
+                cancelled: None,
                 directory: dir.path().join("out").to_string_lossy().into_owned(),
                 anonymize: true,
                 dicomdir: true,
@@ -1383,7 +1653,9 @@ mod tests {
 
         let result = export_series(
             &[source],
-            &ExportOptions { operation: None, cancelled: None,
+            &ExportOptions {
+                operation: None,
+                cancelled: None,
                 directory: dir.path().join("out").to_string_lossy().into_owned(),
                 anonymize: true,
                 dicomdir: true,
@@ -1494,7 +1766,9 @@ mod tests {
         obj.put_str(Tag(0x7053, 0x1000), VR::DS, "0.0025");
         obj.write_to_file(&source).unwrap();
         let output = dir.path().join("out");
-        let mut opts = ExportOptions { operation: None, cancelled: None,
+        let mut opts = ExportOptions {
+            operation: None,
+            cancelled: None,
             directory: output.to_string_lossy().into_owned(),
             anonymize: true,
             dicomdir: false,
@@ -1541,7 +1815,9 @@ mod tests {
         obj.write_to_file(&source).unwrap();
         let result = export_series(
             &[source],
-            &ExportOptions { operation: None, cancelled: None,
+            &ExportOptions {
+                operation: None,
+                cancelled: None,
                 directory: dir.path().join("out").to_string_lossy().into_owned(),
                 anonymize: false,
                 dicomdir: true,

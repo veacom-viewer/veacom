@@ -122,7 +122,9 @@ pub fn assemble(frames: &[FrameGeometry]) -> Geometry {
         warnings: Vec::new(),
     };
     if frames.is_empty() {
-        geometry.warnings.push(note!("geometry.noFrames", "No image frames were found."));
+        geometry
+            .warnings
+            .push(note!("geometry.noFrames", "No image frames were found."));
         return geometry;
     }
 
@@ -409,7 +411,15 @@ mod tests {
     #[test]
     fn accepts_rounded_positions_but_rejects_a_missing_slice() {
         for precision in [10., 100.] {
-            let mut frames: Vec<_> = (0..200).map(|i| frame([0., 0., ((100. + i as f64 * 0.625) * precision).round() / precision])).collect();
+            let mut frames: Vec<_> = (0..200)
+                .map(|i| {
+                    frame([
+                        0.,
+                        0.,
+                        ((100. + i as f64 * 0.625) * precision).round() / precision,
+                    ])
+                })
+                .collect();
             assert!(assemble(&frames).can_reconstruct);
             frames.remove(100);
             assert!(!assemble(&frames).can_reconstruct);

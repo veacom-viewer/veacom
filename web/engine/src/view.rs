@@ -3,7 +3,13 @@
 use veacom_core::model::PixelBuffer;
 
 /// The linear VOI function of PS3.3 C.11.2.1.2 to 8 bits; color pixels are passed through.
-pub fn window_rgba(pixels: &PixelBuffer, components: usize, center: f64, width: f64, invert: bool) -> Vec<u8> {
+pub fn window_rgba(
+    pixels: &PixelBuffer,
+    components: usize,
+    center: f64,
+    width: f64,
+    invert: bool,
+) -> Vec<u8> {
     let count = pixels.len() / components.max(1);
     let mut rgba = vec![255u8; count * 4];
     if components == 3 {
@@ -33,4 +39,3 @@ pub fn window_rgba(pixels: &PixelBuffer, components: usize, center: f64, width: 
     }
     rgba
 }
-
