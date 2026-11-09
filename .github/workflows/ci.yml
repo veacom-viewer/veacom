@@ -85,12 +85,15 @@ jobs:
         run: |
           rustup toolchain install 1.99.1 --profile minimal --component clippy --target wasm32-unknown-unknown
           rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src --target wasm32-unknown-unknown
+          # Cargo decides whether the standard library it builds (-Z build-std) is current from its source files' times,
+          # and a fresh install dates them now. Dated to the nightly's own day, the cached build below stays current.
+          find "$(rustc +nightly-2026-11-01 --print sysroot)/lib/rustlib/src" -exec touch -h -d '2026-11-01 00:00:00 UTC' {} +
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # The one-thread engine build, and wasm-bindgen in ~/.cargo/bin (cached by default).
           workspaces: . -> web/engine/target
       # The threaded build compiles the standard library itself (-Z build-std), which rust-cache's cleanup does not
-      # know and deleted, so every run rebuilt std and every crate after it. A plain cache keeps the whole folder.
+      # know and deletes, so every run rebuilt std and every crate after it. A plain cache keeps the whole folder.
       - name: Threaded engine build cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -176,7 +179,7 @@ jobs:
   # say so. Checks that need a real GPU, Windows input or the fingerprinted ct-small study run elsewhere
   # (tools/windows-vm/README.md). The checks are split three ways, each shard on its own runner with its own build, so
   # they take a third of the time they took one after another: app (the viewer and its boundaries), pet (PET
-  # measurements) and screens (reading screens and the renderer).
+  # quantification) and screens (reading screens and the renderer).
   desktop:
     name: desktop (${{ matrix.shard }})
     runs-on: ubuntu-24.04
@@ -269,7 +272,7 @@ jobs:
           node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder"
           node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder-no-gpu" --no-gpu
 
-      # pet: PET measurements on synthetic studies with known values.
+      # pet: PET quantification on synthetic studies with known values.
       - name: PET quantification on a synthetic follow-up
         if: ${{ !cancelled() && matrix.shard == 'pet' && steps.build.outcome == 'success' }}
         run: |
@@ -282,13 +285,13 @@ jobs:
           node tools/fixtures/make-pet-validation-inputs.mjs "$RUNNER_TEMP/pet-validation-followup"
           node tools/pet-validation.cjs "$RUNNER_TEMP/pet-validation-followup" "$RUNNER_TEMP/pet-validation-followup/pet-validation-spheres.json" "$EVIDENCE/pet-validation" --vendor "$RUNNER_TEMP/pet-validation-followup/pet-validation-expected.json"
           node tools/check-pet-validation-cases.mjs "$RUNNER_TEMP/pet-validation-followup" "$EVIDENCE/pet-validation-cases"
+
+      # screens: reading screens and the renderer.
       - name: PET reading kit on a synthetic PET/CT
-        if: ${{ !cancelled() && matrix.shard == 'pet' && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: |
           node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-reading"
           node tools/check-pet-reading.cjs "$RUNNER_TEMP/petct-reading" "$EVIDENCE/pet-reading"
-
-      # screens: reading screens and the renderer.
       - name: Arrangements on a synthetic PET/CT
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: |
