@@ -1,16 +1,25 @@
-// Summarises a results folder (tools/browser-bench/run.mjs) into report.html beside it and prints the table.
-//   node tools/browser-bench/bench.mjs report <results folder>
-// Warm-up rounds and failed trials are left out (failures are listed). Every number is the median over rounds with a
-// bootstrap 95% interval. When the run has the A/A pair (veacom and veacom-aa, the same build twice), each metric's
+// Summarises one or more results folders (tools/browser-bench/run.mjs) into report.html and report.md and prints the
+// table. Several folders, such as the parallel runs of one CI workflow on different runners, are pooled: every trial
+// counts, and a table per runner shows how far the runners agree.
+//   node tools/browser-bench/bench.mjs report [--out <folder>] <results folder> [<results folder> …]
+// The report goes to --out, or beside the first folder's results. Warm-up rounds and failed trials are left out
+// (failures are listed). Every number is the median over trials with a bootstrap 95% interval. When the run has the A/A pair (veacom and veacom-aa, the same build twice), each metric's
 // A/A spread is the noise floor: another viewer is called faster or slower only beyond it.
 import fs from 'node:fs';
 import path from 'node:path';
 import { LOCK } from './fetch-viewers.mjs';
 import { compare, summarize } from './lib/stats.mjs';
 
-const folder = path.resolve(process.argv[3] ?? process.argv[2] ?? '.');
-const run = JSON.parse(fs.readFileSync(path.join(folder, 'run.json'), 'utf8'));
-const lines = fs.readFileSync(path.join(folder, 'results.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line));
+const args = process.argv.slice(process.argv[1].endsWith('bench.mjs') ? 3 : 2);
+const outFlag = args.indexOf('--out'), out = outFlag >= 0 ? args.splice(outFlag, 2)[1] : null;
+const folders = (args.length ? args : ['.']).map(folder => path.resolve(folder));
+const runs = folders.map(folder => JSON.parse(fs.readFileSync(path.join(folder, 'run.json'), 'utf8')));
+const lines = folders.flatMap((folder, index) => fs.readFileSync(path.join(folder, 'results.jsonl'), 'utf8').split('\n').filter(Boolean)
+  .map(line => ({ ...JSON.parse(line), runner: index + 1 })));
+const run = runs[0], folder = path.resolve(out ?? folders[0]);
+fs.mkdirSync(folder, { recursive: true });
+// The pictures of the first run, for the report's first-image row.
+if (folder !== folders[0] && fs.existsSync(path.join(folders[0], 'shots'))) fs.cpSync(path.join(folders[0], 'shots'), path.join(folder, 'shots'), { recursive: true });
 const counted = lines.filter(line => !line.warmup && !line.error), failed = lines.filter(line => line.error);
 
 // Each metric: label, unit, how to read it from a trial, and whether lower is better.
@@ -32,7 +41,13 @@ const METRICS = [
 ];
 function pct(value) { return Number.isFinite(value) ? value * 100 : undefined; }
 
-const viewers = run.viewers, studies = run.studies;
+const viewers = [...new Set(runs.flatMap(r => r.viewers))], studies = [...new Set(runs.flatMap(r => r.studies))];
+const rounds = new Set(counted.filter(l => l.runner === 1).map(l => l.round)).size;
+const spanText = runs.length > 1 ? `${rounds} rounds on each of ${runs.length} runners` : `${rounds} rounds`;
+const runnerText = runs.length > 1 ? runs.map((r, i) => `runner ${i + 1}: ${r.machine.cpu ?? '?'} (${r.machine.cores} cores)`).join(' · ') : null;
+// How far the runners agree: each runner's own median of the first image, per viewer and study.
+const perRunner = runs.length > 1 ? studies.map(study => ({ study, rows: runs.map((_, i) => viewers.map(viewer =>
+  summarize(counted.filter(l => l.runner === i + 1 && l.viewer === viewer && l.study === study).map(l => l.firstImageMs).filter(Number.isFinite)).median)) })) : [];
 const values = (viewer, study, read) => counted.filter(l => l.viewer === viewer && l.study === study).map(read).filter(Number.isFinite);
 const reference = viewers.includes('veacom') ? 'veacom' : viewers[0];
 
@@ -77,13 +92,16 @@ td .ci{color:var(--muted);font-size:12px;display:block}td.best{background:var(--
 </style></head><body>
 <h1>Browser viewer benchmark</h1>
 <p>${escape(run.started)} · ${escape(machine.model ?? '')} · ${escape(machine.cpu ?? '')} (${machine.cores} cores, ${machine.memoryGB} GB) · ${escape(machine.platform)} ${escape(machine.release)} · Chromium ${escape(machine.chrome)} (Electron ${escape(machine.electron)}) · window ${run.window.join('×')} · drawn by ${escape([...new Set(counted.map(l => l.renderer).filter(Boolean))].join(', ') || 'unknown')}</p>
-<p>Median over ${new Set(counted.map(l => l.round)).size} rounds (warm-up left out) with its bootstrap 95% interval. Green: best in the row. Red: worse than ${escape(reference)} beyond the interval${viewers.includes('veacom-aa') ? ' and the A/A noise (the same build run twice)' : ''}.</p>
+${runnerText ? `<p>${escape(runnerText)}</p>` : ''}
+<p>Median over ${spanText} (warm-up left out) with its bootstrap 95% interval. Green: best in the row. Red: worse than ${escape(reference)} beyond the interval${viewers.includes('veacom-aa') ? ' and the A/A noise (the same build run twice)' : ''}.</p>
 ${tables.map(({ study, rows }) => `<h2>${escape(study)}</h2><div class="scroll"><table><thead><tr><th>Metric</th>${viewers.map(v => `<th>${escape(v)}</th>`).join('')}${rows.some(r => r.noise !== null) ? '<th>A/A noise</th>' : ''}</tr></thead><tbody>
 ${rows.map(row => `<tr><td>${escape(row.label)} <span class="ci">${escape(row.unit)}${row.lower ? ', lower is better' : ', higher is better'}</span></td>${row.cells.map(cell => {
   const worse = cell.versus?.differs && (row.lower ? cell.versus.ratio > 1 : cell.versus.ratio < 1);
   return `<td class="${cell.viewer === row.best ? 'best' : worse ? 'worse' : ''}">${cell.n ? `${format(cell.median, row.unit)}<span class="ci">${format(cell.low, row.unit)}–${format(cell.high, row.unit)} · n=${cell.n}</span>` : '–'}</td>`;
 }).join('')}${row.noise !== null ? `<td>±${(row.noise * 100).toFixed(1)}%</td>` : rows.some(r => r.noise !== null) ? '<td></td>' : ''}</tr>`).join('\n')}
 </tbody></table></div>`).join('\n')}
+${perRunner.map(({ study, rows }) => `<h2>First image on each runner, ${escape(study)} (ms)</h2><div class="scroll"><table><thead><tr><th>Runner</th>${viewers.map(v => `<th>${escape(v)}</th>`).join('')}</tr></thead><tbody>
+${rows.map((row, i) => `<tr><td>${i + 1}: ${escape(runs[i].machine.cpu ?? '')}</td>${row.map(value => `<td>${format(value, 'ms')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}
 <h2>Viewers</h2><div class="scroll"><table><thead><tr><th>Viewer</th><th>Version</th><th>Opened by</th><th>First slice shown</th><th>Licence</th></tr></thead><tbody>
 ${viewers.map(viewer => { const entry = LOCK.viewers.find(e => e.name === viewer), trial = counted.find(l => l.viewer === viewer) ?? lines.find(l => l.viewer === viewer);
   return `<tr><td>${escape(entry?.title ?? viewer)}${entry?.serve.live ? ' <span class="ci">live site, not pinned</span>' : ''}</td><td>${escape(entry?.version ?? run.versions?.[viewer] ?? '')}</td><td>${escape(trial?.openedBy ?? '')}</td><td>${escape(trial?.firstSlice ?? '–')}</td><td>${escape(entry?.licence ?? 'GPL-3.0-or-later')}</td></tr>`; }).join('')}
@@ -102,9 +120,12 @@ const markdown = [
   '## Browser viewer benchmark', '',
   `${run.started} · ${machine.cpu ?? ''} (${machine.cores} cores, ${machine.memoryGB} GB) · ${machine.platform} ${machine.release} · window ${run.window.join('×')}`
     + `${run.repository?.commit ? ` · commit ${run.repository.commit.slice(0, 7)}` : ''}`,
-  `Drawn by: ${renderers.join(', ') || 'unknown'}. Median over ${new Set(counted.map(l => l.round)).size} rounds, with the bootstrap 95% interval.`,
+  ...(runnerText ? [runnerText] : []),
+  `Drawn by: ${renderers.join(', ') || 'unknown'}. Median over ${spanText}, with the bootstrap 95% interval.`,
   ...tables.flatMap(({ study, rows }) => ['', `### ${study}`, '', `| Metric | ${viewers.join(' | ')} |`, `|---|${viewers.map(() => '---:').join('|')}|`,
     ...rows.map(row => `| ${row.label} (${row.unit}) | ${row.cells.map(c => `${c.viewer === row.best ? '**' : ''}${cell(c, row.unit)}${c.viewer === row.best ? '**' : ''}`).join(' | ')} |`)]),
+  ...perRunner.flatMap(({ study, rows }) => ['', `#### First image on each runner, ${study} (ms)`, '', `| Runner | ${viewers.join(' | ')} |`, `|---|${viewers.map(() => '---:').join('|')}|`,
+    ...rows.map((row, i) => `| ${i + 1}: ${runs[i].machine.cpu ?? ''} | ${row.map(value => format(value, 'ms')).join(' | ')} |`)]),
   ...(failed.length ? ['', `Failed trials: ${failed.map(l => `${l.viewer} ${l.study} round ${l.round}: ${l.error.split('\n')[0]}`).join('; ')}`] : []),
   '',
 ].join('\n');

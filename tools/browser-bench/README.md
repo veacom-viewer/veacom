@@ -47,7 +47,7 @@ On GitHub Actions, not on a developer's computer: `.github/workflows/browser-ben
 - **By hand:** *Actions → Browser benchmark → Run workflow* chooses the viewers (add `plexusmd` for the live site), studies, rounds and scenarios. A `base` ref adds that ref's browser build as `veacom-base`, for an A/B of two VEAcom versions in the same run.
 - **On pull requests that change `tools/browser-bench/`:** a one-round smoke check of VEAcom and OHIF.
 
-Each run posts its tables on the run's summary page and keeps the results folder, report and screenshots as an artifact for 90 days. The runner has no GPU, so every viewer draws with Mesa's software rasterizer (llvmpipe), recorded in the report. Its timings say how the viewers compare on one machine without a GPU, not how fast any of them is on a workstation. Runners also differ from run to run, so compare viewers within a run, never across runs.
+Every run times everything three times at once, on three runners, and pools the trials, so one slow or busy machine cannot decide the result. The pooled tables go on the run's summary page with a table of each runner's own first-image times, and each runner's results, report and screenshots, and the pooled report, are kept as artifacts for 90 days. The runner has no GPU, so every viewer draws with Mesa's software rasterizer (llvmpipe), recorded in the report. Its timings say how the viewers compare on one machine without a GPU, not how fast any of them is on a workstation. Runners also differ from run to run, so compare viewers within a workflow run, never across runs.
 
 ## Running it by hand
 
