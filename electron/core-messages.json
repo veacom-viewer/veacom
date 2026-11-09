@@ -53,6 +53,8 @@
     "import.noImages": "Desteklenen görüntü bulunamadı. {details}",
     "import.fileUnreadable": "{file} okunamadı: {reason}",
     "import.moreUnreadable": "{count} dosya daha desteklenen bir DICOM görüntüsü olarak okunamadı.",
+    "import.unreadableAlike": "{count} dosya okunamadı: {reason}",
+    "import.unreadableMany": "{count} dosya desteklenen bir görüntü olarak okunamadı.",
 
     "file.notDicom": "DICOM dosyası değil (DICOM başlığı yok)",
     "file.tooLarge": "dosya okunabilecek en büyük boyutu aşıyor",
