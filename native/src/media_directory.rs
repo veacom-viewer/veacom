@@ -1,7 +1,7 @@
+use crate::vfs::{File, OpenOptions};
 use crate::{ingest::MAX_FILES, source_file::SourceFile};
 use anyhow::{Context, Result, ensure};
 use dicom_core::Tag;
-use crate::vfs::{File, OpenOptions};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -19,8 +19,13 @@ impl MediaRoot {
     /// directory is all a media root has to be.
     #[cfg(target_arch = "wasm32")]
     fn open(path: &Path) -> Result<Arc<Self>> {
-        ensure!(crate::vfs::metadata(path)?.is_dir(), "DICOMDIR root is not a directory");
-        Ok(Arc::new(Self { path: path.to_owned() }))
+        ensure!(
+            crate::vfs::metadata(path)?.is_dir(),
+            "DICOMDIR root is not a directory"
+        );
+        Ok(Arc::new(Self {
+            path: path.to_owned(),
+        }))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -149,9 +154,10 @@ pub fn references(index: &Path, root: &Path) -> Result<BTreeMap<PathBuf, Referen
 pub fn open_referenced(root: &MediaRoot, path: &Path) -> Result<File> {
     ensure!(
         path.starts_with(&root.path)
-            && path
-                .components()
-                .all(|part| !matches!(part, std::path::Component::ParentDir | std::path::Component::CurDir)),
+            && path.components().all(|part| !matches!(
+                part,
+                std::path::Component::ParentDir | std::path::Component::CurDir
+            )),
         "DICOMDIR reference escaped the media root"
     );
     let file = OpenOptions::new().read(true).open(path)?;

@@ -83,7 +83,9 @@ fn words(bytes: &[u8], le: bool) -> Result<Vec<u16>> {
         "Palette word data has an odd byte count"
     );
     Ok(bytes
-        .as_chunks::<2>().0.iter()
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| {
             if le {
                 u16::from_le_bytes([v[0], v[1]])

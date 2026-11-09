@@ -28,7 +28,11 @@ pub fn cost(source: &SourceSeries) -> Result<usize> {
         .frames
         .iter()
         .map(|frame| {
-            let file_bytes = if counted.insert(&frame.source.path) { frame.source.retained_bytes() } else { 0 };
+            let file_bytes = if counted.insert(&frame.source.path) {
+                frame.source.retained_bytes()
+            } else {
+                0
+            };
             size_of::<Frame>() + frame.sop_uid.len() + file_bytes
         })
         .sum::<usize>();
@@ -46,7 +50,10 @@ pub fn cost(source: &SourceSeries) -> Result<usize> {
 
 /// The costs of `incoming`, by series id.
 pub fn costs(incoming: &[Arc<SourceSeries>]) -> Result<BTreeMap<String, usize>> {
-    incoming.iter().map(|source| Ok((source.info.id.clone(), cost(source)?))).collect()
+    incoming
+        .iter()
+        .map(|source| Ok((source.info.id.clone(), cost(source)?)))
+        .collect()
 }
 
 /// What a series counts against `MAX_ENTRIES`: its frames and its documents.
@@ -66,7 +73,9 @@ pub fn fits(
     let mut bytes = open_costs.values().sum::<usize>();
     for source in incoming {
         let id = &source.info.id;
-        count = count.saturating_sub(open.get(id).map_or(0, |old| entries(old))).saturating_add(entries(source));
+        count = count
+            .saturating_sub(open.get(id).map_or(0, |old| entries(old)))
+            .saturating_add(entries(source));
         bytes = bytes
             .saturating_sub(*open_costs.get(id).unwrap_or(&0))
             .saturating_add(*incoming_costs.get(id).unwrap_or(&0));
@@ -77,8 +86,14 @@ pub fn fits(
 /// Whether a study UID among `incoming` names more than one patient, across `incoming` and the series already `open`
 /// (an earlier import's among them). Ingest keeps such images in series of their own; the import then warns
 /// (`conflict_note`).
-pub fn patient_conflict<'a>(incoming: &'a [Arc<SourceSeries>], open: impl Iterator<Item = &'a Arc<SourceSeries>>) -> bool {
-    let studies: HashSet<&str> = incoming.iter().map(|source| source.info.study_uid.as_str()).collect();
+pub fn patient_conflict<'a>(
+    incoming: &'a [Arc<SourceSeries>],
+    open: impl Iterator<Item = &'a Arc<SourceSeries>>,
+) -> bool {
+    let studies: HashSet<&str> = incoming
+        .iter()
+        .map(|source| source.info.study_uid.as_str())
+        .collect();
     let mut patients = BTreeMap::new();
     incoming.iter().chain(open).any(|source| {
         studies.contains(source.info.study_uid.as_str())
@@ -111,7 +126,12 @@ mod tests {
 
     fn series(id: &str, study: &str, patient: &str) -> Arc<SourceSeries> {
         Arc::new(SourceSeries {
-            info: Series { id: id.into(), study_uid: study.into(), patient_key: patient.into(), ..Default::default() },
+            info: Series {
+                id: id.into(),
+                study_uid: study.into(),
+                patient_key: patient.into(),
+                ..Default::default()
+            },
             frames: Vec::new(),
             geometry: crate::geometry::assemble(&[]),
             documents: Vec::new(),
@@ -121,15 +141,36 @@ mod tests {
     #[test]
     fn a_study_that_names_another_patient_in_a_later_import_is_a_conflict() {
         let first = [series("a", "1.2.3", "SYNTHETIC^A")];
-        let open: BTreeMap<String, Arc<SourceSeries>> = first.iter().map(|s| (s.info.id.clone(), s.clone())).collect();
-        assert!(!patient_conflict(&first, std::iter::empty()), "one patient on its own");
+        let open: BTreeMap<String, Arc<SourceSeries>> = first
+            .iter()
+            .map(|s| (s.info.id.clone(), s.clone()))
+            .collect();
+        assert!(
+            !patient_conflict(&first, std::iter::empty()),
+            "one patient on its own"
+        );
         // The second import names the open study with another patient.
-        assert!(patient_conflict(&[series("b", "1.2.3", "SYNTHETIC^B")], open.values()));
+        assert!(patient_conflict(
+            &[series("b", "1.2.3", "SYNTHETIC^B")],
+            open.values()
+        ));
         // The same patient again, or another study, is no conflict.
-        assert!(!patient_conflict(&[series("c", "1.2.3", "SYNTHETIC^A")], open.values()));
-        assert!(!patient_conflict(&[series("d", "9.9.9", "SYNTHETIC^B")], open.values()));
+        assert!(!patient_conflict(
+            &[series("c", "1.2.3", "SYNTHETIC^A")],
+            open.values()
+        ));
+        assert!(!patient_conflict(
+            &[series("d", "9.9.9", "SYNTHETIC^B")],
+            open.values()
+        ));
         // Two patients within one import are a conflict too.
-        assert!(patient_conflict(&[series("e", "4.5", "SYNTHETIC^A"), series("f", "4.5", "SYNTHETIC^B")], std::iter::empty()));
+        assert!(patient_conflict(
+            &[
+                series("e", "4.5", "SYNTHETIC^A"),
+                series("f", "4.5", "SYNTHETIC^B")
+            ],
+            std::iter::empty()
+        ));
     }
 
     #[test]
@@ -145,9 +186,19 @@ mod tests {
         let open_costs: BTreeMap<_, _> = [(one.info.id.clone(), MAX_BYTES)].into();
         // Imported again at the same cost, the series takes its own place.
         let incoming = [one.clone()];
-        assert!(fits(&open, &open_costs, &incoming, &[(one.info.id.clone(), MAX_BYTES)].into()));
+        assert!(fits(
+            &open,
+            &open_costs,
+            &incoming,
+            &[(one.info.id.clone(), MAX_BYTES)].into()
+        ));
         // Beside it, another one byte would not fit.
         let other = [series("b", "2", "P")];
-        assert!(!fits(&open, &open_costs, &other, &[("b".to_owned(), 1)].into()));
+        assert!(!fits(
+            &open,
+            &open_costs,
+            &other,
+            &[("b".to_owned(), 1)].into()
+        ));
     }
 }

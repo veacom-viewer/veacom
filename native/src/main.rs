@@ -2,11 +2,15 @@
 //! the session's catalog, volume cache and job queues.
 
 // The engine's modules under the names this transport has always used.
-#[allow(unused_imports, reason = "the transport keeps every module name it has always used, used or not")]
+#[allow(
+    unused_imports,
+    reason = "the transport keeps every module name it has always used, used or not"
+)]
 use veacom_core::{
-    archive_temp, catalog, codec_guard, coded, color, decode, export, gamma_camera, geometry, import_budget, ingest,
-    input_guard, measure, message, modality_lut, model, note, palette, parallel, pictures, progress, random,
-    rle_guard, sampling, tags, test_dir, window, confidentiality, media_directory, patient, source_file,
+    archive_temp, catalog, codec_guard, coded, color, confidentiality, decode, export,
+    gamma_camera, geometry, import_budget, ingest, input_guard, measure, media_directory, message,
+    modality_lut, model, note, palette, parallel, patient, pictures, progress, random, rle_guard,
+    sampling, source_file, tags, test_dir, window,
 };
 mod memory;
 mod pipe;
@@ -92,7 +96,7 @@ impl Cache {
 }
 struct Core {
     sources: RwLock<BTreeMap<String, Arc<SourceSeries>>>,
-    catalog_bytes:Mutex<BTreeMap<String,usize>>,
+    catalog_bytes: Mutex<BTreeMap<String, usize>>,
     cache: Mutex<Cache>,
     archives: Mutex<Vec<archive_temp::ArchiveTempDir>>,
     jobs: Queue,
@@ -129,14 +133,19 @@ impl From<anyhow::Error> for ApiError {
         if source_file::is_changed(&e) {
             return Self(422, source_file::changed().0);
         }
-        let note = message::coded(&e).cloned().unwrap_or_else(|| format!("{e:#}").into());
+        let note = message::coded(&e)
+            .cloned()
+            .unwrap_or_else(|| format!("{e:#}").into());
         Self(422, note)
     }
 }
 type ApiResult<T> = Result<T, ApiError>;
 
 fn not_found() -> ApiError {
-    ApiError(404, note!("series.notFound", "Series not found; import it first"))
+    ApiError(
+        404,
+        note!("series.notFound", "Series not found; import it first"),
+    )
 }
 /// Main gave the request up while it waited; nobody reads this.
 fn abandoned() -> ApiError {
@@ -148,12 +157,23 @@ fn next_revision() -> u64 {
 }
 fn check_revision(series: &SourceSeries, expected: Option<u64>) -> ApiResult<()> {
     if expected.is_some_and(|revision| revision != series.info.catalog_revision) {
-        return Err(ApiError(409, note!("series.replaced", "This series was replaced. Open the current series again.")));
+        return Err(ApiError(
+            409,
+            note!(
+                "series.replaced",
+                "This series was replaced. Open the current series again."
+            ),
+        ));
     }
     Ok(())
 }
 fn source(core: &App, id: &str) -> ApiResult<Arc<SourceSeries>> {
-    core.sources.read().unwrap().get(id).cloned().ok_or_else(not_found)
+    core.sources
+        .read()
+        .unwrap()
+        .get(id)
+        .cloned()
+        .ok_or_else(not_found)
 }
 
 /// Ends the shared progress record when a job's work ends, also when the work panics.
@@ -178,7 +198,10 @@ struct QueueState {
 }
 impl Queue {
     fn new() -> Self {
-        Self { state: Mutex::new(QueueState::default()), changed: Condvar::new() }
+        Self {
+            state: Mutex::new(QueueState::default()),
+            changed: Condvar::new(),
+        }
     }
     fn lock(&self) -> std::sync::MutexGuard<'_, QueueState> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
@@ -187,7 +210,10 @@ impl Queue {
     /// waits leaves the line without its turn (paging cancels frame requests by the dozen; each would decode a whole
     /// file). Work is done on the thread that holds the turn, so the turn lasts until the work ends: a cancelled
     /// request never frees it early, and a job's progress record is never left "running" with nobody to finish it.
-    #[allow(clippy::disallowed_methods, reason = "the one place a queue's turn is waited for (clippy.toml)")]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the one place a queue's turn is waited for (clippy.toml)"
+    )]
     fn turn(&self, cancelled: &AtomicBool) -> ApiResult<Turn<'_>> {
         let mut state = self.lock();
         let ticket = state.next;
@@ -250,7 +276,8 @@ struct Call {
     body: Option<Value>,
 }
 fn body<T: DeserializeOwned>(body: Option<Value>) -> ApiResult<T> {
-    serde_json::from_value(body.unwrap_or(Value::Null)).map_err(|e| ApiError(400, format!("Invalid request: {e}").into()))
+    serde_json::from_value(body.unwrap_or(Value::Null))
+        .map_err(|e| ApiError(400, format!("Invalid request: {e}").into()))
 }
 #[derive(Deserialize)]
 struct SeriesRef {
@@ -268,9 +295,13 @@ fn ok(value: &impl Serialize) -> ApiResult<Reply> {
 }
 fn handle(core: &App, request: &pipe::Request) -> Reply {
     let result = (|| {
-        let call: Call = serde_json::from_slice(request.call()).map_err(|_| ApiError(400, "Invalid engine request".to_string().into()))?;
+        let call: Call = serde_json::from_slice(request.call())
+            .map_err(|_| ApiError(400, "Invalid engine request".to_string().into()))?;
         if progress::is_stopping() && call.op != "shutdown" {
-            return Err(ApiError(503, note!("core.stopping", "Native core is shutting down")));
+            return Err(ApiError(
+                503,
+                note!("core.stopping", "Native core is shutting down"),
+            ));
         }
         let cancelled = request.abandoned();
         match call.op.as_str() {
@@ -286,26 +317,44 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
                 ok(&json!({"ok":true}))
             }
             "series" => ok(&list_series(core)),
-            "import" => import_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
+            "import" => {
+                import_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
+            }
             "importEarly" => ok(&early_series(core, body(call.body)?)),
-            "removeSeries" => remove_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
+            "removeSeries" => {
+                remove_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
+            }
             "volume" => {
                 let series: SeriesRef = body(call.body)?;
                 volume(core, cancelled, &series.id, series.revision)
             }
             "warm" => warm_volume(core, request, body::<SeriesRef>(call.body)?.id),
             "frame" => {
-                let FrameRef { id, index, revision } = body(call.body)?;
+                let FrameRef {
+                    id,
+                    index,
+                    revision,
+                } = body(call.body)?;
                 frame(core, cancelled, &id, index, revision)
             }
             "tags" => series_tags(core, body(call.body)?).and_then(|result| ok(&result)),
-            "sample" => sample_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
-            "measure" => measure_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result)),
-            "export" => export_series(core, request, body(call.body)?).and_then(|result| ok(&result)),
-            "exportEstimate" => estimate_export(core, body(call.body)?).and_then(|result| ok(&result)),
+            "sample" => {
+                sample_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
+            }
+            "measure" => {
+                measure_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
+            }
+            "export" => {
+                export_series(core, request, body(call.body)?).and_then(|result| ok(&result))
+            }
+            "exportEstimate" => {
+                estimate_export(core, body(call.body)?).and_then(|result| ok(&result))
+            }
             "exportCancel" => {
                 let operation: Value = body(call.body)?;
-                ok(&json!({"requested": operation["operation"].as_str().is_some_and(|id| request.cancel_export(id))}))
+                ok(
+                    &json!({"requested": operation["operation"].as_str().is_some_and(|id| request.cancel_export(id))}),
+                )
             }
             _ => Err(ApiError(404, "Unknown engine operation".to_string().into())),
         }
@@ -330,7 +379,11 @@ fn next_picture(cancelled: &AtomicBool) -> Reply {
     }
 }
 fn picture_ack() -> Reply {
-    Reply { status: 204, headers: Vec::new(), body: Box::new([]) }
+    Reply {
+        status: 204,
+        headers: Vec::new(),
+        body: Box::new([]),
+    }
 }
 #[derive(Deserialize)]
 struct PictureAnswer {
@@ -358,18 +411,24 @@ fn answer_picture(answer: PictureAnswer, bytes: &[u8]) -> ApiResult<Reply> {
         ),
     };
     if !accepted {
-        return Err(ApiError(404, "No picture is waiting for this answer".into()));
+        return Err(ApiError(
+            404,
+            "No picture is waiting for this answer".into(),
+        ));
     }
     Ok(picture_ack())
 }
 /// Cancels the job `{"id"}` names (from progress), if it is still the one running; without a body, whatever runs.
 fn cancel_job(body: Option<Value>) -> ApiResult<Reply> {
     #[derive(Deserialize)]
-    struct CancelRequest { id: u64 }
+    struct CancelRequest {
+        id: u64,
+    }
     let Some(body) = body else {
         return ok(&json!({"requested":progress::cancel()}));
     };
-    let request: CancelRequest = serde_json::from_value(body).map_err(|_| ApiError(400, "Invalid cancel request".to_string().into()))?;
+    let request: CancelRequest = serde_json::from_value(body)
+        .map_err(|_| ApiError(400, "Invalid cancel request".to_string().into()))?;
     ok(&json!({"requested":progress::cancel_operation(request.id)}))
 }
 fn list_series(core: &App) -> ImportResult {
@@ -391,15 +450,31 @@ struct ImportRequest {
     #[serde(default)]
     request_id: String,
 }
-fn import_series(core: &App, cancelled: &AtomicBool, request: ImportRequest) -> ApiResult<ImportResult> {
+fn import_series(
+    core: &App,
+    cancelled: &AtomicBool,
+    request: ImportRequest,
+) -> ApiResult<ImportResult> {
     if request.request_id.len() > 128 {
         return Err(ApiError(400, "Invalid import request id".into()));
     }
     if request.paths.len() > ingest::MAX_FILES {
-        return Err(ApiError(400, note!("import.tooManyPaths", "Select at most 50,000 paths per import")));
+        return Err(ApiError(
+            400,
+            note!(
+                "import.tooManyPaths",
+                "Select at most 50,000 paths per import"
+            ),
+        ));
     }
     if core.archives.lock().unwrap().len() >= 24 {
-        return Err(ApiError(422,note!("import.tooManyArchives", "This session already holds 24 extracted archives; restart before importing more archives")));
+        return Err(ApiError(
+            422,
+            note!(
+                "import.tooManyArchives",
+                "This session already holds 24 extracted archives; restart before importing more archives"
+            ),
+        ));
     }
     let turn = core.jobs.turn(cancelled)?;
     progress::check()?;
@@ -438,7 +513,16 @@ fn import_series(core: &App, cancelled: &AtomicBool, request: ImportRequest) -> 
             std::mem::take(&mut early.added)
         };
         if !added.is_empty() {
-            let kept: HashSet<&str> = result.as_ref().map(|result| result.series.iter().map(|series| series.id.as_str()).collect()).unwrap_or_default();
+            let kept: HashSet<&str> = result
+                .as_ref()
+                .map(|result| {
+                    result
+                        .series
+                        .iter()
+                        .map(|series| series.id.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
             let mut sources = core.sources.write().unwrap();
             for id in added.iter().filter(|id| !kept.contains(id.as_str())) {
                 sources.remove(id);
@@ -449,18 +533,29 @@ fn import_series(core: &App, cancelled: &AtomicBool, request: ImportRequest) -> 
 }
 /// Puts an import's series in the catalogue (replacing any of the same id, those added early among them) within the
 /// session's limits, and keeps its archives' extractions.
-fn finish_import(core: &App, imported: anyhow::Result<ingest::Imported>) -> ApiResult<ImportResult> {
+fn finish_import(
+    core: &App,
+    imported: anyhow::Result<ingest::Imported>,
+) -> ApiResult<ImportResult> {
     let mut imported = imported?;
     {
         let sources = core.sources.read().unwrap();
         let early = core.early.lock().unwrap();
         let provisional: HashSet<_> = early.added.iter().collect();
         for incoming in &mut imported.sources {
-            let previous = sources.get(&incoming.info.id).filter(|s| provisional.contains(&s.info.id)
-                && s.documents.len() == incoming.documents.len()
-                && s.documents.iter().zip(&incoming.documents).all(|(a, b)| Arc::ptr_eq(a, b))
-                && s.frames.len() == incoming.frames.len()
-                && s.frames.iter().zip(&incoming.frames).all(|(a, b)| a.index == b.index && Arc::ptr_eq(&a.source, &b.source)));
+            let previous = sources.get(&incoming.info.id).filter(|s| {
+                provisional.contains(&s.info.id)
+                    && s.documents.len() == incoming.documents.len()
+                    && s.documents
+                        .iter()
+                        .zip(&incoming.documents)
+                        .all(|(a, b)| Arc::ptr_eq(a, b))
+                    && s.frames.len() == incoming.frames.len()
+                    && s.frames
+                        .iter()
+                        .zip(&incoming.frames)
+                        .all(|(a, b)| a.index == b.index && Arc::ptr_eq(&a.source, &b.source))
+            });
             let revision = previous.map_or_else(next_revision, |s| s.info.catalog_revision);
             Arc::make_mut(incoming).info.catalog_revision = revision;
         }
@@ -508,8 +603,15 @@ struct EarlyList {
 fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
     let early = core.early.lock().unwrap();
     let from = query.after.min(early.series.len());
-    let series = if query.request_id == early.request_id { early.series[from..].to_vec() } else { Vec::new() };
-    EarlyList { import: early.import, series }
+    let series = if query.request_id == early.request_id {
+        early.series[from..].to_vec()
+    } else {
+        Vec::new()
+    };
+    EarlyList {
+        import: early.import,
+        series,
+    }
 }
 #[derive(Deserialize)]
 struct RemoveRequest {
@@ -520,7 +622,10 @@ struct RemoveRequest {
 /// since nothing reads from them any more. Serialised with imports by the jobs queue.
 fn remove_series(core: &App, cancelled: &AtomicBool, request: RemoveRequest) -> ApiResult<Value> {
     if request.ids.len() > ingest::MAX_FILES {
-        return Err(ApiError(400, "Too many series in one request".to_string().into()));
+        return Err(ApiError(
+            400,
+            "Too many series in one request".to_string().into(),
+        ));
     }
     let _turn = core.jobs.turn(cancelled)?;
     let mut removed = 0usize;
@@ -550,7 +655,12 @@ fn cached(core: &App, id: &str) -> ApiResult<Option<(Arc<PixelBuffer>, Arc<Sourc
     let volume = core.cache.lock().unwrap().get(id);
     Ok(volume.map(|volume| (volume, series)))
 }
-fn load_volume(core: &App, id: &str, warming: bool, cancelled: &AtomicBool) -> ApiResult<(Arc<PixelBuffer>, Arc<SourceSeries>)> {
+fn load_volume(
+    core: &App,
+    id: &str,
+    warming: bool,
+    cancelled: &AtomicBool,
+) -> ApiResult<(Arc<PixelBuffer>, Arc<SourceSeries>)> {
     if let Some(hit) = cached(core, id)? {
         return Ok(hit);
     }
@@ -605,14 +715,24 @@ fn warm_volume(core: &App, request: &pipe::Request, id: String) -> ApiResult<Rep
     let core = core.clone();
     if !request.warm(move || {
         let _ = load_volume(&core, &id, true, &KEPT);
-    }) { return Err(ApiError(503, "Imaging engine is busy".into())); }
+    }) {
+        return Err(ApiError(503, "Imaging engine is busy".into()));
+    }
     Ok(Reply::json(202, &json!({ "warming": true })))
 }
 /// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed.
 fn header_value(value: &str) -> bool {
-    value.bytes().all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
+    value
+        .bytes()
+        .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
 }
-fn frame(core: &App, cancelled: &AtomicBool, id: &str, index: usize, revision: Option<u64>) -> ApiResult<Reply> {
+fn frame(
+    core: &App,
+    cancelled: &AtomicBool,
+    id: &str,
+    index: usize,
+    revision: Option<u64>,
+) -> ApiResult<Reply> {
     let series = source(core, id)?;
     check_revision(&series, revision)?;
     let components = series.info.components;
@@ -621,7 +741,10 @@ fn frame(core: &App, cancelled: &AtomicBool, id: &str, index: usize, revision: O
     }
     let _turn = core.frames.turn(cancelled)?;
     if progress::is_stopping() {
-        return Err(ApiError(503, note!("core.stopping", "Native core is shutting down")));
+        return Err(ApiError(
+            503,
+            note!("core.stopping", "Native core is shutting down"),
+        ));
     }
     // As the catalogue has the series now: an import may have replaced it while this request waited.
     let series = source(core, id)?;
@@ -634,15 +757,21 @@ fn frame(core: &App, cancelled: &AtomicBool, id: &str, index: usize, revision: O
     // keeps one decode at a time instead of one beside every cancelled one.
     let pixels = decode::decode_frame(&series, index)?;
     let mut reply = pixel_reply(Arc::new(pixels), components);
-    reply.headers.push(("x-source-frame-index", index.to_string()));
+    reply
+        .headers
+        .push(("x-source-frame-index", index.to_string()));
     if !metadata.sop_instance_uid.is_empty() {
         if !header_value(&metadata.sop_instance_uid) {
             return Err(ApiError(422, "Invalid source frame identifier".into()));
         }
-        reply.headers.push(("x-sop-instance-uid", metadata.sop_instance_uid.clone()));
+        reply
+            .headers
+            .push(("x-sop-instance-uid", metadata.sop_instance_uid.clone()));
     }
     if let Some(number) = metadata.source_frame_number {
-        reply.headers.push(("x-source-frame-number", number.to_string()));
+        reply
+            .headers
+            .push(("x-source-frame-number", number.to_string()));
     }
     Ok(reply)
 }
@@ -657,13 +786,22 @@ fn series_tags(core: &App, query: TagsQuery) -> ApiResult<Value> {
     let series = source(core, &query.id)?;
     check_revision(&series, query.revision)?;
     if let Some(file) = series.documents.first() {
-        return Ok(serde_json::to_value(tags::read_source_tags(file.open()?, &file.path)?).unwrap());
+        return Ok(
+            serde_json::to_value(tags::read_source_tags(file.open()?, &file.path)?).unwrap(),
+        );
     }
-    let frame = &series.frames[query.frame.filter(|n| *n < series.frames.len()).unwrap_or(0)];
+    let frame = &series.frames[query
+        .frame
+        .filter(|n| *n < series.frames.len())
+        .unwrap_or(0)];
     if frame.ordinary_image {
         return Ok(json!([]));
     }
-    Ok(serde_json::to_value(tags::read_source_tags(frame.source.open()?, &frame.source.path)?).unwrap())
+    Ok(serde_json::to_value(tags::read_source_tags(
+        frame.source.open()?,
+        &frame.source.path,
+    )?)
+    .unwrap())
 }
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -683,14 +821,21 @@ fn sample_series(core: &App, cancelled: &AtomicBool, request: SampleRequest) -> 
     let _sample = core.samples.turn(cancelled)?;
     let series = source(core, &request.id)?;
     let changed = || ApiError(409, "Source series changed".into());
-    if series.info.source_revision != request.source_revision { return Err(changed()); }
+    if series.info.source_revision != request.source_revision {
+        return Err(changed());
+    }
     let frame = match &request.operation {
         SampleOperation::SourceRegion(region) => {
-            if region.points.len() > 10_000 { return Err(ApiError(400, "Too many region points".into())); }
+            if region.points.len() > 10_000 {
+                return Err(ApiError(400, "Too many region points".into()));
+            }
             region.plane.single_frame(&series)?
         }
         SampleOperation::Window(window) => match &window.frame {
-            Some(frame) => { frame.validate(&series)?; Some(frame.index) }
+            Some(frame) => {
+                frame.validate(&series)?;
+                Some(frame.index)
+            }
             None => None,
         },
     };
@@ -699,14 +844,20 @@ fn sample_series(core: &App, cancelled: &AtomicBool, request: SampleRequest) -> 
         Arc::new(decode::decode_frame(&series, index)?)
     } else {
         let (pixels, loaded) = load_volume(core, &request.id, false, cancelled)?;
-        if loaded.info.source_revision != request.source_revision { return Err(changed()); }
+        if loaded.info.source_revision != request.source_revision {
+            return Err(changed());
+        }
         pixels
     };
     let result = match &request.operation {
-        SampleOperation::SourceRegion(region) => serde_json::to_value(sampling::region(&series, &pixels, region)?).unwrap(),
+        SampleOperation::SourceRegion(region) => {
+            serde_json::to_value(sampling::region(&series, &pixels, region)?).unwrap()
+        }
         SampleOperation::Window(window) => window::calculate(&series, &pixels, window)?,
     };
-    if source(core, &request.id)?.info.source_revision != request.source_revision { return Err(changed()); }
+    if source(core, &request.id)?.info.source_revision != request.source_revision {
+        return Err(changed());
+    }
     Ok(result)
 }
 
@@ -727,7 +878,10 @@ fn measure_series(core: &App, cancelled: &AtomicBool, request: MeasureRequest) -
         request.kind.as_str(),
         "length" | "line" | "distance" | "polyline" | "angle" | "cobb"
     ) {
-        (Arc::new(PixelBuffer::U8(Vec::new())), source(core, &request.series_id)?)
+        (
+            Arc::new(PixelBuffer::U8(Vec::new())),
+            source(core, &request.series_id)?,
+        )
     } else {
         load_volume(core, &request.series_id, false, cancelled)?
     };
@@ -755,7 +909,11 @@ struct ExportRequest {
     options: export::ExportOptions,
 }
 fn export_series(core: &App, call: &pipe::Request, mut request: ExportRequest) -> ApiResult<Value> {
-    request.options.cancelled = request.options.operation.as_deref().and_then(|id| call.export_flag(id));
+    request.options.cancelled = request
+        .options
+        .operation
+        .as_deref()
+        .and_then(|id| call.export_flag(id));
     request.options.check()?;
     let files = export_files(core, &request, true)?;
     Ok(serde_json::to_value(export::export_indexed(&files, &request.options)?).unwrap())
@@ -767,7 +925,11 @@ fn estimate_export(core: &App, request: ExportRequest) -> ApiResult<Value> {
     Ok(serde_json::to_value(result).unwrap())
 }
 /// The source files of the series (or the one slice) an export asks for.
-fn export_files(core: &App, request: &ExportRequest, writing: bool) -> ApiResult<Vec<Arc<source_file::SourceFile>>> {
+fn export_files(
+    core: &App,
+    request: &ExportRequest,
+    writing: bool,
+) -> ApiResult<Vec<Arc<source_file::SourceFile>>> {
     let mut ids = request.series_ids.clone();
     if let Some(id) = &request.series_id {
         ids.push(id.clone());
@@ -775,10 +937,16 @@ fn export_files(core: &App, request: &ExportRequest, writing: bool) -> ApiResult
     ids.sort();
     ids.dedup();
     if ids.is_empty() {
-        return Err(ApiError(400, note!("export.noSeries", "Select at least one series to export")));
+        return Err(ApiError(
+            400,
+            note!("export.noSeries", "Select at least one series to export"),
+        ));
     }
     if request.frame.is_some() && ids.len() != 1 {
-        return Err(ApiError(400, "Select exactly one series for current-slice export.".into()));
+        return Err(ApiError(
+            400,
+            "Select exactly one series for current-slice export.".into(),
+        ));
     }
     let mut files = Vec::new();
     for id in ids {
@@ -789,13 +957,33 @@ fn export_files(core: &App, request: &ExportRequest, writing: bool) -> ApiResult
             check_revision(&series, Some(*revision))?;
         }
         if series.frames.iter().any(|f| f.ordinary_image) {
-            return Err(ApiError(422, note!("export.ordinaryImages", "Ordinary images cannot be exported as original DICOM")));
+            return Err(ApiError(
+                422,
+                note!(
+                    "export.ordinaryImages",
+                    "Ordinary images cannot be exported as original DICOM"
+                ),
+            ));
         }
         match request.frame {
             Some(index) => {
-                let frame = series.frames.get(index).ok_or_else(|| ApiError(422, note!("export.sourceFrame", "No acquired DICOM frame at this index")))?;
+                let frame = series.frames.get(index).ok_or_else(|| {
+                    ApiError(
+                        422,
+                        note!(
+                            "export.sourceFrame",
+                            "No acquired DICOM frame at this index"
+                        ),
+                    )
+                })?;
                 if frame.metadata.source_frame_number.is_some() {
-                    return Err(ApiError(422, note!("export.multiframeSlice", "This slice belongs to a multiframe DICOM. Choose the whole series or export this slice as an image.")));
+                    return Err(ApiError(
+                        422,
+                        note!(
+                            "export.multiframeSlice",
+                            "This slice belongs to a multiframe DICOM. Choose the whole series or export this slice as an image."
+                        ),
+                    ));
                 }
                 files.push(frame.source.clone());
             }
@@ -806,7 +994,10 @@ fn export_files(core: &App, request: &ExportRequest, writing: bool) -> ApiResult
         }
     }
     if files.is_empty() {
-        return Err(ApiError(400, note!("export.noSeries", "Select at least one series to export")));
+        return Err(ApiError(
+            400,
+            note!("export.noSeries", "Select at least one series to export"),
+        ));
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     files.dedup_by(|a, b| a.path == b.path && a.same_contents(b));
@@ -816,7 +1007,12 @@ fn new_core(cache_limit: usize) -> App {
     Arc::new(Core {
         sources: RwLock::new(BTreeMap::new()),
         catalog_bytes: Mutex::new(BTreeMap::new()),
-        cache: Mutex::new(Cache { entries: VecDeque::new(), bytes: 0, limit: cache_limit, handoff: None }),
+        cache: Mutex::new(Cache {
+            entries: VecDeque::new(),
+            bytes: 0,
+            limit: cache_limit,
+            handoff: None,
+        }),
         archives: Mutex::new(Vec::new()),
         jobs: Queue::new(),
         frames: Queue::new(),
@@ -827,7 +1023,9 @@ fn new_core(cache_limit: usize) -> App {
 fn main() -> anyhow::Result<()> {
     // First: the pipes are the protocol from here on, and a print to fd 1 must not reach main.
     let (input, output) = pipe::stdio()?;
-    if let Err(error)=archive_temp::cleanup_stale() {eprintln!("Archive cleanup could not complete: {error}");}
+    if let Err(error) = archive_temp::cleanup_stale() {
+        eprintln!("Archive cleanup could not complete: {error}");
+    }
     let limit = std::env::var("VEACOM_CACHE_MIB")
         .ok()
         .and_then(|x| x.parse::<usize>().ok())
@@ -837,10 +1035,15 @@ fn main() -> anyhow::Result<()> {
         * 1024;
     let core = new_core(limit);
     let (serving, waking) = (core.clone(), core.clone());
-    let mut server = pipe::Server::start(input, output, move |request| handle(&serving, request), move || {
-        wake_cancelled(&waking);
-        pictures::wake_poll();
-    })?;
+    let mut server = pipe::Server::start(
+        input,
+        output,
+        move |request| handle(&serving, request),
+        move || {
+            wake_cancelled(&waking);
+            pictures::wake_poll();
+        },
+    )?;
     // Until the shutdown request, or main closing stdin (it quit or crashed): an engine without its app exits.
     server.wait_for_stop();
     progress::shutdown();
@@ -864,7 +1067,12 @@ mod cache_tests {
 
     #[test]
     fn a_warmed_volume_too_large_to_cache_is_handed_to_one_request() {
-        let mut cache = Cache { entries: VecDeque::new(), bytes: 0, limit: 64, handoff: None };
+        let mut cache = Cache {
+            entries: VecDeque::new(),
+            bytes: 0,
+            limit: 64,
+            handoff: None,
+        };
         let large = volume(64);
         cache.hand_off("large".into(), large.clone());
         assert_eq!(cache.bytes, 0);
@@ -887,7 +1095,12 @@ mod cache_tests {
         let mut rgba = vec![0; 64];
         rgba.truncate(48);
         let picture = Arc::new(PixelBuffer::U8(rgba));
-        let mut cache = Cache { entries: VecDeque::new(), bytes: 0, limit: 64, handoff: None };
+        let mut cache = Cache {
+            entries: VecDeque::new(),
+            bytes: 0,
+            limit: 64,
+            handoff: None,
+        };
         cache.put("picture".into(), picture.clone());
         assert_eq!(cache.bytes, 64);
         cache.put("small".into(), volume(4));
@@ -904,16 +1117,27 @@ mod cache_tests {
 
     #[test]
     fn a_warmed_volume_too_large_to_cache_leaves_the_cached_ones_alone() {
-        let mut cache = Cache { entries: VecDeque::new(), bytes: 0, limit: 64, handoff: None };
+        let mut cache = Cache {
+            entries: VecDeque::new(),
+            bytes: 0,
+            limit: 64,
+            handoff: None,
+        };
         cache.put("small".into(), volume(8));
         cache.hand_off("large".into(), volume(64));
-        assert!(cache.get("small").is_some(), "pre-loading another series does not empty the cache");
+        assert!(
+            cache.get("small").is_some(),
+            "pre-loading another series does not empty the cache"
+        );
         assert!(cache.get("large").is_some());
     }
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods, reason = "a test plays the part of the pipe workers with its own threads")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test plays the part of the pipe workers with its own threads"
+)]
 mod job_tests {
     use super::*;
     use dicom_core::{DataElement, PrimitiveValue, Tag, VR};
@@ -947,18 +1171,29 @@ mod job_tests {
             DataElement::new(Tag(0x0018, 0x0050), VR::DS, "1"),
         ]);
         for (tag, number) in [
-            (Tag(0x0028, 0x0010), 2u16), (Tag(0x0028, 0x0011), 2), (Tag(0x0028, 0x0002), 1),
-            (Tag(0x0028, 0x0100), 16), (Tag(0x0028, 0x0101), 16), (Tag(0x0028, 0x0102), 15), (Tag(0x0028, 0x0103), 0),
+            (Tag(0x0028, 0x0010), 2u16),
+            (Tag(0x0028, 0x0011), 2),
+            (Tag(0x0028, 0x0002), 1),
+            (Tag(0x0028, 0x0100), 16),
+            (Tag(0x0028, 0x0101), 16),
+            (Tag(0x0028, 0x0102), 15),
+            (Tag(0x0028, 0x0103), 0),
         ] {
             slice.put(DataElement::new(tag, VR::US, PrimitiveValue::from(number)));
         }
-        slice.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW, PrimitiveValue::U16(vec![value; 4].into())));
+        slice.put(DataElement::new(
+            Tag(0x7fe0, 0x0010),
+            VR::OW,
+            PrimitiveValue::U16(vec![value; 4].into()),
+        ));
         let path = directory.join(name);
         slice
-            .with_meta(FileMetaTableBuilder::new()
-                .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.4")
-                .media_storage_sop_instance_uid(instance.as_str())
-                .transfer_syntax("1.2.840.10008.1.2.1"))
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.4")
+                    .media_storage_sop_instance_uid(instance.as_str())
+                    .transfer_syntax("1.2.840.10008.1.2.1"),
+            )
             .unwrap()
             .write_to_file(&path)
             .unwrap();
@@ -985,13 +1220,19 @@ mod job_tests {
         let source = crate::test_dir::tempdir().unwrap();
         let out = crate::test_dir::tempdir().unwrap();
         let selected = write_slice(source.path(), "approved.dcm", 11);
-        let opts = serde_json::from_value(json!({"directory":out.path(), "dicomdir":true})).unwrap();
+        let opts =
+            serde_json::from_value(json!({"directory":out.path(), "dicomdir":true})).unwrap();
         let media = export::export_series(&[selected.into()], &opts).unwrap();
         let root = std::path::Path::new(&media.directory);
         write_slice(root, "unreferenced.dcm", 22);
         let index = root.join("DICOMDIR");
         let imported = ingest::import(&[index.to_string_lossy().into_owned()]).unwrap();
-        let uids: Vec<_> = imported.sources.iter().flat_map(|s| &s.frames).map(|f| f.sop_uid.as_str()).collect();
+        let uids: Vec<_> = imported
+            .sources
+            .iter()
+            .flat_map(|s| &s.frames)
+            .map(|f| f.sop_uid.as_str())
+            .collect();
         assert_eq!(uids, ["2.25.11"]);
 
         let referenced = root.join("DICOM/IM000001");
@@ -1009,7 +1250,12 @@ mod job_tests {
 
         let mut obj = dicom_object::open_file(&index).unwrap();
         obj.update_value(Tag(0x0004, 0x1220), |sequence| {
-            let record = sequence.items_mut().unwrap().iter_mut().find(|r| r.get(Tag(0x0004, 0x1500)).is_some()).unwrap();
+            let record = sequence
+                .items_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|r| r.get(Tag(0x0004, 0x1500)).is_some())
+                .unwrap();
             record.put_str(Tag(0x0004, 0x1500), VR::CS, "..\\PRIVATE");
         });
         obj.write_to_file(&index).unwrap();
@@ -1062,10 +1308,16 @@ mod job_tests {
         // Main gives up (the app reloads its page): the request is cancelled while its work runs on.
         cancelled.store(true, Ordering::Release);
         jobs.wake();
-        assert!(!free_within(&jobs, Duration::from_millis(100)), "the work keeps the queue's turn");
+        assert!(
+            !free_within(&jobs, Duration::from_millis(100)),
+            "the work keeps the queue's turn"
+        );
         release.send(()).unwrap();
         request.join().unwrap();
-        assert!(free_within(&jobs, Duration::from_secs(10)), "the turn is given back when the work ends");
+        assert!(
+            free_within(&jobs, Duration::from_secs(10)),
+            "the turn is given back when the work ends"
+        );
         // Finished, so a cancel finds nothing to stop and cannot fail the next job before it begins.
         assert_eq!(progress::snapshot()["running"], json!(false));
         progress::check().unwrap();
@@ -1085,22 +1337,43 @@ mod job_tests {
                 served.send((index, turn.is_ok())).unwrap();
             }));
             // In line one after another, as paging asks.
-            assert!(pipe::eventually(Duration::from_secs(5), || frames.lock().waiting.len() == index + 1));
+            assert!(pipe::eventually(Duration::from_secs(5), || frames
+                .lock()
+                .waiting
+                .len()
+                == index + 1));
         }
         // The viewer pages on: requests 0 and 2 are cancelled before their turn.
         for index in [0, 2] {
             cancelled[index].store(true, Ordering::Release);
         }
         frames.wake();
-        assert!(pipe::eventually(Duration::from_secs(5), || frames.lock().waiting.len() == 2));
+        assert!(pipe::eventually(Duration::from_secs(5), || frames
+            .lock()
+            .waiting
+            .len()
+            == 2));
         drop(holder);
         for thread in waiting {
             thread.join().unwrap();
         }
         let served: Vec<_> = order.try_iter().collect();
-        let given: Vec<_> = served.iter().filter(|(_, turn)| *turn).map(|(index, _)| *index).collect();
-        assert_eq!(given, [1, 3], "only the requests still wanted decode, in the order they asked");
-        assert!(served.iter().filter(|(_, turn)| !*turn).all(|(index, _)| [0, 2].contains(index)));
+        let given: Vec<_> = served
+            .iter()
+            .filter(|(_, turn)| *turn)
+            .map(|(index, _)| *index)
+            .collect();
+        assert_eq!(
+            given,
+            [1, 3],
+            "only the requests still wanted decode, in the order they asked"
+        );
+        assert!(
+            served
+                .iter()
+                .filter(|(_, turn)| !*turn)
+                .all(|(index, _)| [0, 2].contains(index))
+        );
     }
 
     #[test]
@@ -1117,17 +1390,36 @@ mod job_tests {
         let import = core.jobs.turn(&KEPT).ok().unwrap();
         let request = thread::spawn({
             let (core, id) = (core.clone(), id.clone());
-            move || load_volume(&core, &id, false, &KEPT).ok().map(|(pixels, _)| pixels)
+            move || {
+                load_volume(&core, &id, false, &KEPT)
+                    .ok()
+                    .map(|(pixels, _)| pixels)
+            }
         });
-        assert!(pipe::eventually(Duration::from_secs(5), || core.jobs.lock().waiting.len() == 1));
+        assert!(pipe::eventually(Duration::from_secs(5), || core
+            .jobs
+            .lock()
+            .waiting
+            .len()
+            == 1));
         // It commits as import_series does: the series is replaced and its cached volume dropped.
-        core.sources.write().unwrap().insert(id.clone(), second.clone());
+        core.sources
+            .write()
+            .unwrap()
+            .insert(id.clone(), second.clone());
         core.cache.lock().unwrap().remove(&id);
         drop(import);
         let expected = values(&decode::decode_volume(&second).unwrap());
-        assert_eq!(values(&request.join().unwrap().expect("a volume")), expected);
+        assert_eq!(
+            values(&request.join().unwrap().expect("a volume")),
+            expected
+        );
         let (cached, _) = load_volume(&core, &id, false, &KEPT).ok().unwrap();
-        assert_eq!(values(&cached), expected, "and the cache holds the new series' pixels, not the replaced one's");
+        assert_eq!(
+            values(&cached),
+            expected,
+            "and the cache holds the new series' pixels, not the replaced one's"
+        );
     }
 
     #[test]
@@ -1142,8 +1434,14 @@ mod job_tests {
             early.request_id = "startup-import".into();
             early.series.push(series.info.clone());
         }
-        for (request_id, after, count) in [("startup-import", 0, 1), ("manual-import", 0, 0), ("", 0, 0), ("startup-import", 1, 0)] {
-            let query = serde_json::from_value(json!({ "requestId": request_id, "after": after })).unwrap();
+        for (request_id, after, count) in [
+            ("startup-import", 0, 1),
+            ("manual-import", 0, 0),
+            ("", 0, 0),
+            ("startup-import", 1, 0),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "after": after })).unwrap();
             let result = early_series(&core, query);
             assert_eq!(result.series.len(), count, "{request_id} at {after}");
         }
@@ -1157,7 +1455,10 @@ mod job_tests {
         let id = series.info.id.clone();
         let core = core();
         core.sources.write().unwrap().insert(id.clone(), series);
-        core.cache.lock().unwrap().put(id.clone(), Arc::new(PixelBuffer::U16(vec![100; 4])));
+        core.cache
+            .lock()
+            .unwrap()
+            .put(id.clone(), Arc::new(PixelBuffer::U16(vec![100; 4])));
         let sources = core.sources.write().unwrap();
         let (started, wait) = mpsc::channel();
         let reader = thread::spawn({
@@ -1179,7 +1480,10 @@ mod job_tests {
         }
         drop(sources);
         assert!(reader.join().unwrap());
-        assert!(!cache_held, "imports hold the catalogue while taking the cache; reversing that order deadlocks");
+        assert!(
+            !cache_held,
+            "imports hold the catalogue while taking the cache; reversing that order deadlocks"
+        );
     }
 
     #[test]
@@ -1193,22 +1497,37 @@ mod job_tests {
                 operation: Some("export-1".into()),
                 cancelled: Some(Arc::new(std::sync::atomic::AtomicBool::new(true))),
                 directory: destination.to_string_lossy().into_owned(),
-                anonymize: false, dicomdir: false, decompress: false, root: false, full: false, zip, smallest: false,
+                anonymize: false,
+                dicomdir: false,
+                decompress: false,
+                root: false,
+                full: false,
+                zip,
+                smallest: false,
             };
-            let error = export::export_series(std::slice::from_ref(&source), &options).expect_err("cancelled");
+            let error = export::export_series(std::slice::from_ref(&source), &options)
+                .expect_err("cancelled");
             assert_eq!(error.to_string(), "Export cancelled; nothing was kept");
-            assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0, "nothing written (zip: {zip})");
+            assert_eq!(
+                std::fs::read_dir(&destination).unwrap().count(),
+                0,
+                "nothing written (zip: {zip})"
+            );
         }
     }
-
-
 }
 
 #[cfg(test)]
-#[allow(clippy::disallowed_methods, reason = "a test plays the part of the pipe workers with its own threads")]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a test plays the part of the pipe workers with its own threads"
+)]
 mod protocol_tests {
     use super::*;
-    use std::{io::{PipeReader, PipeWriter}, thread};
+    use std::{
+        io::{PipeReader, PipeWriter},
+        thread,
+    };
 
     /// The engine as main runs it, over pipes: requests by op, answers with status, headers and body.
     struct Engine {
@@ -1224,13 +1543,28 @@ mod protocol_tests {
             let (mut replies, output) = std::io::pipe().unwrap();
             let core = new_core(1 << 20);
             let (serving, waking) = (core.clone(), core.clone());
-            let server = pipe::Server::start(input, output, move |request| handle(&serving, request), move || {
-                wake_cancelled(&waking);
-            }).unwrap();
+            let server = pipe::Server::start(
+                input,
+                output,
+                move |request| handle(&serving, request),
+                move || {
+                    wake_cancelled(&waking);
+                },
+            )
+            .unwrap();
             let (kind, _, hello) = pipe::read_message(&mut replies).unwrap();
             assert_eq!(kind, 0);
-            assert_eq!(serde_json::from_slice::<Value>(&hello).unwrap()["protocol"], json!(pipe::PROTOCOL));
-            Self { requests, replies, next: 1, core, _server: server }
+            assert_eq!(
+                serde_json::from_slice::<Value>(&hello).unwrap()["protocol"],
+                json!(pipe::PROTOCOL)
+            );
+            Self {
+                requests,
+                replies,
+                next: 1,
+                core,
+                _server: server,
+            }
         }
         /// Sends a request without waiting for its answer, as main does before it cancels one.
         fn send(&mut self, request: Value) -> u32 {
@@ -1256,7 +1590,10 @@ mod protocol_tests {
             assert_eq!((kind, from), (1, id));
             let head: Value = serde_json::from_slice(&head).unwrap();
             let length = head["length"].as_u64().unwrap() as u32;
-            if length > 0 && (head["headers"]["content-type"] != "application/json" || length as usize > pipe::INLINE) {
+            if length > 0
+                && (head["headers"]["content-type"] != "application/json"
+                    || length as usize > pipe::INLINE)
+            {
                 let mut credit = vec![2u8];
                 credit.extend(id.to_le_bytes());
                 credit.extend(4u32.to_le_bytes());
@@ -1273,7 +1610,10 @@ mod protocol_tests {
         }
         fn json(&mut self, request: Value) -> (u64, Value) {
             let (head, body) = self.call(request);
-            (head["status"].as_u64().unwrap(), serde_json::from_slice(&body).unwrap())
+            (
+                head["status"].as_u64().unwrap(),
+                serde_json::from_slice(&body).unwrap(),
+            )
         }
     }
 
@@ -1282,14 +1622,22 @@ mod protocol_tests {
         let mut engine = Engine::start();
         let core = engine.core.clone();
         // A measurement in progress holds the turn; the next one waits behind it.
-        let Ok(running) = core.samples.turn(&AtomicBool::new(false)) else { panic!("the measurement turn is free") };
-        let id = engine.send(json!({"op": "sample", "body": {"id": "none", "sourceRevision": 1,
-            "operation": {"kind": "window", "automatic": true}}}));
+        let Ok(running) = core.samples.turn(&AtomicBool::new(false)) else {
+            panic!("the measurement turn is free")
+        };
+        let id = engine.send(
+            json!({"op": "sample", "body": {"id": "none", "sourceRevision": 1,
+            "operation": {"kind": "window", "automatic": true}}}),
+        );
         let waiting = || core.samples.lock().waiting.len();
         let wait_for = |count: usize| {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while waiting() != count {
-                assert!(std::time::Instant::now() < deadline, "{} waiting for the measurement turn, expected {count}", waiting());
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{} waiting for the measurement turn, expected {count}",
+                    waiting()
+                );
                 thread::sleep(std::time::Duration::from_millis(5));
             }
         };
@@ -1307,34 +1655,89 @@ mod protocol_tests {
         let path = write_test_slice(temp.path());
         let mut engine = Engine::start();
         let (status, health) = engine.json(json!({"op": "health"}));
-        assert_eq!((status, health["ok"].clone(), health["protocol"].clone()), (200, json!(true), json!(pipe::PROTOCOL)));
+        assert_eq!(
+            (status, health["ok"].clone(), health["protocol"].clone()),
+            (200, json!(true), json!(pipe::PROTOCOL))
+        );
         assert_eq!(engine.json(json!({"op": "unknown"})).0, 404);
-        assert_eq!(engine.json(json!({"op": "import"})).0, 400, "a body the operation cannot read");
-        let (status, imported) = engine.json(json!({"op": "import", "body": {"paths": [path], "requestId": "r1"}}));
+        assert_eq!(
+            engine.json(json!({"op": "import"})).0,
+            400,
+            "a body the operation cannot read"
+        );
+        let (status, imported) =
+            engine.json(json!({"op": "import", "body": {"paths": [path], "requestId": "r1"}}));
         assert_eq!(status, 200, "{imported}");
         let id = imported["series"][0]["id"].as_str().unwrap().to_string();
-        assert_eq!(engine.json(json!({"op": "series"})).1["series"][0]["id"], json!(id));
+        assert_eq!(
+            engine.json(json!({"op": "series"})).1["series"][0]["id"],
+            json!(id)
+        );
         let (head, pixels) = engine.call(json!({"op": "frame", "body": {"id": id, "index": 0}}));
         assert_eq!(head["status"], json!(200));
         assert_eq!(head["headers"]["x-pixel-type"], json!("uint16"));
         assert_eq!(head["headers"]["x-source-frame-index"], json!("0"));
         assert_eq!(head["headers"]["x-sop-instance-uid"], json!("2.25.100"));
-        assert_eq!(pixels, [100u16; 4].iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<_>>());
+        assert_eq!(
+            pixels,
+            [100u16; 4]
+                .iter()
+                .flat_map(|v| v.to_le_bytes())
+                .collect::<Vec<_>>()
+        );
         let (head, volume) = engine.call(json!({"op": "volume", "body": {"id": id}}));
-        assert_eq!((head["headers"]["x-components"].clone(), volume.len()), (json!("1"), 8));
-        assert_eq!(engine.json(json!({"op": "frame", "body": {"id": id, "index": 1}})).0, 404);
-        assert_eq!(engine.json(json!({"op": "tags", "body": {"id": id}})).0, 200);
-        assert_eq!(engine.json(json!({"op": "progress"})).1["running"], json!(false));
-        assert_eq!(engine.json(json!({"op": "cancel"})).1, json!({"requested": false}));
-        assert_eq!(engine.json(json!({"op": "cancel", "body": {"id": 1}})).1, json!({"requested": false}));
-        assert_eq!(engine.json(json!({"op": "importEarly", "body": {"after": 0, "requestId": "r1"}})).1["series"], json!([]));
+        assert_eq!(
+            (head["headers"]["x-components"].clone(), volume.len()),
+            (json!("1"), 8)
+        );
+        assert_eq!(
+            engine
+                .json(json!({"op": "frame", "body": {"id": id, "index": 1}}))
+                .0,
+            404
+        );
+        assert_eq!(
+            engine.json(json!({"op": "tags", "body": {"id": id}})).0,
+            200
+        );
+        assert_eq!(
+            engine.json(json!({"op": "progress"})).1["running"],
+            json!(false)
+        );
+        assert_eq!(
+            engine.json(json!({"op": "cancel"})).1,
+            json!({"requested": false})
+        );
+        assert_eq!(
+            engine.json(json!({"op": "cancel", "body": {"id": 1}})).1,
+            json!({"requested": false})
+        );
+        assert_eq!(
+            engine
+                .json(json!({"op": "importEarly", "body": {"after": 0, "requestId": "r1"}}))
+                .1["series"],
+            json!([])
+        );
         assert_eq!(engine.json(json!({"op": "processCounters"})).0, 200);
         let (status, length) = engine.json(json!({"op": "measure", "body": {"seriesId": id, "points": [[0, 0, 0], [1, 0, 0]], "kind": "length"}}));
         assert_eq!((status, length["value"].clone()), (200, json!(1.0)));
-        assert_eq!(engine.json(json!({"op": "exportCancel", "body": {"operation": "none"}})).1, json!({"requested": false}));
-        assert_eq!(engine.json(json!({"op": "removeSeries", "body": {"ids": [id]}})).1, json!({"removed": 1, "remaining": 0}));
+        assert_eq!(
+            engine
+                .json(json!({"op": "exportCancel", "body": {"operation": "none"}}))
+                .1,
+            json!({"requested": false})
+        );
+        assert_eq!(
+            engine
+                .json(json!({"op": "removeSeries", "body": {"ids": [id]}}))
+                .1,
+            json!({"removed": 1, "remaining": 0})
+        );
         let (status, error) = engine.json(json!({"op": "volume", "body": {"id": id}}));
-        assert_eq!((status, error["note"]["code"].clone()), (404, json!("series.notFound")));
+        assert_eq!(
+            (status, error["note"]["code"].clone()),
+            (404, json!("series.notFound"))
+        );
     }
 
     #[test]
@@ -1343,7 +1746,11 @@ mod protocol_tests {
         let _turn = job_tests_progress();
         let temp = crate::test_dir::tempdir().unwrap();
         let mut paths = Vec::new();
-        for (value, name, issuer) in [(11, "SYNTHETIC^A", "SITE-A"), (22, "SYNTHETIC^B", "SITE-B"), (33, "SYNTHETIC^A", "SITE-B")] {
+        for (value, name, issuer) in [
+            (11, "SYNTHETIC^A", "SITE-A"),
+            (22, "SYNTHETIC^B", "SITE-B"),
+            (33, "SYNTHETIC^A", "SITE-B"),
+        ] {
             let path = super::job_tests::slice(temp.path(), &format!("slice{value}.dcm"), value);
             let mut obj = dicom_object::open_file(&path).unwrap();
             obj.put_str(Tag(0x0010, 0x0010), VR::PN, name);
@@ -1357,16 +1764,22 @@ mod protocol_tests {
         assert_eq!(status, 200, "{result}");
         let series = result["series"].as_array().unwrap();
         assert_eq!(series.len(), 3, "{result}");
-        assert!(result["warningNotes"].as_array().unwrap().iter().any(|n| n["code"] == "import.patientConflict"));
+        assert!(
+            result["warningNotes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n["code"] == "import.patientConflict")
+        );
         let mut samples = Vec::new();
         for s in series {
             assert_eq!(s["dimensions"][2], 1);
             let (head, pixels) = engine.call(json!({"op":"frame","body":{"id":s["id"],"index":0}}));
             assert_eq!(head["status"], 200);
-            samples.push(u16::from_le_bytes([pixels[0],pixels[1]]));
+            samples.push(u16::from_le_bytes([pixels[0], pixels[1]]));
         }
         samples.sort();
-        assert_eq!(samples, [11,22,33]);
+        assert_eq!(samples, [11, 22, 33]);
     }
 
     #[test]
@@ -1382,7 +1795,9 @@ mod protocol_tests {
             obj.write_to_file(&path).unwrap();
             let (status, result) = engine.json(json!({"op":"import", "body":{"paths":[path]}}));
             assert_eq!(status, 200, "{result}");
-            let warned = result["warningNotes"].as_array().is_some_and(|notes| notes.iter().any(|n| n["code"] == "import.patientConflict"));
+            let warned = result["warningNotes"]
+                .as_array()
+                .is_some_and(|notes| notes.iter().any(|n| n["code"] == "import.patientConflict"));
             assert_eq!(warned, conflict, "{name}: {result}");
         }
     }
@@ -1416,20 +1831,27 @@ mod protocol_tests {
                 other.write_to_file(&path).unwrap();
             }
             for call in [
-                frame.clone(), tags.clone(), json!({"op":"volume", "body":{"id":id}}),
+                frame.clone(),
+                tags.clone(),
+                json!({"op":"volume", "body":{"id":id}}),
                 json!({"op":"export", "body":{"seriesId":id, "directory":out.path()}}),
                 json!({"op":"export", "body":{"seriesId":id, "directory":out.path(), "zip":true}}),
                 json!({"op":"exportEstimate", "body":{"seriesId":id, "directory":out.path(), "zip":true}}),
             ] {
                 let op = call["op"].clone();
                 let (status, error) = engine.json(call);
-                assert_eq!((status, &error["note"]["code"]), (422, &json!("file.sourceChanged")), "{op}: {error}");
+                assert_eq!(
+                    (status, &error["note"]["code"]),
+                    (422, &json!("file.sourceChanged")),
+                    "{op}: {error}"
+                );
             }
             assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
         }
         let (status, fresh) = engine.json(import);
         assert_eq!(status, 200, "{fresh}");
-        let (head, pixels) = engine.call(json!({"op":"frame", "body":{"id":fresh["series"][0]["id"], "index":0}}));
+        let (head, pixels) =
+            engine.call(json!({"op":"frame", "body":{"id":fresh["series"][0]["id"], "index":0}}));
         assert_eq!(head["status"], 200);
         assert_eq!(pixels, 22u16.to_le_bytes().repeat(4));
     }
@@ -1448,15 +1870,23 @@ mod protocol_tests {
         let frame = |revision| json!({"op":"frame","body":{"id":id,"index":0,"revision":revision}});
         assert_eq!(engine.call(frame(old)).1, 11u16.to_le_bytes().repeat(4));
         let mut obj = dicom_object::open_file(&path).unwrap();
-        obj.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW, PrimitiveValue::U16(vec![22; 4].into())));
+        obj.put(DataElement::new(
+            Tag(0x7fe0, 0x0010),
+            VR::OW,
+            PrimitiveValue::U16(vec![22; 4].into()),
+        ));
         obj.write_to_file(&path).unwrap();
         let (_, second) = engine.json(import);
         let new = second["series"][0]["catalogRevision"].as_u64().unwrap();
         assert!(new > old);
         assert_eq!(&second["series"][0]["id"], id);
         for op in ["frame", "volume", "tags"] {
-            let (status, error) = engine.json(json!({"op":op,"body":{"id":id,"revision":old,"index":0}}));
-            assert_eq!((status, &error["note"]["code"]), (409, &json!("series.replaced")));
+            let (status, error) =
+                engine.json(json!({"op":op,"body":{"id":id,"revision":old,"index":0}}));
+            assert_eq!(
+                (status, &error["note"]["code"]),
+                (409, &json!("series.replaced"))
+            );
         }
         assert_eq!(engine.call(frame(new)).1, 22u16.to_le_bytes().repeat(4));
     }
@@ -1473,16 +1903,27 @@ mod protocol_tests {
         let (_, first) = engine.json(import.clone());
         let id = first["series"][0]["id"].as_str().unwrap();
         let revision = first["series"][0]["catalogRevision"].clone();
-        let request = |review: Value, zip: bool| json!({"op":"export","body":{"seriesId":id, "directory":out.path(),
-            "anonymize":true, "full":true, "zip":zip, "reviewedRevisions":review}});
-        assert_eq!(engine.json(request(json!({}), false)).1["note"]["code"], "export.pixelReview");
+        let request = |review: Value, zip: bool| {
+            json!({"op":"export","body":{"seriesId":id, "directory":out.path(),
+            "anonymize":true, "full":true, "zip":zip, "reviewedRevisions":review}})
+        };
+        assert_eq!(
+            engine.json(request(json!({}), false)).1["note"]["code"],
+            "export.pixelReview"
+        );
         let mut obj = dicom_object::open_file(&path).unwrap();
         obj.put_str(Tag(0x0028, 0x0301), VR::CS, "YES");
         obj.write_to_file(&path).unwrap();
         let (_, current) = engine.json(import);
-        assert_eq!(engine.json(request(json!({id:revision}), false)).1["note"]["code"], "series.replaced");
+        assert_eq!(
+            engine.json(request(json!({id:revision}), false)).1["note"]["code"],
+            "series.replaced"
+        );
         for zip in [true, false] {
-            let (_, error) = engine.json(request(json!({id:current["series"][0]["catalogRevision"]}), zip));
+            let (_, error) = engine.json(request(
+                json!({id:current["series"][0]["catalogRevision"]}),
+                zip,
+            ));
             assert_eq!(error["note"]["code"], "export.burnedReview", "{error}");
         }
         assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
@@ -1497,8 +1938,11 @@ mod protocol_tests {
         let path = super::job_tests::slice(temp.path(), "frames.dcm", 11);
         let mut image = dicom_object::open_file(&path).unwrap();
         image.put_str(Tag(0x0028, 0x0008), VR::IS, "2");
-        image.put(DataElement::new(Tag(0x7fe0, 0x0010), VR::OW,
-            PrimitiveValue::U16(vec![11,11,11,11,22,22,22,22].into())));
+        image.put(DataElement::new(
+            Tag(0x7fe0, 0x0010),
+            VR::OW,
+            PrimitiveValue::U16(vec![11, 11, 11, 11, 22, 22, 22, 22].into()),
+        ));
         image.write_to_file(&path).unwrap();
         let mut engine = Engine::start();
         let (status, result) = engine.json(json!({"op":"import", "body":{"paths":[path]}}));
@@ -1508,12 +1952,17 @@ mod protocol_tests {
             for index in [0, 1] {
                 for op in ["export", "exportEstimate"] {
                     let (status, error) = engine.json(json!({"op":op, "body":{"seriesId":id, "directory":out.path(), "frame":index, "zip":zip}}));
-                    assert_eq!((status, &error["note"]["code"]), (422, &json!("export.multiframeSlice")), "{error}");
+                    assert_eq!(
+                        (status, &error["note"]["code"]),
+                        (422, &json!("export.multiframeSlice")),
+                        "{error}"
+                    );
                 }
             }
         }
         assert_eq!(std::fs::read_dir(out.path()).unwrap().count(), 0);
-        let (status, result) = engine.json(json!({"op":"export", "body":{"seriesId":id, "directory":out.path()}}));
+        let (status, result) =
+            engine.json(json!({"op":"export", "body":{"seriesId":id, "directory":out.path()}}));
         assert_eq!(status, 200, "{result}");
         let single = super::job_tests::slice(temp.path(), "single.dcm", 33);
         let (status, result) = engine.json(json!({"op":"import", "body":{"paths":[single]}}));
@@ -1534,19 +1983,38 @@ mod protocol_tests {
         let temp = crate::test_dir::tempdir().unwrap();
         let path = super::job_tests::slice(temp.path(), "frame.dcm", 7);
         let core = new_core(1 << 20);
-        core.sources.write().unwrap().insert("s".into(), ingest::import(&[path]).ok().unwrap().sources.remove(0));
+        core.sources.write().unwrap().insert(
+            "s".into(),
+            ingest::import(&[path]).ok().unwrap().sources.remove(0),
+        );
         // A decode holds the frames queue; main asks for a frame, then pages on and cancels it.
         let holder = core.frames.turn(&KEPT).ok().unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let waiting = thread::spawn({
             let (core, cancelled) = (core.clone(), cancelled.clone());
-            move || frame(&core, &cancelled, "s", 0, None).err().map(|error| error.0)
+            move || {
+                frame(&core, &cancelled, "s", 0, None)
+                    .err()
+                    .map(|error| error.0)
+            }
         });
-        assert!(pipe::eventually(std::time::Duration::from_secs(5), || core.frames.lock().waiting.len() == 1));
+        assert!(pipe::eventually(std::time::Duration::from_secs(5), || core
+            .frames
+            .lock()
+            .waiting
+            .len()
+            == 1));
         cancelled.store(true, Ordering::Release);
         core.frames.wake();
-        assert_eq!(waiting.join().unwrap(), Some(499), "it gave up waiting without decoding");
+        assert_eq!(
+            waiting.join().unwrap(),
+            Some(499),
+            "it gave up waiting without decoding"
+        );
         drop(holder);
-        assert!(frame(&core, &KEPT, "s", 0, None).is_ok(), "and the queue still serves the next request");
+        assert!(
+            frame(&core, &KEPT, "s", 0, None).is_ok(),
+            "and the queue still serves the next request"
+        );
     }
 }

@@ -4,7 +4,10 @@ use std::{
     ffi::CString,
     fs::{self, File},
     io,
-    os::{fd::AsRawFd, unix::{ffi::OsStrExt, fs::PermissionsExt}},
+    os::{
+        fd::AsRawFd,
+        unix::{ffi::OsStrExt, fs::PermissionsExt},
+    },
     path::PathBuf,
     sync::{Arc, Mutex, Weak},
 };
@@ -34,17 +37,26 @@ impl Snapshot {
         let path = directory.path().join(random::uuid_v4_simple());
         let name = CString::new(path.as_os_str().as_bytes())?;
         // fclonefileat creates a new file from this open descriptor. CLONE_NOOWNERCOPY keeps our ownership.
-        if unsafe { libc::fclonefileat(source.as_raw_fd(), libc::AT_FDCWD, name.as_ptr(), 0x0002) } != 0 {
+        if unsafe { libc::fclonefileat(source.as_raw_fd(), libc::AT_FDCWD, name.as_ptr(), 0x0002) }
+            != 0
+        {
             return Err(io::Error::last_os_error().into());
         }
-        let snapshot = Self { path, _directory: directory };
+        let snapshot = Self {
+            path,
+            _directory: directory,
+        };
         fs::set_permissions(&snapshot.path, fs::Permissions::from_mode(0o400))?;
         Ok(snapshot)
     }
 
-    pub(super) fn open(&self) -> io::Result<File> { File::open(&self.path) }
+    pub(super) fn open(&self) -> io::Result<File> {
+        File::open(&self.path)
+    }
 }
 
 impl Drop for Snapshot {
-    fn drop(&mut self) { let _ = fs::remove_file(&self.path); }
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }

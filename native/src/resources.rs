@@ -27,7 +27,8 @@ fn read() -> Counters {
         cpu_seconds: Some(seconds(raw.ru_utime) + seconds(raw.ru_stime)),
         resident_bytes: resident(),
         // Darwin reports bytes; Linux reports KiB.
-        peak_resident_bytes: peak.and_then(|n| n.checked_mul(if cfg!(target_os = "macos") { 1 } else { 1024 })),
+        peak_resident_bytes: peak
+            .and_then(|n| n.checked_mul(if cfg!(target_os = "macos") { 1 } else { 1024 })),
     }
 }
 
@@ -36,13 +37,26 @@ fn resident() -> Option<u64> {
     let mut task = std::mem::MaybeUninit::<libc::proc_taskinfo>::uninit();
     let size = std::mem::size_of::<libc::proc_taskinfo>() as i32;
     // PROC_PIDTASKINFO writes exactly one proc_taskinfo for our own PID.
-    let count = unsafe { libc::proc_pidinfo(libc::getpid(), libc::PROC_PIDTASKINFO, 0, task.as_mut_ptr().cast(), size) };
+    let count = unsafe {
+        libc::proc_pidinfo(
+            libc::getpid(),
+            libc::PROC_PIDTASKINFO,
+            0,
+            task.as_mut_ptr().cast(),
+            size,
+        )
+    };
     (count == size).then(|| unsafe { task.assume_init() }.pti_resident_size)
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn resident() -> Option<u64> {
-    let pages = std::fs::read_to_string("/proc/self/statm").ok()?.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+    let pages = std::fs::read_to_string("/proc/self/statm")
+        .ok()?
+        .split_whitespace()
+        .nth(1)?
+        .parse::<u64>()
+        .ok()?;
     let page_size = u64::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).ok()?;
     pages.checked_mul(page_size)
 }
@@ -51,14 +65,27 @@ fn resident() -> Option<u64> {
 fn read() -> Counters {
     use windows_sys::Win32::{
         Foundation::FILETIME,
-        System::{ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS}, Threading::{GetCurrentProcess, GetProcessTimes}},
+        System::{
+            ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS},
+            Threading::{GetCurrentProcess, GetProcessTimes},
+        },
     };
     let own = unsafe { GetCurrentProcess() };
-    let (mut created, mut exited, mut kernel, mut user) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
-    let ticks = |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64;
-    let cpu = unsafe { GetProcessTimes(own, &mut created, &mut exited, &mut kernel, &mut user) } != 0;
+    let (mut created, mut exited, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    let ticks =
+        |t: FILETIME| ((u64::from(t.dwHighDateTime) << 32) | u64::from(t.dwLowDateTime)) as f64;
+    let cpu =
+        unsafe { GetProcessTimes(own, &mut created, &mut exited, &mut kernel, &mut user) } != 0;
     let size = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
-    let mut memory = PROCESS_MEMORY_COUNTERS { cb: size, ..Default::default() };
+    let mut memory = PROCESS_MEMORY_COUNTERS {
+        cb: size,
+        ..Default::default()
+    };
     let ram = unsafe { GetProcessMemoryInfo(own, &mut memory, size) } != 0;
     Counters {
         cpu_seconds: cpu.then(|| (ticks(kernel) + ticks(user)) / 10_000_000.0),

@@ -51,7 +51,9 @@ impl Cache {
         self.remove(&id);
         let bytes = value.bytes().len();
         while self.bytes + bytes > self.limit {
-            let Some((_, old)) = self.entries.pop_front() else { break };
+            let Some((_, old)) = self.entries.pop_front() else {
+                break;
+            };
             self.bytes -= old.bytes().len();
         }
         if bytes <= self.limit {
@@ -90,7 +92,11 @@ impl Default for Session {
             catalog_bytes: BTreeMap::new(),
             archives: Vec::new(),
             // As the desktop's default (VEACOM_CACHE_MIB): 256 MiB of decoded volumes.
-            cache: Cache { entries: VecDeque::new(), bytes: 0, limit: 256 * 1024 * 1024 },
+            cache: Cache {
+                entries: VecDeque::new(),
+                bytes: 0,
+                limit: 256 * 1024 * 1024,
+            },
             last_import: Vec::new(),
             imports: 0,
             revisions: 0,
@@ -102,7 +108,10 @@ impl Default for Session {
 fn check_revision(series: &SourceSeries, expected: Option<u64>) -> Result<()> {
     anyhow::ensure!(
         expected.is_none_or(|revision| revision == series.info.catalog_revision),
-        coded!("series.replaced", "This series was replaced. Open the current series again.")
+        coded!(
+            "series.replaced",
+            "This series was replaced. Open the current series again."
+        )
     );
     Ok(())
 }
@@ -125,14 +134,30 @@ impl Session {
     }
 
     pub fn list(&self) -> ImportResult {
-        ImportResult { series: self.sources.values().map(|source| source.info.clone()).collect(), warnings: Default::default() }
+        ImportResult {
+            series: self
+                .sources
+                .values()
+                .map(|source| source.info.clone())
+                .collect(),
+            warnings: Default::default(),
+        }
     }
 
     /// Imports files, folders or ZIPs by path and adds their series to the catalog, within the limits and with the
     /// patient check the desktop's session applies (`veacom_core::catalog`).
     pub fn import(&mut self, paths: &[String]) -> Result<ImportResult> {
-        anyhow::ensure!(paths.len() <= ingest::MAX_FILES, coded!("import.tooManyPaths", "Select at most 50,000 paths per import"));
-        let incoming_archives = paths.iter().filter(|path| ingest::is_zip_file(Path::new(path))).count();
+        anyhow::ensure!(
+            paths.len() <= ingest::MAX_FILES,
+            coded!(
+                "import.tooManyPaths",
+                "Select at most 50,000 paths per import"
+            )
+        );
+        let incoming_archives = paths
+            .iter()
+            .filter(|path| ingest::is_zip_file(Path::new(path)))
+            .count();
         anyhow::ensure!(
             incoming_archives <= MAX_OPEN_ARCHIVES.saturating_sub(self.archives.len()),
             coded!(
@@ -154,17 +179,34 @@ impl Session {
         }
         let costs = catalog::costs(&imported.sources)?;
         let mut result = ImportResult {
-            series: imported.sources.iter().map(|source| source.info.clone()).collect(),
+            series: imported
+                .sources
+                .iter()
+                .map(|source| source.info.clone())
+                .collect(),
             warnings: imported.warnings.into(),
         };
         if catalog::patient_conflict(&imported.sources, self.sources.values()) {
             result.warnings.push(catalog::conflict_note());
         }
-        anyhow::ensure!(catalog::fits(&self.sources, &self.catalog_bytes, &imported.sources, &costs), Coded(catalog::full_note()));
-        self.last_import = imported.sources.iter().map(|source| source.info.id.clone()).collect();
+        anyhow::ensure!(
+            catalog::fits(
+                &self.sources,
+                &self.catalog_bytes,
+                &imported.sources,
+                &costs
+            ),
+            Coded(catalog::full_note())
+        );
+        self.last_import = imported
+            .sources
+            .iter()
+            .map(|source| source.info.id.clone())
+            .collect();
         for source in imported.sources {
             self.cache.remove(&source.info.id);
-            self.catalog_bytes.insert(source.info.id.clone(), costs[&source.info.id]);
+            self.catalog_bytes
+                .insert(source.info.id.clone(), costs[&source.info.id]);
             self.sources.insert(source.info.id.clone(), source);
         }
         self.archives.extend(imported.archives);
@@ -172,16 +214,21 @@ impl Session {
     }
 
     /// Drops archive directories as soon as their last series goes. The remaining paths also own the page's Blob files.
-    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code, reason = "only the page calls it"))]
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "only the page calls it")
+    )]
     pub fn prune_archives(&mut self) -> HashSet<PathBuf> {
-        let paths: HashSet<_> = self.sources
+        let paths: HashSet<_> = self
+            .sources
             .values()
             .flat_map(|source| {
                 let frames = source.frames.iter().map(|frame| frame.source.path.clone());
                 frames.chain(source.documents.iter().map(|file| file.path.clone()))
             })
             .collect();
-        self.archives.retain(|archive| paths.iter().any(|path| path.starts_with(archive.path())));
+        self.archives
+            .retain(|archive| paths.iter().any(|path| path.starts_with(archive.path())));
         paths
     }
 
@@ -202,7 +249,10 @@ impl Session {
     }
 
     /// Whether the series' decoded volume is in the cache.
-    #[cfg_attr(not(feature = "threads"), allow(dead_code, reason = "only the threaded build calls it"))]
+    #[cfg_attr(
+        not(feature = "threads"),
+        allow(dead_code, reason = "only the threaded build calls it")
+    )]
     pub fn has_volume(&self, id: &str) -> bool {
         self.cache.entries.iter().any(|(key, _)| key == id)
     }
@@ -227,24 +277,44 @@ impl Session {
     pub fn frame(&self, id: &str, index: usize, revision: Option<u64>) -> Result<FramePixels> {
         let series = self.source(id)?;
         check_revision(&series, revision)?;
-        let frame = series.frames.get(index).context("Frame index is out of bounds")?;
+        let frame = series
+            .frames
+            .get(index)
+            .context("Frame index is out of bounds")?;
         let metadata = frame.metadata.clone();
-        Ok(FramePixels { pixels: decode::decode_frame(&series, index)?, components: series.info.components, metadata })
+        Ok(FramePixels {
+            pixels: decode::decode_frame(&series, index)?,
+            components: series.info.components,
+            metadata,
+        })
     }
 
     /// The tags of the file holding frame `frame` (the slice shown), or of the series' first frame.
     /// A series that is a document (an encapsulated PDF, a report) shows its document's tags.
-    pub fn tags(&self, id: &str, frame: Option<usize>, revision: Option<u64>) -> Result<serde_json::Value> {
+    pub fn tags(
+        &self,
+        id: &str,
+        frame: Option<usize>,
+        revision: Option<u64>,
+    ) -> Result<serde_json::Value> {
         let series = self.source(id)?;
         check_revision(&series, revision)?;
         if let Some(file) = series.documents.first() {
-            return Ok(serde_json::to_value(tags::read_source_tags(file.open()?, &file.path)?)?);
+            return Ok(serde_json::to_value(tags::read_source_tags(
+                file.open()?,
+                &file.path,
+            )?)?);
         }
-        let frame = &series.frames[frame.filter(|index| *index < series.frames.len()).unwrap_or(0)];
+        let frame = &series.frames[frame
+            .filter(|index| *index < series.frames.len())
+            .unwrap_or(0)];
         if frame.ordinary_image {
             return Ok(serde_json::json!([]));
         }
-        Ok(serde_json::to_value(tags::read_source_tags(frame.source.open()?, &frame.source.path)?)?)
+        Ok(serde_json::to_value(tags::read_source_tags(
+            frame.source.open()?,
+            &frame.source.path,
+        )?)?)
     }
 
     /// Exports series (or one frame of one series) as the desktop does, into memory instead of a folder, and returns the
@@ -264,9 +334,16 @@ impl Session {
         let mut ids = ids.to_vec();
         ids.sort();
         ids.dedup();
-        anyhow::ensure!(!ids.is_empty(), coded!("export.noSeries", "Select at least one series to export"));
-        anyhow::ensure!(frame.is_none() || ids.len() == 1, "Select exactly one series for current-slice export.");
-        let full_cleanup = options["anonymize"].as_bool().unwrap_or(false) && options["full"].as_bool().unwrap_or(false);
+        anyhow::ensure!(
+            !ids.is_empty(),
+            coded!("export.noSeries", "Select at least one series to export")
+        );
+        anyhow::ensure!(
+            frame.is_none() || ids.len() == 1,
+            "Select exactly one series for current-slice export."
+        );
+        let full_cleanup = options["anonymize"].as_bool().unwrap_or(false)
+            && options["full"].as_bool().unwrap_or(false);
         let mut files: Vec<Arc<SourceFile>> = Vec::new();
         for id in &ids {
             let series = self.source(id)?;
@@ -278,14 +355,25 @@ impl Session {
             }
             anyhow::ensure!(
                 series.frames.iter().all(|frame| !frame.ordinary_image),
-                coded!("export.ordinaryImages", "Ordinary images cannot be exported as original DICOM")
+                coded!(
+                    "export.ordinaryImages",
+                    "Ordinary images cannot be exported as original DICOM"
+                )
             );
             match frame {
                 Some(index) => {
-                    let frame = series.frames.get(index).ok_or_else(|| coded!("export.sourceFrame", "No acquired DICOM frame at this index"))?;
+                    let frame = series.frames.get(index).ok_or_else(|| {
+                        coded!(
+                            "export.sourceFrame",
+                            "No acquired DICOM frame at this index"
+                        )
+                    })?;
                     anyhow::ensure!(
                         frame.metadata.source_frame_number.is_none(),
-                        coded!("export.multiframeSlice", "This slice belongs to a multiframe DICOM. Choose the whole series or export this slice as an image.")
+                        coded!(
+                            "export.multiframeSlice",
+                            "This slice belongs to a multiframe DICOM. Choose the whole series or export this slice as an image."
+                        )
                     );
                     files.push(frame.source.clone());
                 }
@@ -295,11 +383,17 @@ impl Session {
                 }
             }
         }
-        anyhow::ensure!(!files.is_empty(), coded!("export.noSeries", "Select at least one series to export"));
+        anyhow::ensure!(
+            !files.is_empty(),
+            coded!("export.noSeries", "Select at least one series to export")
+        );
         files.sort_by(|a, b| a.path.cmp(&b.path));
         files.dedup_by(|a, b| a.path == b.path && a.same_contents(b));
         static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
-        let base = format!("/out/{}", NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+        let base = format!(
+            "/out/{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         let mut options: ExportOptions = serde_json::from_value(serde_json::json!({
             "directory": base,
             "anonymize": options["anonymize"].as_bool().unwrap_or(false),
@@ -310,7 +404,11 @@ impl Session {
         options.cancelled = Some(cancelled);
         let result = export::export_indexed(&files, &options);
         // Whatever happened, the copy in memory goes once it is read.
-        let written = result.as_ref().ok().map(|_| read_tree(Path::new(&base))).transpose();
+        let written = result
+            .as_ref()
+            .ok()
+            .map(|_| read_tree(Path::new(&base)))
+            .transpose();
         let _ = vfs::remove_dir_all(&base);
         Ok((result?, written?.unwrap_or_default()))
     }
@@ -329,7 +427,12 @@ fn read_tree(root: &Path) -> Result<Vec<NamedFile>> {
             }
             let mut bytes = Vec::new();
             vfs::File::open(&path)?.read_to_end(&mut bytes)?;
-            let name = path.strip_prefix(root)?.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
+            let name = path
+                .strip_prefix(root)?
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
             out.push((name, bytes));
         }
     }
