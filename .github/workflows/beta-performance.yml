@@ -1,8 +1,14 @@
 name: Beta performance comparison
 
+# Beta 2 against the candidate on Linux and macOS, about eleven minutes (tools/README.md, "Beta performance
+# comparison"). It runs nightly on main, by hand, and on a pull request with the `performance` label: when the label
+# is added and on each later push while it stays, so ordinary pull requests do not wait for it.
 on:
+  schedule:
+    - cron: '47 2 * * *'
   workflow_dispatch:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
     paths:
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -23,12 +29,18 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: beta-performance-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 jobs:
   compare:
+    # A label added to the pull request starts it only when it is the performance label; other events need the label on.
+    if: >
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'performance') ||
+      (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'performance'))
+    # On the job, not the workflow: a run whose job is skipped (another label, a push without this one) then cancels
+    # nothing. One group per runner, so the Linux and macOS legs do not cancel each other.
+    concurrency:
+      group: beta-performance-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
     strategy:
       fail-fast: false
       matrix:
