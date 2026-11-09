@@ -174,9 +174,13 @@ jobs:
             if [ -s "$folder/results.jsonl" ]; then folders+=("$folder"); fi
           done
           if [ ${#folders[@]} -eq 0 ]; then echo 'No runner finished a trial.' | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; fi
-          node tools/browser-bench/bench.mjs report --out "$RUNNER_TEMP/combined" "${folders[@]}"
+          # Fails the run when any viewer has no successful trial, after the report is written and posted.
+          status=0
+          node tools/browser-bench/bench.mjs report --require-every-viewer --out "$RUNNER_TEMP/combined" "${folders[@]}" || status=$?
           cat "$RUNNER_TEMP/combined/report.md" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          exit "$status"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-bench-${{ github.run_id }}-pooled
           path: ${{ runner.temp }}/combined

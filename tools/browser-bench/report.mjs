@@ -1,7 +1,8 @@
 // Summarises one or more results folders (tools/browser-bench/run.mjs) into report.html and report.md and prints the
 // table. Several folders, such as the parallel runs of one CI workflow on different runners, are pooled: every trial
 // counts, and a table per runner shows how far the runners agree.
-//   node tools/browser-bench/bench.mjs report [--out <folder>] <results folder> [<results folder> …]
+//   node tools/browser-bench/bench.mjs report [--out <folder>] [--require-every-viewer] <results folder> […]
+// --require-every-viewer exits 1, after writing the report, when any viewer has no successful trial in any study.
 // The report goes to --out, or beside the first folder's results. Warm-up rounds and failed trials are left out
 // (failures are listed). Every number is the median over trials with a bootstrap 95% interval. When the run has the A/A pair (veacom and veacom-aa, the same build twice), each metric's
 // A/A spread is the noise floor: another viewer is called faster or slower only beyond it.
@@ -12,6 +13,8 @@ import { compare, summarize } from './lib/stats.mjs';
 
 const args = process.argv.slice(process.argv[1].endsWith('bench.mjs') ? 3 : 2);
 const outFlag = args.indexOf('--out'), out = outFlag >= 0 ? args.splice(outFlag, 2)[1] : null;
+const requireFlag = args.indexOf('--require-every-viewer'), requireEvery = requireFlag >= 0;
+if (requireEvery) args.splice(requireFlag, 1);
 const folders = (args.length ? args : ['.']).map(folder => path.resolve(folder));
 const runs = folders.map(folder => JSON.parse(fs.readFileSync(path.join(folder, 'run.json'), 'utf8')));
 const lines = folders.flatMap((folder, index) => fs.readFileSync(path.join(folder, 'results.jsonl'), 'utf8').split('\n').filter(Boolean)
@@ -131,3 +134,10 @@ const markdown = [
 ].join('\n');
 fs.writeFileSync(path.join(folder, 'report.md'), markdown);
 console.log(`\n${path.join(folder, 'report.html')}`);
+// A viewer that never finished a trial means the run did not measure it: say so, and fail when asked to.
+const missing = studies.flatMap(study => viewers.filter(viewer => !counted.some(l => l.viewer === viewer && l.study === study)).map(viewer => `${viewer} (${study})`));
+if (missing.length) {
+  console.error(`No successful trial for: ${missing.join(', ')}`);
+  fs.appendFileSync(path.join(folder, 'report.md'), `\n**No successful trial for:** ${missing.join(', ')}\n`);
+  if (requireEvery) process.exitCode = 1;
+}
