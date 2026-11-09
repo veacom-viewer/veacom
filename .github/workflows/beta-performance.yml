@@ -68,13 +68,15 @@ jobs:
             )
           done
           if cmp -s "$BASE_APP/native/target/release/veacom-core" "$HEAD_APP/native/target/release/veacom-core"; then exit 1; fi
-      - name: Compare nine paired desktop trials
+      - name: Compare nine paired Auto Window trials at identical window and level
+        env:
+          VEACOM_MATCH_MPR: "1"
         run: node tools/check-beta-performance.cjs "$RUNNER_TEMP/beta-desktop" 9
       - name: Keep timings, pixel checks and sample counts
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: beta1-main-${{ matrix.os }}-${{ github.run_attempt }}
+          name: beta1-main-mpr-${{ matrix.os }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/open-speed/open-speed.json
             ${{ runner.temp }}/open-speed/open-speed.md

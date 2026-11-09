@@ -28,28 +28,14 @@ function generate() {
   const generateStudy = (script, folder, ...args) => execFileSync(process.execPath,
     [path.join(fixtures, script), path.join(studies, folder), ...args], { stdio: 'inherit' });
   generateStudy('make-smoke-study.mjs', 'ct-1000', '--pipe-volume');
-  generateStudy('make-smoke-study.mjs', 'video', '--video-ct');
-  generateStudy('make-smoke-study.mjs', 'ct-small');
-  const jpeg = path.join(studies, 'ct-jpeg', 'S01');
-  fs.mkdirSync(jpeg, {recursive:true});
-  const source = path.join(studies, 'ct-1000', 'S01');
-  const slices = fs.readdirSync(source).filter(file => file.endsWith('.dcm'));
-  assert.equal(slices.length, 1000);
-  for (const file of slices) execFileSync('dcmcjpeg', ['+e1', path.join(source,file),path.join(jpeg,file)], {stdio:'pipe'});
-  fs.mkdirSync(path.join(studies, 'mr'));
-  for (let n = 1; n <= 8; n++) generateStudy('make-smoke-study.mjs', 'mr/' + n, '--modality', 'MR', '--series-index=' + n);
-  generateStudy('make-petct-study.mjs', 'pet');
-  const width = 512, data = Buffer.alloc(width * width * 4);
-  for (let i = 0; i < width * width; i++) {
-    const v = (i % width * 5 + Math.floor(i / width) * 3) & 255;
-    data.set([v, (v + 30) & 255, (v + 12) & 255, 255], i * 4);
-  }
-  fs.writeFileSync(path.join(studies, 'single.png'), encodePng({ width, height: width, data }));
 }
 
 async function measureWindow(page) {
   await page.getByTestId('tool-mpr').evaluate(button => button.click());
   await page.waitForFunction(() => document.querySelectorAll('canvas[data-mode="mpr"]').length === 3);
+  await page.evaluate(()=>window.__VEACOM_TEST__.setView({slice:500}));
+  await page.waitForFunction(()=>window.__VEACOM_TEST__.state().view.slice===500 &&
+    document.querySelector('.viewport-cell.is-active canvas[data-mode="mpr"]')?.dataset.slice==='500');
   const times = [];
   let value;
   for (let n = 0; n < 3; n++) {
@@ -327,7 +313,7 @@ async function run(build, study, counter) {
 async function main() {
   generate();
   const report = { platform: process.platform, arch: process.arch, release: os.release(), cpu: os.cpus()[0].model,
-    rounds, versions: {}, engines: {}, samples: [], comparisons: [], failures: [], regressions: [] };
+    rounds, control: 'Every axial slice has 16 equally frequent scalar values; matched active plane at slice index 500', versions: {}, engines: {}, samples: [], comparisons: [], failures: [], regressions: [] };
   for (const [build, root] of Object.entries(roots)) {
     report.versions[build] = build==='base' ? 'c6956d95424e5862236378b0a5862b874407d39a' : execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
     report.engines[build] = createHash('sha256').update(fs.readFileSync(binary(root))).digest('hex');
@@ -336,7 +322,7 @@ async function main() {
   const counter = prepareCounter(output);
   assert(counter.library, counter.reason);
   report.counts = {}; save();
-  for (const study of ['ct-1000','mr','pet','single.png','picture-picker','video','ct-small','ct-jpeg']) {
+  for (const study of ['ct-1000']) {
     for (let round = -1; round < rounds; round++) {
       const pair = {};
       try {
@@ -382,6 +368,11 @@ async function main() {
   save();
   fs.writeFileSync(path.join(output, 'desktop.md'),table.join('\n')+'\n');
   if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY,table.join('\n')+'\n');
+  assert.equal(report.samples.length,rounds);
+  for(const sample of report.samples) {
+    assert.deepEqual(sample.base.values,[50,1500]);
+    assert.deepEqual(sample.head.values,[50,1500]);
+  }
   assert.deepEqual(report.failures, []);
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

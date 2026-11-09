@@ -38,7 +38,7 @@ for (let z = 0; z < slices; z++) {
       texture = Math.round((seed / 2 ** 32 - 0.5) * 76);
     }
     // CT in HU (air, bone rim, soft tissue); MR in arbitrary signal (none outside, a bright rim, tissue).
-    const value = mr ? (r > 1 ? 0 : r > 0.88 ? 900 : 400 + texture) : (r > 1 ? -1000 : r > 0.88 ? 1200 : 40 + texture);
+    const value = large && process.env.VEACOM_MATCH_MPR === "1" ? 100 * (((x + z) >> 5) & 15) - 700 : mr ? (r > 1 ? 0 : r > 0.88 ? 900 : 400 + texture) : (r > 1 ? -1000 : r > 0.88 ? 1200 : 40 + texture);
     pixels.writeInt16LE(value, (y * size + x) * 2);
   }
   if (large) volumeHash.update(pixels);
