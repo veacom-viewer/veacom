@@ -12,6 +12,7 @@ const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { choosePetLayout, selectPetLayout } = require('./lib/pet-layout.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -71,11 +72,11 @@ async function main() {
     assert.deepEqual(s.view, originalView);
     assert.equal(s.fusionId, pet.id);
     assert.equal(s.panes[0].unfused, false);
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 3);
     await choosePetLayout(page);
     await undoScreen(3);
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 1);
     assert.deepEqual((await state()).view, originalView);
     check('Undo restores the fused view, including slice, window, zoom and the workspace saved by MPR');

@@ -14,6 +14,7 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 
 const positional = process.argv.slice(2).filter(value => !value.startsWith('--'));
 const [windowStudy, segmentationStudy] = positional.slice(0, 2).map(value => value && path.resolve(value));
@@ -110,7 +111,7 @@ async function main() {
       width: Math.min(outline.width + 2 * margin, viewport.width), height: Math.min(outline.height + 2 * margin, viewport.height) } });
     check('A segmentation draws over its image at the segmented region', { segmentation: first.description, slice: current.view.slice, frames: current.segmentationFrames[first.id] });
 
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3);
     for (const plane of ['axial', 'coronal', 'sagittal']) {
       await page.locator(`svg[data-testid="annotation-overlay"][data-plane="${plane}"] [data-segmentation="${first.id}"]`).first().waitFor({ timeout: 30_000 });
@@ -122,7 +123,7 @@ async function main() {
       await page.screenshot({ path: path.join(output, `segmentation-mpr-${plane}.png`), clip: { x: shape.x + shape.width / 2 - 70, y: shape.y + shape.height / 2 - 70, width: 140, height: 140 } });
     }
     check('The segmentation outlines its region in the axial, coronal and sagittal planes through it');
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 1);
 
     await page.getByTestId('tool-3d').click();

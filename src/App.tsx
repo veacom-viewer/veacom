@@ -2202,16 +2202,18 @@ export default function App() {
     </div>{menu === 'fusion' && nmScreen && <Menu label={t('toolbar.fusionMenu')} onClose={closeMenu}>
       <MenuItem action="nm-screen" meta={arrangementName(nmScreen)} onClick={() => act(openNmScreen)}>{t('toolbar.nmScreen')}</MenuItem>
     </Menu>}</div> }] : []),
-    { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu><div className="split">
-      <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('help.mpr')}`} hint={isMpr ? t('toolbar.restorePrevious') : undefined} shortcut={singleKey('M')} testId="tool-mpr" active={isMpr} disabled={!canReconstruct && !isMpr} why={mprWhy} onClick={mpr} />
-      <MenuChevron label={t('toolbar.mprPlanes')} expanded={menu === 'mpr'} testId="tool-mpr-menu" disabled={noImage} onClick={() => toggleMenu('mpr')} />
-    </div>{menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
-      <MenuItem action="toolbar-acquired-slices" kind="radio" checked={activeVolume ? usesSourceFrames(activeVolume.series, activeDisplayView) : false} disabled={!activeVolume} onClick={() => act(showAcquired)}>{t('toolbar.acquiredSlices')}</MenuItem>
-      {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action="menu-option" key={plane} kind="radio" checked={Boolean(activeVolume && !usesSourceFrames(activeVolume.series, activeDisplayView) && activeDisplayView.plane === plane && !activeDisplayView.oblique?.some(Boolean))} disabled={!canReconstruct} onClick={() => act(() => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
-      <MenuDivider />
-      <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
-      <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
-    </Menu>}</div> },
+    // One button that opens the planes' menu: a reader who presses MPR expects choices, not three panes at once. The
+    // three-plane screen is the menu's first entry, and the M key still opens it straight away.
+    { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu>
+      <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('toolbar.mprPlanes')}`} testId="tool-mpr" popup="menu" indicator active={isMpr} expanded={menu === 'mpr'} disabled={noImage || (!canReconstruct && !isMpr)} why={mprWhy} onClick={() => toggleMenu('mpr')} />
+      {menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
+        <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
+        <MenuDivider />
+        <MenuItem action="toolbar-acquired-slices" kind="radio" checked={activeVolume ? usesSourceFrames(activeVolume.series, activeDisplayView) : false} disabled={!activeVolume} onClick={() => act(showAcquired)}>{t('toolbar.acquiredSlices')}</MenuItem>
+        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action="menu-option" key={plane} kind="radio" checked={Boolean(activeVolume && !usesSourceFrames(activeVolume.series, activeDisplayView) && activeDisplayView.plane === plane && !activeDisplayView.oblique?.some(Boolean))} disabled={!canReconstruct} onClick={() => act(() => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
+        <MenuDivider />
+        <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
+      </Menu>}</div> },
     { id: '3d', group: 'view', priority: 10, node: <ToolButton icon={<span className="tool-word">3D</span>} label={t('toolbar.open3d')} testId="tool-3d" active={show3d} disabled={!canReconstruct} why={mprWhy} onClick={open3d} /> },
     { id: 'slab', group: 'view', priority: 9, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<SlabGlyph on={Boolean(activeDisplayView.slab)} />} label={activeDisplayView.slab ? `${t('slab.title')}: ${t('slab.label', { mode: t(`slab.${activeDisplayView.slab.mode}` as const), thickness: activeDisplayView.slab.thickness })}` : t('slab.title')} testId="tool-slab" popup="menu" indicator active={Boolean(activeDisplayView.slab)} expanded={menu === 'slab'} disabled={!canReconstruct || activeProjection} why={activeProjection ? t('projection.slabWhy') : mprWhy} onClick={() => toggleMenu('slab')} />

@@ -7,6 +7,7 @@ const { ClickBudget } = require('./click-budget.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 // hardware (default): a graphics driver must draw. software: the PC has no usable driver, so drawing must
 // run in software and the app must say so.
 const expectedRenderer = process.env.VEACOM_SMOKE_RENDERER || 'hardware';
@@ -97,7 +98,7 @@ async function main() {
       };
       requestAnimationFrame(watch);
     });
-    await budget.task('mpr', () => page.getByTestId('tool-mpr').click(), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
+    await budget.task('mpr', () => toggleMpr(page), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
     const planes = await page.locator('canvas[data-renderer]').evaluateAll(nodes => nodes.map(node => node.dataset.plane).sort());
     assert.deepEqual(planes, ['axial', 'coronal', 'sagittal']);
     const early = await page.evaluate(() => { const seen = window.__earlyOverlays; delete window.__earlyOverlays; return seen; });
