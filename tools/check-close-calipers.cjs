@@ -141,7 +141,9 @@ async function main() {
     check('⌘Z in the checklist undoes Clear, not the image; a drawing moved meanwhile measures again');
 
     // A calibration changes what the calipers measure, as it changes their labels: a 10 mm line called 20 mm doubles
-    // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again.
+    // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again,
+    // and takes down the notice that says the series is calibrated.
+    const calibratedNotice = page.locator('[data-testid="notice"][data-code="notice.calibrated"]');
     const settledValue = (which, start) => page.waitForFunction(([which, start]) => (document.querySelector(`[data-item="keros"] [data-side="${which}"] .preop-seen`)?.textContent ?? '').startsWith(start), [which, start]);
     await pane.focus(); await page.keyboard.press('l');
     const lineFrom = await screen(coronal, [-20, -10]), lineTo = await screen(coronal, [-10, -10]);
@@ -154,10 +156,12 @@ async function main() {
     await settledValue('right', '6.4 mm');
     assert.equal(await answer('keros', 'right'), '2', 'The answer follows the calibrated depth.');
     await settledValue('left', '12.0 mm');
+    assert.equal(await calibratedNotice.count(), 1, 'Calibrating says so.');
     await page.locator('[data-action="calibration-remove"]').click();
     await settledValue('right', '3.2 mm');
     assert.equal(await answer('keros', 'right'), '1');
     await settledValue('left', '6.0 mm');
+    assert.equal(await calibratedNotice.count(), 0, 'Removing the calibration takes down the notice that says the series is calibrated.');
     await page.getByTestId('tool-inspector').click();
     await page.locator('.inspector').waitFor({ state: 'hidden' });
     await pane.focus();
