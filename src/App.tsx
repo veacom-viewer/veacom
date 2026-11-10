@@ -325,8 +325,9 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
+        showPointerValue={interaction.showPointerValue}
         mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
-        showOverlay={interaction.showOverlay} showScale={interaction.showScale} showPointerValue={interaction.showPointerValue} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} />
+        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
       {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
