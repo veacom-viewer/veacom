@@ -708,6 +708,8 @@ export const tr: Record<keyof typeof en, string> = {
   'checklist.note': 'Bu kesiti not et',
   'checklist.help': 'Var · Yok · ? (değerlendirilemedi)',
   'checklist.clear': 'Temizle',
+  'checklist.unmarked': '{count} işaretsiz',
+  'checklist.unmarkedTip': 'Kopyaya girmeyen satırlar: ilkine git',
   'checklist.unknown': 'Değerlendirilemedi',
   'checklist.bothKey': '{keys} iki tarafı yanıtlar',
   'checklist.measuredOn': '{value} · kesit {slice}',

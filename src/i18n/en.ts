@@ -705,6 +705,8 @@ export const en = {
   'checklist.note': 'Note this slice',
   'checklist.help': 'Yes · No · ? (not assessable)',
   'checklist.clear': 'Clear',
+  'checklist.unmarked': '{count} unmarked',
+  'checklist.unmarkedTip': 'Rows left out of the copy: go to the first',
   'checklist.unknown': 'Not assessable',
   'checklist.bothKey': '{keys} answers both sides',
   'checklist.measuredOn': '{value} · slice {slice}',

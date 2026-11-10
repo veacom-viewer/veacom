@@ -146,12 +146,21 @@ export function checklistRows(kind: ChecklistKind, answers: Answers, notes: Note
   }) }));
 }
 
+/** Whether a row goes into the report: a side answered or measured. A slice noted alone does not take it there. */
+const inReport = (item: CheckedItem) => item.sides.some(side => side.marked || side.measured);
+
+/** The ids of the rows "Copy for the report" leaves out, in the list's order: nothing on any side answered or measured.
+ * A row with one side answered is copied, the other side as "–". */
+export function unmarkedItems(kind: ChecklistKind, answers: Answers, notes: Notes): string[] {
+  return checklistRows(kind, answers, notes, 'en').flatMap(group => group.items).filter(item => !inReport(item)).map(item => item.id);
+}
+
 /** The checklist as text for the report: what was marked or measured, each side with its measurement and the slice it
  * was seen on. Both olfactory fossae measured give their difference. */
 export function checklistSummary(kind: ChecklistKind, answers: Answers, notes: Notes, locale: 'tr' | 'en'): string {
   const lines = [CHECKLISTS[kind].title[locale]];
   for (const group of checklistRows(kind, answers, notes, locale)) for (const item of group.items) {
-    if (!item.sides.some(side => side.marked || side.measured)) continue;
+    if (!inReport(item)) continue;
     const parts = item.sides.map(side => {
       const details = [side.measured, side.slice].filter(Boolean).join('; ');
       const answer = side.side === 'both' ? side.word : `${SIDE_NAMES[side.side][locale]} ${side.word}`;

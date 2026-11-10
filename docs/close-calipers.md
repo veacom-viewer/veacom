@@ -67,7 +67,10 @@ Notes are kept per item and side. Every side has a button that notes the slice o
 also have a caliper button; a side holds one note, whichever came last. A caliper's note holds its points (patient
 millimetres), its reading and the answer it gave. Moving a point of its drawing measures again, and so does a change of
 the series' calibration; the answer follows until the reader picks another one. Deleting
-the drawing leaves the record. "Copy for the report" gives each side its answer, measurement and slice.
+the drawing leaves the record. "Copy for the report" gives each side its answer, measurement and slice. It leaves out a
+row with nothing answered or measured on any side (a slice noted alone included), so the checklist says how many rows
+that is at the end of its help line, above Copy, and pressing the count goes to the first of them. A row answered on
+one side is copied, with "–" for the other.
 
 Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.
 Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never

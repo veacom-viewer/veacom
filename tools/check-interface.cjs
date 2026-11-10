@@ -522,6 +522,11 @@ async function main() {
     assert.equal(await checklist.locator('[data-item="onodi"] [aria-checked="true"]').count(), 0, 'No key answers while a caliper waits for its points.');
     await page.getByTestId('caliper-setup').locator('[data-action="caliper-view-undo"]').click();
     await page.getByTestId('caliper-hint').waitFor({ state: 'detached' });
+    // Beside Copy, the rows it would leave out (Keros and lamina are answered), and a way to the first of them.
+    const unmarkedCount = checklist.locator('[data-action="checklist-unmarked"]');
+    assert.match(await unmarkedCount.textContent(), /^9 (işaretsiz|unmarked)$/, 'Nine rows are left out of the copy.');
+    await unmarkedCount.click();
+    assert.equal(await focusedCell(), 'onodi:right', 'The count goes to the first row left out.');
     await clear.click();
     await viewport.focus(); await page.keyboard.press('Escape'); await settle();
     assert.equal(await checklist.isVisible(), true, 'Esc in the image must not close the checklist.');
@@ -547,7 +552,7 @@ async function main() {
       await page.getByTestId('volume-view').waitFor({ state: 'detached' });
       await page.waitForFunction(() => document.activeElement?.dataset.testid === 'tool-3d');
     }
-    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, sets up the pane for a caliper with Undo, undoes Clear, answers by keys, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
+    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, sets up the pane for a caliper with Undo, undoes Clear, answers by keys, counts unmarked rows, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
 
     // A real click with the text tool leaves focus in the note field: typed letters are text, not shortcuts. It comes
     // right after 3D closed, which with slow (software) drawing is before the widened pane's resize frame: the pane

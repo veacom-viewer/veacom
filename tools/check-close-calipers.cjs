@@ -252,6 +252,19 @@ async function main() {
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
     check('Copy for the report gives every caliper value with its side and slice', { report });
 
+    // The rows Copy leaves out are counted beside it, and the count goes to the first of them.
+    const unmarkedButton = checklist.locator('[data-action="checklist-unmarked"]');
+    const rowCount = await checklist.locator('[data-item]').count(), copiedRows = report.split('\n').length - 1;
+    assert.equal(await unmarkedButton.textContent(), `${rowCount - copiedRows} unmarked`, 'The count is the rows the report leaves out.');
+    await unmarkedButton.click();
+    assert.equal(await page.evaluate(() => { const cell = document.activeElement?.closest('[data-side]'); return cell && `${cell.closest('[data-item]').dataset.item}:${cell.dataset.side}`; }),
+      'lamina:right', 'It goes to the first row left out.');
+    await unmarkedButton.hover();
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: path.join(output, '5-unmarked-en.png') });
+    await page.mouse.move(5, 5);
+    check('Beside Copy, the rows it leaves out are counted, and the count goes to the first', { unmarked: rowCount - copiedRows });
+
     // The theatre card: the main process's print dialog is replaced by a PDF of the page as it would print, kept here.
     await desktop.evaluate(({ BrowserWindow }) => {
       const contents = BrowserWindow.getAllWindows()[0].webContents;
@@ -292,6 +305,7 @@ async function main() {
     const turkish = await copied('Kopyalandı');
     assert.match(turkish, /Kribriform plate \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; Gera 70\.0°, sınıf II; kesit \d+\/\d+\)/);
     assert.match(turkish, /sağ–sol fark 2\.8 mm/);
+    assert.equal(await unmarkedButton.textContent(), `${rowCount - copiedRows} işaretsiz`);
     const turkishCard = await printCard('4-theatre-card-tr', 2);
     assert(turkishCard.includes('Ameliyathane kartı · PNS BT · ameliyat öncesi') && turkishCard.includes('taraftan'), turkishCard);
     await page.screenshot({ path: path.join(output, '1-keros-tr.png') });

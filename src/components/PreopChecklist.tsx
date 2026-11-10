@@ -11,7 +11,7 @@ import { TheatreCard } from './TheatreCard';
 import { CALIPERS, caliperName, caliperShort, ITEM_CALIPERS } from '../imaging/calipers';
 import { keepChecklist, keptChecklist, subscribeChecklists } from '../ui/checklistStore';
 import { modifierKey } from '../ui/presets';
-import { CHECKLISTS, FINDING, answerByKey, checklistKey, checklistKind, checklistSummary, moveCell, type ChecklistCell, type ChecklistState, type ChecklistKind, type Side, type SliceNote } from '../ui/preopChecklist';
+import { CHECKLISTS, FINDING, answerByKey, checklistKey, checklistKind, checklistSummary, moveCell, unmarkedItems, type ChecklistCell, type ChecklistState, type ChecklistKind, type Side, type SliceNote } from '../ui/preopChecklist';
 import { usage } from '../usage/tracker';
 import './PreopChecklist.css';
 
@@ -119,6 +119,14 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     update(answered.state);
     focusCell(answered.next);
   };
+  // Rows Copy leaves out (nothing answered or measured), said beside it; pressing the count goes to the first one.
+  const unmarked = unmarkedItems(state.kind, state.answers, state.notes);
+  const goToUnmarked = () => {
+    const row = items.findIndex(item => item.id === unmarked[0]);
+    if (row < 0) return;
+    usage.touch('panel');
+    focusCell({ row, side: items[row].sided ? 'right' : 'both' });
+  };
   // The theatre card, stamped with when it was printed: in the page from the first print on, and only ever on paper.
   const [printedAt, setPrintedAt] = useState<Date | null>(null);
   const [printFailed, setPrintFailed] = useState(false);
@@ -183,7 +191,10 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     {undoable && <p className="preop-undo" role="status">{undoable.text}
       <button type="button" className="text-button" data-action="checklist-undo" onClick={event => restore(event.currentTarget)}>{t('notice.undo')}</button></p>}
     {printFailed && <p className="preop-print-failed" role="alert">{t('checklist.printFailed')}</p>}
-    <footer><span className="preop-help">{t('checklist.help')}</span>
+    {/* The rows Copy leaves out are counted at the end of the help line, right above Copy: the buttons keep one row. */}
+    <footer><div className="preop-help-row"><span className="preop-help">{t('checklist.help')}</span>
+      {unmarked.length > 0 && <button type="button" className="text-button preop-unmarked" data-action="checklist-unmarked" data-tooltip={t('checklist.unmarkedTip')}
+        aria-description={t('checklist.unmarkedTip')} onClick={goToUnmarked}>{t('checklist.unmarked', { count: unmarked.length })}</button>}</div>
       <button type="button" className="secondary-button compact" data-action="checklist-clear" onClick={clear}>{t('checklist.clear')}</button>
       <button type="button" className="secondary-button compact" data-action="checklist-print" data-tooltip={t('checklist.print')} data-tooltip-hint={t('checklist.printHint')}
         aria-description={t('checklist.printHint')} onClick={() => void print()}><Printer size={14} />{t('checklist.print')}</button>
