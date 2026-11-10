@@ -138,27 +138,6 @@ function draggedSeries(data: DataTransfer): string[] {
 }
 const errorText = errorMessage;
 
-/**
- * Resolves once a pane has drawn the series and the browser has put that frame on screen, or, for a series no pane shows
- * (a PET fused over its CT), three frames later; in a hidden page, after a quarter of a second.
- */
-function seriesDrawn(seriesId: string): Promise<void> {
-  return new Promise(resolve => {
-    let finished = false, frames = 0;
-    const finish = () => {
-      if (finished) return;
-      finished = true; window.removeEventListener('veacom:frame', drawn); clearTimeout(timer); resolve();
-    };
-    const drawn = (event: Event) => {
-      if ((event as CustomEvent<{ seriesId?: string }>).detail.seriesId === seriesId) requestAnimationFrame(finish);
-    };
-    const count = () => { if (++frames >= 3) finish(); else requestAnimationFrame(count); };
-    window.addEventListener('veacom:frame', drawn);
-    const timer = setTimeout(finish, 250);
-    requestAnimationFrame(count);
-  });
-}
-
 function sourceFrameForView(series: Series, view: ViewState): number {
   if (usesSourceFrames(series, view)) return Math.round(view.slice);
   // Metadata and frame export use the acquired slice nearest the displayed plane's centre.
@@ -844,19 +823,7 @@ export default function App() {
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     let complete = false;
-    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
-    const previewWanted = () => !complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
-    // The opening slice is drawn before the whole volume is asked for. Decoded at the same time, the volume held the
-    // first image back by most of a second on a four-core machine without a GPU (tools/browser-bench).
-    const preview = !cached && item.dimensions[2] > 1 ? frameCache.get(item, openingSlice(item)).then(async volume => {
-      if (!previewWanted()) return;
-      await prepareSourceProgram(volume);
-      if (!previewWanted()) return;
-      const drawn = seriesDrawn(item.id);
-      storeVolume(volume);
-      await drawn;
-    }).catch(() => { /* The full decoder supplies the actionable error. */ }) : Promise.resolve();
-    const full = preview.then(() => loadVolume(item)).then(async volume => {
+    const full = loadVolume(item).then(async volume => {
       complete = true;
       await prepareSourceProgram(volume);
       if (mounted.current && isCurrent()) {
@@ -875,6 +842,13 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
+    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
+    const previewWanted = () => !complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
+    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
+      if (!previewWanted()) return;
+      await prepareSourceProgram(volume);
+      if (previewWanted()) storeVolume(volume);
+    }).catch(() => { /* The full decoder supplies the actionable error. */ });
     return full;
   };
 
