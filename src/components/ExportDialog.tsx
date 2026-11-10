@@ -161,8 +161,8 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
   const order = { descending: backwards !== reverse, numberOf: (slice: number) => backwards ? count - slice : slice + 1, prefix };
   const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && start <= end && end <= (video?.frameCount ?? 0));
-  // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs); a disc has a limit of its own.
-  const tooMany = !captures && !(isMedia && target === 'cd') && ids.length > MAX_EXPORT_SERIES;
+  // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs), a disc's as well.
+  const tooMany = !captures && ids.length > MAX_EXPORT_SERIES;
   const ready = Boolean(window.veacom) && (shownScope === 'layout' || (captures ? rangeValid && (isImages || (fps >= 1 && fps <= 120)) : ids.length > 0))
     && !(mode === 'dicom' && shownScope === 'slice' && currentFrame === undefined) && !tooMany;
   // "1 seri, 24 dosya: 12,4 MB → yaklaşık 6,1 MB, 2 sn": a few of the files compressed for real, a moment after a change.
