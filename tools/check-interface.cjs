@@ -241,6 +241,41 @@ async function main() {
     await page.locator('input[data-action="export-scope"][value="series"]').check();
     assert.equal(await estimate.textContent(), seriesEstimate);
     check('ZIP estimates follow the export scope and reuse the completed series estimate');
+
+    // Selected series: the list's first row and each study's heading are boxes over several series. A click picks all
+    // of them, or none when all were picked; with only some of them picked the box shows a dash.
+    await page.locator('[data-action="export-zip"]').uncheck();
+    await page.locator('input[data-action="export-scope"][value="picked"]').check();
+    const pickAll = page.locator('.export-dialog [data-action="export-select-all"]');
+    const firstStudy = page.locator('.export-dialog .export-study').first();
+    const picks = () => page.locator('.export-series-list').evaluate(list => {
+      const state = input => input.indeterminate ? 'some' : input.checked ? 'all' : 'none';
+      return { list: state(list.querySelector('[data-action="export-select-all"]')),
+        studies: [...list.querySelectorAll('.export-study')].map(study => ({ box: state(study.querySelector('[data-action="export-select-study"]')),
+          series: [...study.querySelectorAll('[data-action="export-series"]')].map(input => input.checked) })) };
+    });
+    const studySizes = (await picks()).studies.map(study => study.series.length);
+    const everySeries = { list: 'all', studies: studySizes.map(count => ({ box: 'all', series: Array(count).fill(true) })) };
+    if ((await picks()).list !== 'all') await pickAll.click();
+    assert.deepEqual(await picks(), everySeries, 'The box over the list picks every series.');
+    await pickAll.click();
+    assert.deepEqual(await picks(), { list: 'none', studies: studySizes.map(count => ({ box: 'none', series: Array(count).fill(false) })) }, 'Pressed with all picked, it picks none.');
+    assert.equal(await page.getByTestId('export-submit').isDisabled(), true, 'With no series picked there is nothing to export.');
+    await firstStudy.locator('[data-action="export-select-study"]').click();
+    assert.deepEqual(await picks(), { list: studySizes.length > 1 ? 'some' : 'all', studies: studySizes.map((count, index) => ({ box: index ? 'none' : 'all', series: Array(count).fill(!index) })) },
+      'A study\'s box picks that study\'s series only.');
+    assert.equal(await page.getByTestId('export-submit').isDisabled(), false);
+    if (studySizes[0] > 1) {
+      await firstStudy.locator('[data-action="export-series"]').first().click();
+      assert.deepEqual(await picks(), { list: 'some', studies: studySizes.map((count, index) => index ? { box: 'none', series: Array(count).fill(false) }
+        : { box: 'some', series: [false, ...Array(count - 1).fill(true)] }) }, 'With some of its series picked, a box shows a dash.');
+    }
+    if ((await picks()).list === 'some') {
+      await pickAll.click();
+      assert.deepEqual(await picks(), everySeries, 'Pressed with some picked, the box over the list picks all.');
+    }
+    check('Selected series: the boxes over the list and over a study pick all of their series, or none', { studies: studySizes });
+    await page.locator('input[data-action="export-scope"][value="series"]').check();
     await page.getByTestId('export-close').click();
     await page.locator('.export-dialog').waitFor({ state: 'detached' });
     check('⌘E / Ctrl+E opens the export window');

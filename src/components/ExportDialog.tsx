@@ -8,6 +8,7 @@ import { errorMessage, type Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
+import { pickState, togglePicked } from '../ui/exportSelection';
 import { phaseLabel } from '../ui/overlayCorners';
 import { exportedImages } from '../ui/seriesNames';
 import './ExportDialog.css';
@@ -98,6 +99,12 @@ function Choice<T extends string>({ label, value, options, onChange, name, actio
       <input type="radio" name={name} value={key} data-action={action} checked={value === key} disabled={disabled} onChange={() => onChange(key)} /><span>{text}</span></label>)}</div></div>;
 }
 
+/** A box over several series: ticked when all of them are picked, a dash when only some are (src/ui/exportSelection.ts). */
+function PickAll({ ids, picked, action, onToggle }: { ids: string[]; picked: ReadonlySet<string>; action: string; onToggle: (ids: string[]) => void }) {
+  const state = pickState(ids, picked);
+  return <input type="checkbox" data-action={action} checked={state.all} ref={box => { if (box) box.indeterminate = state.partial; }} onChange={() => onToggle(ids)} />;
+}
+
 export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture }: ExportDialogProps) {
   const { locale, t } = useTranslation();
   const active = series.find(item => item.id === activeSeriesId);
@@ -176,7 +183,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
     what: shownScope === 'slice' ? t('export.estimateOne') : t('export.estimateFiles', { series: ids.length, files: result.files }),
     before: sizeText(result.before, locale), after: sizeText(result.after, locale), time: timeText(result.seconds, t),
   });
-  const toggle = (id: string) => setPicked(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const toggle = (toggled: string[]) => setPicked(current => togglePicked(current, toggled));
   const chooseFolder = async () => { const chosen = await window.veacom?.chooseExportFolder?.(); if (chosen) setFolder(chosen); };
 
   const submit = async () => {
@@ -265,14 +272,26 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
             </div>
             {scopes.length > 1 && <Choice name="scope" action="export-scope" label={t('export.scope')} value={shownScope} onChange={setScope}
               options={scopes.map(key => [key, scopeName(key), mode === 'dicom' && key === 'slice' && currentFrame === undefined])} />}
+            {/* A box on the list and one on each study pick all of their series, or none when all were picked. */}
             {shownScope === 'picked' && <div className="export-series-list" role="group" aria-label={t('export.seriesHeading')}>
-              {groups.map(([key, items]) => <section className="export-study" key={key}>
-                <h4>{items[0].patientName.replaceAll('^', ' ').trim() || items[0].patientId || t('series.unnamedPatient')}<span>{studyDate(items[0].studyDate) || t('export.undatedStudy')}</span></h4>
-                {items.map(item => <label className="export-series-row" key={item.id}>
-                  <input type="checkbox" data-action="export-series" checked={picked.has(item.id)} onChange={() => toggle(item.id)} />
-                  <span><strong>{[item.description || t('export.seriesNumber', { number: item.seriesNumber }), item.phase && phaseLabel(item.phase)].filter(Boolean).join(' · ')}</strong><small>{exportedImages(item)}</small></span>
-                </label>)}
-              </section>)}
+              <label className="export-pick-row export-pick-all">
+                <PickAll action="export-select-all" ids={series.map(item => item.id)} picked={picked} onToggle={toggle} />
+                <span><strong>{t('export.selectAll')}</strong><small>{t('export.seriesPicked', { picked: ids.length, total: series.length })}</small></span>
+              </label>
+              {groups.map(([key, items]) => {
+                const studyIds = items.map(item => item.id);
+                return <section className="export-study" key={key}>
+                  <h4><label className="export-pick-row">
+                    <PickAll action="export-select-study" ids={studyIds} picked={picked} onToggle={toggle} />
+                    <span><strong>{items[0].patientName.replaceAll('^', ' ').trim() || items[0].patientId || t('series.unnamedPatient')}</strong>
+                      <small>{studyDate(items[0].studyDate) || t('export.undatedStudy')} · {pickState(studyIds, picked).count} / {items.length}</small></span>
+                  </label></h4>
+                  {items.map(item => <label className="export-series-row" key={item.id}>
+                    <input type="checkbox" data-action="export-series" checked={picked.has(item.id)} onChange={() => toggle([item.id])} />
+                    <span><strong>{[item.description || t('export.seriesNumber', { number: item.seriesNumber }), item.phase && phaseLabel(item.phase)].filter(Boolean).join(' · ')}</strong><small>{exportedImages(item)}</small></span>
+                  </label>)}
+                </section>;
+              })}
             </div>}
             {!captures && shownScope !== 'all' && series.some(item => ids.includes(item.id) && item.phase?.gate)
               && <p className="export-note" data-testid="export-gates">{t('export.gatesNote')}</p>}

@@ -241,6 +241,19 @@ async function main() {
     await page.locator('input[data-action="export-scope"][value="picked"]').check();
     const row = page.locator('.export-series-row', { hasText: fifth.phase.label });
     assert.equal((await row.locator('small').textContent()).trim(), `NM · ${gated.dimensions[2] * gated.gates} images: all ${gated.gates} gates of its file`);
+    // With one series left out, the box over the list shows a dash; a click on it then picks every series.
+    const listBox = page.locator('.export-dialog [data-action="export-select-all"]');
+    await row.locator('input').uncheck();
+    assert.equal(await listBox.evaluate(box => box.indeterminate), true, 'With one series left out the box over the list shows a dash.');
+    await listBox.click();
+    assert.equal(await page.locator('.export-dialog [data-action="export-series"]:not(:checked)').count(), 0, 'A click on the dash picks every series.');
+    assert.equal(await listBox.isChecked(), true, 'With every series picked the box over the list is ticked.');
+    // The list is longer than its frame. Scrolled to its end, the row with the list's own box is still at its top.
+    const stuck = await page.locator('.export-series-list').evaluate(list => {
+      list.scrollTop = list.scrollHeight;
+      return { scrolled: list.scrollTop, gap: Math.round(list.querySelector('.export-pick-all').getBoundingClientRect().top - list.getBoundingClientRect().top) };
+    });
+    assert.ok(stuck.scrolled > 0 && Math.abs(stuck.gap) <= 2, `The box over the list stays in view while the list scrolls: ${JSON.stringify(stuck)}`);
     await page.locator('input[data-action="export-scope"][value="all"]').check();
     assert.equal(await page.getByTestId('export-gates').count(), 0, 'Every series exported needs no note.');
     await page.getByTestId('export-close').click();

@@ -50,14 +50,24 @@
 .export-selection-actions button:hover:enabled { background: var(--bg-hover); border-color: var(--line-control-hover); color: var(--text-strong); }
 .export-series-list { max-height: 230px; overflow: auto; border: 1px solid var(--line-control); border-radius: var(--radius); background: var(--bg-input); }
 .export-study + .export-study { border-top: 1px solid var(--line); }
-.export-study h4 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 0; padding: 10px 12px; background: var(--bg-raised); color: var(--text-strong); font-size: var(--text-md); font-weight: 600; }
-.export-study h4 > span { color: var(--text-tertiary); font-size: var(--text-sm); font-weight: 400; white-space: nowrap; }
-.export-series-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line-subtle); cursor: pointer; }
-.export-series-row:hover { background: var(--bg-hover); }
-.export-series-row input, .export-check input { flex-shrink: 0; margin: 0; }
-.export-series-row > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.export-series-row strong { color: var(--text); font-size: var(--text-md); font-weight: 500; overflow-wrap: anywhere; }
-.export-series-row small { color: var(--text-tertiary); font-size: var(--text-sm); }
+.export-study h4 { margin: 0; }
+/* A row is a box, a name and, at the right, a count. The list's first row and each study's heading are boxes over
+   several series: a click picks all of them, or none when all were picked. */
+.export-series-row, .export-pick-row { display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; }
+.export-series-row { border-top: 1px solid var(--line-subtle); }
+/* A series' box sits under its study's name: past the row's padding, the study's box and the gap after it. */
+.export-study .export-series-row { padding-left: 38px; }
+.export-pick-row { background: var(--bg-raised); }
+/* The list's own box stays in view while the list scrolls. */
+.export-pick-all { position: sticky; top: 0; z-index: 1; border-bottom: 1px solid var(--line); }
+.export-series-row:hover, .export-pick-row:hover { background: var(--bg-hover); }
+.export-series-row input, .export-pick-row input, .export-check input { flex-shrink: 0; margin: 0; }
+.export-series-row > span, .export-pick-row > span { display: flex; flex: 1; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.export-series-row strong, .export-pick-row strong { min-width: 0; color: var(--text); font-size: var(--text-md); font-weight: 500; overflow-wrap: anywhere; }
+.export-pick-row strong { color: var(--text-strong); font-weight: 600; }
+.export-series-row small, .export-pick-row small { color: var(--text-tertiary); font-size: var(--text-sm); font-weight: 400; text-align: right; }
+/* The counts change as series are ticked: figures of one width keep them still. */
+.export-pick-row small { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .export-destination { margin-top: 18px; }
 .export-check { display: flex; align-items: flex-start; gap: 10px; min-height: 24px; margin-top: 14px; color: var(--text); font-size: var(--text-md); line-height: 1.4; cursor: pointer; }
 .export-check input { margin-top: 1px; }
@@ -83,7 +93,8 @@
   .export-footer-note { flex: 1 0 100%; max-width: none; }
   .export-fields { grid-template-columns: 1fr; gap: 11px; }
   .export-dialog-content, .export-dialog > header { padding: 14px; }
-  .export-study h4 { flex-direction: column; gap: 4px; }
+  .export-series-row > span, .export-pick-row > span { flex-direction: column; align-items: flex-start; gap: 3px; }
+  .export-series-row small, .export-pick-row small { text-align: left; white-space: normal; }
   .export-selection-heading { align-items: flex-start; }
   .dialog.export-dialog { max-height: calc(100vh - 24px); }
 }

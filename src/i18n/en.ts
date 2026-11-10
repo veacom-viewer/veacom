@@ -790,6 +790,7 @@ export const en = {
   'export.selectedCount': '{selected} of {total} selected',
   'export.currentStudy': 'Current study',
   'export.selectAll': 'Select all',
+  'export.seriesPicked': '{picked} / {total} series',
   'export.clear': 'Clear',
   'export.undatedStudy': 'Undated study',
   'export.seriesNumber': 'Series {number}',

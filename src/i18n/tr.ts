@@ -793,6 +793,7 @@ export const tr: Record<keyof typeof en, string> = {
   'export.selectedCount': '{total} seriden {selected} seçili',
   'export.currentStudy': 'Bu çalışmanın tümü',
   'export.selectAll': 'Tümünü seç',
+  'export.seriesPicked': '{picked} / {total} seri',
   'export.clear': 'Hiçbiri',
   'export.undatedStudy': 'Tarihsiz çalışma',
   'export.seriesNumber': 'Seri {number}',
