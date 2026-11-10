@@ -121,19 +121,49 @@ pub fn set_hold_limit(bytes: f64) {
     HOLD_LIMIT.store(bytes as u64, Ordering::Relaxed);
 }
 
-/// Decodes a whole series, from the cache when it is there. In the threads build the series' files are first read
-/// whole into shared memory, as the decoding threads cannot reach the page's files, and given back after.
+/// The files a series' frames are read from, each once.
+#[cfg(feature = "threads")]
+fn frame_files(source: &veacom_core::model::SourceSeries) -> Vec<&std::path::Path> {
+    let mut paths: Vec<&std::path::Path> = source
+        .frames
+        .iter()
+        .map(|frame| frame.source.path.as_path())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// The page files series `id` will be decoded from that are not held yet, by number. The Worker reads them several at
+/// a time and hands each over with `holdFile` before it asks for the series: read here one after another, they took
+/// most of a series' load, while the decoding threads waited. None when the series is cached, or too large to hold.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = volumeFiles)]
+pub fn volume_files(id: &str) -> Vec<u32> {
+    if SESSION.with_borrow(|session| session.has_volume(id)) {
+        return Vec::new();
+    }
+    let Ok(source) = SESSION.with_borrow(|session| session.source(id)) else {
+        return Vec::new();
+    };
+    crate::blob::unheld(&frame_files(&source), HOLD_LIMIT.load(Ordering::Relaxed))
+}
+
+/// File `id`, read whole by the Worker. False when it is not a listed file of that length: then it is read here.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = holdFile)]
+pub fn hold_file(id: u32, bytes: Vec<u8>) -> bool {
+    crate::blob::hold_read(id, bytes)
+}
+
+/// Decodes a whole series, from the cache when it is there. In the threads build the series' files are first held
+/// whole in shared memory, as the decoding threads cannot reach the page's files, and given back after. The Worker
+/// reads most of them beforehand (`volumeFiles`); `hold` reads the rest here.
 fn decode_volume_of(id: &str, revision: Option<u64>) -> anyhow::Result<Arc<PixelBuffer>> {
     #[cfg(feature = "threads")]
     if !SESSION.with_borrow(|session| session.has_volume(id)) {
         let source = SESSION.with_borrow(|session| session.source(id))?;
-        let mut paths: Vec<&std::path::Path> = source
-            .frames
-            .iter()
-            .map(|frame| frame.source.path.as_path())
-            .collect();
-        paths.sort();
-        paths.dedup();
+        let paths = frame_files(&source);
         // Above HOLD_LIMIT, or when memory runs short, the series is decoded on this thread alone, reading as it goes.
         let volume = match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
             Ok(true) => SESSION.with_borrow_mut(|session| session.volume(id, revision)),
@@ -169,10 +199,16 @@ pub fn progress() -> String {
 }
 
 /// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold the
-/// file's first 64 KiB, read by the page beforehand.
+/// file's first 64 KiB, read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
 #[wasm_bindgen(js_name = addFile)]
-pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) {
-    crate::blob::add(path, file, head);
+pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
+    crate::blob::add(path, file, head)
+}
+
+/// The numbers of the files listed now: an import and a removal forget the files no series reads from.
+#[wasm_bindgen(js_name = listedFiles)]
+pub fn listed_files() -> Vec<u32> {
+    crate::blob::listed()
 }
 
 /// Closes everything and forgets every listed file.

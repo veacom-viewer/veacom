@@ -30,13 +30,13 @@ function startHelpers(threaded: ThreadedEngine, count: number): Promise<void> {
   });
 }
 
-async function load(): Promise<{ engine: Engine; threads: number; memory: WebAssembly.Memory }> {
+async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; threads: number; memory: WebAssembly.Memory }> {
   if (self.crossOriginIsolated && THREADS > 1) {
     try {
       const threaded: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
       const exports = await threaded.default();
       await startHelpers(threaded, THREADS - 1);
-      return { engine: threaded as unknown as Engine, threads: THREADS, memory: exports.memory };
+      return { engine: threaded as unknown as Engine, threaded, threads: THREADS, memory: exports.memory };
     } catch (error) {
       console.warn('The threaded engine could not start; using one thread.', error);
     }
@@ -46,6 +46,38 @@ async function load(): Promise<{ engine: Engine; threads: number; memory: WebAss
   return { engine: single, threads: 1, memory: exports.memory };
 }
 let engine: Engine;
+
+// The page's files by the number the engine knows each by (`addFile`), for reading a series' files here before it is
+// decoded (`holdInParallel`); and the page's cancel flag, when it has shared memory.
+const pageFiles = new Map<number, File>();
+let cancelFlag: Int32Array | undefined;
+const READS_AT_ONCE = 8;
+
+/** Lets go of the files the engine no longer lists: an import and a removal forget those no series reads from. */
+function forgetUnlisted(): void {
+  const listed = new Set(engine.listedFiles());
+  for (const id of pageFiles.keys()) if (!listed.has(id)) pageFiles.delete(id);
+}
+
+/** Reads the page files series `seriesId` is decoded from, READS_AT_ONCE at a time, and hands each to the engine
+ * whole. The engine read them one after another on this thread, which took most of a series' load while the
+ * decoding threads waited; the browser reads several at once, off this thread. A file that cannot be read here is left
+ * to the engine, which reads it itself and says why. Stops when request `request` is cancelled. */
+async function holdInParallel(threaded: ThreadedEngine, seriesId: string, request: number): Promise<void> {
+  const ids = threaded.volumeFiles(seriesId);
+  const cancelled = () => cancelFlag !== undefined && Atomics.load(cancelFlag, 0) === request;
+  let next = 0;
+  const read = async () => {
+    while (next < ids.length && !cancelled()) {
+      const id = ids[next++], file = pageFiles.get(id);
+      if (!file) continue;
+      try {
+        threaded.holdFile(id, new Uint8Array(await file.arrayBuffer()));
+      } catch { /* The engine reads it itself, and reports a failure. */ }
+    }
+  };
+  await Promise.all(Array.from({ length: READS_AT_ONCE }, read));
+}
 
 export type EngineRequest =
   // `cancel`: the page's cancel flag, where the page is cross-origin isolated and so has shared memory.
@@ -93,6 +125,7 @@ async function answer(data: EngineRequest): Promise<void> {
       case 'init': {
         // Without shared memory the page cannot reach a flag while the engine works; this one stays 0.
         engine.watch((record: string) => scope.postMessage({ type: 'progress', value: JSON.parse(record) }), new Int32Array(data.cancel ?? new ArrayBuffer(4)));
+        cancelFlag = data.cancel ? new Int32Array(data.cancel) : undefined;
         // In the threads build the module's memory is shared: the page reads progress and sets the cancel flag in it.
         // SharedArrayBuffer itself exists only where the page is cross-origin isolated.
         const [cancel, progress] = engine.sharedState();
@@ -102,12 +135,14 @@ async function answer(data: EngineRequest): Promise<void> {
       }
       case 'import': {
         const first = await readHeads(data.files);
-        data.files.forEach(({ path, file }, i) => engine.addFile(path, file, first[i]));
-        value = JSON.parse(engine.importPaths(data.roots));
+        data.files.forEach(({ path, file }, i) => pageFiles.set(engine.addFile(path, file, first[i]), file));
+        try {
+          value = JSON.parse(engine.importPaths(data.roots));
+        } finally { forgetUnlisted(); }
         break;
       }
       case 'list': value = JSON.parse(engine.listSeries()); break;
-      case 'remove': value = JSON.parse(engine.removeSeries(data.ids)); break;
+      case 'remove': value = JSON.parse(engine.removeSeries(data.ids)); forgetUnlisted(); break;
       case 'tags': value = JSON.parse(engine.tags(data.seriesId, data.frame, data.revision)); break;
       case 'sample': value = JSON.parse(engine.sample(data.seriesId, data.revision, data.operation)); break;
       case 'export': {
@@ -118,7 +153,8 @@ async function answer(data: EngineRequest): Promise<void> {
       }
       case 'volume':
       case 'frame': {
-        const pixels = (data.op === 'volume' ? engine.volume(data.seriesId, data.revision) : engine.frame(data.seriesId, data.index, data.revision)) as EnginePixels;
+        if (data.op === 'volume' && loaded.threaded) await holdInParallel(loaded.threaded, data.seriesId, data.id);
+        const pixels =(data.op === 'volume' ? engine.volume(data.seriesId, data.revision) : engine.frame(data.seriesId, data.index, data.revision)) as EnginePixels;
         value = pixels; transfer = [pixels.bytes.buffer];
         break;
       }

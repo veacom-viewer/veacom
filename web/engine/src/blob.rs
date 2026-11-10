@@ -85,7 +85,8 @@ fn sources() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Arc<BlobSource>
 }
 
 /// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: its first 64 KiB, if read already.
-pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) {
+/// Returns the number the file is known by, for `unheld` and `hold_read`.
+pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let length = blob.size() as u64;
     // Kept only when it is exactly the file's first piece.
@@ -105,6 +106,59 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) {
     if let Some(replaced) = sources().insert(key, source) {
         forget(&HashSet::from([replaced.id]));
     }
+    id
+}
+
+/// The numbers of the files listed now.
+pub fn listed() -> Vec<u32> {
+    sources().values().map(|source| source.id).collect()
+}
+
+/// The page files at these paths that are not held whole yet, by number, for the Worker to read itself, several at a
+/// time, and hand over with `hold_read`. None when they all come to more than `limit` bytes: `hold` would not hold
+/// them either.
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn unheld(paths: &[&Path], limit: u64) -> Vec<u32> {
+    let sources = sources();
+    let wanted: Vec<&Arc<BlobSource>> =
+        paths.iter().filter_map(|path| sources.get(*path)).collect();
+    if wanted.iter().map(|source| source.length).sum::<u64>() > limit {
+        return Vec::new();
+    }
+    wanted
+        .into_iter()
+        .filter(|source| {
+            source
+                .whole
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .is_none()
+        })
+        .map(|source| source.id)
+        .collect()
+}
+
+/// Holds file `id` whole from bytes the Worker read itself. False, holding nothing, when no listed file has that number
+/// or the bytes are not its length; `hold` then reads it here.
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn hold_read(id: u32, bytes: Vec<u8>) -> bool {
+    let Some(source) = sources().values().find(|source| source.id == id).cloned() else {
+        return false;
+    };
+    if bytes.len() as u64 != source.length {
+        return false;
+    }
+    *source
+        .whole
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(bytes));
+    true
 }
 
 /// Forgets the first pieces the page read ahead: the import that parsed its headers from them has ended, and later
