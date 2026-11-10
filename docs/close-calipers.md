@@ -64,6 +64,10 @@ also have a caliper button; a side holds one note, whichever came last. A calipe
 millimetres), its reading and the answer it gave. Moving a point of its drawing measures again; the answer follows until the reader picks another one. Deleting
 the drawing leaves the record. "Copy for the report" gives each side its answer, measurement and slice.
 
+Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.
+Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never
+overwrites newer work. The caliper drawings stay on the image either way.
+
 ## The theatre card
 
 "Theatre card" in the checklist prints it on one A4 page to take into theatre: the patient as the image corner gives

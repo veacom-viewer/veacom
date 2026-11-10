@@ -140,7 +140,16 @@ async function main() {
     // A caliper item's side can still be noted by hand: the slice on screen.
     await side('septum', 'right').locator('[data-action="checklist-note"]').click();
     assert.match(await value('septum', 'right'), /^Slice \d+\/\d+$/, 'The right side has its slice noted.');
-    check('Septal angle: measured at the crista galli and recorded on the side the septum bows to; the other side noted by hand', { septum });
+    // A slice note on the measured side replaces the measurement there, says so, and Undo brings the measurement back.
+    await side('septum', 'left').locator('[data-action="checklist-note"]').click();
+    assert.match(await value('septum', 'left'), /^Slice \d+\/\d+$/);
+    assert.match(await checklist.locator('.preop-undo').textContent(), /^Septal deviation \/ spur · Left: the slice note replaced the measurement\.Undo$/);
+    await page.mouse.move(5, 5);
+    await page.screenshot({ path: path.join(output, '5-undo-en.png') });
+    await checklist.locator('[data-action="checklist-undo"]').click();
+    assert.equal(await value('septum', 'left'), septum, 'Undo brings the measurement back.');
+    assert.equal(await answer('septum', 'left'), 'Yes');
+    check('Septal angle: measured at the crista galli and recorded on the side the septum bows to; the other side noted by hand; a note that replaces the measurement can be undone', { septum });
 
     // The sella lines on the midsagittal plane.
     const sagittal = await show('sagittal', landmarks.sella.x);
@@ -274,7 +283,15 @@ async function main() {
     await page.screenshot({ path: path.join(output, '3-set-up-tr.png') });
     await setUp.getByRole('button').click();
     await shownPlane('sagittal');
-    check('In Turkish: the checklist, its limit word and the report', { report: turkish });
+    // Clear says so with Undo, and Undo puts every answer and measurement back.
+    await checklist.locator('[data-action="checklist-clear"]').click();
+    assert.equal(await checklist.locator('.preop-undo').textContent(), 'Kontrol listesi temizlendi.Geri al');
+    assert.equal(await answer('keros', 'right'), null);
+    await page.mouse.move(5, 5);
+    await page.screenshot({ path: path.join(output, '5-undo-tr.png') });
+    await checklist.locator('[data-action="checklist-undo"]').click();
+    assert.deepEqual([await answer('keros', 'right'), await value('keros', 'right')], ['1', '3.2 mm · 70.0°'], 'Undo puts the cleared checklist back.');
+    check('In Turkish: the checklist, its limit word and the report; Clear says so and Undo puts it back', { report: turkish });
 
     assert.deepEqual(errors, [], 'No page errors.');
     await fs.writeFile(path.join(output, 'close-calipers-checks.json'), JSON.stringify({ checks, errors }, null, 2));

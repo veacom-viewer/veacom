@@ -708,6 +708,8 @@ export const tr: Record<keyof typeof en, string> = {
   'checklist.print': 'Ameliyathane kartı',
   'checklist.printHint': 'Ameliyathane için tek sayfa yazdırır: hasta, iki taraf, ölçümler ve kesitler. Önce yazdırma penceresi açılır.',
   'checklist.printFailed': 'Yazdırılamadı. Yeniden deneyin ya da PDF olarak yazdırın.',
+  'checklist.cleared': 'Kontrol listesi temizlendi.',
+  'checklist.noteReplaced': '{where}: ölçümün yerine kesit notu kondu.',
   'card.printed': 'yazdırma: {date}',
   'card.patientHidden': 'Hasta bilgileri gizli',
   'card.notMarked': '{total} taraftan {count} tanesi işaretlenmedi',

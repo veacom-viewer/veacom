@@ -40,6 +40,7 @@
 .preop-checklist > footer { flex-wrap: wrap; }
 .preop-help { flex: 1 0 100%; color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.4; }
 .preop-checklist > footer > button:first-of-type { margin-left: auto; }
+.preop-undo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; padding: 8px 12px 0; color: var(--text-secondary); font-size: var(--text-sm); }
 .preop-print-failed { margin: 0; padding: 8px 12px 0; color: var(--danger); font-size: var(--text-sm); }
 /* A one-answer row (sphenoid pneumatisation) has longer words: each choice as wide as its word. */
 .preop-row.is-single .preop-option { flex: 1 1 auto; padding: 0 5px; }

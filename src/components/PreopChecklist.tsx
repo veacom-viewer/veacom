@@ -46,7 +46,33 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
   const total = items.reduce((sum, item) => sum + (item.sided ? 2 : 1), 0);
   const done = items.reduce((sum, item) => sum + sidesOf(item.sided).filter(side => state.answers[item.id]?.[side]).length, 0);
   const answer = (id: string, side: Side, value: string) => update({ ...state, answers: { ...state.answers, [id]: { ...state.answers[id], [side]: state.answers[id]?.[side] === value ? undefined : value } } });
-  const note = (id: string, side: Side) => { const here = onNote(); if (here) update({ ...state, notes: { ...state.notes, [id]: { ...state.notes[id], [side]: here } } }); };
+  // What Clear, or a slice note in place of a measurement, took away: Undo puts it back while the checklist is still as
+  // that change left it, so it never overwrites anything done since.
+  const [undo, setUndo] = useState<{ before: ChecklistState; after: ChecklistState; text: string } | null>(null);
+  const undoable = undo !== null && undo.after === saved ? undo : null;
+  const change = (next: ChecklistState, text: string) => { update(next); if (saved) setUndo({ before: saved, after: next, text }); };
+  const sideName = (side: Side) => side === 'both' ? '' : t(side === 'right' ? 'checklist.right' : 'checklist.left');
+  const note = (id: string, side: Side, label: string) => {
+    const here = onNote();
+    if (!here) return;
+    const next = { ...state, notes: { ...state.notes, [id]: { ...state.notes[id], [side]: here } } };
+    // A side holds one note: a slice note drops a caliper's record there (its drawing stays on the image).
+    if (state.notes[id]?.[side]?.caliper) change(next, t('checklist.noteReplaced', { where: side === 'both' ? label : `${label} · ${sideName(side)}` }));
+    else update(next);
+  };
+  const clear = () => {
+    const next = { ...state, answers: {}, notes: {} };
+    const marked = [state.answers, state.notes].some(record => Object.values(record).some(sides => Object.values(sides ?? {}).some(Boolean)));
+    if (marked) change(next, t('checklist.cleared')); else update(next);
+  };
+  const restore = (button: HTMLElement) => {
+    if (!undoable) return;
+    // The Undo line goes with it: focus moves to Clear beside where it was (found now, while the button is in the page).
+    const clearButton = button.closest('.preop-checklist')?.querySelector<HTMLElement>('[data-action="checklist-clear"]');
+    update(undoable.before);
+    setUndo(null);
+    requestAnimationFrame(() => clearButton?.focus());
+  };
   const copy = async () => {
     const text = checklistSummary(state.kind, state.answers, state.notes, locale);
     try { await copyText(text); setCopiedFrom({ state: saved }); } catch { setCopiedFrom(null); }
@@ -58,7 +84,6 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     flushSync(() => { setPrintedAt(new Date()); setPrintFailed(false); });
     try { await printPage(); } catch { setPrintFailed(true); }
   };
-  const sideName = (side: Side) => side === 'both' ? '' : t(side === 'right' ? 'checklist.right' : 'checklist.left');
 
   return <section className="preop-checklist" aria-label={t('checklist.title')} data-testid="preop-checklist">
     <header><ClipboardCheck size={17} aria-hidden="true" /><h2 ref={headingRef} tabIndex={-1}>{t('checklist.title')}</h2>
@@ -91,7 +116,7 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
                 <div className="preop-side-tools">
                   {/* A side holds one note: the slice noted here or a caliper's measurement, whichever came last. */}
                   <button type="button" className="icon-button preop-tool" data-action="checklist-note" aria-label={named(t('checklist.note'))} data-tooltip={t('checklist.note')}
-                    onClick={() => note(item.id, side)}><Crosshair size={15} /></button>
+                    onClick={() => note(item.id, side, item.label[locale])}><Crosshair size={15} /></button>
                   {kind && <button type="button" className={`icon-button preop-tool${armed ? ' is-on' : ''}${why ? ' is-unavailable' : ''}`} data-action="checklist-caliper"
                     aria-pressed={armed} aria-disabled={why ? true : undefined} aria-description={why ? t(why) : undefined}
                     aria-label={armed ? t('caliper.stop') : named(t('caliper.measure', { name: caliperName(kind, locale) }))}
@@ -107,9 +132,11 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
         })}
       </div>)}
     </div>
+    {undoable && <p className="preop-undo" role="status">{undoable.text}
+      <button type="button" className="text-button" data-action="checklist-undo" onClick={event => restore(event.currentTarget)}>{t('notice.undo')}</button></p>}
     {printFailed && <p className="preop-print-failed" role="alert">{t('checklist.printFailed')}</p>}
     <footer><span className="preop-help">{t('checklist.help')}</span>
-      <button type="button" className="secondary-button compact" data-action="checklist-clear" onClick={() => update({ ...state, answers: {}, notes: {} })}>{t('checklist.clear')}</button>
+      <button type="button" className="secondary-button compact" data-action="checklist-clear" onClick={clear}>{t('checklist.clear')}</button>
       <button type="button" className="secondary-button compact" data-action="checklist-print" data-tooltip={t('checklist.print')} data-tooltip-hint={t('checklist.printHint')}
         aria-description={t('checklist.printHint')} onClick={() => void print()}><Printer size={14} />{t('checklist.print')}</button>
       <button type="button" className="primary-button compact" data-action="checklist-copy" onClick={() => void copy()}><Copy size={14} />{copied ? t('report.copied') : t('report.copy')}</button></footer>

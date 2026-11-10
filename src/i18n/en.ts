@@ -705,6 +705,8 @@ export const en = {
   'checklist.print': 'Theatre card',
   'checklist.printHint': 'Prints one page for theatre: the patient, both sides, measurements and slices. The print dialog opens first.',
   'checklist.printFailed': 'Not printed. Try again, or print to a PDF.',
+  'checklist.cleared': 'Checklist cleared.',
+  'checklist.noteReplaced': '{where}: the slice note replaced the measurement.',
   'card.printed': 'printed {date}',
   'card.patientHidden': 'Patient data hidden',
   'card.notMarked': '{count} of {total} sides not marked',

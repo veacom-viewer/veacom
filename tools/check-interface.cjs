@@ -468,8 +468,21 @@ async function main() {
     assert.deepEqual(await page.evaluate(() => window.__VEACOM_TEST__.state().view), viewBefore, 'Undo puts the view back exactly.');
     await page.waitForFunction(mode => document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.mode === mode, modeBefore);
     assert.equal(await keros.getAttribute('aria-pressed'), 'false', 'Undo ends the caliper.');
-    await checklist.locator('[data-action="checklist-clear"]').click();
+    // Clear takes answers and notes, says so with Undo, and Undo puts both back with focus on Clear. Any change after
+    // Clear ends the offer, so Undo never overwrites it.
+    const clear = checklist.locator('[data-action="checklist-clear"]'), undo = checklist.locator('[data-action="checklist-undo"]');
+    await clear.click();
     assert.equal(await lamina('left').locator('[data-action="checklist-go"]').count(), 0, 'Clear removes the notes too.');
+    assert.equal(await firstAnswer.getAttribute('aria-checked'), 'false', 'Clear removes the answers.');
+    await undo.click();
+    assert.equal(await firstAnswer.getAttribute('aria-checked'), 'true', 'Undo puts the answers back.');
+    assert.match(await lamina('left').locator('[data-action="checklist-go"]').textContent(), /^(Slice|Kesit) \d+\/\d+$/, 'Undo puts the notes back.');
+    await focusReaches(() => document.activeElement?.dataset.action === 'checklist-clear', undefined, 'After Undo, focus is on Clear.');
+    await clear.click();
+    await undo.waitFor();
+    await lamina('right').locator('[data-action="checklist-note"]').click();
+    assert.equal(await undo.count(), 0, 'A change after Clear ends the Undo offer.');
+    await clear.click();
     await viewport.focus(); await page.keyboard.press('Escape'); await settle();
     assert.equal(await checklist.isVisible(), true, 'Esc in the image must not close the checklist.');
     await checklist.locator('[data-action="checklist-clear"]').focus(); await page.keyboard.press('Escape');
@@ -494,7 +507,7 @@ async function main() {
       await page.getByTestId('volume-view').waitFor({ state: 'detached' });
       await page.waitForFunction(() => document.activeElement?.dataset.testid === 'tool-3d');
     }
-    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, sets up the pane for a caliper with Undo, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
+    check('Keyboard routing: Alt + letter, Help and the CT checklist keep letters; the checklist keeps its answers, notes each side apart, sets up the pane for a caliper with Undo, undoes Clear, takes focus, closes on Esc from inside and returns focus; Esc leaves 3D from a field', { escapedFrom3d, numberFieldKeptEsc });
 
     // A real click with the text tool leaves focus in the note field: typed letters are text, not shortcuts. It comes
     // right after 3D closed, which with slow (software) drawing is before the widened pane's resize frame: the pane
