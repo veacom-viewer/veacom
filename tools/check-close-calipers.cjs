@@ -159,7 +159,12 @@ async function main() {
     await page.getByTestId('tool-measure-menu').click();
     await page.locator('[data-action="toolbar-units-calibration"]').click();
     await page.locator('[data-action="calibration-length"]').fill('20');
+    // Cleared before the calibration, the records come back with ⌘Z in the checklist at the calibrated scale.
+    await checklist.locator('[data-action="checklist-clear"]').click();
     await page.locator('[data-action="calibrate"]').click();
+    assert.equal(await value('keros', 'right'), null);
+    await checklist.locator('[data-action="checklist-clear"]').focus();
+    await page.keyboard.press(undoKeys);
     await settledValue('right', '6.4 mm');
     assert.equal(await answer('keros', 'right'), '2', 'The answer follows the calibrated depth.');
     await settledValue('left', '12.0 mm');
@@ -176,7 +181,7 @@ async function main() {
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
     await page.waitForFunction(() => [...document.querySelectorAll('.viewport-cell.is-active [data-annotation-id] .annotation-label')].some(label => label.textContent.includes('Keros left 6.0 mm')));
-    check('A calibration changes the caliper values and answers in the checklist, a deleted drawing\'s record too, and removing it changes them back');
+    check('A calibration changes the caliper values and answers in the checklist, a deleted drawing\'s record and a cleared record brought back too, and removing it changes them back');
 
     // The anterior ethmoidal artery: in the right roof (type 1: no answer, a dehiscence is the reader's call) and 3 mm
     // below the left one, whose roof point was clicked in the air and moved onto the bone.
