@@ -5,6 +5,8 @@
     "actions-before-input": 0,
     "burr": 3,
     "burr-undo": 1,
+    "checklist-answer-keys": 12,
+    "checklist-answer-mouse": 21,
     "checklist-close": 1,
     "checklist-open": 1,
     "close-3d": 1,

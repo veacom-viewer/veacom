@@ -162,6 +162,50 @@ export function checklistSummary(kind: ChecklistKind, answers: Answers, notes: N
   return lines.join('\n');
 }
 
+/** A side of a row, where the checklist's keys act: `row` indexes the list's items in order. */
+export interface ChecklistCell { row: number; side: Side }
+/** What a key does inside the checklist: move between rows (↑ ↓) or sides (← →), or answer with the row's first to ninth
+ * answer (Alt with 1–9, by position, so the keys mean the same in every language), on both sides with Shift too. */
+export type ChecklistKey = { move: 'up' | 'down' | 'left' | 'right' } | { answer: number; both: boolean };
+
+const MOVES: Partial<Record<string, 'up' | 'down' | 'left' | 'right'>> = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
+
+/** The checklist's meaning of a key press, or null. An answer is Alt (⌥) with a digit: a plain digit is a window preset
+ * on the image, and keeps that one meaning. The digit is read from the key's place (`code`), since Alt, Shift and the
+ * layout change the character it types. ⌘ and Ctrl combinations belong to the app; so does AltGr, which Windows reports
+ * as Ctrl+Alt and which types characters on a Turkish keyboard. Only the top-row digits answer: with Alt, the keypad's
+ * digits type characters by their codes on Windows. */
+export function checklistKey(event: { key: string; code: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }): ChecklistKey | null {
+  if (event.metaKey || event.ctrlKey) return null;
+  const move = MOVES[event.key];
+  if (move) return event.shiftKey || event.altKey ? null : { move };
+  const digit = event.altKey ? /^Digit([1-9])$/.exec(event.code) : null;
+  return digit ? { answer: Number(digit[1]) - 1, both: event.shiftKey } : null;
+}
+
+/** The cell a move goes to. ← and → go to the Right and Left columns as the checklist shows them (patient's right on
+ * the left, as on the image); a one-answer row has neither. ↑ and ↓ keep the column, or take `column` (the last one
+ * used) when leaving a one-answer row; they stop at the first and last rows. */
+export function moveCell(items: readonly ChecklistItem[], at: ChecklistCell, move: 'up' | 'down' | 'left' | 'right', column: 'right' | 'left'): ChecklistCell {
+  if (move === 'left' || move === 'right') return items.at(at.row)?.sided ? { row: at.row, side: move === 'left' ? 'right' : 'left' } : at;
+  const row = Math.max(0, Math.min(items.length - 1, at.row + (move === 'up' ? -1 : 1)));
+  return { row, side: items[row].sided ? (at.side === 'both' ? column : at.side) : 'both' };
+}
+
+/** The checklist after answering `at` by key with the row's answer `index` (on both sides of a sided row with `both`),
+ * and the cell the keys move on to: the left side after the right, else the next row's right side; the last cell stays.
+ * A key sets its answer and never clears it, unlike a second click. Null when the row has no such answer. */
+export function answerByKey(state: ChecklistState, items: readonly ChecklistItem[], at: ChecklistCell, index: number, both: boolean): { state: ChecklistState; next: ChecklistCell } | null {
+  const item = items.at(at.row), option = item && (item.options ?? FINDING).at(index);
+  if (!option) return null;
+  const sides = both ? sidesOf(item) : [at.side];
+  const answers = { ...state.answers, [item.id]: { ...state.answers[item.id], ...Object.fromEntries(sides.map(side => [side, option.value])) } };
+  const following = items.at(at.row + 1);
+  const next: ChecklistCell = !both && at.side === 'right' ? { row: at.row, side: 'left' }
+    : following ? { row: at.row + 1, side: following.sided ? 'right' : 'both' } : at;
+  return { state: { ...state, answers }, next };
+}
+
 /** The checklist after a caliper drawing measured `item` on `side`: its note, and the answer it gives. A new drawing
  * sets its answer. An edited one moves its note (a septum can change side) and its answer, unless the reader picked
  * another answer since. The answer an earlier drawing gave on that side goes with that drawing. */

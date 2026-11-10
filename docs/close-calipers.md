@@ -73,6 +73,16 @@ Clear, and a slice note that replaces a side's measurement, say what they took a
 Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never
 overwrites newer work. The caliper drawings stay on the image either way.
 
+The checklist answers from the keyboard too, while focus is in it and no caliper waits for its points: ↑ and ↓ move
+between rows, ← and → between the Right and Left columns as shown, and Alt (⌥ on a Mac) with a digit gives the row's
+answer at that place (1 Yes, 2 No, 3 ?; Keros 1 to 3; pneumatisation 1 to 5), then moves on to the left side or the
+next row. Alt+Shift with a digit gives both sides the same answer and goes to the next row. Answers are digits by place
+so they mean the same in English and Turkish (Y would be yes in one and "Yok", no, in the other), and they take Alt
+because a plain digit is a window preset on the image (the owner's choice, 10 November 2026): no key has two meanings.
+AltGr, which Windows reports as Ctrl+Alt, answers nothing, and neither do the keypad's digits, which with Alt type
+characters by their codes on Windows. Being chords, the answers stay on when single-key shortcuts are turned off. Each
+answer's tooltip shows its keys, and Help lists them.
+
 ## The theatre card
 
 "Theatre card" in the checklist prints it on one A4 page to take into theatre: the patient as the image corner gives
