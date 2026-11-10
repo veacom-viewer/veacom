@@ -15,6 +15,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 function parse(argv) {
   const split = argv.indexOf('--');
@@ -166,7 +167,7 @@ async function main() {
   } finally {
     result.finished = new Date().toISOString();
     await fs.writeFile(path.join(output, 'software-rendering.json'), JSON.stringify(result, null, 2));
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
   const o = result.observations;

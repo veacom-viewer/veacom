@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 const repo = path.resolve(__dirname, '..');
 const options = {};
@@ -199,14 +200,11 @@ async function main() {
     failure = error;
     if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
   } finally {
-    try { await desktop?.close(); }
-    catch (error) { failure ??= error; }
-    finally {
-      await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
-      await fs.writeFile(path.join(output, 'process.log'), logs.join(''));
-      await fs.writeFile(path.join(output, 'results.json'), JSON.stringify({ passed: !failure, platform: process.platform, study, checks, errors, error: failure?.stack,
-        method: 'Production Electron app. Real disk-backed File objects selected through the browser file input; DragEvents dispatched with those same File objects. This does not simulate physical desktop pointer dragging.', profileRemoved: true }, null, 2));
-    }
+    if (!await closeDesktop(desktop)) failure ??= new Error('The desktop app did not quit, so it was killed.');
+    await fs.rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    await fs.writeFile(path.join(output, 'process.log'), logs.join(''));
+    await fs.writeFile(path.join(output, 'results.json'), JSON.stringify({ passed: !failure, platform: process.platform, study, checks, errors, error: failure?.stack,
+      method: 'Production Electron app. Real disk-backed File objects selected through the browser file input; DragEvents dispatched with those same File objects. This does not simulate physical desktop pointer dragging.', profileRemoved: true }, null, 2));
   }
   if (failure) throw failure;
   console.log(`Results: ${path.join(output, 'results.json')}`);

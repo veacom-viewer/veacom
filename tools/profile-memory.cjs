@@ -12,6 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const equal = argument.indexOf('='); return [argument.slice(2, equal), argument.slice(equal + 1)];
@@ -126,7 +127,7 @@ async function run(index) {
     const entryUrl = await page.locator('script[type="module"][src]').first().evaluate(script => script.src);
     return { appPath: runtime.appPath, builds: buildHashes(runtime, entryUrl), summary, at3s, at20s, afterPaging };
   } finally {
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     fs.rmSync(profile, { recursive: true, force: true });
   }
 }

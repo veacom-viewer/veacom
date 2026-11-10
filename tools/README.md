@@ -63,6 +63,19 @@ keeps drawing, and `capturePage()` still returns the current frame. The checks' 
 needs neither. A new desktop check calls `ignoreOutsideInput(desktop)` straight after `firstWindow()`. On Windows the
 windows still take real input, as when the Windows checks last passed.
 
+## When the app does not start or does not quit
+
+Every tool here that opens the desktop app closes it with `closeDesktop(desktop)` (`tools/lib/close-desktop.cjs`), not
+Playwright's `desktop.close()` alone, which waits for the app to quit with no time limit. An app that has not quit after
+20 seconds, longer than its own shutdown, is killed with its helpers and the imaging engine, and the check fails with
+the error that explains it, such as `firstWindow()` timing out. A new desktop check does the same.
+
+On macOS, a few seconds after an app crashes, the crash check's main-process crash included, the system records the
+crash. The app's next start then asks "it unexpectedly quit while reopening windows. Do you want to try to reopen its
+windows again?" before the app is ready, and waits for an answer: no engine and no window. VEAcom ignores the window
+state macOS saves (`electron/main.cjs`), so its starts do not wait on that alert. To see where a stalled start sits,
+`sample <pid> 1` prints the stacks of Electron's main process.
+
 ## Drawing without a graphics driver
 
 On a PC without a usable graphics driver (Microsoft's basic display driver, some remote sessions, drivers Chromium blocklists) Chromium still provides WebGL, drawn in software: on Windows through Direct3D WARP, whose renderer string names the "Microsoft Basic Render Driver". The viewer then shows a notice that drawing is slow and a "Software drawing" marker in the status bar.
