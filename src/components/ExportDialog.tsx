@@ -32,8 +32,10 @@ export interface ExportDialogProps {
     setSlice: (slice: number) => void | Promise<void>;
     /** The series' own pixel size, for 1:1 pictures. */
     nativeSize?: { width: number; height: number };
-    /** The pane pages against the slice order (an axial stack stored from the feet up): what it shows as slice 1 is the last index. */
+    /** The pane pages against the slice order (an axial stack stored from the feet up): down the page is a lower index. */
     backwards?: boolean;
+    /** The pane's slice numbers fall as the index rises: what it shows as slice 1 is the last index (imaging/paging.ts). */
+    numbersBackwards?: boolean;
   };
   /** The acquired slice on screen (its file), for "current slice" DICOM. */
   currentFrame?: number;
@@ -147,11 +149,12 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const ids = shownScope === 'all' ? series.map(item => item.id) : shownScope === 'picked' ? series.filter(item => picked.has(item.id)).map(item => item.id) : active ? [active.id] : [];
   const fitSize = { width: FIT_SIZES[fit][0], height: FIT_SIZES[fit][1] };
   const outputSize = size === 'native' ? video?.nativeSize : size === 'fit' ? fitSize : undefined;
-  const backwards = Boolean(video?.backwards), count = video?.frameCount ?? 1;
-  const indexOf = (shown: number) => backwards ? count - shown : shown - 1;
+  // The slices go out in the order the pane pages them, under the numbers the pane shows.
+  const backwards = Boolean(video?.backwards), countsBackwards = Boolean(video?.numbersBackwards), count = video?.frameCount ?? 1;
+  const indexOf = (shown: number) => countsBackwards ? count - shown : shown - 1;
   const sliceRange = shownScope === 'slice' && video ? { start: video.originalSlice, end: video.originalSlice }
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
-  const order = { descending: backwards !== reverse, numberOf: (slice: number) => backwards ? count - slice : slice + 1, prefix };
+  const order = { descending: backwards !== reverse, numberOf: (slice: number) => countsBackwards ? count - slice : slice + 1, prefix };
   const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && start <= end && end <= (video?.frameCount ?? 0));
   const ready = Boolean(window.veacom) && (shownScope === 'layout' || (captures ? rangeValid && (isImages || (fps >= 1 && fps <= 120)) : ids.length > 0))
     && !(mode === 'dicom' && shownScope === 'slice' && currentFrame === undefined);
