@@ -53,11 +53,17 @@ export function stackSliceAt(series: Series, view: Paged, place: number, count: 
 
 /** The number a slice shows and the total beside it: its place, from 1, in the sequence its pane pages. What numbers
  * the slice a pane shows asks here, so that the number means one image in all of it: the pane's counter, the slice
- * bar, the image corner, the export window, the tag panel and a checklist note. (The measurement list names an
- * acquired frame by its place in the import instead: "Source frame".) */
+ * bar, the image corner, the export window, the tag panel and a checklist note. */
 export function shownSlice(series: Series, view: Paged, slice: number, count: number, joined?: Joined | null): { number: number; total: number } {
   const { place, total } = placeInSequence(series, view, slice, count, joined);
   return { number: place + 1, total };
+}
+
+/** A frame's number in its series as imported, from 1, which the measurement list shows ("Source frame"): the frame
+ * at `place` of the `total` its pane pages, counted from the other end where the series is paged against its own
+ * order (`backwards`). A stack's reference image is so counted with the stack's frames, as in paging. */
+export function importedNumber(place: number, total: number, backwards: boolean): number {
+  return backwards ? total - place : place + 1;
 }
 
 /** A paging step (+1 is down the page) as a change of slice index. */

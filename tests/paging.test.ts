@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
-import { openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
+import { importedNumber, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
 
 // Synthetic stacks with no frame metadata: the volume geometry alone places the slices.
 const stack = (direction: number[], slices = 20): Series => ({
@@ -72,5 +72,20 @@ describe('a stack paged with its reference image as one sequence', () => {
     assert.deepEqual([1, 3, 5].map(place => stackSliceAt(feetUp, source, place, 5, first)), [4, 2, 0]);
     assert.deepEqual([0, 2, 4].map(place => stackSliceAt(feetUp, source, place, 5, last)), [4, 2, 0]);
     for (const joined of [first, last]) for (const slice of [0, 1, 2, 3, 4]) assert.equal(stackSliceAt(feetUp, source, placeInSequence(feetUp, source, slice, 5, joined).place, 5, joined), slice);
+  });
+  it('numbers a frame in the series as imported, counting the reference image where it stands', () => {
+    const imported = (slice: number, joined?: typeof first) => { const { place, total } = placeInSequence(feetUp, source, slice, 5, joined); return importedNumber(place, total, true); };
+    // A series alone: the frame's own index from 1, though it is paged from its last slice down.
+    assert.deepEqual([0, 4].map(slice => imported(slice)), [1, 5]);
+    // The image paged first stands after the last stored slice: the slices keep their numbers and it is the sixth.
+    assert.deepEqual([0, 4].map(slice => imported(slice, first)), [1, 5]);
+    assert.equal(importedNumber(first.leadAt, first.total, true), 6);
+    // The image paged last stands before the first stored slice: it is the first and every slice is one higher.
+    assert.deepEqual([0, 4].map(slice => imported(slice, last)), [2, 6]);
+    assert.equal(importedNumber(last.leadAt, last.total, true), 1);
+    // A stack paged in its own order with the image first: every slice is one higher, as its paging number is.
+    const headDown = stack([1, 0, 0, 0, 1, 0, 0, 0, -1], 5);
+    assert.deepEqual([0, 4].map(slice => { const { place, total } = placeInSequence(headDown, source, slice, 5, first); return importedNumber(place, total, false); }), [2, 6]);
+    assert.deepEqual([0, 4].map(slice => shownSlice(headDown, source, slice, 5, first).number), [2, 6]);
   });
 });
