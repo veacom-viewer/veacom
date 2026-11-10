@@ -653,7 +653,7 @@ async function main() {
     await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
     await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
     check('A drag from the right edge of the image pages the slices with the mouse and with one finger');
-    const layers =await page.evaluate(() => [...document.querySelector('.viewport-cell.is-active').querySelectorAll('canvas,svg,[data-export-label]')]
+    const layers = await page.evaluate(() => [...document.querySelector('.viewport-cell.is-active').querySelectorAll('canvas,svg,[data-export-label]')]
       .filter(layer => !layer.closest('[data-export-exclude]')).filter(layer => { const r = layer.getBoundingClientRect(); return r.width && r.height && getComputedStyle(layer).display !== 'none'; })
       .map(layer => layer.dataset.testid || layer.getAttribute('data-testid')));
     assert.deepEqual(layers, ['dicom-canvas', 'annotation-overlay'], 'Exports draw only the image and its overlay.');
