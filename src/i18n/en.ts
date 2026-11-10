@@ -570,6 +570,7 @@ export const en = {
   'series.patientId': 'Patient ID',
   'series.studySummary': '{modalities}: {count} series',
   'series.openReference': 'Open reference image',
+  'series.referenceInMenu': 'Reference image in the menu',
   'series.untitled': 'Untitled series',
   'series.cardLabel': '{description}{phase}, {modality}, {count} images{warnings}',
   'series.cardWarnings': ', has warnings',

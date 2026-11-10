@@ -573,6 +573,7 @@ export const tr: Record<keyof typeof en, string> = {
   'series.patientId': 'Hasta no',
   'series.studySummary': '{modalities}: {count} seri',
   'series.openReference': 'Referans görüntüsünü aç',
+  'series.referenceInMenu': 'Referans görüntüsü menüde',
   'series.untitled': 'Adsız seri',
   'series.cardLabel': '{description}{phase}, {modality}, {count} görüntü{warnings}',
   'series.cardWarnings': ', uyarı var',

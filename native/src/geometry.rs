@@ -81,6 +81,20 @@ pub fn plane_normal(orientation: [f64; 6]) -> Option<[f64; 3]> {
     axes(Some(orientation)).map(|(_, _, normal)| normal)
 }
 
+/// Whether row and column directions are those of one orientation: what the frames of a stack must keep to.
+fn aligned(i: [f64; 3], j: [f64; 3], other_i: [f64; 3], other_j: [f64; 3]) -> bool {
+    norm(sub(other_i, i)) <= DIRECTION_TOLERANCE && norm(sub(other_j, j)) <= DIRECTION_TOLERANCE
+}
+
+/// Whether two images face the same way, as `assemble` takes the frames of a stack to: both orientations are
+/// valid and agree within its tolerance. Rounding alone does not make two orientations different.
+pub fn same_orientation(a: [f64; 6], b: [f64; 6]) -> bool {
+    match (axes(Some(a)), axes(Some(b))) {
+        (Some((i, j, _)), Some((other_i, other_j, _))) => aligned(i, j, other_i, other_j),
+        _ => false,
+    }
+}
+
 fn spacing_valid(spacing: Option<[f64; 2]>) -> Option<[f64; 2]> {
     spacing.filter(|s| s.iter().all(|x| x.is_finite() && *x > 0.0))
 }
@@ -160,7 +174,7 @@ pub fn assemble(frames: &[FrameGeometry]) -> Geometry {
     let positions: Vec<_> = frames.iter().map(|frame| frame.position.unwrap()).collect();
     let mixed_orientation = frames.iter().any(|frame| {
         let (frame_i, frame_j, _) = axes(frame.orientation).unwrap();
-        norm(sub(frame_i, i)) > DIRECTION_TOLERANCE || norm(sub(frame_j, j)) > DIRECTION_TOLERANCE
+        !aligned(i, j, frame_i, frame_j)
     });
     if mixed_orientation {
         geometry.warnings.push(note!(
@@ -514,6 +528,19 @@ mod tests {
         let g = assemble(&[a, b]);
         assert_eq!(g.order, [0, 1]);
         assert!(!g.has_physical_geometry);
+    }
+
+    #[test]
+    fn orientations_within_the_stack_tolerance_are_one_orientation() {
+        let axial = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0];
+        // A rounding step away: one orientation, as the frames of a stack are.
+        assert!(same_orientation(axial, [1.0, 0.00006, 0.0, 0.0, 1.0, 0.0]));
+        // Turned a thousandth of a radian in its plane, and a plane across it: other orientations.
+        let (sin, cos) = 0.001_f64.sin_cos();
+        assert!(!same_orientation(axial, [cos, sin, 0.0, -sin, cos, 0.0]));
+        assert!(!same_orientation(axial, [0.0, 1.0, 0.0, 0.0, 0.0, -1.0]));
+        // An orientation that is not one is the same as nothing.
+        assert!(!same_orientation(axial, [1.0, 0.0, 0.0, 0.0, 0.0, 0.0]));
     }
 
     #[test]

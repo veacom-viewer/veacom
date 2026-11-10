@@ -933,15 +933,16 @@ export default function App() {
   const loadPaneImage = (item?: Series) => {
     if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
   };
-  const assignSeries = (slotId: string, item: Series) => {
+  /** Puts a series in a pane, which becomes the active one unless `activate` is false. */
+  const assignSeries = (slotId: string, item: Series, activate = true) => {
     setSlots(current => current.map(slot => slot.id === slotId ? { id: slot.id, seriesId: item.id, view: defaultView(item) } : slot));
-    setActiveId(slotId);
+    if (activate) setActiveId(slotId);
     loadPaneImage(item);
   };
 
   // `trigger` says how the study was opened (folder, disc, drop...) for usage timings; never where from.
   // Set below, where arrangements are applied: opens a study's first image, or the arrangement it matches.
-  const openStudy = useRef<(first: Series, study: Series[], keepShown?: boolean, session?: Series[]) => void>(() => {});
+  const openStudy = useRef<(first: Series, study: Series[], keepShown?: boolean, session?: Series[], slotId?: string) => void>(() => {});
   const importStudies = async (paths: string[], trigger = 'other') => {
     if (!paths.length) return;
     // A study named at launch has been opening since the window was created (the monotonic clock's zero).
@@ -1016,17 +1017,23 @@ export default function App() {
         return [...kept, ...result.series.filter(item => !listedBefore.has(item.id))];
       });
       if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
+      const known = new Map(seriesRef.current.map(item => [item.id, item]));
+      for (const item of result.series) known.set(item.id, item);
+      const session = [...known.values()];
       // A study opens on a series, not on a stack's reference image (ui/referenceImages.ts): that one image does not page.
-      const onCards = new Set([...referenceImages(result.series).values()].map(item => item.id));
-      const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0 && !onCards.has(item.id))
-        ?? result.series.find(item => !item.segmentation && item.dimensions[2] > 0) ?? result.series.find(item => !item.segmentation);
+      // The stack may have been listed before this import, so the reference images are those of the whole session, as
+      // in the series list; an import of nothing but a reference image opens that image's stack.
+      const stackOf = new Map([...referenceImages(session)].map(([stack, reference]) => [reference.id, known.get(stack)!]));
+      const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0 && !stackOf.has(item.id))
+        ?? result.series.map(item => stackOf.get(item.id)).find(stack => stack !== undefined) ?? result.series.find(item => !item.segmentation);
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
       // PET/CT screen) is laid out now that every series is known.
       const shownEarly = slotsRef.current.flatMap(slot => slot.seriesId && early.has(slot.seriesId) ? [slot.seriesId] : []);
-      const keep = opened && shownEarly.length > 0 && shownEarly.every(id => settled.has(id)) && !shownEarly.some(id => onCards.has(id));
-      const known = new Map(seriesRef.current.map(item => [item.id, item]));
-      for (const item of result.series) known.set(item.id, item);
-      if (firstImage) openStudy.current(firstImage, [...known.values()].filter(item => studyKey(item) === studyKey(firstImage)), keep, [...known.values()]);
+      const keep = opened && shownEarly.length > 0 && shownEarly.every(id => settled.has(id)) && !shownEarly.some(id => stackOf.has(id));
+      // A reference image shown since the study began to open gives way in its own pane, whichever pane the reader is
+      // in by now.
+      const referencePane = slotsRef.current.find(slot => slot.seriesId && early.has(slot.seriesId) && stackOf.has(slot.seriesId))?.id;
+      if (firstImage) openStudy.current(firstImage, session.filter(item => studyKey(item) === studyKey(firstImage)), keep, session, referencePane);
       else if (result.series.length) say('segmentation.onlySegmentations', 'info');
       else say('notice.noDicomFound', 'info');
     }).catch(error => {
@@ -1550,12 +1557,14 @@ export default function App() {
       : plan.arrangement.kept ? t('arrangement.yours', { name }) : notice ? t(notice.key, notice.params) : name,
       sticky: true, undoAction: 'arrangement', onUndo: undo });
   };
-  const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study) => {
+  const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study, slotId?: string) => {
     arranged.current = null;
     // The session's other studies are where a prior study's role is found (the PET follow-up screen).
     const plan = matchOnOpen(keptRef.current, { series: study, session });
-    // Without an arrangement, a series already shown (opened while the study was still read) stays as it is.
-    if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(activeIdRef.current, first);
+    // Without an arrangement, a series already shown (opened while the study was still read) stays as it is. The
+    // series goes into `slotId`, the active pane unless another is named; the pane the reader is in stays the active one.
+    const pane = slotId ?? activeIdRef.current;
+    if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(pane, first, pane === activeIdRef.current);
   };
   /** Back to VEAcom's own arrangements: what the reader kept is forgotten. */
   const forgetKept = () => { saveKept({}); say('arrangement.forgotten', 'info', undefined, true); };

@@ -732,6 +732,8 @@ const MAX_STACKS: usize = 8;
 /// It is split only when every orientation is a stack of its own: at least 5 images, at most 8 stacks.
 /// One case more is split: a single stack with one image facing another way, the reference image a scanner
 /// puts at the head of a reformatted series. Kept in the stack, it would stop the stack being reconstructed.
+/// An image whose orientation differs from the stack's only in its rounding is a slice of the stack and stays
+/// in it (`faces_another_way`).
 fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Frame>)>) {
     let mut alike: BTreeMap<(String, String, String), Vec<GroupKey>> = BTreeMap::new();
     for key in groups.keys() {
@@ -749,9 +751,18 @@ fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Fra
         {
             continue;
         }
-        let sizes: Vec<usize> = keys.iter().map(|key| groups[key].1.len()).collect();
-        if sizes.len() == 2 && sizes.contains(&1) && sizes.iter().any(|n| *n >= MIN_STACK_IMAGES) {
-            continue;
+        if let [a, b] = keys.as_slice() {
+            let (image, stack) = if groups[a].1.len() == 1 {
+                (&groups[a].1, &groups[b].1)
+            } else {
+                (&groups[b].1, &groups[a].1)
+            };
+            if image.len() == 1
+                && stack.len() >= MIN_STACK_IMAGES
+                && faces_another_way(&image[0], stack)
+            {
+                continue;
+            }
         }
         let mut keys = keys.into_iter();
         let first = keys.next().unwrap();
@@ -762,6 +773,26 @@ fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Fra
         frames.sort_by_key(|f| (f.instance_number, f.source.path.clone(), f.index));
         groups.insert(first, (info, frames));
     }
+}
+
+/// Whether an image faces another way than a stack: both orientations are known, and the image's is none of the
+/// stack's by the tolerance within which the volume geometry takes a stack's images for one orientation. The key
+/// that groups images rounds each orientation, so two images of one stack can fall either side of a rounding
+/// step; kept apart for that alone, a slice would leave its stack and the stack be built without it.
+fn faces_another_way(image: &Frame, stack: &[Frame]) -> bool {
+    let Some(own) = image
+        .geometry
+        .orientation
+        .filter(|orientation| geometry::plane_normal(*orientation).is_some())
+    else {
+        return false;
+    };
+    let mut known = stack
+        .iter()
+        .filter_map(|frame| frame.geometry.orientation)
+        .filter(|orientation| geometry::plane_normal(*orientation).is_some())
+        .peekable();
+    known.peek().is_some() && !known.any(|other| geometry::same_orientation(own, other))
 }
 
 /// The explicit temporal position shared by every frame of a group.
@@ -6956,6 +6987,30 @@ mod tests {
         let mut few = vec![facing(1, SAGITTAL, 0.)];
         few.extend((2..=5).map(|n| facing(n, AXIAL, n as f64)));
         assert_eq!(import_dir(&write_slices(few)).sources.len(), 1);
+    }
+
+    #[test]
+    fn a_slice_whose_orientation_differs_only_in_its_rounding_stays_in_its_stack() {
+        // 0.00006 in one component crosses a rounding step of the key that groups images, yet is one orientation
+        // to the volume geometry: the slice is no reference image, and the stack is built with it.
+        let mut slices: Vec<_> = (1..=5).map(|n| facing(n, AXIAL, n as f64)).collect();
+        slices.push(facing(6, r"1\0.00006\0\0\1\0", 6.));
+        let imported = import_dir(&write_slices(slices));
+        assert_eq!(imported.sources.len(), 1);
+        let stack = &imported.sources[0];
+        assert_eq!(stack.frames.len(), 6);
+        assert!(stack.info.can_reconstruct, "{:?}", stack.info.warnings);
+    }
+
+    #[test]
+    fn an_image_of_no_known_orientation_is_not_taken_for_a_reference_image() {
+        let mut slices: Vec<_> = (1..=5).map(|n| facing(n, AXIAL, n as f64)).collect();
+        let mut unplaced = classic_slice(6, 6.);
+        unplaced.remove_element(Tag(0x0020, 0x0037));
+        slices.push(unplaced);
+        let imported = import_dir(&write_slices(slices));
+        assert_eq!(imported.sources.len(), 1);
+        assert_eq!(imported.sources[0].frames.len(), 6);
     }
 
     #[test]

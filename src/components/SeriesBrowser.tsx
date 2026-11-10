@@ -271,7 +271,9 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   // small picture is no button, so a click meant for the series cannot open it: the card's menu opens it.
   const references = referenceImages(series), onCards = new Set([...references.values()].map(item => item.id));
   const listed = series.filter(item => !onCards.has(item.id));
-  const studies = groupStudies(searchIndex ? listed.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : listed);
+  // The stack's card stands for its reference image too: a search that finds only that image keeps the card.
+  const found = searchIndex ? (item: Series) => words.every(word => searchIndex.get(item.id)!.includes(word)) : null;
+  const studies = groupStudies(found ? listed.filter(item => found(item) || found(references.get(item.id) ?? item)) : listed);
 
   // Ctrl and Shift pick several cards, as in a folder; dragging one of them drags them all, in the order
   // they were picked, and they open side by side (VEAcom 1.x). A plain click picks one and opens it.
@@ -378,9 +380,10 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
           {!hidden && <div className="series-study-items">{study.items.map(item => {
             if (item.segmentation) return <SegmentationCard key={item.id} item={item} series={series} shown={shownSegmentationIds?.has(item.id) ?? false} onSelect={onSelect} onMenu={event => openMenu(event, { item })} />;
             const loading = loadingIds.has(item.id);
-            const active = item.id === activeId;
-            const several = picked.length > 1 && picked.includes(item.id);
             const reference = references.get(item.id);
+            // The card is the open one while its series or its reference image is shown.
+            const active = item.id === activeId || (reference !== undefined && reference.id === activeId);
+            const several = picked.length > 1 && picked.includes(item.id);
             const card = <button
               type="button"
               key={item.id}
@@ -388,7 +391,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               aria-pressed={active}
               aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2], warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
               aria-busy={loading}
-              aria-describedby={item.warnings.length ? `series-warnings-${item.id}` : undefined}
+              aria-describedby={[item.warnings.length ? `series-warnings-${item.id}` : '', reference ? `series-reference-${item.id}` : ''].filter(Boolean).join(' ') || undefined}
               data-testid={`series-${item.id}`}
               data-action="series-pick"
               draggable
@@ -407,6 +410,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
                 <span className="series-image-count">{item.dimensions[2]}</span>
                 {several && <span className="sr-only">{t('series.picked', { number: picked.indexOf(item.id) + 1, count: picked.length })}</span>}
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
+                {/* The small picture is hidden from assistive technology: the card says where the image is. */}
+                {reference && <span id={`series-reference-${item.id}`} className="sr-only">{t('series.referenceInMenu')}</span>}
               </span>
             </button>;
             if (!reference) return card;
