@@ -182,7 +182,7 @@ those landmarks and checks:
 
 - each value, answer and side in the checklist, and the near-limit word for a Keros depth near a type limit;
 - a roof point clicked in the air moves onto the bone;
-- moving a point measures again, and undo takes it back with its answer;
+- moving a point measures again, and undo takes it back with its answer; a calibration changes the values and answers, and removing it changes them back;
 - started off its plane, a caliper turns its pane to that plane and the bone window, says so with Undo, and Undo puts
   the pane back; Esc ends one;
 - "Copy for the report" in English and Turkish, with screenshots in both;

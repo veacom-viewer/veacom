@@ -776,6 +776,8 @@ export const tr: Record<keyof typeof en, string> = {
   'caliper.kerosOrder': 'Ölçülemedi: lamelin tepesi tabanının üstünde olmalı',
   'caliper.kerosPlate': 'Ölçülemedi: plate noktasını lamelden uzağa koyun',
   'caliper.aeaOrder': 'Ölçülemedi: tavan arterin üstünde olmalı',
+  'caliper.septumOrder': 'Ölçülemedi: krista galli maksiller kristanın üstünde olmalı',
+  'caliper.localizer': 'Lokalizör (topogram) görüntüsünde ölçülemez',
   'caliper.sellaShort': 'Ölçülemedi: tüberkulum ile dorsum çok yakın',
   'report.copy': 'Rapor için kopyala',
   'report.copied': 'Kopyalandı',

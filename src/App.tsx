@@ -19,7 +19,7 @@ import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
-import { CALIPERS, caliperMmScale, caliperName, caliperResult, caliperView, onCaliperPlane, snapCaliper } from './imaging/calipers';
+import { CALIPERS, caliperMmScale, caliperName, caliperResult, caliperView, isLocalizer, onCaliperPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper } from './ui/checklistStore';
 import type { Side, SliceNote } from './ui/preopChecklist';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
@@ -686,6 +686,7 @@ export default function App() {
    * its series already on the caliper's plane, so the three-plane MPR keeps its planes; or why it cannot measure. */
   const caliperPlan = (kind: CaliperKind): { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey } => {
     if (!activeVolume || activeVolume.series.modality !== 'CT') return { blocked: 'caliper.needsImage' };
+    if (isLocalizer(activeVolume.series)) return { blocked: 'caliper.localizer' };
     if (caliperMmScale(activeVolume.series) === null) return { blocked: 'caliper.needsSpacing' };
     if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'caliper.loading' };
     // A new plane goes through the point picked in this series' frame, else through the middle of the pane's plane.
@@ -837,7 +838,8 @@ export default function App() {
    * tagged as that caliper, which then ends. */
   const caliperDrawn = (seriesId: string, next: Annotation[]): { list: Annotation[]; drawn?: string } => {
     const request = caliperRef.current, volume = displayVolumesRef.current.get(seriesId);
-    if (!request || !volume || studyKey(volume.series) !== request.study) return { list: next };
+    // A scout of the study is a projection: what is drawn on it stays a plain measurement, and the caliper waits.
+    if (!request || !volume || studyKey(volume.series) !== request.study || isLocalizer(volume.series)) return { list: next };
     const before = annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS;
     const added = next.filter(annotation => !before.some(old => old.id === annotation.id));
     if (added.length !== 1 || added[0].type !== CALIPERS[request.kind].tool || added[0].caliper) return { list: next };
@@ -850,17 +852,18 @@ export default function App() {
     return { list: next.map(annotation => annotation === fresh ? tagged : annotation), drawn: tagged.id };
   };
   /** Records in its study's checklist each caliper drawing of the series that is new (`drawn`) or whose points changed
-   * since its record. A drawing whose record was replaced or cleared stays out. */
-  const recordCalipers = (seriesId: string, list: Annotation[], drawn?: string) => {
+   * since its record, or every recorded one when the series' scale changed (`rescaled`: the series at its new scale).
+   * A drawing whose record was replaced or cleared stays out. */
+  const recordCalipers = (seriesId: string, list: Annotation[], drawn?: string, rescaled?: Series) => {
     // The shown series, with any calibration: a series with measurements keeps its volume (publishVolumes).
-    const series = displayVolumesRef.current.get(seriesId)?.series;
+    const series = rescaled ?? displayVolumesRef.current.get(seriesId)?.series;
     if (!series) return;
     const study = studyKey(series);
     for (const annotation of list) {
       const tag = annotation.caliper;
       if (!tag) continue;
       const recorded = caliperRecorded(study, tag.item, annotation.id)?.caliper;
-      if (annotation.id !== drawn && (!recorded || samePoints(recorded.points, annotation.points))) continue;
+      if (annotation.id !== drawn && (!recorded || (!rescaled && samePoints(recorded.points, annotation.points)))) continue;
       const result = caliperResult(tag, annotation.points, caliperMmScale(series));
       const view = viewOfAnnotation(annotation, annotationSourceIndex(annotation, series));
       keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view),
@@ -1517,6 +1520,7 @@ export default function App() {
     const spec = CALIPERS[caliper.kind], shown = renderedView(volume, view), axes = planeAxes(volume.series, shown);
     const key = `${caliper.kind}:${caliper.item}:${caliper.side}`;
     const setUp = caliper.setUp?.slotId === slotId ? { text: caliper.setUp.text, onUndo: undoCaliperSetUp } : undefined;
+    if (isLocalizer(volume.series)) return { key, setUp, prompts: [t('caliper.localizer')] };
     if (isProjection(volume.series, shown) || !onCaliperPlane(caliper.kind, scale(axes.v, -1), axes.normal)) return { key, setUp, prompts: [t(spec.plane === 'coronal' ? 'caliper.needsCoronal' : 'caliper.needsSagittal')] };
     const name = caliperName(caliper.kind, locale), side = caliper.side === 'both' ? '' : t(caliper.side === 'right' ? 'caliper.right' : 'caliper.left');
     // Without HU the points are not moved onto bone; the hint says so.
@@ -1894,13 +1898,20 @@ export default function App() {
     if (bounds) setVolumeViewportSize([bounds.width, bounds.height]);
     setShow3d(true);
   };
+  /** Sets or removes a series' calibration. Its caliper records measure again at the new scale, as its drawings' labels
+   * do: the checklist, its answers, the report and the theatre card follow the scale on screen. */
+  const setCalibration = (seriesId: string, factor: number | undefined) => {
+    setCalibrationScales(current => { const next = { ...current }; if (factor === undefined) delete next[seriesId]; else next[seriesId] = factor; return next; });
+    const series = displayVolumesRef.current.get(seriesId)?.series;
+    if (series) recordCalipers(seriesId, annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, undefined, { ...series, measurementScale: factor });
+  };
   const applyCalibration = () => {
     if (!activeSeries) return;
     const line = activeAnnotations.find(annotation => annotation.id === calibrationLine) ?? activeAnnotations.find(annotation => annotation.type === 'length');
     const length = line?.points.length === 2 ? distanceMm(line.points[0], line.points[1]) : null;
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
-    setCalibrationScales(current => ({ ...current, [activeSeries.id]: known / length }));
+    setCalibration(activeSeries.id, known / length);
     setSettings(current => ({ ...current, measurementUnits: 'auto' }));
     say('notice.calibrated', 'info', undefined, true);
   };
@@ -2571,7 +2582,7 @@ export default function App() {
             <p className="field-help">{t('inspector.calibrationHelp')}</p>
             <label className="stacked-field">{t('inspector.referenceLine')}<select data-action="calibration-line" aria-label={t('inspector.calibrationLine')} value={activeAnnotations.some(annotation => annotation.id === calibrationLine) ? calibrationLine : activeAnnotations.find(annotation => annotation.type === 'length')?.id ?? ''} onChange={event => setCalibrationLine(event.target.value)}><option value="">{t('inspector.chooseLength')}</option>{activeAnnotations.filter(annotation => annotation.type === 'length').map((annotation, index) => <option key={annotation.id} value={annotation.id}>{t('inspector.lengthNumber', { number: index + 1 })}</option>)}</select></label>
             <label className="stacked-field">{t('inspector.knownLength')}<input data-action="calibration-length" type="number" min={0.001} step="any" value={calibrationLength} onChange={event => setCalibrationLength(event.target.value)} /></label>
-            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !activeAnnotations.some(annotation => annotation.type === 'length')} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibrationScales(current => { const next = { ...current }; delete next[activeSeries.id]; return next; })}>{t('inspector.removeCalibration')}</button>}</div>
+            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !activeAnnotations.some(annotation => annotation.type === 'length')} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibration(activeSeries.id, undefined)}>{t('inspector.removeCalibration')}</button>}</div>
             {activeSeries && calibrationScales[activeSeries.id] && <p className="calibration-status" role="status">{t('inspector.manualScale', { scale: calibrationScales[activeSeries.id].toPrecision(4) })}</p>}
             <label className="stacked-field">{t('inspector.petValues')}<select data-action="pet-values" value={settings.suvNormalization} onChange={event => setSettings(current => ({ ...current, suvNormalization: event.target.value as SuvNormalization }))}><option value="bw">{t('inspector.suvBw')}</option><option value="lbm">{t('inspector.suvLbm')}</option><option value="bsa">{t('inspector.suvBsa')}</option></select></label>
             <p className="field-help">{t('inspector.petValuesHelp')}</p>

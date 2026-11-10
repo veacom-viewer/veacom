@@ -33,7 +33,9 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
   dorsum, square to the line joining them. Between them the sinus is sellar, behind the dorsum line postsellar. In
   front of the tuberculum line it is presellar or conchal, which the sinus's size decides, so the reader answers.
 - **Septal angle**: mild below 9°, moderate 9–15°, severe above 15°. This is a common grading, not a standard one.
-  Below 1° the septum is read as on the midline and no side is marked.
+  Below 1° the septum is read as on the midline and no side is marked. The crista galli must lie above the crest:
+  clicked the other way round, the angle's corner would move to the crest and the angle would grow, so the caliper
+  says "Unavailable" instead.
 
 Every value needs the image's pixel spacing (or a calibration), and the plane the caliper is read on: within 45° of
 coronal or sagittal, upright. A drawing made on another plane says "Unavailable" with the reason.
@@ -46,8 +48,10 @@ through the point picked in that series, or through the middle of the plane it s
 tilted or not, keeps its slice. Its window becomes the bone preset, unless it is already at least as wide and as high.
 The pane says what changed, with Undo, until the first point is placed. Undo puts the pane back and ends the caliper.
 Finding the slice of the structure itself (the per-item jump of the CLOSE plan) needs segmentation and is not done
-here. The checklist's button is unavailable, and says why, only when there is no CT in the active pane, its pixel
-spacing is unknown, it is still loading, or the series cannot be shown on the caliper's plane.
+here. The checklist's button is unavailable, and says why, only when there is no CT in the active pane, the CT is a
+scout (Image Type value 3 LOCALIZER, PS3.3 C.8.2.1.1.1: a projection, so no caliper measures on it), its pixel
+spacing is unknown, it is still loading, or the series cannot be shown on the caliper's plane. A measurement drawn on
+a scout while a caliper waits stays a plain measurement.
 
 ## Snapping onto bone
 
@@ -61,7 +65,8 @@ cartilage. Moving a point by hand afterwards does not snap.
 
 Notes are kept per item and side. Every side has a button that notes the slice on screen, and the four items above
 also have a caliper button; a side holds one note, whichever came last. A caliper's note holds its points (patient
-millimetres), its reading and the answer it gave. Moving a point of its drawing measures again; the answer follows until the reader picks another one. Deleting
+millimetres), its reading and the answer it gave. Moving a point of its drawing measures again, and so does a change of
+the series' calibration; the answer follows until the reader picks another one. Deleting
 the drawing leaves the record. "Copy for the report" gives each side its answer, measurement and slice.
 
 Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.

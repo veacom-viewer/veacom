@@ -773,6 +773,8 @@ export const en = {
   'caliper.kerosOrder': 'Unavailable: the lamella top must lie above its foot',
   'caliper.kerosPlate': 'Unavailable: mark the plate further from the lamella',
   'caliper.aeaOrder': 'Unavailable: the roof must lie above the artery',
+  'caliper.septumOrder': 'Unavailable: the crista galli must lie above the maxillary crest',
+  'caliper.localizer': 'Cannot measure on a scout (localizer) image',
   'caliper.sellaShort': 'Unavailable: tuberculum and dorsum lie too close',
   'report.copy': 'Copy for the report',
   'report.copied': 'Copied',

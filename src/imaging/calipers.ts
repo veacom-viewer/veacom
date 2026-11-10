@@ -37,6 +37,9 @@ const SUPERIOR: Vec3 = [0, 0, 1], LEFT: Vec3 = [1, 0, 0], POSTERIOR: Vec3 = [0, 
 /** The patient axis each plane faces (LPS). */
 const FACING: Record<CaliperSpec['plane'], Vec3> = { coronal: POSTERIOR, sagittal: LEFT };
 
+/** A scout (CT Image Type value 3 LOCALIZER, DICOM PS3.3 C.8.2.1.1.1) is a projection: a caliper never measures on it. */
+export const isLocalizer = (series: Pick<Series, 'imageType'>): boolean => /(?:^|[\\ ,])LOCALIZER(?:$|[\\ ,])/i.test(series.imageType ?? '');
+
 /** A plane within 45° of the caliper's own (a tilted one still counts) whose up is the patient's head. `up` and `normal`
  * are the plane's own axes (geometry.planeAxes), whatever the image's turn on screen. */
 export function onCaliperPlane(kind: CaliperKind, up: Vec3, normal: Vec3): boolean {
@@ -131,6 +134,8 @@ export function caliperResult(tag: CaliperTag, points: readonly Vec3[], mmScale:
     return { reading, side: 'both', ...(position === 'anterior' ? {} : { answer: position }) };
   }
   const [crest, crista, deviated] = points;
+  // The crista galli is the angle's vertex, above the crest: swapped, the corner moves to the crest and the angle grows.
+  if (!(dot(sub(crista, crest), tag.up) > 0)) return unavailable('caliper.septumOrder');
   const midline = sub(crest, crista), toward = sub(deviated, crista);
   const angle = degrees(midline, toward);
   if (!Number.isFinite(angle)) return unavailable('caliper.incomplete');

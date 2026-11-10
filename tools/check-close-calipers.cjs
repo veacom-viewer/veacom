@@ -121,6 +121,30 @@ async function main() {
     assert.equal(await answer('keros', 'right'), '1', 'Undo brings back the first measurement and its answer.');
     check('Moving a caliper point measures again and its answer follows; undo takes both back');
 
+    // A calibration changes what the calipers measure, as it changes their labels: a 10 mm line called 20 mm doubles
+    // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again.
+    const settledValue = (which, start) => page.waitForFunction(([which, start]) => (document.querySelector(`[data-item="keros"] [data-side="${which}"] .preop-seen`)?.textContent ?? '').startsWith(start), [which, start]);
+    await pane.focus(); await page.keyboard.press('l');
+    const lineFrom = await screen(coronal, [-20, -10]), lineTo = await screen(coronal, [-10, -10]);
+    await page.mouse.move(...lineFrom); await page.mouse.down(); await page.mouse.move(...lineTo, { steps: 6 }); await page.mouse.up();
+    await page.keyboard.press('w');
+    await page.getByTestId('tool-measure-menu').click();
+    await page.locator('[data-action="toolbar-units-calibration"]').click();
+    await page.locator('[data-action="calibration-length"]').fill('20');
+    await page.locator('[data-action="calibrate"]').click();
+    await settledValue('right', '6.4 mm');
+    assert.equal(await answer('keros', 'right'), '2', 'The answer follows the calibrated depth.');
+    await settledValue('left', '12.0 mm');
+    await page.locator('[data-action="calibration-remove"]').click();
+    await settledValue('right', '3.2 mm');
+    assert.equal(await answer('keros', 'right'), '1');
+    await settledValue('left', '6.0 mm');
+    await page.getByTestId('tool-inspector').click();
+    await page.locator('.inspector').waitFor({ state: 'hidden' });
+    await pane.focus();
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+    check('A calibration changes the caliper values and answers in the checklist, and removing it changes them back');
+
     // The anterior ethmoidal artery: in the right roof (type 1: no answer, a dehiscence is the reader's call) and 3 mm
     // below the left one, whose roof point was clicked in the air and moved onto the bone.
     await show('coronal', landmarks.aea.y);

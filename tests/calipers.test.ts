@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { aeaType, caliperLabel, caliperReport, caliperResult, caliperShort, caliperView, geraClass, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
+import { aeaType, caliperLabel, caliperReport, caliperResult, caliperShort, caliperView, geraClass, isLocalizer, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
 import { getPlaneFrame, sub, dot } from '../src/imaging/geometry';
 import { checklistRows, checklistSummary, recordCaliper, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
 import type { CaliperTag, Series, Vec3, ViewState, Volume } from '../src/model';
@@ -42,7 +42,7 @@ describe('Keros depth and the Gera angle', () => {
     assert.deepEqual(caliperResult(coronal('left'), points, null), { unavailable: 'caliper.noSpacing', side: 'left' });
     assert.deepEqual(caliperResult({ ...coronal('left'), up: [0, 1, 0], normal: [0, 0, 1] }, points, 1), { unavailable: 'caliper.notCoronal', side: 'left' });
     // Upside down on its own plane (a flipped reconstruction) is refused too; tilted 30° still counts as coronal.
-    assert.equal('unavailable' in caliperResult({ ...coronal('left'), up: [0, 0, -1] }, points, 1), true);
+    assert.deepEqual(caliperResult({ ...coronal('left'), up: [0, 0, -1] }, points, 1), { unavailable: 'caliper.notCoronal', side: 'left' });
     const tilt = 30 * Math.PI / 180;
     assert.equal('reading' in caliperResult({ ...coronal('left'), up: [0, -Math.sin(tilt), Math.cos(tilt)], normal: [0, Math.cos(tilt), Math.sin(tilt)] }, points, 1), true);
     assert.deepEqual(caliperResult(coronal('left'), [points[0], points[2], points[1]], 1), { unavailable: 'caliper.kerosOrder', side: 'left' });
@@ -91,6 +91,18 @@ describe('septal angle', () => {
     const straight = caliperResult(coronal('left', 'septum'), [crest, crista, [0, 0, -4]], 1);
     assert.ok('reading' in straight && !('answer' in straight) && straight.side === 'left');
     assert.deepEqual([8.9, 9, 15, 15.1].map(septumGrade), ['mild', 'moderate', 'moderate', 'severe']);
+  });
+  it('refuses the crest and the crista galli clicked the other way round, which would put the angle at the crest', () => {
+    // Swapped, the same three points would read about 18.5°, "severe", instead of 12° "moderate".
+    assert.deepEqual(caliperResult(coronal('right', 'septum'), [crista, crest, [x, 0, -4]], 1), { unavailable: 'caliper.septumOrder', side: 'right' });
+    assert.deepEqual(caliperResult(coronal('right', 'septum'), [crista, crista, [x, 0, -4]], 1), { unavailable: 'caliper.septumOrder', side: 'right' });
+  });
+});
+
+describe('scouts', () => {
+  it('are recognised by CT Image Type value 3, LOCALIZER, and nothing else', () => {
+    assert.deepEqual(['ORIGINAL\\PRIMARY\\LOCALIZER', 'ORIGINAL\\PRIMARY\\AXIAL', 'DERIVED\\SECONDARY\\REFORMATTED', undefined]
+      .map(imageType => isLocalizer({ imageType })), [true, false, false, false]);
   });
 });
 
