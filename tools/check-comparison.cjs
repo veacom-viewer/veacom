@@ -290,19 +290,37 @@ async function compareStudies(manifest, followUp, { desktop, page, state, settle
   const stranger = (await state()).series.find(item => !listedFirst.has(item.id));
   await single(now.t2.id);
   await compare('Compare with the earlier study');
-  const warning = page.locator('[data-testid="notice"][data-code="compare.otherPatient"]');
+  const warning = page.getByTestId('patient-warning');
   assert.equal(await warning.count(), 0);
   // As a click on its card in the series list: the series goes to the active pane.
-  await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), stranger.id);
+  const strangerIn = () => page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), stranger.id);
+  await strangerIn();
   await warning.waitFor();
-  assert.equal(await warning.getAttribute('data-kind'), 'error');
+  assert.equal(await warning.getAttribute('role'), 'alert');
   assert.match(await warning.textContent(), /^The two panes show different patients\./);
   assert.deepEqual(await shown(), [before.t2.id, stranger.id], 'The series is shown all the same.');
   await settled();
+  // Another message does not take the warning's place: linking the panes again says so in the window's notice.
+  await page.getByTestId('tool-link').click();
+  await page.waitForFunction(() => window.__VEACOM_TEST__.state().linked === false);
+  await page.getByTestId('tool-link').click();
+  await page.waitForFunction(() => window.__VEACOM_TEST__.state().linked === true);
+  await page.getByTestId('notice').waitFor();
+  assert.equal(await warning.count(), 1, 'The warning stays beside another message.');
   await shot('7-other-patient');
+  // One patient again: the warning goes.
+  await image(1).focus();
   await pick(now.t1.id, 1);
   await warning.waitFor({ state: 'detached' });
-  check('Another patient\'s series in a comparison pane brings a warning, which goes when the panes show one patient again');
+  // Dismissed, it stays away while the same two series are shown.
+  await strangerIn();
+  await warning.waitFor();
+  await page.getByTestId('patient-warning-dismiss').click();
+  await warning.waitFor({ state: 'detached' });
+  await pageDown(2, (await state()).panes[1].slice);
+  assert.equal(await warning.count(), 0);
+  assert.deepEqual(await shown(), [before.t2.id, stranger.id]);
+  check('Another patient\'s series in a comparison pane brings a warning that no other message replaces; it goes when dismissed or when the panes show one patient again');
 }
 
 /** PET studies: a fused PET/CT keeps its fusion beside an earlier CT; two PET studies are left to the PET follow-up. */

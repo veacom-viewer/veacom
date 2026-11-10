@@ -477,6 +477,10 @@ export default function App() {
     void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); });
   };
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** The two series, of different patients, that the comparison screen shows side by side. Its warning is kept apart
+   * from `notice`, which the next message replaces: it stays until the reader dismisses it or one of the two leaves
+   * the screen (docs/design-guidelines.md, "Patient safety"). */
+  const [twoPatients, setTwoPatients] = useState<readonly [string, string] | null>(null);
   const say = (key: MessageKey, kind: Notice['kind'], params?: MessageParams, transient = false) => setNotice({ message: t(key, params), kind, key, params, transient });
   const [graphics, setGraphics] = useState<Graphics | null>(null);
   // The caught error itself, so a translated (LocalizedError) message follows a language change.
@@ -1367,11 +1371,9 @@ export default function App() {
     setSlots(current => current.map(slot => slot.id === slotId ? { id: slot.id, seriesId: item.id, view } : slot));
     loadPaneImage(item);
     if (theirs) linkCompared({ id: slotId, item, view }, { id: other.id, item: theirs, view: other.view });
-    // Series of two patients in one comparison: a warning, which stays until the reader dismisses it or the panes
-    // show one patient again (docs/design-guidelines.md, "Patient safety"). A series that names no patient is not
-    // a known mismatch, so it brings no warning.
-    if (theirs && patientMatch(item, theirs) === 'different') say('compare.otherPatient', 'error');
-    else setNotice(current => current?.key === 'compare.otherPatient' ? null : current);
+    // Series of two patients in one comparison bring a warning. A series that names no patient is not a known
+    // mismatch, so it brings none.
+    setTwoPatients(theirs && patientMatch(item, theirs) === 'different' ? [item.id, theirs.id] : null);
   };
   /** In the comparison screen a series put in one pane changes that pane only. The other pane then offers, for a few
    * seconds, that series' counterpart in its own study; one click opens it there. */
@@ -2429,6 +2431,9 @@ export default function App() {
         {/* From main (#7): no usable graphics driver, or WebGL drawn in software. */}
         {graphicsNoticeOpen && graphicsError != null && <div className="notice error" role="alert" data-testid="graphics-unavailable-notice"><span>{errorText(graphicsError)}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
         {graphicsNoticeOpen && graphics?.software && <div className="notice warning" role="status" data-testid="software-rendering-notice"><span>{t('gpu.softwareNotice')} <span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
+        {/* Two patients in the comparison screen, while both series are on screen: its own bar, so no other message
+            takes its place. */}
+        {twoPatients?.every(id => slots.some(slot => slot.seriesId === id)) && <div className="notice error" role="alert" data-testid="patient-warning"><span>{t('compare.otherPatient')}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="patient-warning-dismiss" onClick={() => { setTwoPatients(null); focusImage(); }}><X size={14} /></button></div>}
         {/* Info notices go into a live region that is always present, so screen readers announce them reliably. */}
         <div className="notice-region" role="status">{notice && notice.kind !== 'error' && noticeBar}</div>
         {notice?.kind === 'error' && noticeBar}

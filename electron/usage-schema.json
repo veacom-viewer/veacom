@@ -21,7 +21,7 @@
       "findings-add", "findings-delete-all", "fusion-disable", "fusion-opacity", "fusion-blend", "fusion-device-look", "fusion-drag", "fusion-palette", "fusion-series", "fusion-strip", "fusion-suv-max",
       "graphics-notice-dismiss", "graphics-unavailable-notice", "help-check-updates", "help-close", "image-overlay", "inspector-rotate-left", "inspector-rotate-right", "inspector-tab-display",
       "inspector-tab-measurements", "inspector-tab-study", "inspector-tab-tags", "invert", "key-finish", "key-slice", "key-zoom", "language-en",
-      "language-tr", "layout-pet-fused", "layout-pet-reading", "layout-pet-follow-up", "layout-compare", "compare-open", "series-next", "series-previous", "layout-1x1", "layout-1x2", "layout-1x3", "layout-1x4", "layout-1x5", "layout-2x1", "layout-2x2",
+      "language-tr", "layout-pet-fused", "layout-pet-reading", "layout-pet-follow-up", "layout-compare", "compare-open", "patient-warning", "patient-warning-dismiss", "series-next", "series-previous", "layout-1x1", "layout-1x2", "layout-1x3", "layout-1x4", "layout-1x5", "layout-2x1", "layout-2x2",
       "layout-2x3", "layout-2x4", "layout-2x5", "layout-3x1", "layout-3x2", "layout-3x3", "layout-3x4", "layout-3x5",
       "layout-4x1", "layout-4x2", "layout-4x3", "layout-4x4", "layout-4x5", "layout-5x1", "layout-5x2", "layout-5x3",
       "layout-5x4", "layout-5x5", "link-frames", "measure-angle", "measure-arrow", "measure-cobb", "measure-crosshair", "measure-ellipse",
