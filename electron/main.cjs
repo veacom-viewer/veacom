@@ -136,7 +136,9 @@ app.whenReady().then(async () => {
     for (const { argv, cwd } of launches.splice(0)) {
       const paths = launchPaths(argv, { packaged: app.isPackaged, cwd, isFile });
       if (!paths.length) continue;
-      const pending = imaging.authorizeImportPaths(paths).then(capabilities => { imaging.prefetchImport(capabilities); return capabilities; });
+      // A path that is not there (a disc taken out, a folder moved) is said in plain words, not as the system's error.
+      const pending = imaging.authorizeImportPaths(paths).then(capabilities => { imaging.prefetchImport(capabilities); return capabilities; },
+        () => { throw new Error(t('launch.cannotOpen', { path: paths.join(', ') })); });
       pending.catch(() => {});
       opened.push(pending);
     }

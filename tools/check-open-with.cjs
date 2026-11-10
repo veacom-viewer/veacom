@@ -89,9 +89,12 @@ async function main() {
 
     // A later launch that names a path that is not there: the window says so and keeps what it shows.
     assert.equal(await launchAgain(['--study', path.join(profile, 'no-such-study')], env), 0, 'A later launch with a missing path ends cleanly.');
-    await page.locator('[data-testid="notice"][data-kind="error"]').waitFor({ timeout: 30_000 });
+    const refusal = page.locator('[data-testid="notice"][data-kind="error"]');
+    await refusal.waitFor({ timeout: 30_000 });
+    const said = await refusal.textContent();
+    assert(said.includes('no-such-study') && !/ENOENT|realpath/i.test(said), `The window names the path in plain words: ${said}`);
     assert.equal(await page.evaluate(() => window.__VEACOM_TEST__.state().series.length), seriesBefore, 'A missing path changes nothing that is open.');
-    checks.push({ name: 'later-launch-with-a-missing-path', passed: true });
+    checks.push({ name: 'later-launch-with-a-missing-path', passed: true, said });
     console.log('PASS A later launch with a missing path is reported and changes nothing');
 
     assert.deepEqual(errors, [], 'Renderer emitted an uncaught error.');
