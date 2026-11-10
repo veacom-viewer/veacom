@@ -47,15 +47,19 @@ impl Cache {
             self.bytes -= value.bytes().len();
         }
     }
-    fn put(&mut self, id: String, value: Arc<PixelBuffer>) {
-        self.remove(&id);
-        let bytes = value.bytes().len();
+    /// Drops the least recently used volumes until `bytes` more fit, or none is left.
+    fn make_room(&mut self, bytes: usize) {
         while self.bytes + bytes > self.limit {
             let Some((_, old)) = self.entries.pop_front() else {
                 break;
             };
             self.bytes -= old.bytes().len();
         }
+    }
+    fn put(&mut self, id: String, value: Arc<PixelBuffer>) {
+        self.remove(&id);
+        let bytes = value.bytes().len();
+        self.make_room(bytes);
         if bytes <= self.limit {
             self.bytes += bytes;
             self.entries.push_back((id, value));
@@ -264,6 +268,12 @@ impl Session {
         if let Some(volume) = self.cache.get(id) {
             return Ok(volume);
         }
+        // The volumes that this one will push out of the cache go before it is decoded, not after: this module's memory
+        // never shrinks, so a moment with both in it would keep the page that much bigger. Room is made for the least
+        // the volume can take, so no volume goes that would not have gone once it is in. If the decode fails or is
+        // cancelled, they have gone all the same, and are decoded again when asked for.
+        self.cache
+            .make_room(decode::least_volume_bytes(&series).unwrap_or(0));
         progress::check()?;
         progress::begin("decode", series.frames.len());
         let volume = {
