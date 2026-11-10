@@ -81,6 +81,16 @@ describe('the counterpart of a series in another study', () => {
     assert.ok(counterpart(spine, earlier({ ...spine, bodyPartExamined: 'SPINE' })));
     assert.equal(counterpart(spine, earlier({ ...spine, bodyPartExamined: 'TSPINE' })), null);
     assert.equal(counterpart(series({ bodyPartExamined: 'EAR' }), earlier(series({ bodyPartExamined: 'HEART' }))), null, 'a name inside another name is not that part');
+    // Nor is a name that only begins or ends with another; a whole word in common is, but not the side.
+    const part = (name: string) => series({ bodyPartExamined: name });
+    assert.equal(counterpart(part('HIP'), earlier(part('HIPPOCAMPUS'))), null);
+    assert.equal(counterpart(part('ARM'), earlier(part('FOREARM'))), null);
+    assert.ok(counterpart(part('KNEE LEFT'), earlier(part('KNEE'))));
+    assert.equal(counterpart(part('KNEE LEFT'), earlier(part('ANKLE LEFT'))), null);
+    assert.ok(counterpart(part('ABDOMEN_PELVIS'), earlier(part('ABDOMENPELVIS'))));
+    assert.ok(counterpart(part('LUMBAR SPINE'), earlier(part('LSPINE'))));
+    assert.ok(counterpart(part('TLSPINE'), earlier(part('LSPINE'))));
+    assert.equal(counterpart(part('C SPINE'), earlier(part('L SPINE'))), null, 'two levels of the spine share only the word');
     // A series whose files name several parts (the engine keeps them all) is of each of them, and of no other.
     const two = series({ bodyPartExamined: 'KNEE\\ANKLE\\FOOT' });
     assert.ok(counterpart(two, earlier({ ...two, bodyPartExamined: 'ANKLE' })));

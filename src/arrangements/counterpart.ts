@@ -23,17 +23,38 @@ function sameLook(a: Series, b: Series): boolean {
 /** The parts of the trunk and head one scan can cover together (HEADNECK, CHESTABDPELVIS), as Body Part Examined
  * names them. */
 const REGIONS: readonly [RegExp, string][] = [[/HEAD|BRAIN|SKULL/, 'head'], [/NECK/, 'neck'], [/CHEST|THORAX|LUNG/, 'chest'], [/ABD/, 'abdomen'], [/PELV/, 'pelvis']];
+/** A part of the body as a series names it: its letters, and its words as they were written apart. */
+interface Part { letters: string; words: string[] }
 /** The parts of the body a series names: the engine keeps every part its files record, separated by backslashes. */
-const parts = (item: Series) => (item.bodyPartExamined ?? '').split('\\').map(part => part.toUpperCase().replace(/[^A-Z]/g, '')).filter(Boolean);
+const parts = (item: Series): Part[] => (item.bodyPartExamined ?? '').split('\\').flatMap(part => {
+  const words = part.toUpperCase().match(/[A-Z]+/g) ?? [];
+  return words.length ? [{ letters: words.join(''), words }] : [];
+});
+/** Words that say a side, not a part. */
+const SIDES = new Set(['L', 'R', 'LT', 'RT', 'LEFT', 'RIGHT', 'BOTH', 'BIL', 'BILATERAL']);
+const SPINE_NAMES = new Map([['CERVICAL', 'C'], ['THORACIC', 'T'], ['DORSAL', 'T'], ['LUMBAR', 'L'], ['SACRAL', 'S']]);
+/** The levels of the spine a part names (C, T, L, S), all four for the spine as a whole; empty when it is not the
+ * spine. */
+function spineLevels({ letters, words }: Part): string {
+  const named = words.map(word => SPINE_NAMES.get(word) ?? '').join('');
+  const short = /^([CTLS]{0,4})SPINE$/.exec(letters);
+  if (short) return short[1] || named || 'CTLS';
+  return named || (words.includes('SPINE') ? 'CTLS' : '');
+}
+/** Two names of one part: the same letters (L-SPINE, LSPINE), a region of the head and trunk in common, a level of the
+ * spine in common, or a whole word in common that is not a side (KNEE LEFT, KNEE). A name that merely begins or ends
+ * with another is not that part: HIP is not HIPPOCAMPUS, nor ARM FOREARM. */
+function alike(x: Part, y: Part): boolean {
+  if (x.letters === y.letters || REGIONS.some(([pattern]) => pattern.test(x.letters) && pattern.test(y.letters))) return true;
+  const mine = spineLevels(x), theirs = spineLevels(y);
+  if (mine && theirs) return [...mine].some(level => theirs.includes(level));
+  return x.words.some(word => !SIDES.has(word) && y.words.includes(word));
+}
 /** Two series of one part of the body, as far as Body Part Examined tells: both record it and name a part in common
  * (CHEST and CHESTABDPELVIS, HEAD and BRAIN, SPINE and LSPINE), or one of them does not record it. */
 function samePart(a: Series, b: Series): boolean {
   const mine = parts(a), theirs = parts(b);
-  if (!mine.length || !theirs.length) return true;
-  return mine.some(x => theirs.some(y => {
-    const [long, short] = x.length >= y.length ? [x, y] : [y, x];
-    return long.startsWith(short) || long.endsWith(short) || REGIONS.some(([pattern]) => pattern.test(x) && pattern.test(y));
-  }));
+  return !mine.length || !theirs.length || mine.some(x => theirs.some(y => alike(x, y)));
 }
 
 /**
