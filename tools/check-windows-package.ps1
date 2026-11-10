@@ -2,8 +2,8 @@
 # Run from the repository root with Windows PowerShell or pwsh after electron-builder (installed in packaging/):
 #   -Action Package    the packaged engine is the one this job built, and its app-local runtime is intact
 #   -Action Install    silent per-user install: files, engine and uninstall registration in place, in a folder
-#                      named after the product
-#   -Action Uninstall  silent uninstall: folder, registration and processes gone
+#                      named after the product; Explorer's "Open with VEAcom" entries run the installed program
+#   -Action Uninstall  silent uninstall: folder, registration, Explorer entries and processes gone
 # Each action writes <action>.json into -Output and throws on any failure. Install also writes the installed
 # executable to $GITHUB_OUTPUT as `executable`, when that file is set.
 [CmdletBinding()]
@@ -40,6 +40,24 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds) {
         Start-Sleep -Seconds 2
     }
     return $true
+}
+# Explorer's entries (packaging/explorer-entries.nsh) under the current user's classes. A key can hold `*`, so every
+# path is taken literally.
+$Classes = 'Registry::HKEY_CURRENT_USER\Software\Classes'
+$ExplorerVerbs = @('Directory', 'Drive', 'SystemFileAssociations\.zip', '*')
+function Get-ClassValue([string]$Key, [string]$Name = '') {
+    $Item = Get-Item -LiteralPath "$Classes\$Key" -ErrorAction SilentlyContinue
+    if ($Item) { return $Item.GetValue($Name) }
+    return $null
+}
+function Test-ListedForDcm {
+    $Listed = Get-Item -LiteralPath "$Classes\.dcm\OpenWithProgids" -ErrorAction SilentlyContinue
+    return [bool]($Listed -and ($Listed.GetValueNames() -contains 'VEAcom.dcm'))
+}
+function Get-ExplorerEntriesLeft {
+    $Left = @(@($ExplorerVerbs | ForEach-Object { "$_\shell\VEAcom" }) + 'VEAcom.dcm' | Where-Object { Test-Path -LiteralPath "$Classes\$_" })
+    if (Test-ListedForDcm) { $Left += '.dcm\OpenWithProgids' }
+    return $Left
 }
 
 $PackagedEngine = Join-Path $Package 'resources\native\veacom-core.exe'
@@ -80,10 +98,26 @@ elseif ($Action -eq 'Install') {
     $Engine = Get-Sha256 (Join-Path $Folder 'resources\native\veacom-core.exe')
     if ($Engine -ne (Get-Sha256 $PackagedEngine)) { throw 'The installed engine differs from the packaged one.' }
     $Registration = (Get-Registration)[0]
+    # Explorer's entries run the installed program with --study and the path (a drive's with a dot after it, since
+    # its path ends in a backslash). A .dcm file lists VEAcom under "Open with" and keeps its default program.
+    $Open = "`"$Executable`" --study `"%1`""
+    $Commands = [ordered]@{ 'Directory\shell\VEAcom\command' = $Open; 'Drive\shell\VEAcom\command' = "`"$Executable`" --study `"%1.`""
+        'SystemFileAssociations\.zip\shell\VEAcom\command' = $Open; '*\shell\VEAcom\command' = $Open; 'VEAcom.dcm\shell\open\command' = $Open }
+    foreach ($Key in $Commands.Keys) {
+        $Command = Get-ClassValue $Key
+        if ($Command -cne $Commands[$Key]) { throw "Explorer's entry $Key runs '$Command', not '$($Commands[$Key])'." }
+    }
+    foreach ($Verb in $ExplorerVerbs) {
+        if (!(Get-ClassValue "$Verb\shell\VEAcom")) { throw "Explorer's entry $Verb\shell\VEAcom has no words." }
+    }
+    if ((Get-ClassValue '*\shell\VEAcom' 'AppliesTo') -cne 'System.FileName:="DICOMDIR"') { throw "The entry for files is not limited to files named DICOMDIR." }
+    if (!(Test-ListedForDcm)) { throw 'A .dcm file does not list VEAcom under "Open with".' }
+    if ((Get-ClassValue '.dcm') -eq 'VEAcom.dcm') { throw 'The installer made VEAcom the default program for .dcm files.' }
     Save-Json 'install.json' ([ordered]@{ passed = $true; installer = $Installer.Name; installerBytes = $Installer.Length
         installerSha256 = (Get-Sha256 $Installer.FullName); folder = $Folder; engineSha256 = $Engine
         executableMatchesPackage = ((Get-Sha256 $Executable) -eq (Get-Sha256 (Join-Path $Package "$Product.exe")))
-        displayName = (Get-Field $Registration 'DisplayName'); displayVersion = (Get-Field $Registration 'DisplayVersion') })
+        displayName = (Get-Field $Registration 'DisplayName'); displayVersion = (Get-Field $Registration 'DisplayVersion')
+        explorerEntries = @($Commands.Keys); explorerWords = (Get-ClassValue 'Directory\shell\VEAcom') })
     if ($env:GITHUB_OUTPUT) { [IO.File]::AppendAllText($env:GITHUB_OUTPUT, "executable=$Executable`n") }
     Write-Output "Installed $($Installer.Name) into $Folder."
 }
@@ -98,9 +132,11 @@ else {
     $Left = @(Get-Process -ErrorAction SilentlyContinue | Where-Object {
         $Path = Get-Field $_ 'Path'
         ($Path -and $Path.StartsWith($Folder + '\', [StringComparison]::OrdinalIgnoreCase)) -or $_.ProcessName -eq $Product -or $_.ProcessName -eq 'veacom-core' })
-    $Result = [ordered]@{ passed = ($Gone -and !$Left.Count); folderRemoved = !(Test-Path -LiteralPath $Folder)
-        registrationRemoved = !@(Get-Registration).Count; processesLeft = @($Left | ForEach-Object { "$($_.ProcessName) $($_.Id)" }) }
+    $Entries = @(Get-ExplorerEntriesLeft)
+    $Result = [ordered]@{ passed = ($Gone -and !$Left.Count -and !$Entries.Count); folderRemoved = !(Test-Path -LiteralPath $Folder)
+        registrationRemoved = !@(Get-Registration).Count; processesLeft = @($Left | ForEach-Object { "$($_.ProcessName) $($_.Id)" })
+        explorerEntriesLeft = $Entries }
     Save-Json 'uninstall.json' $Result
-    if (!$Result.passed) { throw "The silent uninstall left something behind: folder removed $($Result.folderRemoved), registration removed $($Result.registrationRemoved), processes $($Result.processesLeft -join ', ')." }
+    if (!$Result.passed) { throw "The silent uninstall left something behind: folder removed $($Result.folderRemoved), registration removed $($Result.registrationRemoved), processes $($Result.processesLeft -join ', '), Explorer entries $($Entries -join ', ')." }
     Write-Output "Uninstalled: $Folder and its registration are gone, and nothing of it is running."
 }

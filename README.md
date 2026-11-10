@@ -71,6 +71,7 @@ Use generated synthetic studies stored outside this repository for desktop check
 ```sh
 node tools/desktop-smoke.cjs /path/to/studies/ct-small test-results/smoke
 node tools/check-file-drop.cjs --study /path/to/studies/ct-small --output test-results/file-drop
+node tools/check-open-with.cjs --study /path/to/studies/ct-small --second /path/to/studies/petct --output test-results/open-with
 node tools/check-engine-recovery.cjs /path/to/studies/ct-small test-results/recovery
 node tools/check-security-boundary.cjs /path/to/studies/ct-small/S01 test-results/security
 node tools/check-interface.cjs /path/to/studies/ct-small test-results/interface

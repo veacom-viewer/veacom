@@ -280,7 +280,10 @@ export interface DesktopBridge {
   locale?: string;
   /** Saves the interface language for the main process's own text and the next start. */
   setLocale?: (locale: 'tr' | 'en') => Promise<void>;
+  /** What launches asked to open and the page has not taken yet: this launch's study and those of later launches. */
   takeStartupPaths(): Promise<string[]>;
+  /** Called when a later launch named a study while VEAcom runs (Explorer's "Open with VEAcom"): take it with takeStartupPaths. */
+  onOpened?: (listener: () => void) => () => void;
   getCoreState(): Promise<CoreState>;
   /** Chromium's WebGL and compositing feature status, e.g. webgl: 'enabled' or 'unavailable_software'. */
   getGraphicsStatus?(): Promise<{ webgl?: string; gpuCompositing?: string }>;

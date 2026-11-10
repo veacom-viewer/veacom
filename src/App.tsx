@@ -1081,6 +1081,15 @@ export default function App() {
     }
     if (startupPaths?.length) await importStudies(startupPaths, 'startup');
   };
+  // A study a later launch named while VEAcom runs (Explorer's "Open with VEAcom"): main queues it and says so, and
+  // it opens as a study named at the start does.
+  const openLaunched = useEffectEvent(async () => {
+    try {
+      const paths = await window.veacom?.takeStartupPaths();
+      if (paths?.length) await importStudies(paths, 'startup');
+    } catch (error) { if (mounted.current) setNotice({ message: errorText(error), kind: 'error' }); }
+  });
+  useEffect(() => window.veacom?.onOpened?.(() => { void openLaunched(); }), []);
   const connect = async () => {
     setBusy('status.connecting'); setConnectionError(null);
     try { await restoreCatalog(); } catch (error) { if (mounted.current) setConnectionError(errorText(error)); }
