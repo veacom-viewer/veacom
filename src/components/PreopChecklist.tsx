@@ -17,7 +17,7 @@ import './PreopChecklist.css';
 
 /** The pre-operative checklist beside the images: each finding marked per side, with the slice it was seen on, and the
  * items with a caliper measured on the image. */
-export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, headingRef }: {
+export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, onRestored, headingRef }: {
   series: Series; onClose: () => void;
   /** The reader hid the patient's data: the theatre card leaves it out too. */
   hidePatient: boolean;
@@ -30,6 +30,8 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
   measuring: { item: string; side: Side } | null;
   /** Why a caliper cannot be used on the active pane now, or null. */
   measureBlocked: (kind: CaliperKind) => MessageKey | null;
+  /** Undo put back an earlier checklist: caliper drawings moved since measure again into the records it brought back. */
+  onRestored: () => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void;
 }) {
   const { locale, t } = useTranslation();
@@ -77,6 +79,7 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     const clearButton = button.closest('.preop-checklist')?.querySelector<HTMLElement>('[data-action="checklist-clear"]');
     update(undoable.before);
     setUndo(null);
+    onRestored();
     requestAnimationFrame(() => clearButton?.focus());
   };
   const copy = async () => {
@@ -135,7 +138,14 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     try { await printPage(); } catch { setPrintFailed(true); }
   };
 
-  return <section className="preop-checklist" aria-label={t('checklist.title')} data-testid="preop-checklist" onKeyDown={keys}>
+  const undoKeys = mac ? '⌘Z' : 'Ctrl+Z';
+  return <section className="preop-checklist" aria-label={t('checklist.title')} data-testid="preop-checklist" onKeyDown={event => {
+    // ⌘Z here undoes what the checklist just lost, not the last measurement on the image.
+    if (undoable && (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'z') {
+      event.preventDefault(); event.stopPropagation(); usage.action('checklist-undo', 'key'); restore(event.currentTarget); return;
+    }
+    keys(event);
+  }}>
     <header><ClipboardCheck size={17} aria-hidden="true" /><h2 ref={headingRef} tabIndex={-1}>{t('checklist.title')}</h2>
       <span className="preop-count" aria-label={t('checklist.count', { done, total })}>{done} / {total}</span>
       <button type="button" className="icon-button" aria-label={t('checklist.close')} data-action="checklist-close" onClick={onClose}><X size={16} /></button></header>
@@ -189,7 +199,8 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
       </div>)}
     </div>
     {undoable && <p className="preop-undo" role="status">{undoable.text}
-      <button type="button" className="text-button" data-action="checklist-undo" onClick={event => restore(event.currentTarget)}>{t('notice.undo')}</button></p>}
+      <button type="button" className="text-button" data-action="checklist-undo" data-tooltip={t('notice.undo')} data-shortcut={undoKeys}
+        aria-keyshortcuts={mac ? 'Meta+Z' : 'Control+Z'} onClick={event => restore(event.currentTarget)}>{t('notice.undo')}</button></p>}
     {printFailed && <p className="preop-print-failed" role="alert">{t('checklist.printFailed')}</p>}
     {/* The rows Copy leaves out are counted at the end of the help line, right above Copy: the buttons keep one row. */}
     <footer><div className="preop-help-row"><span className="preop-help">{t('checklist.help')}</span>

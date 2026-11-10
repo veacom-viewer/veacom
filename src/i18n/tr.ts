@@ -528,6 +528,7 @@ export const tr: Record<keyof typeof en, string> = {
   'help.checklistSides': 'Sağ ya da sol',
   'help.checklistAnswer': 'Yanıtla, ilerle',
   'help.checklistBoth': 'İki tarafı yanıtla',
+  'help.checklistUndo': 'Silineni geri al',
   'help.group.view': 'Görünüm',
   'help.export': 'Dışa aktarma menüsü',
   'help.wheelKey': 'Tekerlek',

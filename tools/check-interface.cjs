@@ -478,6 +478,12 @@ async function main() {
     assert.equal(await firstAnswer.getAttribute('aria-checked'), 'true', 'Undo puts the answers back.');
     assert.match(await lamina('left').locator('[data-action="checklist-go"]').textContent(), /^(Slice|Kesit) \d+\/\d+$/, 'Undo puts the notes back.');
     await focusReaches(() => document.activeElement?.dataset.action === 'checklist-clear', undefined, 'After Undo, focus is on Clear.');
+    // ⌘Z with focus in the checklist undoes its Clear too, and leaves the measurements deleted above deleted.
+    await clear.click(); await undo.waitFor();
+    await page.keyboard.press('ControlOrMeta+z');
+    await lamina('left').locator('[data-action="checklist-go"]').waitFor({ timeout: 3000 });
+    assert.equal(await firstAnswer.getAttribute('aria-checked'), 'true', '⌘Z in the checklist undoes Clear.');
+    assert.equal(await page.locator('[data-annotation-id]:not([data-annotation-id="draft"])').count(), 0, '⌘Z in the checklist leaves the measurements alone.');
     await clear.click();
     await undo.waitFor();
     await lamina('right').locator('[data-action="checklist-note"]').click();

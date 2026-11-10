@@ -29,6 +29,7 @@ function groups(t: Translator): { title: MessageKey; rows: Row[] }[] {
     { title: 'help.group.checklist', rows: [
       [t('help.checklistRows'), [['↑'], ['↓']]], [t('help.checklistSides'), [['←'], ['→']]],
       [t('help.checklistAnswer'), [[alt, '1'], ['…'], [alt, '5']]], [t('help.checklistBoth'), [[alt, shift, '1'], ['…'], [alt, shift, '5']]],
+      [t('help.checklistUndo'), [[mod, 'Z']]],
     ] },
     { title: 'help.group.window', rows: [
       [t('toolbar.dicomWindow'), [['0']]], [t('preset.fullRange'), [['1']]], [t('help.presetKeys'), [['2'], ['…'], ['9']]],

@@ -74,7 +74,9 @@ one side is copied, with "–" for the other.
 
 Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.
 Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never
-overwrites newer work. The caliper drawings stay on the image either way.
+overwrites newer work. The caliper drawings stay on the image either way. ⌘Z (Ctrl+Z) while focus is in the checklist
+does the same, instead of undoing the last measurement on the image. Undo brings the caliper records back, so their
+drawings feed them again, and a drawing moved while its record was gone measures again.
 
 The checklist answers from the keyboard too, while focus is in it and no caliper waits for its points: ↑ and ↓ move
 between rows, ← and → between the Right and Left columns as shown, and Alt (⌥ on a Mac) with a digit gives the row's

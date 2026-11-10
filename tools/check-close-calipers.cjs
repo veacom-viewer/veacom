@@ -121,6 +121,25 @@ async function main() {
     assert.equal(await answer('keros', 'right'), '1', 'Undo brings back the first measurement and its answer.');
     check('Moving a caliper point measures again and its answer follows; undo takes both back');
 
+    // Clear drops the records, so a drawing moved meanwhile writes nothing; ⌘Z in the checklist then undoes the Clear,
+    // not the move on the image, and the record it brings back measures the moved drawing again.
+    const undoKeys = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
+    await checklist.locator('[data-action="checklist-clear"]').click();
+    assert.equal(await value('keros', 'right'), null, 'Clear removes the measurements from the checklist.');
+    await page.mouse.move(...from); await page.mouse.down(); await page.mouse.move(...to, { steps: 6 }); await page.mouse.up();
+    await page.waitForTimeout(300);
+    assert.equal(await value('keros', 'right'), null, 'A drawing whose record was cleared does not write into the checklist.');
+    await checklist.locator('[data-action="checklist-clear"]').focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(() => (document.querySelector('[data-item="keros"] [data-side="right"] .preop-seen')?.textContent ?? '').startsWith('4.2 mm'));
+    assert.equal(await answer('keros', 'right'), '2', 'The record came back measured again, and its answer follows.');
+    assert.match(await value('keros', 'left'), /^6\.0 mm/, 'The other side came back too.');
+    await pane.focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(() => (document.querySelector('[data-item="keros"] [data-side="right"] .preop-seen')?.textContent ?? '').startsWith('3.2 mm'));
+    assert.equal(await answer('keros', 'right'), '1', '⌘Z on the image undoes the move.');
+    check('⌘Z in the checklist undoes Clear, not the image; a drawing moved meanwhile measures again');
+
     // A calibration changes what the calipers measure, as it changes their labels: a 10 mm line called 20 mm doubles
     // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again.
     const settledValue = (which, start) => page.waitForFunction(([which, start]) => (document.querySelector(`[data-item="keros"] [data-side="${which}"] .preop-seen`)?.textContent ?? '').startsWith(start), [which, start]);

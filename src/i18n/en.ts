@@ -525,6 +525,7 @@ export const en = {
   'help.checklistSides': 'Right or left',
   'help.checklistAnswer': 'Answer, move on',
   'help.checklistBoth': 'Answer both sides',
+  'help.checklistUndo': 'Undo lost work',
   'help.group.view': 'View',
   'help.export': 'Export menu',
   'help.wheelKey': 'Wheel',

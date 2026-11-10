@@ -2468,6 +2468,8 @@ export default function App() {
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
       {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries} hidePatient={settings.hidePatientData}
+        /* Undo brought caliper records back: a drawing moved while its record was gone measures again. */
+        onRestored={() => { for (const [seriesId, list] of Object.entries(annotationRef.current)) recordCalipers(seriesId, list); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
         onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view) : null}
