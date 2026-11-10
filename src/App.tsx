@@ -981,30 +981,41 @@ export default function App() {
     loadPaneImage(item);
   };
 
-  /** A pane that pages a stack with its reference image goes to a place of that sequence which the other of the two
-   * holds: the pane takes that series. On the reference image it keeps the stack's view for the way back, and a window
-   * the reader set by hand goes with it. */
+  /** Puts a pane that pages a stack with its reference image on a place of that sequence: on the reference image at
+   * the image's place, on the stack's slice at any other. Where that is the other of the two, the pane takes that
+   * series: on the reference image it keeps the stack's view for the way back, and a window the reader set by hand
+   * goes with it. The place says where to go whichever of the two the pane shows, so that a call which follows
+   * another before the pane is drawn again (two wheel notches, a drag's moves) lands where it asked. */
   const crossJoined = (slotId: string, place: number) => {
     const known = new Map(seriesRef.current.map(item => [item.id, item])), pairs = referenceImages(seriesRef.current);
-    const next = (slot: Slot): Slot => {
-      const shown = slot.seriesId ? known.get(slot.seriesId) : undefined;
-      if (slot.id !== slotId || !shown) return slot;
-      const reference = pairs.get(shown.id);
-      if (reference) {
-        const set = slot.view.windowMode === 'manual' ? { windowMode: slot.view.windowMode, windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth } : {};
-        return { id: slot.id, seriesId: reference.id, unfused: slot.unfused, stack: { id: shown.id, view: slot.view }, view: { ...defaultView(reference), ...set, inverted: slot.view.inverted } };
-      }
-      const stackId = [...pairs].find(([, item]) => item.id === shown.id)?.[0], stack = stackId ? known.get(stackId) : undefined;
-      if (!stack) return slot;
-      const joined = { ...joinedWith(stack, shown), lead: true };
-      if (place === joined.leadAt) return slot;
-      const kept = slot.stack?.id === stack.id ? slot.stack.view : defaultView(stack);
-      return { id: slot.id, seriesId: stack.id, unfused: slot.unfused, view: { ...kept, slice: stackSliceAt(stack, kept, place, stack.dimensions[2], joined) } };
+    const stackOf = new Map([...pairs].map(([stack, reference]) => [reference.id, known.get(stack)]));
+    /** The sequence a pane's series is in: what the pane shows, the stack, its reference image and how they join. */
+    const sequenceOf = (slot: Slot) => {
+      const shown = slot.seriesId ? known.get(slot.seriesId) : undefined, stack = shown && (pairs.has(shown.id) ? shown : stackOf.get(shown.id)), reference = stack && pairs.get(stack.id);
+      return shown && stack && reference ? { shown, stack, reference, joined: { ...joinedWith(stack, reference), lead: false } } : null;
     };
-    const before = slotsRef.current.find(slot => slot.id === slotId), after = before && next(before);
-    if (!after || after === before) return;
-    setSlots(current => current.map(next));
-    loadPaneImage(after.seriesId ? known.get(after.seriesId) : undefined);
+    const next = (slot: Slot): Slot => {
+      const sequence = slot.id === slotId ? sequenceOf(slot) : null;
+      if (!sequence) return slot;
+      const { shown, stack, reference, joined } = sequence, onStack = shown.id === stack.id;
+      // Only a pane that shows the stack as it was acquired pages it with the image.
+      if (onStack && !(usesSourceFrames(stack, slot.view) && !isProjection(stack, slot.view))) return slot;
+      if (place === joined.leadAt) {
+        if (!onStack) return slot;
+        const set = slot.view.windowMode === 'manual' ? { windowMode: slot.view.windowMode, windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth } : {};
+        return { id: slot.id, seriesId: reference.id, unfused: slot.unfused, stack: { id: stack.id, view: slot.view }, view: { ...defaultView(reference), ...set, inverted: slot.view.inverted } };
+      }
+      // The stack's slice at the place: in the view the pane has on the stack, or had on it before it went to the image.
+      const view = onStack ? slot.view : slot.stack?.id === stack.id ? slot.stack.view : defaultView(stack);
+      const slice = stackSliceAt(stack, view, place, stack.dimensions[2], joined);
+      return onStack && view.slice === slice ? slot : { id: slot.id, seriesId: stack.id, unfused: slot.unfused, view: { ...view, slice } };
+    };
+    const before = slotsRef.current.find(slot => slot.id === slotId), sequence = before && sequenceOf(before);
+    if (!sequence) return;
+    // Queued even where the pane seems to be there already: it may be on its way to the other of the two.
+    setSlots(current => { const moved = current.map(next); return moved.some((slot, index) => slot !== current[index]) ? moved : current; });
+    const target = place === sequence.joined.leadAt ? sequence.reference : sequence.stack;
+    if (target.id !== sequence.shown.id) loadPaneImage(target);
   };
 
   // `trigger` says how the study was opened (folder, disc, drop...) for usage timings; never where from.
