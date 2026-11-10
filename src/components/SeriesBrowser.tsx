@@ -267,7 +267,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const searching = Boolean(query);
   const searchIndex = searching ? new Map(series.map(item => [item.id, searchText(item, guesses.get(item.id))])) : null;
   const words = query.split(/\s+/);
-  // A stack's reference image is shown on the stack's card, not on a card of its own (ui/referenceImages.ts).
+  // A stack's reference image is shown on the stack's card, not on a card of its own (ui/referenceImages.ts). The
+  // small picture is no button, so a click meant for the series cannot open it: the card's menu opens it.
   const references = referenceImages(series), onCards = new Set([...references.values()].map(item => item.id));
   const listed = series.filter(item => !onCards.has(item.id));
   const studies = groupStudies(searchIndex ? listed.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : listed);
@@ -410,10 +411,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
             </button>;
             if (!reference) return card;
             return <div key={item.id} className="series-card-with-reference">{card}
-              <button type="button" className={`series-reference${reference.id === activeId ? ' is-active' : ''}`} aria-pressed={reference.id === activeId} aria-label={t('series.reference')} data-tooltip={t('series.reference')}
-                data-testid={`series-${reference.id}`} data-action="series-reference" draggable onDragStart={event => dragStart(event, reference)} onClick={() => onSelect(reference)} onContextMenu={event => openMenu(event, { item: reference })}>
-                <Preview id={reference.id} small empty={false} failed={Boolean(failedIds?.has(reference.id) && !loadingIds.has(reference.id))} />
-              </button>
+              <span className="series-reference" aria-hidden="true"><Preview id={reference.id} small empty={false} failed={Boolean(failedIds?.has(reference.id) && !loadingIds.has(reference.id))} /></span>
             </div>;
           })}</div>}
         </section>;
@@ -431,7 +429,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
       <Menu label={t('series.menu')} onClose={() => closeMenu()} className={`context-menu${menu.y > window.innerHeight - 320 ? ' menu-up' : ''}`} testId="series-menu">
         {menu.item && <>
           <MenuItem action="series-open-active" onClick={() => { const item = menu.item!; act(() => onSelect(item)); }}>{t('series.openInActive')}</MenuItem>
-          <MenuItem action="series-remove" onClick={() => { const item = menu.item!; act(() => onRemove([item.id])); }}>{t('series.removeSeries')}</MenuItem>
+          {references.has(menu.item.id) && <MenuItem action="series-reference" onClick={() => { const reference = references.get(menu.item!.id)!; act(() => onSelect(reference)); }}>{t('series.openReference')}</MenuItem>}
+          <MenuItem action="series-remove" onClick={() => { const item = menu.item!, reference = references.get(item.id); act(() => onRemove(reference ? [item.id, reference.id] : [item.id])); }}>{t('series.removeSeries')}</MenuItem>
           <MenuDivider />
         </>}
         {menu.study && <MenuItem action="study-toggle" onClick={() => { const key = menu.study!; act(() => toggleStudy(key)); }}>{t(collapsed.has(menu.study) ? 'series.expand' : 'series.collapse')}</MenuItem>}
