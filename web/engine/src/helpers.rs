@@ -1,10 +1,13 @@
 //! Threads lent to the engine's parallel work (`veacom_core::parallel`) in the threads build. The engine cannot start
-//! threads in a browser: the page starts Web Workers that share this module's memory, and each calls `helper_main`,
-//! where it waits for work. A parallel run (decoding a series' frames, say) then hands its items to them and to the
-//! engine's own thread at once.
+//! threads in a browser: the page starts Web Workers that share this module's memory, and each calls `helper_serve`
+//! again and again, where it waits for work. A parallel run (decoding a series' frames) then hands its items to them
+//! and to the engine's own thread at once.
 //!
-//! Only files held in memory can be read on these threads (`blob::hold`): a page's File belongs to the Worker that
-//! received it. Everything else runs with `veacom_core::parallel::on_this_thread`.
+//! A page's File can be read only on a Worker that was given it. Each helper is given the page's files too
+//! (`blob::add_here`), between its waits: `helper_serve` returns to the Worker's own events when it has waited long
+//! enough, after a run, and when the engine Worker wakes the helpers to hand them files (`wake`). A series is decoded
+//! from the page's files on every thread once every helper has them (`blob::on_helpers`); otherwise only files held in
+//! memory (`blob::hold`) are read there, or the work runs with `veacom_core::parallel::on_this_thread`.
 
 use std::{
     cell::Cell,
@@ -12,6 +15,7 @@ use std::{
         Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
 use veacom_core::parallel::Helpers;
 use wasm_bindgen::prelude::*;
@@ -33,6 +37,8 @@ struct State {
     joined: usize,
     /// Helpers inside the run's work.
     running: usize,
+    /// Bumped to send every waiting helper back to its Worker's events (`wake`).
+    wake: u64,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -42,6 +48,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     limit: 0,
     joined: 0,
     running: 0,
+    wake: 0,
 });
 /// Helpers wait here for the next run.
 static NEXT: Condvar = Condvar::new();
@@ -53,6 +60,8 @@ static COUNT: AtomicUsize = AtomicUsize::new(0);
 
 thread_local! {
     static HELPER: Cell<bool> = const { Cell::new(false) };
+    /// The last run generation this helper has seen, kept between its calls to `helper_serve`.
+    static SEEN: Cell<Option<u64>> = const { Cell::new(None) };
 }
 
 fn state() -> MutexGuard<'static, State> {
@@ -112,32 +121,55 @@ pub fn helper_setup() -> js_sys::Array {
     js_sys::Array::of2(&wasm_bindgen::module(), &wasm_bindgen::memory())
 }
 
-/// A lent thread's life: called by each helper Worker once the module is set up on it, and never returns.
-#[wasm_bindgen(js_name = helperMain)]
-pub fn helper_main() {
-    HELPER.set(true);
-    let mut seen = state().generation;
-    COUNT.fetch_add(1, Ordering::AcqRel);
-    loop {
-        let work = {
-            let mut state = state();
-            while state.generation == seen {
-                state = NEXT.wait(state).unwrap_or_else(PoisonError::into_inner);
-            }
-            seen = state.generation;
-            if !state.open || state.joined >= state.limit {
-                continue;
-            }
-            state.joined += 1;
-            state.running += 1;
-            state.work.expect("an open run has its work")
-        };
-        // Safety: the run stays open, and its work alive, until `running` is back to zero (see `Lent::run`).
-        unsafe { (*work.0)() };
+/// Sends every helper waiting in `helper_serve` back to its Worker's events at once, to take the files the engine
+/// Worker has just sent it.
+pub fn wake() {
+    state().wake += 1;
+    NEXT.notify_all();
+}
+
+/// A lent thread's turn, called again and again by each helper Worker once the module is set up on it: waits up to
+/// `wait_ms` for a run and takes part in it, then returns, so the Worker can take the page's files (see the module's
+/// notes). It also returns when the helpers are woken (`wake`). A run that began while the Worker was away is joined
+/// if it is still open.
+#[wasm_bindgen(js_name = helperServe)]
+pub fn helper_serve(wait_ms: u32) {
+    if !HELPER.get() {
+        HELPER.set(true);
+        SEEN.set(Some(state().generation));
+        COUNT.fetch_add(1, Ordering::AcqRel);
+    }
+    let mut seen = SEEN.get().unwrap_or_default();
+    let work = {
         let mut state = state();
-        state.running -= 1;
-        if state.running == 0 {
-            LEFT.notify_all();
+        let woken = state.wake;
+        let mut waited = false;
+        loop {
+            if state.generation != seen {
+                seen = state.generation;
+                if state.open && state.joined < state.limit {
+                    state.joined += 1;
+                    state.running += 1;
+                    break Some(state.work.expect("an open run has its work"));
+                }
+            }
+            if state.wake != woken || waited {
+                break None;
+            }
+            let (next, timeout) = NEXT
+                .wait_timeout(state, Duration::from_millis(wait_ms.into()))
+                .unwrap_or_else(PoisonError::into_inner);
+            state = next;
+            waited = timeout.timed_out();
         }
+    };
+    SEEN.set(Some(seen));
+    let Some(work) = work else { return };
+    // Safety: the run stays open, and its work alive, until `running` is back to zero (see `Lent::run`).
+    unsafe { (*work.0)() };
+    let mut state = state();
+    state.running -= 1;
+    if state.running == 0 {
+        LEFT.notify_all();
     }
 }

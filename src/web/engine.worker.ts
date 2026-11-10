@@ -5,29 +5,67 @@
 // Where the page is cross-origin isolated, the threads build is used: a series is decoded on this Worker's thread and
 // on a few helper Workers that share the module's memory (engine.helper.ts, web/engine/src/helpers.rs). To leave the
 // computer room, the engine works on at most half its cores and never more than 4; the helpers sleep when there is
-// nothing to decode. Elsewhere, or if the helpers cannot start, the single-thread build runs.
+// nothing to do. Each helper is sent an import's files once they are listed (`shareFiles`), so that every thread reads
+// the files of the frames it decodes. Elsewhere, or if the helpers cannot start, the single-thread build runs.
 
 import { readHeads } from '../../web/file-heads.js';
+import type { HelperFiles } from './engine.helper';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
 type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
 
 const THREADS = Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
 
+// One channel to each helper, for the page's files (`shareFiles`), and the batches it has not answered yet.
+let helperPorts: MessagePort[] = [];
+let batches = 0;
+// The last import's files on their way to the helpers.
+let sharing: Promise<void> = Promise.resolve();
+const waiting = new Map<number, { left: number; done: () => void }>();
+// A helper takes a batch the moment it is woken; one that has not after this long has stopped, and the page replaces
+// the engine. Until then a series is decoded from files held in memory, as without the helpers' files.
+const SHARE_TIMEOUT_MS = 5000;
+
 /** Asks the page to start `count` helper Workers on the threads build's module and memory, and waits for its answer.
  * The page starts them, not this Worker: the threads build aborts on a panic, and a helper that stops so must reach the
  * page, which then replaces the engine. Sent here, its error would wait for this Worker, which may be the very thread
- * waiting for that helper. The page gives up after 15 s; then the single-thread build is used. */
+ * waiting for that helper. The page gives up after 15 s; then the single-thread build is used. Each helper also gets
+ * one end of a channel to this Worker, for the page's files. */
 function startHelpers(threaded: ThreadedEngine, count: number): Promise<void> {
   const [module, memory] = threaded.helperSetup() as [WebAssembly.Module, WebAssembly.Memory];
   const { port1, port2 } = new MessageChannel();
+  const channels = Array.from({ length: count }, () => new MessageChannel());
   return new Promise((resolve, reject) => {
     port1.onmessage = ({ data }) => {
       port1.close();
-      if (data.ok) resolve(); else reject(new Error(data.error || 'the threads did not start'));
+      if (!data.ok) { reject(new Error(data.error || 'the threads did not start')); return; }
+      helperPorts = channels.map(channel => channel.port1);
+      for (const port of helperPorts) {
+        port.onmessage = ({ data: answer }: MessageEvent<{ took: number }>) => {
+          const batch = waiting.get(answer.took);
+          if (batch && --batch.left === 0) { waiting.delete(answer.took); batch.done(); }
+        };
+      }
+      resolve();
     };
-    scope.postMessage({ type: 'helpers', module, memory, count, port: port2 }, [port2]);
+    const files = channels.map(channel => channel.port2);
+    scope.postMessage({ type: 'helpers', module, memory, count, port: port2, files }, [port2, ...files]);
   });
+}
+
+/** Sends every helper these page files, by the numbers the engine knows them by, and waits until each has taken them;
+ * then the engine reads them on every thread (`filesOnHelpers`). */
+async function shareFiles(threaded: ThreadedEngine, ids: number[], files: File[]): Promise<void> {
+  if (!helperPorts.length || !ids.length) return;
+  const batch = ++batches;
+  const taken = new Promise<boolean>(resolve => {
+    waiting.set(batch, { left: helperPorts.length, done: () => { resolve(true); } });
+    setTimeout(() => { waiting.delete(batch); resolve(false); }, SHARE_TIMEOUT_MS);
+  });
+  const message: HelperFiles = { batch, ids, files };
+  for (const port of helperPorts) port.postMessage(message);
+  threaded.wakeHelpers();
+  if (await taken) threaded.filesOnHelpers(Uint32Array.from(ids));
 }
 
 async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; threads: number; memory: WebAssembly.Memory }> {
@@ -53,10 +91,15 @@ const pageFiles = new Map<number, File>();
 let cancelFlag: Int32Array | undefined;
 const READS_AT_ONCE = 8;
 
-/** Lets go of the files the engine no longer lists: an import and a removal forget those no series reads from. */
+/** Lets go of the files the engine no longer lists, here and on the helpers: an import and a removal forget those no
+ * series reads from. */
 function forgetUnlisted(): void {
   const listed = new Set(engine.listedFiles());
-  for (const id of pageFiles.keys()) if (!listed.has(id)) pageFiles.delete(id);
+  const gone = [...pageFiles.keys()].filter(id => !listed.has(id));
+  for (const id of gone) pageFiles.delete(id);
+  if (!gone.length) return;
+  const message: HelperFiles = { forget: gone };
+  for (const port of helperPorts) port.postMessage(message);
 }
 
 /** Reads the page files series `seriesId` is decoded from, READS_AT_ONCE at a time, and hands each to the engine
@@ -135,10 +178,20 @@ async function answer(data: EngineRequest): Promise<void> {
       }
       case 'import': {
         const first = await readHeads(data.files);
-        data.files.forEach(({ path, file }, i) => pageFiles.set(engine.addFile(path, file, first[i]), file));
+        const ids = data.files.map(({ path, file }, i) => {
+          const id = engine.addFile(path, file, first[i]);
+          pageFiles.set(id, file);
+          return id;
+        });
         try {
           value = JSON.parse(engine.importPaths(data.roots));
         } finally { forgetUnlisted(); }
+        // The helpers take the files the import kept while the page asks for its first images; decoding a series waits
+        // for them.
+        if (loaded.threaded) {
+          const kept = ids.flatMap(id => { const file = pageFiles.get(id); return file ? [{ id, file }] : []; });
+          sharing = shareFiles(loaded.threaded, kept.map(({ id }) => id), kept.map(({ file }) => file));
+        }
         break;
       }
       case 'list': value = JSON.parse(engine.listSeries()); break;
@@ -153,7 +206,10 @@ async function answer(data: EngineRequest): Promise<void> {
       }
       case 'volume':
       case 'frame': {
-        if (data.op === 'volume' && loaded.threaded) await holdInParallel(loaded.threaded, data.seriesId, data.id);
+        if (data.op === 'volume' && loaded.threaded) {
+          await sharing;
+          await holdInParallel(loaded.threaded, data.seriesId, data.id);
+        }
         const pixels =(data.op === 'volume' ? engine.volume(data.seriesId, data.revision) : engine.frame(data.seriesId, data.index, data.revision)) as EnginePixels;
         value = pixels; transfer = [pixels.bytes.buffer];
         break;

@@ -73,6 +73,8 @@ struct BlobSource {
     head: Mutex<Option<Arc<Vec<u8>>>>,
     /// The whole file, while a parallel decode needs it on every thread.
     whole: Mutex<Option<Arc<Vec<u8>>>>,
+    /// Set once every helper has the Blob (`add_here`, `mark_on_helpers`): then any thread reads it.
+    on_helpers: std::sync::atomic::AtomicBool,
 }
 
 /// Every listed file's source by its path as the file system keeps it, for `hold` and `retain` (shared by all threads).
@@ -99,6 +101,7 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
         length,
         head: Mutex::new(head),
         whole: Mutex::new(None),
+        on_helpers: std::sync::atomic::AtomicBool::new(false),
     });
     memory_fs::add(path, source.clone());
     // Under the path the engine's series name it by (`.` and `..` resolved), so `retain` and `hold` find it.
@@ -107,6 +110,51 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
         forget(&HashSet::from([replaced.id]));
     }
     id
+}
+
+/// Gives this thread (a helper) Blob `id`, a file the engine Worker listed, so that a parallel run can read it here.
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn add_here(id: u32, blob: web_sys::Blob) {
+    BLOBS.with_borrow_mut(|blobs| blobs.insert(id, blob));
+}
+
+/// Lets go of these Blobs on this thread (a helper), as `retain` does on the engine Worker.
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn forget_here(ids: &[u32]) {
+    forget(&ids.iter().copied().collect());
+}
+
+/// Records that every helper now has these files, once each has said so.
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn mark_on_helpers(ids: &[u32]) {
+    let ids: HashSet<u32> = ids.iter().copied().collect();
+    for source in sources().values().filter(|source| ids.contains(&source.id)) {
+        source.on_helpers.store(true, Ordering::Release);
+    }
+}
+
+/// Whether every thread can read the files at these paths: each is on every helper, or is not a page file at all (a
+/// ZIP entry, held in memory).
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn on_helpers(paths: &[&Path]) -> bool {
+    let sources = sources();
+    paths.iter().all(|path| {
+        sources
+            .get(*path)
+            .is_none_or(|source| source.on_helpers.load(Ordering::Acquire))
+    })
 }
 
 /// The numbers of the files listed now.

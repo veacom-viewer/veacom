@@ -136,7 +136,8 @@ fn frame_files(source: &veacom_core::model::SourceSeries) -> Vec<&std::path::Pat
 
 /// The page files series `id` will be decoded from that are not held yet, by number. The Worker reads them several at
 /// a time and hands each over with `holdFile` before it asks for the series: read here one after another, they took
-/// most of a series' load, while the decoding threads waited. None when the series is cached, or too large to hold.
+/// most of a series' load, while the decoding threads waited. None when the series is cached, when every helper has
+/// its files (then each thread reads the files it decodes), or when it is too large to hold.
 #[cfg(feature = "threads")]
 #[wasm_bindgen(js_name = volumeFiles)]
 pub fn volume_files(id: &str) -> Vec<u32> {
@@ -146,7 +147,42 @@ pub fn volume_files(id: &str) -> Vec<u32> {
     let Ok(source) = SESSION.with_borrow(|session| session.source(id)) else {
         return Vec::new();
     };
-    crate::blob::unheld(&frame_files(&source), HOLD_LIMIT.load(Ordering::Relaxed))
+    let paths = frame_files(&source);
+    if crate::blob::on_helpers(&paths) {
+        return Vec::new();
+    }
+    crate::blob::unheld(&paths, HOLD_LIMIT.load(Ordering::Relaxed))
+}
+
+/// On a helper: takes the page files the engine Worker listed, by their numbers (`addFile`), so that parallel runs
+/// read them on this thread too.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = helperTakeFiles)]
+pub fn helper_take_files(ids: Vec<u32>, files: Vec<web_sys::Blob>) {
+    for (id, file) in ids.into_iter().zip(files) {
+        crate::blob::add_here(id, file);
+    }
+}
+
+/// On a helper: lets go of files the engine Worker no longer lists.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = helperForgetFiles)]
+pub fn helper_forget_files(ids: Vec<u32>) {
+    crate::blob::forget_here(&ids);
+}
+
+/// Every helper has taken these files: parallel runs may read them on any thread from now on.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = filesOnHelpers)]
+pub fn files_on_helpers(ids: Vec<u32>) {
+    crate::blob::mark_on_helpers(&ids);
+}
+
+/// Sends the helpers back to their Workers' events, to take the files just sent to them.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = wakeHelpers)]
+pub fn wake_helpers() {
+    crate::helpers::wake();
 }
 
 /// File `id`, read whole by the Worker. False when it is not a listed file of that length: then it is read here.
@@ -156,14 +192,18 @@ pub fn hold_file(id: u32, bytes: Vec<u8>) -> bool {
     crate::blob::hold_read(id, bytes)
 }
 
-/// Decodes a whole series, from the cache when it is there. In the threads build the series' files are first held
-/// whole in shared memory, as the decoding threads cannot reach the page's files, and given back after. The Worker
-/// reads most of them beforehand (`volumeFiles`); `hold` reads the rest here.
+/// Decodes a whole series, from the cache when it is there. In the threads build, when every helper has the series'
+/// files, each thread reads the files of the frames it decodes, and nothing is held. Otherwise the files are first held
+/// whole in shared memory, and given back after: the Worker reads most of them beforehand (`volumeFiles`), and `hold`
+/// reads the rest here.
 fn decode_volume_of(id: &str, revision: Option<u64>) -> anyhow::Result<Arc<PixelBuffer>> {
     #[cfg(feature = "threads")]
     if !SESSION.with_borrow(|session| session.has_volume(id)) {
         let source = SESSION.with_borrow(|session| session.source(id))?;
         let paths = frame_files(&source);
+        if crate::blob::on_helpers(&paths) {
+            return SESSION.with_borrow_mut(|session| session.volume(id, revision));
+        }
         // Above HOLD_LIMIT, or when memory runs short, the series is decoded on this thread alone, reading as it goes.
         let volume = match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
             Ok(true) => SESSION.with_borrow_mut(|session| session.volume(id, revision)),
@@ -218,7 +258,9 @@ pub fn reset() {
     crate::blob::clear();
 }
 
-/// Imports files, folders or ZIPs by path and adds their series to the catalog; returns `{series, warnings}`.
+/// Imports files, folders or ZIPs by path and adds their series to the catalog; returns `{series, warnings}`. The files
+/// are listed on this thread alone: on every thread, the header parsing's many small allocations waited for each other
+/// on the module's one allocator, and the listing took longer.
 #[wasm_bindgen(js_name = importPaths)]
 pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
     let imported = session(|session| session.import(&paths));
