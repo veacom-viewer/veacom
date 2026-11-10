@@ -300,7 +300,8 @@ export function Viewport(props: ViewportProps) {
     editing.current = null; editLive.current = null; setEdited(null);
     construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null;
     draftLive.current = null; pendingCrosshair.current = null;
-    setDraft(null); setTextPrompt(null); setSelected(null);
+    // The hints follow at once: the paint that sets them may not come before the next caliper asks for its first point.
+    setDraft(null); setDraftHint(null); setCaliperStep(0); setTextPrompt(null); setSelected(null);
   };
   const syncInteractionContext = (volume: ViewportProps['volume'], view: ViewState) => {
     const next = interactionContext(volume, view), previous = context.current;
@@ -388,7 +389,7 @@ export function Viewport(props: ViewportProps) {
   };
   // A PET is read inverted (imaging/quantity.ts petLook): reset brings that back, not plain grey.
   const reset = () => changeView({ zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: latest.current.volume.series.modality === 'PT', oblique: [0, 0] });
-  const discardDraft = () => { construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null; draftLive.current = null; setDraft(null); };
+  const discardDraft = () => { construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null; draftLive.current = null; setDraft(null); setDraftHint(null); setCaliperStep(0); };
   /** Points of a two-point measurement from its start to `end` (rectangles and ellipses use the box corners). */
   const twoPointShape = (mode: Tool, startWorld: Vec3, end: Point2): Vec3[] => twoPointWorld(mappingNow(), mode, startWorld, end);
   /** Zoom about the pane centre, keeping the centred point where it is. */
