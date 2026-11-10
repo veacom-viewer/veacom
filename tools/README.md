@@ -195,11 +195,13 @@ those landmarks and checks:
 
 - each value, answer and side in the checklist, and the near-limit word for a Keros depth near a type limit;
 - a roof point clicked in the air moves onto the bone;
-- moving a point measures again, and undo takes it back with its answer; a calibration changes the values and answers, and removing it changes them back;
+- moving a point measures again, and undo takes it back with its answer; a calibration changes the values and answers,
+  also of a record whose drawing was deleted, and removing it changes them back;
 - started off its plane, a caliper turns its pane to that plane and the bone window, says so with Undo, and Undo puts
   the pane back; Esc ends one;
 - "Copy for the report" in English and Turkish, with screenshots in both;
-- the theatre card on one A4 page, as a PDF of the page made in place of the print dialog.
+- the theatre card on one A4 page, as a PDF of the page made in place of the print dialog, and a full card (every
+  side answered and noted, the measurements kept) on one page too, in both languages.
 
 CI's desktop job (screens shard) and `tools/verify.sh` run it.
 

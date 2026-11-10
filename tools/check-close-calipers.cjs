@@ -124,7 +124,13 @@ async function main() {
 
     // A calibration changes what the calipers measure, as it changes their labels: a 10 mm line called 20 mm doubles
     // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again.
+    // The left side's drawing is deleted first: its record keeps its points, and the calibration measures it again too.
     const settledValue = (which, start) => page.waitForFunction(([which, start]) => (document.querySelector(`[data-item="keros"] [data-side="${which}"] .preop-seen`)?.textContent ?? '').startsWith(start), [which, start]);
+    await side('keros', 'left').locator('[data-action="checklist-go"]').click();
+    await pane.locator('[data-annotation-id][data-selected]').waitFor();
+    await pane.focus(); await page.keyboard.press('Delete');
+    await page.waitForFunction(() => ![...document.querySelectorAll('.viewport-cell.is-active [data-annotation-id] .annotation-label')].some(label => label.textContent.includes('Keros left')));
+    await settledValue('left', '6.0 mm');
     await pane.focus(); await page.keyboard.press('l');
     const lineFrom = await screen(coronal, [-20, -10]), lineTo = await screen(coronal, [-10, -10]);
     await page.mouse.move(...lineFrom); await page.mouse.down(); await page.mouse.move(...lineTo, { steps: 6 }); await page.mouse.up();
@@ -143,8 +149,11 @@ async function main() {
     await page.getByTestId('tool-inspector').click();
     await page.locator('.inspector').waitFor({ state: 'hidden' });
     await pane.focus();
+    // Undo takes the calibration line away, then brings the left drawing back.
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
-    check('A calibration changes the caliper values and answers in the checklist, and removing it changes them back');
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
+    await page.waitForFunction(() => [...document.querySelectorAll('.viewport-cell.is-active [data-annotation-id] .annotation-label')].some(label => label.textContent.includes('Keros left 6.0 mm')));
+    check('A calibration changes the caliper values and answers in the checklist, a deleted drawing\'s record too, and removing it changes them back');
 
     // The anterior ethmoidal artery: in the right roof (type 1: no answer, a dehiscence is the reader's call) and 3 mm
     // below the left one, whose roof point was clicked in the air and moved onto the bone.
@@ -317,6 +326,19 @@ async function main() {
     await checklist.locator('[data-action="checklist-undo"]').click();
     assert.deepEqual([await answer('keros', 'right'), await value('keros', 'right')], ['1', '3.2 mm · 70.0°'], 'Undo puts the cleared checklist back.');
     check('In Turkish: the checklist, its limit word and the report; Clear says so and Undo puts it back', { report: turkish });
+
+    // A full card fits on one page too: every side answered and noted, the measurements kept, in both languages.
+    for (const cell of await checklist.locator('[data-item] [data-side]').all()) {
+      if (!await cell.locator('[data-action="checklist-answer"][aria-checked="true"]').count()) await cell.locator('[data-action="checklist-answer"]').first().click();
+      if (!await cell.locator('.preop-seen').count()) await cell.locator('[data-action="checklist-note"]').click();
+    }
+    assert.match(await printCard('6-full-card-tr', 3), /21 taraftan 0 tanesi işaretlenmedi/);
+    await page.getByTestId('tool-language').press('Enter');
+    await page.getByTestId('language-en').press('Enter');
+    await checklist.getByText('Pre-operative check').first().waitFor();
+    assert.match(await printCard('6-full-card-en', 4), /0 of 21 sides not marked/);
+    assert.equal((await cardCell('keros', 'right'))[1], '3.2 mm, type 1, near limit; Gera 70.0°, class II', 'The measurements stay on the full card.');
+    check('A full theatre card, every side answered and noted with the measurements kept, prints on one page in both languages');
 
     assert.deepEqual(errors, [], 'No page errors.');
     await fs.writeFile(path.join(output, 'close-calipers-checks.json'), JSON.stringify({ checks, errors }, null, 2));

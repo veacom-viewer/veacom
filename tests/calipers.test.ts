@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { aeaType, caliperLabel, caliperReport, caliperResult, caliperShort, caliperView, geraClass, isLocalizer, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
+import { aeaType, caliperLabel, caliperRefusal, caliperReport, caliperResult, caliperShort, caliperView, geraClass, isLocalizer, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
 import { getPlaneFrame, sub, dot } from '../src/imaging/geometry';
-import { checklistRows, checklistSummary, recordCaliper, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
+import { caliperNote, checklistRows, checklistSummary, recordCaliper, remeasureRecords, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
 import type { CaliperTag, Series, Vec3, ViewState, Volume } from '../src/model';
 
 const coronal = (side: CaliperTag['side'], kind: CaliperTag['kind'] = 'keros'): CaliperTag => ({ kind, item: 'keros', side, up: [0, 0, 1], normal: [0, 1, 0] });
@@ -104,6 +104,12 @@ describe('scouts', () => {
     assert.deepEqual(['ORIGINAL\\PRIMARY\\LOCALIZER', 'ORIGINAL\\PRIMARY\\AXIAL', 'DERIVED\\SECONDARY\\REFORMATTED', undefined]
       .map(imageType => isLocalizer({ imageType })), [true, false, false, false]);
   });
+
+  it('are refused with every series that is not CT, at the start and at the drawing alike', () => {
+    assert.equal(caliperRefusal({ modality: 'CT', imageType: 'ORIGINAL\\PRIMARY\\AXIAL' }), null);
+    assert.equal(caliperRefusal({ modality: 'CT', imageType: 'ORIGINAL\\PRIMARY\\LOCALIZER' }), 'caliper.localizer');
+    assert.equal(caliperRefusal({ modality: 'MR', imageType: 'ORIGINAL\\PRIMARY\\M' }), 'caliper.needsImage');
+  });
 });
 
 describe('caliper words', () => {
@@ -149,9 +155,10 @@ describe('snapping onto bone', () => {
 describe('the checklist record of a caliper', () => {
   const empty: ChecklistState = { kind: 'pns', answers: {}, notes: {} };
   const slice = { seriesId: 's', slice: 41, shown: '42/120', plane: 'coronal', mode: 'mpr' };
-  const note = (annotationId: string, result: CaliperResult, kind: CaliperNote['kind'] = 'keros'): SliceNote & { caliper: CaliperNote } =>
-    ({ ...slice, caliper: { annotationId, kind, points: [], result, ...('answer' in result && result.answer ? { given: result.answer } : {}) } });
-  const keros = (depth: number) => caliperResult(coronal('right'), [[-2, 0, 10], [-5, 0, 10], [-5, 0, 10 + depth]], 1);
+  const note = (annotationId: string, result: CaliperResult, kind: CaliperNote['kind'] = 'keros', points: Vec3[] = []): SliceNote & { caliper: CaliperNote } =>
+    ({ ...slice, caliper: caliperNote(annotationId, coronal(result.side, kind), points, result) });
+  const kerosPoints = (depth: number): Vec3[] => [[-2, 0, 10], [-5, 0, 10], [-5, 0, 10 + depth]];
+  const keros = (depth: number) => caliperResult(coronal('right'), kerosPoints(depth), 1);
 
   it('sets the answer, follows edits of the same drawing, and keeps an answer the reader picked since', () => {
     let state = recordCaliper(empty, 'keros', 'right', note('a', keros(6)));
@@ -180,6 +187,24 @@ describe('the checklist record of a caliper', () => {
     state = { ...state, answers: { ...state.answers, 'ethmoid-artery': { left: 'no' } } };
     state = recordCaliper(state, 'ethmoid-artery', 'left', note('z', artery(1), 'aea'));
     assert.equal(state.answers['ethmoid-artery']?.left, 'no');
+  });
+
+  it('measures a record whose drawing was deleted again at a new scale, and leaves the records of drawings to them', () => {
+    const leftPoints: Vec3[] = [[2, 0, 10], [5, 0, 10], [5, 0, 16]];
+    let state = recordCaliper(empty, 'keros', 'right', note('deleted', keros(3.2), 'keros', kerosPoints(3.2)));
+    state = recordCaliper(state, 'keros', 'left', note('drawn', caliperResult(coronal('left'), leftPoints, 1), 'keros', leftPoints));
+    const doubled = remeasureRecords(state, 's', new Set(['drawn']), 2), right = doubled.notes.keros?.right?.caliper?.result;
+    assert.ok(right && 'reading' in right && right.reading.kind === 'keros');
+    close(right.reading.depth, 6.4);
+    assert.equal(doubled.answers.keros?.right, '2', 'The answer follows the new depth.');
+    assert.equal(doubled.notes.keros?.left, state.notes.keros?.left);
+    assert.equal(remeasureRecords(state, 'another series', new Set(), 2), state);
+    // An answer the reader picked stays; without a scale the record says why instead of keeping the old value.
+    const picked = remeasureRecords({ ...state, answers: { keros: { ...state.answers.keros, right: '3' } } }, 's', new Set(['drawn']), 2);
+    assert.equal(picked.answers.keros?.right, '3');
+    const unscaled = remeasureRecords(state, 's', new Set(['drawn']), null);
+    assert.deepEqual(unscaled.notes.keros?.right?.caliper?.result, { unavailable: 'caliper.noSpacing', side: 'right' });
+    assert.equal(unscaled.answers.keros?.right, undefined);
   });
 
   it('gives each side its measurement and slice in the report, and both fossae their difference', () => {
@@ -245,7 +270,7 @@ describe('the theatre card', () => {
     const slice = { seriesId: 's', slice: 40, shown: '41/141', plane: 'coronal', mode: 'mpr' };
     const keros = (side: 'right' | 'left', depth: number): SliceNote & { caliper: CaliperNote } => {
       const result = caliperResult(coronal(side), [[side === 'right' ? -2 : 2, 0, 10], [side === 'right' ? -5 : 5, 0, 10], [side === 'right' ? -5 : 5, 0, 10 + depth]], 1);
-      return { ...slice, caliper: { annotationId: side, kind: 'keros', points: [], result, given: 'answer' in result ? result.answer : undefined } };
+      return { ...slice, caliper: caliperNote(side, coronal(side), [], result) };
     };
     state = recordCaliper(recordCaliper(state, 'keros', 'right', keros('right', 3.5)), 'keros', 'left', keros('left', 6));
     const groups = checklistRows('pns', state.answers, state.notes, 'en');
