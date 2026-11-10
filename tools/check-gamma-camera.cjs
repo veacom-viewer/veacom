@@ -106,10 +106,17 @@ async function main() {
     check('A click on the SPECT MIP sends the linked panes to the hottest voxel there', { location: await location(1) });
 
     // The whole body opens in the active pane; its screen shows the two views side by side, named in the corner,
-    // inverted grey, not linked.
+    // inverted grey, not linked. The series list is long enough to scroll here, so it is scrolled to its end first:
+    // the study opened second leads the list, and the list comes to its top with it.
+    const seriesList = page.locator('.series-browser-scroll');
+    await seriesList.evaluate(list => { list.scrollTop = list.scrollHeight; });
+    assert.ok(await seriesList.evaluate(list => list.scrollTop) > 0, 'The series list scrolls with the SPECT/CT in it.');
     await privileged.importPaths(desktop, page, [wholeBody]);
     await page.waitForFunction(() => (window.__VEACOM_TEST__.state().series.find(item => item.id === document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.seriesId)?.description ?? '').endsWith('whole body'), undefined, { timeout: 120_000 });
     await settled();
+    assert.equal(await page.locator('.series-study').first().locator(`[data-testid="series-${named(await state(), /whole body$/).id}"]`).count(), 1, 'The study just opened is the first in the series list.');
+    assert.equal(await seriesList.evaluate(list => list.scrollTop), 0, 'The series list shows its top, where the new study is.');
+    check('A study opened second leads the series list, and the list comes to its top');
     assert.equal((await state()).layout.join('x'), '2x2', 'Opening the whole body leaves the screen as it is.');
     await openScreen();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '1x2', undefined, { timeout: 120_000 });

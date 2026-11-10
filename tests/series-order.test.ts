@@ -36,7 +36,7 @@ describe('where an import\'s series go in the series list', () => {
     const found = withFound(old, [series('passing')], listedBefore);
     assert.deepEqual(ids(withImported(found, [series('new-1')], listedBefore, ['passing'])), ['new-1', 'old-1', 'old-2']);
   });
-  it('opens the first study into an empty list as before', () => {
+  it('lists a study opened into an empty list in the import\'s own order', () => {
     assert.deepEqual(ids(withImported([], [series('a'), series('b')], new Set(), [])), ['a', 'b']);
   });
 });
