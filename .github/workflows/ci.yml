@@ -320,6 +320,12 @@ jobs:
         run: |
           node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-study"
           node tools/check-arrangements.cjs "$RUNNER_TEMP/petct-study" "$EVIDENCE/arrangements"
+      - name: Comparison with an earlier study, synthetic MR, CT and PET/CT
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-comparison-studies.mjs "$RUNNER_TEMP/comparison-studies"
+          node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/comparison-followup"
+          node tools/check-comparison.cjs "$RUNNER_TEMP/comparison-studies" "$RUNNER_TEMP/comparison-followup" "$EVIDENCE/comparison"
       - name: Gamma camera studies, synthetic SPECT/CT and whole body
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: |

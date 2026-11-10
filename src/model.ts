@@ -94,6 +94,8 @@ export interface Series {
   /** For the image corners, as stored: Patient's Birth Date, Patient's Age (045Y), Study Time and so on. */
   patientBirthDate?: string; patientAgeText?: string; studyTime?: string; studyDescription?: string;
   institutionName?: string; accessionNumber?: string; magneticFieldStrength?: number; sliceThickness?: number;
+  /** Body Part Examined (0018,0015), as stored. */
+  bodyPartExamined?: string;
   /** A PET's tracer, injection and patient, for its acquisition panel (imaging/petAcquisition.ts). */
   petAcquisition?: PetAcquisition;
   /** Blood glucose in mmol/l the reader typed for this PET's study (imaging/glucose.ts): a display setting, as

@@ -7,6 +7,7 @@ import type { SequenceRole } from '../domain/clinical';
 import { indexToWorld } from '../imaging/geometry';
 import { samePatient, shareFrame } from '../imaging/linking';
 import { sequenceGuess } from '../ui/seriesNames';
+import { counterpart } from './counterpart';
 
 /** Ranking keys, compared in order: not one gate of a gated SPECT (the summed reconstruction holds all the counts),
  * attenuation-corrected (by description, not NAC), the anchor's slice grid, the most head-to-feet range shared with the
@@ -27,8 +28,11 @@ export interface RoleSpec {
   views?: readonly string[];
   /** The anchor: another role, or `picked`, the series the reader picked or shows in the active pane. */
   of?: string;
-  /** `same` study as the anchor (the default when there is one), or `prior`: the same patient's most recent earlier study. */
-  study?: 'same' | 'prior';
+  /** `same` study as the anchor (the default when there is one); `prior`: the same patient's most recent earlier
+   * study; `later`: the same patient's next later study. */
+  study?: 'same' | 'prior' | 'later';
+  /** The anchor's counterpart: a series of the anchor's own kind, the best such first (src/arrangements/counterpart.ts). */
+  alike?: true;
   /** `same`: drawn together with the anchor (one frame of reference, a reconstructable volume, a known orientation). */
   frame?: 'same';
   prefer?: readonly RoleRank[];
@@ -55,9 +59,10 @@ const RANK: Record<RoleRank, (item: Series, anchor: Series | null) => number> = 
   highB: item => item.diffusionBValue ?? 0,
 };
 
-/** An earlier study of the same patient. */
-function priorStudy(anchor: Series, item: Series): boolean {
-  if (item.studyUid === anchor.studyUid || !samePatient(anchor, item) || !/^\d{8}$/.test(item.studyDate) || !/^\d{8}$/.test(anchor.studyDate) || item.studyDate >= anchor.studyDate) return false;
+/** An earlier study of the same patient, or with `later` a later one. */
+function otherStudy(anchor: Series, item: Series, later = false): boolean {
+  if (item.studyUid === anchor.studyUid || !samePatient(anchor, item) || !/^\d{8}$/.test(item.studyDate) || !/^\d{8}$/.test(anchor.studyDate)
+    || (later ? item.studyDate <= anchor.studyDate : item.studyDate >= anchor.studyDate)) return false;
   if (anchor.modality !== 'PT' || item.modality !== 'PT') return true;
   const tracer = comparisonTracer(anchor.petAcquisition);
   return !!anchor.patientId.trim() && !!item.patientId.trim() && !!tracer && tracer === comparisonTracer(item.petAcquisition);
@@ -78,12 +83,16 @@ export function ofKind(spec: RoleSpec, item: Series): boolean {
 /** The series that best fills `spec` among `candidates`, beside `anchor`; ties go to the one listed first. `fits` can
  * narrow the candidates further. */
 export function findRole(spec: RoleSpec, candidates: readonly Series[], anchor: Series | null, fits?: (item: Series) => boolean): Series | null {
+  const elsewhere = spec.study === 'prior' || spec.study === 'later';
   const found = candidates.filter(item => ofKind(spec, item) && (!anchor || item.id !== anchor.id)
-    && (!anchor || (spec.study === 'prior' ? priorStudy(anchor, item) : studyKey(item) === studyKey(anchor)))
-    && (!anchor || spec.frame !== 'same' || shareFrame(anchor, item)) && (!fits || fits(item)));
+    && (!anchor || (elsewhere ? otherStudy(anchor, item, spec.study === 'later') : studyKey(item) === studyKey(anchor)))
+    && (!anchor || spec.frame !== 'same' || shareFrame(anchor, item)) && (!anchor || !spec.alike || counterpart(anchor, item) !== null)
+    && (!fits || fits(item)));
   if (!found.length) return null;
   const ranks = spec.prefer ?? [];
-  const score = (item: Series) => [...(spec.study === 'prior' ? [Number(item.studyDate)] : []), ...ranks.map(rank => RANK[rank](item, anchor))];
+  // Of other studies, the nearest in time first: the latest earlier one, or the earliest later one.
+  const score = (item: Series) => [...(elsewhere ? [spec.study === 'later' ? -Number(item.studyDate) : Number(item.studyDate)] : []),
+    ...(anchor && spec.alike ? counterpart(anchor, item) ?? [] : []), ...ranks.map(rank => RANK[rank](item, anchor))];
   return found.reduce((best, item) => {
     const a = score(item), b = score(best);
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i] ? item : best;

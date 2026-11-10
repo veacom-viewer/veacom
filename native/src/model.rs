@@ -52,6 +52,10 @@ pub struct AcquisitionMetadata {
     pub study_time: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub study_description: String,
+    /// Body Part Examined (0018,0015), as stored: a series of another part of the body is never put beside this one
+    /// as its counterpart in another study.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub body_part_examined: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub institution_name: String,
     /// The hospital's number for the study (Accession Number): the protocol number readers look for.

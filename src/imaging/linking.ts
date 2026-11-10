@@ -128,6 +128,16 @@ export function followTarget(source: Pane, target: Pane, anchor: { source: numbe
   return clampSlice(target, anchor.target + steps * sameWay(source, target));
 }
 
+/** For two stacks of one part of the body with no frame of reference in common (two studies): the target's slice as
+ * far through its stack as the source is through its own, going the same way in the patient. A first guess for the
+ * reader to correct, never a measured correspondence. */
+export function levelSlice(source: Pane, target: Pane): number {
+  const from = sliceCount(source.series, source.view), to = sliceCount(target.series, target.view);
+  if (from < 2 || to < 2) return clampSlice(target, Math.round(target.view.slice));
+  const through = Math.max(0, Math.min(1, Math.round(source.view.slice) / (from - 1)));
+  return clampSlice(target, Math.round((sameWay(source, target) > 0 ? through : 1 - through) * (to - 1)));
+}
+
 export const pairKey = (a: string, b: string) => [a, b].sort().join('|');
 
 /** The anchor of two panes, while each still shows the series it was linked with. */

@@ -767,6 +767,8 @@ export function Viewport(props: ViewportProps) {
       event.preventDefault(); event.stopPropagation();
       const step = 40, [dx, dy] = { ArrowUp: [0, -step], ArrowDown: [0, step], ArrowLeft: [-step, 0], ArrowRight: [step, 0] }[event.key as 'ArrowUp'];
       changeView({ pan: [liveView.current.pan[0] + dx, liveView.current.pan[1] + dy] });
+    } else if ((event.ctrlKey || event.metaKey) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      // Ctrl + ← / → steps through the series: the workspace's key, not this pane's.
     } else {
       const delta = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1, PageUp: -10, PageDown: 10 }[event.key];
       if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); usage.action('key-slice', 'key', { burst: true }); changeView({ slice: stepSlice(props.volume.series, liveView.current, delta * pageDirection) }); }

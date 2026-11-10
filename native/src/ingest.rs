@@ -189,6 +189,7 @@ fn acquisition_metadata(obj: &InMemDicomObject, frame: usize) -> AcquisitionMeta
         patient_age_text: text(obj, Tag(0x0010, 0x1010)),
         study_time: text(obj, Tag(0x0008, 0x0030)),
         study_description: text(obj, Tag(0x0008, 0x1030)),
+        body_part_examined: text(obj, Tag(0x0018, 0x0015)),
         institution_name: text(obj, Tag(0x0008, 0x0080)),
         accession_number: text(obj, Tag(0x0008, 0x0050)),
         magnetic_field_strength: number(obj, Tag(0x0018, 0x0087)).filter(|v| *v > 0.),
@@ -4357,6 +4358,7 @@ mod tests {
         obj.put_str(Tag(0x0010, 0x1010), VR::AS, "045Y");
         obj.put_str(Tag(0x0008, 0x0030), VR::TM, "101530");
         obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Beyin MR");
+        obj.put_str(Tag(0x0018, 0x0015), VR::CS, "BRAIN");
         obj.put_str(Tag(0x0008, 0x0080), VR::LO, "Deneme Hastanesi");
         obj.put_str(Tag(0x0008, 0x0050), VR::SH, "LHK000000001");
         obj.put(ds(Tag(0x0018, 0x0087), "1.5"));
@@ -4366,6 +4368,7 @@ mod tests {
         assert_eq!(shared.patient_age_text, "045Y");
         assert_eq!(shared.study_time, "101530");
         assert_eq!(shared.study_description, "Beyin MR");
+        assert_eq!(shared.body_part_examined, "BRAIN");
         assert_eq!(shared.institution_name, "Deneme Hastanesi");
         assert_eq!(shared.accession_number, "LHK000000001");
         assert_eq!(shared.magnetic_field_strength, Some(1.5));

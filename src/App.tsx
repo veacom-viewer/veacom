@@ -54,15 +54,17 @@ import { usage, type Surface, type UsageSnapshot } from './usage/tracker';
 import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
-import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
+import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
-import { activeStudyContext, deriveKept, findRole, KEPT_STORAGE, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
+import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
+import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
+import { bestCounterpart } from './arrangements/counterpart';
 import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
-import { seriesName } from './ui/seriesNames';
+import { sequenceGuess, seriesName, shownGuess, sortStudySeries } from './ui/seriesNames';
+import { dicomDate } from './ui/overlayCorners';
 // Tokens first: component rules in styles.css must win over the shared ones at equal specificity.
 import './theme.css';
 import './styles.css';
@@ -213,6 +215,28 @@ function defaultView(series: Series): ViewState {
   return { ...DEFAULT_VIEW, pan: [0, 0], slice, windowCenter: frame?.windowCenter ?? series.windowCenter,
     windowWidth: Math.max(1, frame?.windowWidth ?? series.windowWidth), ...petLook(series) };
 }
+/** How a series opens beside a pane of another study in the comparison screen: in the same kind of view (where that
+ * pane shows a reconstructed plane, with its tilt and slab, or a turning MIP, so does this one), level with it (by
+ * position where the two share a frame of reference, else as far through its own stack), at its zoom and pan, and,
+ * for CT beside CT, in its window: Hounsfield units are one scale, an MR's values are not. */
+function besideView(item: Series, base: ViewState, beside: Pane): ViewState {
+  const theirs = beside.view, reconstructed = !usesSourceFrames(beside.series, theirs) && !usesSourceFrames(item, { mode: 'mpr' });
+  const like: ViewState = reconstructed ? { ...base, mode: 'mpr', plane: theirs.plane, oblique: theirs.oblique ? [...theirs.oblique] : undefined, slab: theirs.slab, projection: theirs.projection } : base;
+  const target: Pane = { series: item, view: like };
+  // A MIP's slice is its turn, the same for both; a plane's is its place in the patient.
+  const slice = like.projection ? theirs.slice
+    : shareFrame(item, beside.series) ? sliceAtWorld(item, like, getPlaneFrame(beside.series, theirs).center)
+      : facesSame(target, beside) ? levelSlice(beside, target) : reconstructed ? Math.floor(sliceCount(item, like) / 2) : base.slice;
+  const oneScale = item.modality === 'CT' && beside.series.modality === 'CT';
+  return { ...like, slice, zoom: theirs.zoom, pan: [...theirs.pan],
+    ...(oneScale ? { windowCenter: theirs.windowCenter, windowWidth: theirs.windowWidth, windowMode: 'manual' as const } : {}) };
+}
+/** `view` of `item` at the place the pane `from` shows, where the two lie in one frame of reference (two series of
+ * one study): a series that takes another's pane stays where the reader was. Otherwise `view` as it is. */
+function atPlaceOf(item: Series, view: ViewState, from: Pane | undefined): ViewState {
+  if (!from || view.projection || !shareFrame(item, from.series) || isProjection(from.series, from.view)) return view;
+  return { ...view, slice: sliceAtWorld(item, view, getPlaneFrame(from.series, from.view).center) };
+}
 /** The arrangements VEAcom applies, with the reader's kept ones in place of its own. */
 const PET_LAYOUTS = [
   [PET_CT, 'layout-pet-fused', 'arrangement.petCt.fused'],
@@ -261,9 +285,12 @@ const PALETTE_SWATCHES = { gray: 'linear-gradient(90deg, #000, #fff)', hot: 'lin
 const PANE_DRAG = 'application/x-veacom-pane';
 
 /** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
- * rearranged. A sticky one stays until the reader's next action instead of a few seconds. */
+ * rearranged. A sticky one stays until the reader's next action instead of a few seconds. It is about the series the
+ * pane shows (`seriesId`, empty for a pane that shows none) and goes when the pane shows another. */
 type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
-  onUndo?: () => void; undoAction?: 'pair' | 'arrangement'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
+  onUndo?: () => void; undoAction?: 'pair' | 'arrangement'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain';
+  /** The comparison's offer to open a series' counterpart in this pane. */
+  onOpen?: () => void };
 
 function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references,
   onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast }: {
@@ -333,7 +360,8 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
         {toast.onKeep && (toast.keepAction === 'keep-plain' ? <button type="button" data-action="arrangement-keep-plain" onClick={toast.onKeep}>{t('arrangement.keep')}</button>
-          : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}</div>}
+          : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}
+        {toast.onOpen && <button type="button" data-action="compare-open" onClick={toast.onOpen}>{t('compare.open')}</button>}</div>}
       {loadError && <div className="viewport-error" role="status" data-export-exclude>{volume ? t('viewport.previewOnly') : ''}{loadError}</div>}
     </div>
     {volume && <footer className="viewport-footer" data-export-exclude>
@@ -1158,6 +1186,13 @@ export default function App() {
       const arrangement = arranged.current;
       const sharedPet = arrangement && (sharedWindow || sharedLook) && arrangement.slotIds.includes(slotId) && sharesSuvScale(arrangement.plan)
         && arrangement.plan.panes.some(pane => pane.series.id === selected.seriesId) ? arrangement : null;
+      // The comparison screen's panes zoom and pan together while linked, each from where it is; CT beside CT also
+      // takes one window (Hounsfield units are one scale).
+      const compared = arrangement?.plan.arrangement.view === 'shared' && settingsRef.current.linked && arrangement.slotIds.includes(slotId)
+        && current.length === arrangement.slotIds.length && current.every(slot => arrangement.slotIds.includes(slot.id)) ? arrangement : null;
+      const zoomed = selected.view.zoom > 0 ? nextView.zoom / selected.view.zoom : 1;
+      const shifted: [number, number] = [nextView.pan[0] - selected.view.pan[0], nextView.pan[1] - selected.view.pan[1]];
+      const framed = zoomed !== 1 || shifted[0] !== 0 || shifted[1] !== 0;
       return current.map(original => {
         if (original.id === slotId) return { ...original, view: nextView };
         if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
@@ -1170,6 +1205,12 @@ export default function App() {
           const window = sharedWindow ? sameRangeWindow(volume.series, nextView, other.series, 'SUV') : null;
           slot = { ...slot, view: { ...slot.view, ...(window ? { ...window, windowMode: 'manual' as const } : {}),
             ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
+        }
+        if (compared && slot.seriesId && (framed || windowed)) {
+          const oneScale = windowed && volume?.series.modality === 'CT' && other?.series.modality === 'CT';
+          slot = { ...slot, view: { ...slot.view,
+            ...(framed ? { zoom: slot.view.zoom * zoomed, pan: [slot.view.pan[0] + shifted[0], slot.view.pan[1] + shifted[1]] as [number, number] } : {}),
+            ...(oneScale ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: 'manual' as const } : {}) } };
         }
         if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
         const target: Pane = { series: other.series, view: slot.view };
@@ -1304,11 +1345,93 @@ export default function App() {
     activateSlot(slotId);
     if (!wasLinked) setSettings(current => ({ ...current, linked: true }));
   };
+  // The comparison screen (COMPARISONS in src/arrangements/builtin.ts): for one of its panes the other one, while its
+  // panes are still the ones on screen.
+  const comparedWith = (slotId: string) => {
+    const current = arranged.current;
+    return current?.plan.arrangement.view === 'shared' && stillArranged() ? slotsRef.current.find(slot => slot.id !== slotId) : undefined;
+  };
+  const seriesOf = (slot: Slot | undefined) => slot?.seriesId ? seriesRef.current.find(value => value.id === slot.seriesId) : undefined;
+  /** Links two comparison panes where they are, as the link button links panes by hand. */
+  const linkCompared = (a: { id: string; item: Series; view: ViewState }, b: { id: string; item: Series; view: ViewState }) => {
+    anchorsRef.current.set(pairKey(a.id, b.id), { [a.id]: { seriesId: a.item.id, slice: Math.round(a.view.slice) }, [b.id]: { seriesId: b.item.id, slice: Math.round(b.view.slice) } });
+  };
+  /** Puts `item` in a comparison pane beside what the other pane shows: at the place the pane was at where its own
+   * series lay in `item`'s frame of reference, else level with the other pane; at that pane's zoom and pan, and linked
+   * to it there. The other pane is not touched. */
+  const placeBeside = (slotId: string, item: Series, other: Slot) => {
+    const theirs = seriesOf(other), slot = slotsRef.current.find(value => value.id === slotId), mine = seriesOf(slot);
+    const view = atPlaceOf(item, theirs ? besideView(item, defaultView(item), { series: theirs, view: other.view }) : defaultView(item),
+      slot && mine ? { series: mine, view: slot.view } : undefined);
+    setSlots(current => current.map(slot => slot.id === slotId ? { id: slot.id, seriesId: item.id, view } : slot));
+    loadPaneImage(item);
+    if (theirs) linkCompared({ id: slotId, item, view }, { id: other.id, item: theirs, view: other.view });
+  };
+  /** In the comparison screen a series put in one pane changes that pane only. The other pane then offers, for a few
+   * seconds, that series' counterpart in its own study; one click opens it there. */
+  const offerCounterpart = (slotId: string, item: Series) => {
+    const other = comparedWith(slotId);
+    if (!other) return;
+    // From the study the other pane shows; where that pane is empty or shows this series' own study, from the nearest
+    // earlier study that has a counterpart, else the nearest later one (the roles of the comparison itself).
+    const shownThere = seriesOf(other), elsewhere = shownThere && studyKey(shownThere) !== studyKey(item);
+    if (elsewhere && (!samePatient(item, shownThere) || shownThere.studyDate === item.studyDate)) return;
+    const partner = elsewhere ? bestCounterpart(item, seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere)))
+      : findRole(COMPARE_WITH_PRIOR.roles.prior, comparableSeries(item, seriesRef.current), item) ?? findRole(COMPARE_WITH_LATER.roles.later, comparableSeries(item, seriesRef.current), item);
+    if (!partner || partner.id === other.seriesId) return;
+    // Named as its card in the series list names it: by its own name, or its likely sequence where the name is a site code.
+    setPaneToast({ slotId: other.id, seriesId: other.seriesId ?? '',
+      text: t(partner.studyDate < item.studyDate ? 'compare.offerPrior' : 'compare.offerLater', { series: shownGuess(partner, sequenceGuess(partner)) || seriesName(partner) }),
+      onOpen: () => {
+        setPaneToast(null);
+        // The offer stood for a few seconds: the series may have been taken off the list since, and the panes changed.
+        const beside = slotsRef.current.find(slot => slot.id === slotId);
+        if (beside && seriesRef.current.some(value => value.id === partner.id)) placeBeside(other.id, partner, beside);
+      } });
+  };
+  /** A series picked or dropped into a pane. In the comparison screen it opens beside the other pane's series, which
+   * stays as it is, and that pane offers the counterpart; anywhere else it opens as it does on its own. */
+  const putSeries = (slotId: string, item: Series) => {
+    const other = comparedWith(slotId);
+    if (!other) { assignSeries(slotId, item); offerPair(slotId, item); return; }
+    placeBeside(slotId, item, other); activateSlot(slotId);
+    offerCounterpart(slotId, item);
+  };
+  /** Ctrl+→ / Ctrl+←: the next or previous series of the active pane's study, in list order. In the comparison screen
+   * both panes step together, to the next series that has a counterpart in the other pane's study. */
+  const stepSeries = (direction: 1 | -1) => {
+    const slot = slotsRef.current.find(value => value.id === activeIdRef.current), shownHere = seriesOf(slot);
+    if (!slot || !shownHere || beforeMpr.current) return;
+    const study = sortStudySeries(seriesRef.current.filter(value => studyKey(value) === studyKey(shownHere) && !value.segmentation));
+    const from = study.findIndex(value => value.id === shownHere.id);
+    const other = comparedWith(slot.id), shownThere = seriesOf(other);
+    if (!other || !shownThere || studyKey(shownThere) === studyKey(shownHere) || !samePatient(shownHere, shownThere)) {
+      const next = from >= 0 && from + direction >= 0 ? study.at(from + direction) : undefined;
+      if (next) selectSeries(next);
+      return;
+    }
+    const theirs = seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere));
+    for (let index = from + direction; from >= 0 && index >= 0 && index < study.length; index += direction) {
+      const next = study[index], partner = bestCounterpart(next, theirs);
+      if (!partner) continue;
+      // Each pane stays where it was when its next series lies in the frame of reference of the one it showed (the
+      // series of one study); otherwise this pane's opens level with the other pane, and its counterpart level with it.
+      const here: Pane = { series: shownHere, view: slot.view }, there: Pane = { series: shownThere, view: other.view };
+      const view = atPlaceOf(next, besideView(next, defaultView(next), there), here);
+      const partnerView = atPlaceOf(partner, besideView(partner, defaultView(partner), { series: next, view }), there);
+      setSlots(current => current.map(value => value.id === slot.id ? { id: value.id, seriesId: next.id, view }
+        : value.id === other.id ? { id: value.id, seriesId: partner.id, view: partnerView } : value));
+      loadPaneImage(next); loadPaneImage(partner);
+      linkCompared({ id: slot.id, item: next, view }, { id: other.id, item: partner, view: partnerView });
+      setPaneToast(null);
+      return;
+    }
+    say('compare.noMorePairs', 'info', undefined, true);
+  };
   const selectSeries = (item: Series) => {
     if (item.segmentation) { toggleSegmentation(item, activeIdRef.current); return; }
     if (beforeMpr.current) endMpr.current();
-    assignSeries(activeIdRef.current, item);
-    offerPair(activeIdRef.current, item);
+    putSeries(activeIdRef.current, item);
   };
   const selectFromMenu = (item: Series) => { selectSeries(item); setMenu(null); };
   /** Several series picked together: a layout with a pane for each, the first picked first (VEAcom 1.x). */
@@ -1331,7 +1454,7 @@ export default function App() {
     if (seriesIds.length > 1) { openSideBySide(seriesIds); return; }
     const item = seriesRef.current.find(value => value.id === seriesIds[0]); if (!item) return;
     if (!item.segmentation && beforeMpr.current) { endMpr.current(); assignSeries(activeIdRef.current, item); return; }
-    if (item.segmentation) toggleSegmentation(item, slotId); else { assignSeries(slotId, item); offerPair(slotId, item); }
+    if (item.segmentation) toggleSegmentation(item, slotId); else putSeries(slotId, item);
   };
   /** Series taken off the list (VEAcom 1.x's list menu): panes showing them are emptied, their volumes,
    * drawings and overlays go, and the engine frees them. The files themselves are not touched. */
@@ -1494,29 +1617,49 @@ export default function App() {
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
     const separateScales = plan.arrangement.scale === 'shared' && !sharesSuvScale(plan);
+    // The listed panes start `offset` places into the grid (an arrangement's `lead`).
+    const offset = plan.arrangement.lead ?? 0, paneAt = (index: number) => index >= offset ? plan.panes.at(index - offset) : undefined;
+    const showing = current.find(slot => slot.id === activeIdRef.current);
+    const showingFused = Boolean(showing && shownPanes()[current.indexOf(showing)]?.fusedWith);
     let panes: Slot[] = Array.from({ length: rows * columns }, (_, index) => {
-      const pane = plan.panes.at(index), id = current[index]?.id ?? crypto.randomUUID();
+      const pane = paneAt(index), id = current[index]?.id ?? crypto.randomUUID();
       if (!pane) return { id, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } };
+      // A pane kept as shown takes the view the reader has of its series in the active pane, and the fusion it shows.
+      if (pane.spec.asShown && showing?.seriesId === pane.series.id) return { id, seriesId: pane.series.id, view: { ...showing.view, pan: [...showing.view.pan] }, unfused: !showingFused };
       const spec = separateScales && !plan.arrangement.kept ? { ...pane.spec, display: { ...pane.spec.display, window: undefined } } : pane.spec;
       return { id, seriesId: pane.series.id, view: paneView(pane.series, spec, defaultView(pane.series)), unfused: spec.show !== 'fused' };
     });
     // The panes in one frame of reference start where the first one opens, so they page together from there.
     const lead = plan.panes.at(0);
     if (lead) {
-      const at = getPlaneFrame(lead.series, panes[0].view).center;
+      const at = getPlaneFrame(lead.series, panes[offset].view).center;
       panes = panes.map((slot, index) => {
-        const pane = plan.panes.at(index);
-        return index && pane && !pane.spec.view && shareFrame(lead.series, pane.series) && !isProjection(pane.series, slot.view) ? { ...slot, view: { ...slot.view, slice: sliceAtWorld(pane.series, slot.view, at) } } : slot;
+        const pane = paneAt(index);
+        return index > offset && pane && !pane.spec.view && shareFrame(lead.series, pane.series) && !isProjection(pane.series, slot.view) ? { ...slot, view: { ...slot.view, slice: sliceAtWorld(pane.series, slot.view, at) } } : slot;
       });
     }
-    setLayout([rows, columns]); setSlots(panes); activateSlot(panes[0].id);
+    // Two studies share no frame of reference (`link: 'level'`): the other panes open level with the pane kept as
+    // shown, and are linked to it there by hand, as the link button would link them.
+    const mine = panes.findIndex((slot, index) => Boolean(paneAt(index)?.spec.asShown && slot.seriesId));
+    if (plan.arrangement.link === 'level' && mine >= 0) {
+      const kept = panes[mine], beside: Pane = { series: plan.panes[mine - offset].series, view: kept.view };
+      panes = panes.map((slot, index) => {
+        const pane = paneAt(index);
+        return index === mine || !pane ? slot : { ...slot, view: besideView(pane.series, slot.view, beside) };
+      });
+      for (const slot of panes) {
+        if (slot.id !== kept.id && slot.seriesId) anchorsRef.current.set(pairKey(slot.id, kept.id), {
+          [slot.id]: { seriesId: slot.seriesId, slice: Math.round(slot.view.slice) }, [kept.id]: { seriesId: beside.series.id, slice: Math.round(kept.view.slice) } });
+      }
+    }
+    setLayout([rows, columns]); setSlots(panes); activateSlot((mine >= 0 ? panes[mine] : panes[0]).id);
     for (const item of new Set(plan.panes.map(pane => pane.series))) loadPaneImage(item);
     // Linking as the arrangement says (Undo puts it back): `none` lets each pane page on its own.
-    const linked = plan.arrangement.link === 'crosshair' ? true : plan.arrangement.link === 'none' ? false : settingsRef.current.linked;
+    const linked = plan.arrangement.link === 'crosshair' || plan.arrangement.link === 'level' ? true : plan.arrangement.link === 'none' ? false : settingsRef.current.linked;
     if (linked !== settingsRef.current.linked) setSettings(state => ({ ...state, linked }));
     const fusedAt = plan.panes.findIndex(pane => pane.spec.show === 'fused'), over = fusedAt >= 0 ? plan.roles[plan.panes[fusedAt].spec.over ?? ''] : undefined;
-    if (over) { setShowFusion(true); fusePet(over, plan.panes[fusedAt].series, panes[fusedAt].id, true); }
-    else stopFusion();
+    if (over) { setShowFusion(true); fusePet(over, plan.panes[fusedAt].series, panes[fusedAt + offset].id, true); }
+    else if (!(mine >= 0 && panes[mine].unfused === false)) stopFusion();
     arranged.current = { plan, slotIds: panes.map(slot => slot.id) };
     const name = arrangementName(plan), notice = plan.arrangement.notice;
     const undo = () => {
@@ -1542,8 +1685,12 @@ export default function App() {
         setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.keptPlain', { name }) });
       } });
     };
-    setPaneToast({ slotId: panes[0].id, seriesId: plan.panes[0].series.id, text: separateScales ? t('arrangement.petFollowUp.separate')
-      : plan.arrangement.kept ? t('arrangement.yours', { name }) : notice ? t(notice.key, notice.params) : name,
+    // The note is in the first pane that shows a series. A notice about another study can give its date ({date}).
+    const noted = panes.find(slot => slot.seriesId) ?? panes[0];
+    const elsewhere = ['prior', 'later', 'other'].flatMap(role => Object.hasOwn(plan.roles, role) ? [plan.roles[role]] : []).at(0);
+    setPaneToast({ slotId: noted.id, seriesId: noted.seriesId ?? '', text: separateScales ? t('arrangement.petFollowUp.separate')
+      : plan.arrangement.kept ? t('arrangement.yours', { name })
+        : notice ? t(notice.key, { ...notice.params, ...(elsewhere ? { date: dicomDate(elsewhere.studyDate) } : {}) }) : name,
       sticky: true, undoAction: 'arrangement', onUndo: undo });
   };
   const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study) => {
@@ -1812,6 +1959,11 @@ export default function App() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); key('open-folder'); void openImport(); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e') { event.preventDefault(); if (activeSeries) { if (event.shiftKey) { key('export-media'); openExport('media'); } else { key('tool-export'); openExport('dicom'); } } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); key(event.shiftKey ? 'redo' : 'undo'); undo(event.shiftKey); return; }
+    // ⌘→ / Ctrl+→ and ⌘← / Ctrl+←: the next and previous series (in the comparison screen, the next pair).
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+      event.preventDefault(); const forward = event.key === 'ArrowRight';
+      key(forward ? 'series-next' : 'series-previous'); stepSeries(forward ? 1 : -1); return;
+    }
     // Letters, 0, m, ? and + / − only without ⌘, Ctrl or Alt (Alt + letter types characters and opens menus).
     if (event.key === 'F1') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
     // Space opens the quick menu over the images; on a button, a link or a menu it presses that, as it should.
@@ -1873,7 +2025,7 @@ export default function App() {
     fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
     sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
     sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
-    series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
+    series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, studyDate: item.studyDate, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
       ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
       // For the gated SPECT check: each gate's phase and where its slices lie.
       ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
@@ -1881,7 +2033,7 @@ export default function App() {
     // For the arrangement checks: the panes on screen and what each one shows.
     layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
       projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
-      windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth })),
+      windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan })),
     graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
   }));
   const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(activeSlot.id, patch));
@@ -2076,6 +2228,9 @@ export default function App() {
   const activeStudy = activeSeries ? activeStudyContext(activeSeries, series) : null;
   const nmScreen = activeStudy ? match(withKept(kept, NUCLEAR_MEDICINE_SCREENS), 'screen', activeStudy) : null;
   const openNmScreen = () => { if (nmScreen) applyArrangement(nmScreen); };
+  // The comparison screen for the series in the active pane, offered in Layout when the same patient's earlier (or
+  // later) study is loaded: with the series' counterpart there, or an empty side where it has none.
+  const compareScreen = activeSeries && !isMpr ? matchComparison(activeSeries, series) : null;
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
@@ -2138,6 +2293,8 @@ export default function App() {
           return <button className="secondary-button compact" type="button" data-action={action} key={action}
             onClick={() => applyArrangement(plan)}>{t(key)}</button>;
         })}
+        {compareScreen && <button className="secondary-button compact" type="button" data-action="layout-compare"
+          onClick={() => applyArrangement(compareScreen)}>{t(Object.hasOwn(compareScreen.roles, 'later') || compareScreen.arrangement.id === 'compare-later-empty' ? 'layout.compareLater' : 'layout.comparePrior')}</button>}
       </Popover>}</div> },
     { id: 'measure', group: 'measure', node: <div className="menu-anchor" data-menu><div className="split">
         <ToolButton icon={measureIcon(lastMeasure, 18, true)} label={t('toolbar.measurement', { tool: toolLabel(lastMeasure) })} shortcut={singleKey(TOOL_KEYS[lastMeasure])} testId="tool-measure" disabled={noStudy} active={MEASURE_TOOLS.includes(tool)} onClick={() => toggleMeasure(MEASURE_TOOLS.includes(tool) ? tool : lastMeasure)} />
@@ -2295,7 +2452,7 @@ export default function App() {
               onActivate={activateSlot} onViewChange={updateView} onAnnotationsChange={changeAnnotations} onCrosshairChange={changeCrosshair}
               onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
               onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlane : undefined} clickPicksPoint={show3d}
-              toast={paneToast?.slotId === slot.id && paneToast.seriesId === slot.seriesId ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes} />;
+              toast={paneToast?.slotId === slot.id && paneToast.seriesId === (slot.seriesId ?? '') ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes} />;
           })}
         </div>}
       </main>
