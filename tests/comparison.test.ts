@@ -81,6 +81,10 @@ describe('the counterpart of a series in another study', () => {
     assert.ok(counterpart(spine, earlier({ ...spine, bodyPartExamined: 'SPINE' })));
     assert.equal(counterpart(spine, earlier({ ...spine, bodyPartExamined: 'TSPINE' })), null);
     assert.equal(counterpart(series({ bodyPartExamined: 'EAR' }), earlier(series({ bodyPartExamined: 'HEART' }))), null, 'a name inside another name is not that part');
+    // A series whose files name several parts (the engine keeps them all) is of each of them, and of no other.
+    const two = series({ bodyPartExamined: 'KNEE\\ANKLE\\FOOT' });
+    assert.ok(counterpart(two, earlier({ ...two, bodyPartExamined: 'ANKLE' })));
+    assert.equal(counterpart(two, earlier({ ...two, bodyPartExamined: 'HIP' })), null);
   });
   it('for other modalities is only a series of the same description; never another modality or a segmentation', () => {
     const chest = series({ id: 'cr', modality: 'CR', description: 'Chest PA', canReconstruct: false });

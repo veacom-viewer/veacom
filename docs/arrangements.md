@@ -91,7 +91,7 @@ Layout offers **Compare with the earlier study** when another study of the same 
 - **The reader's pane stays.** The series in the active pane goes to the right with its slice, window, zoom, pan and fusion.
 - **The counterpart.** The left pane takes that series' counterpart in the most recent earlier study that has one (`src/arrangements/counterpart.ts`). A counterpart is of the same kind, never merely the nearest series:
   - always the same modality, both volumes or neither, and the same acquired plane;
-  - never another part of the body, where both series record Body Part Examined (0018,0015). HEAD and BRAIN, CHEST and CHESTABDPELVIS, and SPINE and LSPINE are one part. A part one of the two does not record decides nothing;
+  - never another part of the body, where both series record Body Part Examined (0018,0015). HEAD and BRAIN, CHEST and CHESTABDPELVIS, and SPINE and LSPINE are one part. A part one of the two does not record decides nothing. The engine keeps every part the files of a series record, so a series whose first file lacks the value still has it;
   - MR: the same likely sequence, so T1 with contrast is not T1. Names do not matter: "AX T2 TSE" pairs with "t2_tse_tra". A series whose sequence cannot be told pairs only with one of the same description;
   - CT: ranked by the same contrast state, the same description, the same stored window (a lung reconstruction with a lung reconstruction), the nearer slice thickness, then the most slices;
   - any other modality: only a series of the same description.

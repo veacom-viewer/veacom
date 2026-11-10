@@ -23,13 +23,17 @@ function sameLook(a: Series, b: Series): boolean {
 /** The parts of the trunk and head one scan can cover together (HEADNECK, CHESTABDPELVIS), as Body Part Examined
  * names them. */
 const REGIONS: readonly [RegExp, string][] = [[/HEAD|BRAIN|SKULL/, 'head'], [/NECK/, 'neck'], [/CHEST|THORAX|LUNG/, 'chest'], [/ABD/, 'abdomen'], [/PELV/, 'pelvis']];
+/** The parts of the body a series names: the engine keeps every part its files record, separated by backslashes. */
+const parts = (item: Series) => (item.bodyPartExamined ?? '').split('\\').map(part => part.toUpperCase().replace(/[^A-Z]/g, '')).filter(Boolean);
 /** Two series of one part of the body, as far as Body Part Examined tells: both record it and name a part in common
  * (CHEST and CHESTABDPELVIS, HEAD and BRAIN, SPINE and LSPINE), or one of them does not record it. */
 function samePart(a: Series, b: Series): boolean {
-  const [x, y] = [a, b].map(item => (item.bodyPartExamined ?? '').toUpperCase().replace(/[^A-Z]/g, ''));
-  if (!x || !y) return true;
-  const [long, short] = x.length >= y.length ? [x, y] : [y, x];
-  return long.startsWith(short) || long.endsWith(short) || REGIONS.some(([pattern]) => pattern.test(x) && pattern.test(y));
+  const mine = parts(a), theirs = parts(b);
+  if (!mine.length || !theirs.length) return true;
+  return mine.some(x => theirs.some(y => {
+    const [long, short] = x.length >= y.length ? [x, y] : [y, x];
+    return long.startsWith(short) || long.endsWith(short) || REGIONS.some(([pattern]) => pattern.test(x) && pattern.test(y));
+  }));
 }
 
 /**

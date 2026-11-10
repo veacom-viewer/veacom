@@ -2725,6 +2725,10 @@ fn catalogue(
                     }
                     merge_calibration(group, &info);
                     merge_pet_acquisition(group, &info);
+                    merge_body_part(
+                        &mut group.acquisition.body_part_examined,
+                        &info.acquisition.body_part_examined,
+                    );
                     frames.push(frame);
                 }
             }
@@ -4001,6 +4005,29 @@ impl PetAcquisition {
     }
 }
 
+/// The most parts of the body one series is let name, and the longest name kept (CS holds 16 characters).
+const MAX_BODY_PARTS: usize = 8;
+const MAX_BODY_PART_TEXT: usize = 64;
+
+/// A file joins a series: a Body Part Examined it records that the series does not name yet is added. A series whose
+/// first file lacks the value still has it, and one whose files name several parts names them all, as a
+/// multi-valued attribute would (`HEAD\NECK`): a comparison then never takes it for a series of no known part.
+fn merge_body_part(series: &mut String, file: &str) {
+    let part = file.trim();
+    if part.is_empty() || part.len() > MAX_BODY_PART_TEXT {
+        return;
+    }
+    let named = || series.split('\\').filter(|name| !name.is_empty());
+    let known = named().any(|name| name.eq_ignore_ascii_case(part));
+    if known || named().count() >= MAX_BODY_PARTS {
+        return;
+    }
+    if !series.is_empty() {
+        series.push('\\');
+    }
+    series.push_str(part);
+}
+
 /// A file joins `group`: the PET details it records that the series' first file lacks are added.
 fn merge_pet_acquisition(group: &mut Series, info: &Series) {
     if let Some(theirs) = &info.acquisition.pet_acquisition {
@@ -5026,6 +5053,28 @@ mod tests {
         // The first file's scanner stays, whatever the administrations.
         assert_eq!(first.scanner_model, "Model A");
         assert_eq!(first.uptake_seconds, None);
+    }
+    #[test]
+    fn a_series_keeps_the_body_part_its_first_file_lacks_and_names_every_part_its_files_record() {
+        let mut series = String::new();
+        merge_body_part(&mut series, "");
+        assert_eq!(series, "");
+        merge_body_part(&mut series, "BRAIN");
+        merge_body_part(&mut series, "");
+        merge_body_part(&mut series, " brain ");
+        assert_eq!(series, "BRAIN");
+        // Two parts in one series are both kept: neither is dropped, and the series is not left without one.
+        merge_body_part(&mut series, "NECK");
+        assert_eq!(series, "BRAIN\\NECK");
+        merge_body_part(&mut series, "NECK");
+        assert_eq!(series, "BRAIN\\NECK");
+        // A file cannot make the list grow without bound.
+        merge_body_part(&mut series, &"X".repeat(MAX_BODY_PART_TEXT + 1));
+        for index in 0..20 {
+            merge_body_part(&mut series, &format!("PART{index}"));
+        }
+        assert_eq!(series.split('\\').count(), MAX_BODY_PARTS);
+        assert!(series.starts_with("BRAIN\\NECK\\PART0"));
     }
     #[test]
     fn values_already_in_suv_convert_only_from_body_weight() {
