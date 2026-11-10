@@ -472,14 +472,19 @@ export function createWebBridge(): DesktopBridge {
       const drop = dropped;
       dropped = null;
       const same = drop && drop.files.length === files.length && drop.files.every((file, i) => file === files[i]);
-      return remember(same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]));
+      const selected = same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]);
+      // Steps of opening a study, on the page's timeline for tools/browser-bench (performance marks cost next to nothing).
+      performance.mark('veacom:files-listed');
+      return remember(selected);
     },
     async importSelected(capabilities) {
       const chosen = capabilities.map(token => selections.get(token));
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
       for (const token of capabilities) selections.delete(token);
       const files = chosen.flatMap(selection => selection!.files), roots = chosen.flatMap(selection => selection!.roots);
+      performance.mark('veacom:import-start');
       const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
+      performance.mark('veacom:import-done');
       return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
     },
     // The engine answers one request at a time, so it cannot publish series while an import runs: every series
@@ -517,9 +522,11 @@ export function createWebBridge(): DesktopBridge {
     async fetchPixels({ seriesId, generation: requestGeneration, revision, index }, signal) {
       requireGeneration(requestGeneration);
       if (known.get(seriesId) !== generation) throw new Error(t('engine.seriesNotOpen'));
+      performance.mark(index === undefined ? 'veacom:volume-start' : 'veacom:frame-start');
       const pixels = await (index === undefined
         ? call<EnginePixels>({ op: 'volume', seriesId, revision }, { busy: true, signal })
         : call<EnginePixels>({ op: 'frame', seriesId, index, revision }, { signal }));
+      performance.mark(index === undefined ? 'veacom:volume-done' : 'veacom:frame-done');
       const headers = new Headers({
         'Content-Type': 'application/octet-stream', 'Content-Length': String(pixels.bytes.byteLength),
         'X-Pixel-Type': pixels.pixelType, 'X-Components': String(pixels.components),

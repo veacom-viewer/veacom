@@ -198,6 +198,7 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }
 
 
+let firstDrawMarked = false;
 function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number) {
   const renderer = sliceRenderer();
   const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion);
@@ -209,6 +210,9 @@ function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed
   canvas.dataset.plane = displayed.plane;
   canvas.dataset.seriesId = current.volume.series.id;
   current.onFrame?.(milliseconds);
+  // The page's first frame handed to the renderer, on its timeline for tools/browser-bench. It is drawn on screen later:
+  // the benchmark's "first image" is the trace screenshot that first shows it.
+  if (!firstDrawMarked) { firstDrawMarked = true; performance.mark('veacom:first-draw'); }
   canvas.dispatchEvent(new CustomEvent('veacom:frame', { bubbles: true, detail: {
     seriesId: current.volume.series.id, slice: displayed.slice, plane: displayed.plane, mode: displayed.mode ?? 'mpr',
     renderSubmitMs: milliseconds, finishedAt: performance.now(), measurementKind: 'cpu-render-submit-and-composite',
