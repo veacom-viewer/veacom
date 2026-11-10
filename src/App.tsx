@@ -16,6 +16,7 @@ import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenu
 import { SliceBar } from './components/SliceBar';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
+import { referenceImages } from './ui/referenceImages';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
@@ -1015,11 +1016,14 @@ export default function App() {
         return [...kept, ...result.series.filter(item => !listedBefore.has(item.id))];
       });
       if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
-      const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0) ?? result.series.find(item => !item.segmentation);
+      // A study opens on a series, not on a stack's reference image (ui/referenceImages.ts): that one image does not page.
+      const onCards = new Set([...referenceImages(result.series).values()].map(item => item.id));
+      const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0 && !onCards.has(item.id))
+        ?? result.series.find(item => !item.segmentation && item.dimensions[2] > 0) ?? result.series.find(item => !item.segmentation);
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
       // PET/CT screen) is laid out now that every series is known.
       const shownEarly = slotsRef.current.flatMap(slot => slot.seriesId && early.has(slot.seriesId) ? [slot.seriesId] : []);
-      const keep = opened && shownEarly.length > 0 && shownEarly.every(id => settled.has(id));
+      const keep = opened && shownEarly.length > 0 && shownEarly.every(id => settled.has(id)) && !shownEarly.some(id => onCards.has(id));
       const known = new Map(seriesRef.current.map(item => [item.id, item]));
       for (const item of result.series) known.set(item.id, item);
       if (firstImage) openStudy.current(firstImage, [...known.values()].filter(item => studyKey(item) === studyKey(firstImage)), keep, [...known.values()]);
