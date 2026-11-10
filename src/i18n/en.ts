@@ -791,6 +791,7 @@ export const en = {
   'export.currentStudy': 'Current study',
   'export.selectAll': 'Select all',
   'export.seriesPicked': '{picked} / {total} series',
+  'export.tooManySeries': 'Export at most {max} series at a time.',
   'export.clear': 'Clear',
   'export.undatedStudy': 'Undated study',
   'export.seriesNumber': 'Series {number}',

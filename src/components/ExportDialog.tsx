@@ -8,6 +8,7 @@ import { errorMessage, type Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
+import { MAX_EXPORT_SERIES } from '../../electron/export-limits.mjs';
 import { pickState, togglePicked } from '../ui/exportSelection';
 import { phaseLabel } from '../ui/overlayCorners';
 import { exportedImages } from '../ui/seriesNames';
@@ -160,10 +161,12 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
   const order = { descending: backwards !== reverse, numberOf: (slice: number) => backwards ? count - slice : slice + 1, prefix };
   const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && start <= end && end <= (video?.frameCount ?? 0));
+  // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs); a disc has a limit of its own.
+  const tooMany = !captures && !(isMedia && target === 'cd') && ids.length > MAX_EXPORT_SERIES;
   const ready = Boolean(window.veacom) && (shownScope === 'layout' || (captures ? rangeValid && (isImages || (fps >= 1 && fps <= 120)) : ids.length > 0))
-    && !(mode === 'dicom' && shownScope === 'slice' && currentFrame === undefined);
+    && !(mode === 'dicom' && shownScope === 'slice' && currentFrame === undefined) && !tooMany;
   // "1 seri, 24 dosya: 12,4 MB → yaklaşık 6,1 MB, 2 sn": a few of the files compressed for real, a moment after a change.
-  const zipping = mode === 'dicom' && zip && ids.length > 0;
+  const zipping = mode === 'dicom' && zip && ids.length > 0 && !tooMany;
   const estimateOptions = {
     anonymize: anonymity !== 'none', full: anonymity === 'full', smallest,
     frame: shownScope === 'slice' ? currentFrame : undefined, engineGeneration: series.find(item => item.id === ids[0])?.engineGeneration,
@@ -295,6 +298,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
             </div>}
             {!captures && shownScope !== 'all' && series.some(item => ids.includes(item.id) && item.phase?.gate)
               && <p className="export-note" data-testid="export-gates">{t('export.gatesNote')}</p>}
+            {tooMany && <p className="export-note" data-testid="export-too-many">{t('export.tooManySeries', { max: MAX_EXPORT_SERIES })}</p>}
             {captures && <>
               {isImages && <Choice name="picture-format" action="export-picture-format" label={t('export.format')} value={pictureFormat} onChange={setPictureFormat} options={[['png', 'PNG'], ['jpeg', 'JPEG']]} />}
               {shownScope !== 'layout' && <Choice name="annotations" action="export-annotations" label={t('export.annotations')} value={annotations} onChange={setAnnotations}
