@@ -40,6 +40,14 @@ const FACING: Record<CaliperSpec['plane'], Vec3> = { coronal: POSTERIOR, sagitta
 /** A scout (CT Image Type value 3 LOCALIZER, DICOM PS3.3 C.8.2.1.1.1) is a projection: a caliper never measures on it. */
 export const isLocalizer = (series: Pick<Series, 'imageType'>): boolean => /(?:^|[\\ ,])LOCALIZER(?:$|[\\ ,])/i.test(series.imageType ?? '');
 
+/** Why a series cannot take a caliper, or null. The CLOSE measurements are defined on a CT's cross-sections: another
+ * modality of the study (an MR) and a CT scout are refused, both when a caliper starts and when a drawing would become
+ * one. */
+export function caliperRefusal(series: Pick<Series, 'modality' | 'imageType'>): MessageKey | null {
+  if (series.modality !== 'CT') return 'caliper.needsImage';
+  return isLocalizer(series) ? 'caliper.localizer' : null;
+}
+
 /** A plane within 45° of the caliper's own (a tilted one still counts) whose up is the patient's head. `up` and `normal`
  * are the plane's own axes (geometry.planeAxes), whatever the image's turn on screen. */
 export function onCaliperPlane(kind: CaliperKind, up: Vec3, normal: Vec3): boolean {

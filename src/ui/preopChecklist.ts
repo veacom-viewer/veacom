@@ -2,8 +2,8 @@
 // surgery, each finding marked present, absent or not assessable, per side, with the slice it was seen on. A PNS CT
 // opens the CLOSE checklist (cribriform plate, lamina papyracea, Onodi cell, sphenoid, ethmoid artery); a temporal
 // bone CT the third-window, ossicle, facial canal, inner ear and tegmen checklist.
-import type { CaliperKind, Series, Vec3 } from '../model';
-import { caliperReport, type CaliperResult } from '../imaging/calipers';
+import type { CaliperKind, CaliperTag, Series, Vec3 } from '../model';
+import { caliperReport, caliperResult, type CaliperResult } from '../imaging/calipers';
 import { translate } from '../i18n';
 import { foldSearch } from './seriesNames';
 
@@ -13,14 +13,17 @@ export interface ChecklistItem { id: string; label: Words; hint: Words; sided: b
 export interface ChecklistGroup { title: Words; items: ChecklistItem[] }
 export type Side = 'right' | 'left' | 'both';
 export type Answers = Partial<Record<string, Partial<Record<Side, string>>>>;
-/** What a caliper measured for an item and side (src/imaging/calipers.ts). The note keeps the points and the reading,
- * so deleting the drawing on the image leaves the checklist's record. */
+/** What a caliper measured for an item and side (src/imaging/calipers.ts). The note keeps the points, their plane and
+ * the reading, so deleting the drawing on the image leaves the checklist's record, and a calibration still measures it
+ * again. */
 export interface CaliperNote {
   /** The measurement it was drawn as, on the note's series; an edit to it measures again. */
   annotationId: string;
   kind: CaliperKind;
   /** Patient coordinates (mm), in the caliper's order. */
   points: Vec3[];
+  /** The plane's up and normal, from the drawing's tag. */
+  up: Vec3; normal: Vec3;
   result: CaliperResult;
   /** The answer it gave: it follows the drawing's edits until the reader picks another answer. */
   given?: string;
@@ -232,4 +235,25 @@ export function recordCaliper(state: ChecklistState, item: string, side: Side, n
   notes[side] = note;
   if (follows && note.caliper.given !== undefined) answers[side] = note.caliper.given;
   return { ...state, notes: { ...state.notes, [item]: notes }, answers: { ...state.answers, [item]: answers } };
+}
+
+/** The record of a caliper drawing (its id) whose `points`, on the plane its `tag` gives, read as `result`. */
+export function caliperNote(annotationId: string, tag: Pick<CaliperTag, 'kind' | 'up' | 'normal'>, points: Vec3[], result: CaliperResult): CaliperNote {
+  return { annotationId, kind: tag.kind, points, up: tag.up, normal: tag.normal, result, ...('answer' in result && result.answer !== undefined ? { given: result.answer } : {}) };
+}
+
+/** The checklist with the caliper records of `seriesId` whose drawings are gone (not among `drawings`) measured again at
+ * `mmScale` from the points and plane they keep, as a calibration measures the drawings' records again. A record that
+ * was cleared is not there to come back, and an answer the reader picked stays (recordCaliper). */
+export function remeasureRecords(state: ChecklistState, seriesId: string, drawings: ReadonlySet<string>, mmScale: number | null): ChecklistState {
+  let next = state;
+  for (const [item, sides] of Object.entries(state.notes)) {
+    for (const [side, note] of Object.entries(sides ?? {}) as Array<[Side, SliceNote | undefined]>) {
+      const kept = note?.caliper;
+      if (!note || !kept || note.seriesId !== seriesId || drawings.has(kept.annotationId)) continue;
+      const result = caliperResult({ kind: kept.kind, item, side, up: kept.up, normal: kept.normal }, kept.points, mmScale);
+      next = recordCaliper(next, item, result.side, { ...note, caliper: caliperNote(kept.annotationId, kept, kept.points, result) });
+    }
+  }
+  return next;
 }

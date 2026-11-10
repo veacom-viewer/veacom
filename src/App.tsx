@@ -19,9 +19,9 @@ import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
-import { CALIPERS, caliperMmScale, caliperName, caliperResult, caliperView, isLocalizer, onCaliperPlane, snapCaliper } from './imaging/calipers';
-import { caliperRecorded, keepCaliper } from './ui/checklistStore';
-import type { Side, SliceNote } from './ui/preopChecklist';
+import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, caliperView, onCaliperPlane, snapCaliper } from './imaging/calipers';
+import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
+import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -685,8 +685,9 @@ export default function App() {
   /** Where a caliper measures and what that pane needs first (calipers.caliperView): the active pane, or another pane of
    * its series already on the caliper's plane, so the three-plane MPR keeps its planes; or why it cannot measure. */
   const caliperPlan = (kind: CaliperKind): { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey } => {
-    if (!activeVolume || activeVolume.series.modality !== 'CT') return { blocked: 'caliper.needsImage' };
-    if (isLocalizer(activeVolume.series)) return { blocked: 'caliper.localizer' };
+    if (!activeVolume) return { blocked: 'caliper.needsImage' };
+    const refused = caliperRefusal(activeVolume.series);
+    if (refused) return { blocked: refused };
     if (caliperMmScale(activeVolume.series) === null) return { blocked: 'caliper.needsSpacing' };
     if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'caliper.loading' };
     // A new plane goes through the point picked in this series' frame, else through the middle of the pane's plane.
@@ -838,8 +839,9 @@ export default function App() {
    * tagged as that caliper, which then ends. */
   const caliperDrawn = (seriesId: string, next: Annotation[]): { list: Annotation[]; drawn?: string } => {
     const request = caliperRef.current, volume = displayVolumesRef.current.get(seriesId);
-    // A scout of the study is a projection: what is drawn on it stays a plain measurement, and the caliper waits.
-    if (!request || !volume || studyKey(volume.series) !== request.study || isLocalizer(volume.series)) return { list: next };
+    // What is drawn on another series of the study that a caliper refuses (an MR, a CT scout) stays a plain measurement,
+    // and the caliper waits.
+    if (!request || !volume || studyKey(volume.series) !== request.study || caliperRefusal(volume.series)) return { list: next };
     const before = annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS;
     const added = next.filter(annotation => !before.some(old => old.id === annotation.id));
     if (added.length !== 1 || added[0].type !== CALIPERS[request.kind].tool || added[0].caliper) return { list: next };
@@ -852,8 +854,8 @@ export default function App() {
     return { list: next.map(annotation => annotation === fresh ? tagged : annotation), drawn: tagged.id };
   };
   /** Records in its study's checklist each caliper drawing of the series that is new (`drawn`) or whose points changed
-   * since its record, or every recorded one when the series' scale changed (`rescaled`: the series at its new scale).
-   * A drawing whose record was replaced or cleared stays out. */
+   * since its record, or every recorded one when the series' scale changed (`rescaled`: the series at its new scale),
+   * records whose drawings were deleted too. A drawing whose record was replaced or cleared stays out. */
   const recordCalipers = (seriesId: string, list: Annotation[], drawn?: string, rescaled?: Series) => {
     // The shown series, with any calibration: a series with measurements keeps its volume (publishVolumes).
     const series = rescaled ?? displayVolumesRef.current.get(seriesId)?.series;
@@ -866,9 +868,10 @@ export default function App() {
       if (annotation.id !== drawn && (!recorded || (!rescaled && samePoints(recorded.points, annotation.points)))) continue;
       const result = caliperResult(tag, annotation.points, caliperMmScale(series));
       const view = viewOfAnnotation(annotation, annotationSourceIndex(annotation, series));
-      keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view),
-        caliper: { annotationId: annotation.id, kind: tag.kind, points: annotation.points, result, ...('answer' in result && result.answer !== undefined ? { given: result.answer } : {}) } });
+      keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view), caliper: caliperNote(annotation.id, tag, annotation.points, result) });
     }
+    const kept = rescaled && keptChecklist(study);
+    if (kept) keepChecklist(study, remeasureRecords(kept, seriesId, new Set(list.map(annotation => annotation.id)), caliperMmScale(series)));
   };
   const remember = () => {
     history.current.past.push({ slots: slotsRef.current, annotations: annotationRef.current });
@@ -1520,7 +1523,8 @@ export default function App() {
     const spec = CALIPERS[caliper.kind], shown = renderedView(volume, view), axes = planeAxes(volume.series, shown);
     const key = `${caliper.kind}:${caliper.item}:${caliper.side}`;
     const setUp = caliper.setUp?.slotId === slotId ? { text: caliper.setUp.text, onUndo: undoCaliperSetUp } : undefined;
-    if (isLocalizer(volume.series)) return { key, setUp, prompts: [t('caliper.localizer')] };
+    const refused = caliperRefusal(volume.series);
+    if (refused) return { key, setUp, prompts: [t(refused)] };
     if (isProjection(volume.series, shown) || !onCaliperPlane(caliper.kind, scale(axes.v, -1), axes.normal)) return { key, setUp, prompts: [t(spec.plane === 'coronal' ? 'caliper.needsCoronal' : 'caliper.needsSagittal')] };
     const name = caliperName(caliper.kind, locale), side = caliper.side === 'both' ? '' : t(caliper.side === 'right' ? 'caliper.right' : 'caliper.left');
     // Without HU the points are not moved onto bone; the hint says so.

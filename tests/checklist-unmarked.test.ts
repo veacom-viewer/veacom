@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { CHECKLISTS, checklistSummary, unmarkedItems, type Answers, type Notes, type SliceNote } from '../src/ui/preopChecklist';
 
 const slice: SliceNote = { seriesId: 's', slice: 3, shown: '4/10', plane: 'axial', mode: 'source' };
-const measured: SliceNote = { ...slice, caliper: { annotationId: 'a', kind: 'aea', points: [[0, 0, 0], [0, 0, 1]],
+const measured: SliceNote = { ...slice, caliper: { annotationId: 'a', kind: 'aea', points: [[0, 0, 0], [0, 0, 1]], up: [0, 0, 1], normal: [0, 1, 0],
   result: { reading: { kind: 'aea', distance: 1, type: 1, nearLimit: false }, side: 'left' } } };
 
 describe('rows left out of the copy', () => {
