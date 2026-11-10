@@ -8,6 +8,7 @@
 // - Ctrl+Left and Ctrl+Right step both panes to the previous and next pair.
 // - A series the earlier study has no counterpart of leaves the left side empty.
 // - A reconstructed plane is compared with the same plane, and the earlier study with the later one on the right.
+// - Another patient's series put in a pane brings a warning, which goes when the panes show one patient again.
 // On the synthetic follow-up of tools/fixtures/make-pet-followup.mjs:
 // - A fused PET/CT compared with an earlier CT keeps its fusion.
 // - Between two PET studies the comparison is not offered: the PET follow-up screen is.
@@ -86,11 +87,13 @@ async function withDesktop(study, output, steps) {
   if (failure) throw failure;
 }
 
-/** The comparison screen on one patient's MR and CT studies. */
-async function compareStudies(manifest, { page, state, settled, cells, shot, image, shown, listed, single, compare, pick, pairs }) {
-  await listed(manifest.studies.reduce((sum, study) => sum + study.series.length, 0));
+/** The comparison screen on one patient's MR and CT studies; `followUp` gives a series of another patient. */
+async function compareStudies(manifest, followUp, { desktop, page, state, settled, cells, shot, image, shown, listed, single, compare, pick, pairs }) {
+  const count = manifest.studies.reduce((sum, study) => sum + study.series.length, 0);
+  await listed(count);
   await settled();
   let s = await state();
+  const listedFirst = new Set(s.series.map(item => item.id));
   // Each series by its study and kind, and each study's date.
   const ids = {}, dates = {};
   for (const study of manifest.studies) {
@@ -278,6 +281,28 @@ async function compareStudies(manifest, { page, state, settled, cells, shot, ima
   assert.equal(s.activeSeriesId, before.t2.id);
   assert((await page.locator('.pane-toast').allTextContents())[0].startsWith(`Later study on the right: ${shownDate(dates['mr-current'])}.`));
   check('From the earlier study the later study comes on the right');
+
+  // Another patient's series put in a comparison pane is shown, with a warning that stays until the panes show one
+  // patient again (docs/design-guidelines.md, "Patient safety").
+  await privileged.importPaths(desktop, page, [path.join(followUp, 'prior', 'S01')]);
+  await listed(count + 1);
+  await settled();
+  const stranger = (await state()).series.find(item => !listedFirst.has(item.id));
+  await single(now.t2.id);
+  await compare('Compare with the earlier study');
+  const warning = page.locator('[data-testid="notice"][data-code="compare.otherPatient"]');
+  assert.equal(await warning.count(), 0);
+  // As a click on its card in the series list: the series goes to the active pane.
+  await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), stranger.id);
+  await warning.waitFor();
+  assert.equal(await warning.getAttribute('data-kind'), 'error');
+  assert.match(await warning.textContent(), /^The two panes show different patients\./);
+  assert.deepEqual(await shown(), [before.t2.id, stranger.id], 'The series is shown all the same.');
+  await settled();
+  await shot('7-other-patient');
+  await pick(now.t1.id, 1);
+  await warning.waitFor({ state: 'detached' });
+  check('Another patient\'s series in a comparison pane brings a warning, which goes when the panes show one patient again');
 }
 
 /** PET studies: a fused PET/CT keeps its fusion beside an earlier CT; two PET studies are left to the PET follow-up. */
@@ -308,7 +333,7 @@ async function petStudies(folder, { desktop, page, state, settled, shot, listed,
   s = await state();
   assert.deepEqual(s.panes.map(pane => [pane.seriesId, pane.unfused]), [[priorCt.id, true], [ct.id, false]], 'The reader\'s pane keeps its fusion; the earlier CT is plain.');
   assert.equal(s.fusionId, pet.id);
-  await shot('7-fused');
+  await shot('8-fused');
   await page.locator('[data-action="arrangement-undo"]').click();
   await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 1);
   s = await state();
@@ -339,7 +364,7 @@ async function main() {
   await fs.mkdir(output, { recursive: true });
   let failure;
   try {
-    await withDesktop(studies, output, kit => compareStudies(manifest, kit));
+    await withDesktop(studies, output, kit => compareStudies(manifest, followUp, kit));
     await withDesktop(path.join(followUp, 'current'), output, kit => petStudies(followUp, kit));
   } catch (error) { failure = error; }
   await fs.writeFile(path.join(output, 'results.json'), JSON.stringify({ passed: !failure, platform: process.platform, checks, error: failure?.stack }, null, 2));

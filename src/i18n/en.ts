@@ -677,6 +677,7 @@ export const en = {
   'compare.offerLater': 'Open the later {series} here?',
   'compare.open': 'Open',
   'compare.noMorePairs': 'No other series has a match in the other study.',
+  'compare.otherPatient': 'The two panes show different patients. Check the series you opened.',
   'arrangement.petFollowUp.notice': 'PET follow-up on one SUV scale: this study · prior · their MIPs. Bring both to one level, then link them.',
   'arrangement.spectCt': 'SPECT/CT',
   'arrangement.spectCt.notice': 'SPECT/CT: CT · SPECT · fusion · MIP',

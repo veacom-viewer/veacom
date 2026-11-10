@@ -199,6 +199,7 @@ BRAIN and HEAD; the current MR has a FLAIR the earlier one lacks; each CT has a 
 - Ctrl+Left and Ctrl+Right step both panes pair by pair, past the FLAIR.
 - The FLAIR leaves the earlier study's side empty.
 - A coronal reconstruction is compared in the same plane, and the earlier study with the later one on the right.
+- Another patient's series (the follow-up's earlier CT) put in a pane brings a warning, which goes when the panes show one patient again.
 
 A second launch opens the synthetic PET/CT follow-up. A fused PET/CT compared with the earlier CT alone keeps its
 fusion. With the earlier PET loaded too, Layout offers the PET follow-up and not the comparison.

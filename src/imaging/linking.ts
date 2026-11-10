@@ -82,6 +82,17 @@ export function samePatient(a: Series, b: Series): boolean {
   return Boolean(a.studyUid && a.studyUid === b.studyUid);
 }
 
+/** Whether two series are of one patient. `same`: as `samePatient` tells it. `different`: both name a patient (an ID or
+ * a name) and their IDs, names or the engine's patient keys differ. `unknown`: one of them names no patient, or only
+ * the study tells them apart. An unknown identity is never taken for a mismatch. */
+export function patientMatch(a: Series, b: Series): 'same' | 'different' | 'unknown' {
+  if (samePatient(a, b)) return 'same';
+  const id = [a.patientId.trim(), b.patientId.trim()], name = [a.patientName.trim().toUpperCase(), b.patientName.trim().toUpperCase()];
+  if (!(id[0] || name[0]) || !(id[1] || name[1])) return 'unknown';
+  if (id[0] !== id[1] || name[0] !== name[1]) return 'different';
+  return a.patientKey && b.patientKey && a.patientKey !== b.patientKey ? 'different' : 'unknown';
+}
+
 /** Images with no place in the patient (PNG/JPEG pictures, or an unknown orientation): they page by image number. */
 export const unplaced = (series: Series) => series.orientationKnown !== true;
 

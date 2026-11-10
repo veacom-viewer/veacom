@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { matchComparison } from '../src/arrangements';
 import { COMPARISONS } from '../src/arrangements/builtin';
 import { bestCounterpart, counterpart } from '../src/arrangements/counterpart';
-import { levelSlice } from '../src/imaging/linking';
+import { levelSlice, patientMatch } from '../src/imaging/linking';
 import { sequenceGuess } from '../src/ui/seriesNames';
 import { en } from '../src/i18n/en';
 import type { Series, ViewState } from '../src/model';
@@ -142,6 +142,24 @@ describe('the comparison screen', () => {
     const stranger = { ...earlier(t2), patientId: 'Q', patientName: 'Other', patientKey: 'other-patient' };
     assert.equal(plan(t2, [...now, stranger]), null);
     assert.equal(plan(t2, [...now, { ...earlier(t2), studyDate: '' }]), null, 'a study without a date is neither earlier nor later');
+  });
+});
+
+describe('whether two series are of one patient', () => {
+  const one = series({ patientKey: 'key-one' });
+  it('is the same for one patient and different for two who are both named', () => {
+    assert.equal(patientMatch(one, earlier(one)), 'same');
+    assert.equal(patientMatch(one, { ...earlier(one), patientId: 'Q', patientKey: 'key-two' }), 'different');
+    assert.equal(patientMatch(one, { ...earlier(one), patientName: 'Other', patientKey: 'key-two' }), 'different');
+    // One ID and one name, but the engine keeps the two apart (another birth date, say).
+    assert.equal(patientMatch(one, { ...earlier(one), patientKey: 'key-two' }), 'different');
+  });
+  it('is unknown, never different, where a series names no patient or only the study tells them apart', () => {
+    const unnamed = { ...earlier(one), patientId: '', patientName: ' ', patientKey: 'key-unnamed' };
+    assert.equal(patientMatch(one, unnamed), 'unknown');
+    assert.equal(patientMatch(unnamed, one), 'unknown');
+    assert.equal(patientMatch(unnamed, { ...unnamed, studyUid: 'another-study', patientKey: 'key-other' }), 'unknown');
+    assert.equal(patientMatch({ ...one, patientKey: undefined }, { ...earlier(one), patientKey: undefined }), 'unknown');
   });
 });
 

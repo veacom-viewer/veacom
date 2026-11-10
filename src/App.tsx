@@ -54,7 +54,7 @@ import { usage, type Surface, type UsageSnapshot } from './usage/tracker';
 import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
-import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
+import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
 import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
 import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
@@ -1367,6 +1367,11 @@ export default function App() {
     setSlots(current => current.map(slot => slot.id === slotId ? { id: slot.id, seriesId: item.id, view } : slot));
     loadPaneImage(item);
     if (theirs) linkCompared({ id: slotId, item, view }, { id: other.id, item: theirs, view: other.view });
+    // Series of two patients in one comparison: a warning, which stays until the reader dismisses it or the panes
+    // show one patient again (docs/design-guidelines.md, "Patient safety"). A series that names no patient is not
+    // a known mismatch, so it brings no warning.
+    if (theirs && patientMatch(item, theirs) === 'different') say('compare.otherPatient', 'error');
+    else setNotice(current => current?.key === 'compare.otherPatient' ? null : current);
   };
   /** In the comparison screen a series put in one pane changes that pane only. The other pane then offers, for a few
    * seconds, that series' counterpart in its own study; one click opens it there. */
