@@ -1,6 +1,8 @@
 // The counterpart of a series in another study of the same patient: what the comparison screen puts beside it
-// (docs/arrangements.md). A counterpart is of the same kind, never merely the nearest thing in the other study: where
-// nothing is of the same kind there is none, and the reader picks.
+// (docs/arrangements.md). A counterpart is of the same kind, never merely the nearest thing in the other study: the
+// same modality, plane and part of the body, and for MR the same sequence. Where the other study has nothing of that
+// kind there is none, and the reader picks. Among CT series of that kind the best is taken: contrast, name, stored
+// window and slice thickness rank them, and none of the four rules a series out.
 import type { Series } from '../model';
 import { acquiredPlane } from '../imaging/geometry';
 import { sequenceGuess } from '../ui/seriesNames';
@@ -9,6 +11,7 @@ import { sequenceGuess } from '../ui/seriesNames';
 const words = (text: string) => text.trim().toUpperCase().replace(/[\s_]+/g, ' ');
 /** Contrast was given, as the series records it. */
 const enhanced = (item: Series) => Boolean(item.contrastBolusAgent?.trim());
+/** Slice thickness as recorded, else the distance between slices. It only ranks candidates; it is never shown. */
 const thickness = (item: Series) => item.sliceThickness ?? item.spacing[2];
 /** Two stored windows of one look: a lung reconstruction is stored with a lung window, a soft-tissue one with its own. */
 function sameLook(a: Series, b: Series): boolean {

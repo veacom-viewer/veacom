@@ -1345,12 +1345,13 @@ export default function App() {
     activateSlot(slotId);
     if (!wasLinked) setSettings(current => ({ ...current, linked: true }));
   };
-  // The comparison screen (COMPARISONS in src/arrangements/builtin.ts): for one of its panes the other one, while its
-  // panes are still the ones on screen.
+  /** For a pane of the comparison screen (COMPARISONS in src/arrangements/builtin.ts), the other one, while its panes
+   * are still the ones on screen. */
   const comparedWith = (slotId: string) => {
     const current = arranged.current;
     return current?.plan.arrangement.view === 'shared' && stillArranged() ? slotsRef.current.find(slot => slot.id !== slotId) : undefined;
   };
+  /** The series a pane shows, while it is still in the list. */
   const seriesOf = (slot: Slot | undefined) => slot?.seriesId ? seriesRef.current.find(value => value.id === slot.seriesId) : undefined;
   /** Links two comparison panes where they are, as the link button links panes by hand. */
   const linkCompared = (a: { id: string; item: Series; view: ViewState }, b: { id: string; item: Series; view: ViewState }) => {
@@ -2229,8 +2230,9 @@ export default function App() {
   const nmScreen = activeStudy ? match(withKept(kept, NUCLEAR_MEDICINE_SCREENS), 'screen', activeStudy) : null;
   const openNmScreen = () => { if (nmScreen) applyArrangement(nmScreen); };
   // The comparison screen for the series in the active pane, offered in Layout when the same patient's earlier (or
-  // later) study is loaded: with the series' counterpart there, or an empty side where it has none.
-  const compareScreen = activeSeries && !isMpr ? matchComparison(activeSeries, series) : null;
+  // later) study is loaded: with the series' counterpart there, or an empty side where it has none. Only the Layout
+  // popover shows it, so it is worked out only while that is open, not on every slice, zoom or pan.
+  const compareScreen = menu === 'layout' && activeSeries && !isMpr ? matchComparison(activeSeries, series) : null;
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
