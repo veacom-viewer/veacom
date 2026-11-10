@@ -15,6 +15,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 async function main() {
   const studies = path.resolve(process.argv[2]);
@@ -254,7 +255,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'gamma-camera-checks.json'), JSON.stringify({ checks, errors, failure: String(error.stack || error) }, null, 2));
     throw error;
   } finally {
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
 }

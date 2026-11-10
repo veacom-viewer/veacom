@@ -13,6 +13,7 @@ const assert = require('node:assert/strict');
 const { encodePng } = require('./lib/png.cjs');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { EngineProcess } = require('../electron/engine-process.cjs');
 
 const png = (width, height, rgb) => {
@@ -230,7 +231,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'pictures.json'), JSON.stringify({ passed: false, error: error.stack, checks, errors }, null, 2));
     throw error;
   } finally {
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(temporary, { recursive: true, force: true });
   }
 }

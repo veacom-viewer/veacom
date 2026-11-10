@@ -9,6 +9,7 @@ const path = require('node:path');
 const { _electron: electron } = require('playwright');
 const { authorizeImportPaths } = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 const { prepareCounter, readCounts } = require('./lib/io-count.cjs');
 const { compareRounds, median } = require('./lib/open-speed.cjs');
@@ -233,7 +234,7 @@ async function run(build, study, counter) {
     assert.deepEqual(errors, []);
     return row;
   } finally {
-    if (desktop) await desktop.close();
+    await closeDesktop(desktop);
     fs.rmSync(profile, { recursive: true, force: true });
   }
 }

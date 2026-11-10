@@ -1,4 +1,5 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
 import { createRequire } from 'node:module';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
@@ -11,6 +12,7 @@ import { assertFields } from './support';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const { decodePng, encodePng } = createRequire(import.meta.url)('../tools/lib/png.cjs');
+const { closeDesktop } = createRequire(import.meta.url)('../tools/lib/close-desktop.cjs');
 let dir: string;
 beforeEach(async () => { dir = await mkdtemp(path.join(tmpdir(), 'veacom-gate-test-')); });
 afterEach(async () => { await rm(dir, { recursive: true, force: true }); });
@@ -158,4 +160,43 @@ it('the local gate stops before app launch when a study has the right names but 
   const run = spawnSync('bash', ['tools/verify.sh', study, path.join(dir, 'evidence')], { cwd: root, encoding: 'utf8', timeout: 10000,
     env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, REAL_NODE: process.execPath, UNEXPECTED_COMMAND: unexpected } });
   assert.equal(run.status, 1); assert.ok(run.stderr.includes('FAIL fixture')); assert.equal(existsSync(unexpected), false);
+});
+
+it('closes a desktop app that quits, and kills one that does not with what it started, without throwing', async () => {
+  let closes = 0;
+  assert.equal(await closeDesktop({ close: async () => { closes++; }, process: () => ({ exitCode: 0, signalCode: null }) }, 1000), true);
+  assert.equal(closes, 1);
+  assert.equal(await closeDesktop(undefined), true);
+  // close() fails, but the app quits by itself in time: nothing is killed.
+  const quitting = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 300)'], { stdio: 'ignore' });
+  assert.equal(await closeDesktop({ close: async () => { throw new Error('Target closed'); }, process: () => quitting }, 5000), true);
+  assert.deepEqual([quitting.exitCode, quitting.signalCode], [0, null]);
+  // An app that never quits, with a child of its own as the imaging engine. Playwright starts the app as the leader of a
+  // process group of its own, except on Windows.
+  const engineScript = "require('node:child_process').spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })";
+  const app = spawn(process.execPath, ['-e', `console.log(${engineScript}.pid); setInterval(() => {}, 1000);`],
+    { detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'ignore'] });
+  const engine = Number(String((await once(app.stdout, 'data') as [Buffer])[0]).trim());
+  const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  const { exitCode } = process, { error } = console, said: string[] = [];
+  console.error = (...args: unknown[]) => { said.push(args.join(' ')); };
+  const started = Date.now();
+  let quit: boolean, marked: typeof process.exitCode, elapsed: number, unkillable: boolean;
+  try {
+    quit = await closeDesktop({ close: () => new Promise(() => {}), process: () => app }, 300);
+    marked = process.exitCode;
+    elapsed = Date.now() - started;
+    // One that cannot be killed either (no process to signal, no exit ever) is reported as possibly still running.
+    unkillable = await closeDesktop({ close: () => new Promise(() => {}),
+      process: () => ({ pid: undefined, exitCode: null, signalCode: null, once() {}, kill() {} }) }, 300);
+  } finally { console.error = error; process.exitCode = exitCode; }
+  for (const until = Date.now() + 3000; alive(engine) && Date.now() < until;) await new Promise(resolve => setTimeout(resolve, 50));
+  const survivors = [app.pid!, engine].filter(alive);
+  for (const pid of survivors) process.kill(pid, 'SIGKILL');
+  assert.deepEqual(survivors, [], 'the app and its engine are gone');
+  assert.equal(quit, false); assert.equal(marked, 1);
+  assert.ok(elapsed < 4000, `closed after ${elapsed} ms`);
+  assert.match(said[0], /did not quit within 0.3 s, so it was killed/);
+  assert.equal(unkillable, false);
+  assert.match(said[1], /did not quit within 0.3 s and could not be killed/);
 });

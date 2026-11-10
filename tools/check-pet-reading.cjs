@@ -9,6 +9,7 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
@@ -181,7 +182,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'pet-reading-checks.json'), JSON.stringify({ checks, errors, failure: String(error.stack || error) }, null, 2));
     throw error;
   } finally {
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
 }

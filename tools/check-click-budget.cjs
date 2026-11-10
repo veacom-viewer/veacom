@@ -14,6 +14,7 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { ClickBudget } = require('./click-budget.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 
 // Only synthetic, fingerprinted fixtures can enter this lab run or supply its label.
@@ -223,6 +224,6 @@ async function main() {
     if (page) await page.screenshot({ path: path.join(output, `${name}-failure.png`) }).catch(() => {});
     if (budget) await fs.writeFile(path.join(output, `${name}.json`), JSON.stringify({ study: name, error: error.stack, results: budget.results, errors }, null, 2)).catch(() => {});
     throw error;
-  } finally { await desktop.close(); await fs.rm(userData, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(userData, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
