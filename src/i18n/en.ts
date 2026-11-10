@@ -569,6 +569,7 @@ export const en = {
   'series.picked': 'picked, {number} of {count}',
   'series.patientId': 'Patient ID',
   'series.studySummary': '{modalities}: {count} series',
+  'series.reference': 'Reference image',
   'series.untitled': 'Untitled series',
   'series.cardLabel': '{description}{phase}, {modality}, {count} images{warnings}',
   'series.cardWarnings': ', has warnings',

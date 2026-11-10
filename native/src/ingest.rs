@@ -730,6 +730,8 @@ const MAX_STACKS: usize = 8;
 /// A series whose images face several ways in handfuls (a localizer, a few MPR snapshots) stays one series in
 /// the scanner's order, as in VEAcom 1.x: split by orientation, its images were listed as series of one or two.
 /// It is split only when every orientation is a stack of its own: at least 5 images, at most 8 stacks.
+/// One case more is split: a single stack with one image facing another way, the reference image a scanner
+/// puts at the head of a reformatted series. Kept in the stack, it would stop the stack being reconstructed.
 fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Frame>)>) {
     let mut alike: BTreeMap<(String, String, String), Vec<GroupKey>> = BTreeMap::new();
     for key in groups.keys() {
@@ -745,6 +747,10 @@ fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Fra
                     .iter()
                     .all(|key| groups[key].1.len() >= MIN_STACK_IMAGES))
         {
+            continue;
+        }
+        let sizes: Vec<usize> = keys.iter().map(|key| groups[key].1.len()).collect();
+        if sizes.len() == 2 && sizes.contains(&1) && sizes.iter().any(|n| *n >= MIN_STACK_IMAGES) {
             continue;
         }
         let mut keys = keys.into_iter();
@@ -6930,6 +6936,26 @@ mod tests {
         let imported = import_dir(&write_slices(slices));
         assert_eq!(imported.sources.len(), 1);
         assert_eq!(imported.sources[0].frames.len(), 8);
+    }
+
+    #[test]
+    fn a_stack_with_one_reference_image_facing_another_way_is_the_stack_and_the_image() {
+        let mut slices = vec![facing(1, SAGITTAL, 0.)];
+        slices.extend((2..=7).map(|n| facing(n, AXIAL, n as f64)));
+        let imported = import_dir(&write_slices(slices));
+        let mut sizes: Vec<_> = imported.sources.iter().map(|s| s.frames.len()).collect();
+        sizes.sort();
+        assert_eq!(sizes, [1, 6]);
+        let stack = imported
+            .sources
+            .iter()
+            .find(|s| s.frames.len() == 6)
+            .unwrap();
+        assert!(stack.info.can_reconstruct, "{:?}", stack.info.warnings);
+        // Four images and one facing another way are no stack: they stay one series.
+        let mut few = vec![facing(1, SAGITTAL, 0.)];
+        few.extend((2..=5).map(|n| facing(n, AXIAL, n as f64)));
+        assert_eq!(import_dir(&write_slices(few)).sources.len(), 1);
     }
 
     #[test]

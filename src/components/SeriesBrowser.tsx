@@ -8,6 +8,7 @@ import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
+import { referenceImages } from '../ui/referenceImages';
 import { foldSearch, patientKey, searchText, sequenceGuess, shownGuess, sortStudySeries, studyKey } from '../ui/seriesNames';
 import { phaseLabel } from '../ui/overlayCorners';
 import { Glyph } from './Glyph';
@@ -118,7 +119,10 @@ export function forgetThumbnail(id: string) {
   if (drawnPreviews.delete(id)) previewUpdates.dispatchEvent(new Event(id));
 }
 
-function Preview({ id, empty, failed }: { id: string; empty: boolean; failed: boolean }) {
+/** How wide a stack's reference image is drawn on the stack's card. */
+const REFERENCE_WIDTH = 30;
+
+function Preview({ id, empty, failed, small = false }: { id: string; empty: boolean; failed: boolean; small?: boolean }) {
   const { t } = useTranslation();
   const subscribe = (notify: () => void) => {
     previewUpdates.addEventListener(id, notify);
@@ -128,10 +132,10 @@ function Preview({ id, empty, failed }: { id: string; empty: boolean; failed: bo
   const paint = (canvas: HTMLCanvasElement | null) => {
     if (picture) canvas?.getContext('2d')?.putImageData(picture, 0, 0);
   };
-  if (picture) return <canvas ref={paint} width={PREVIEW_WIDTH * PREVIEW_SCALE} height={PREVIEW_HEIGHT * PREVIEW_SCALE} style={{ width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT }} aria-hidden="true" />;
+  if (picture) return <canvas ref={paint} width={PREVIEW_WIDTH * PREVIEW_SCALE} height={PREVIEW_HEIGHT * PREVIEW_SCALE} style={small ? { width: REFERENCE_WIDTH, height: REFERENCE_WIDTH * PREVIEW_HEIGHT / PREVIEW_WIDTH } : { width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT }} aria-hidden="true" />;
   if (empty) return <span className="series-preview-note">{t('series.noImages')}</span>;
   if (failed) return <span className="series-preview-note" title={t('series.previewFailed')}>—</span>;
-  return <Images size={28} strokeWidth={1.1} className="series-preview-placeholder" />;
+  return <Images size={small ? 14 : 28} strokeWidth={1.1} className="series-preview-placeholder" />;
 }
 
 function timeLabel(value = '') {
@@ -263,7 +267,10 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const searching = Boolean(query);
   const searchIndex = searching ? new Map(series.map(item => [item.id, searchText(item, guesses.get(item.id))])) : null;
   const words = query.split(/\s+/);
-  const studies = groupStudies(searchIndex ? series.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : series);
+  // A stack's reference image is shown on the stack's card, not on a card of its own (ui/referenceImages.ts).
+  const references = referenceImages(series), onCards = new Set([...references.values()].map(item => item.id));
+  const listed = series.filter(item => !onCards.has(item.id));
+  const studies = groupStudies(searchIndex ? listed.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : listed);
 
   // Ctrl and Shift pick several cards, as in a folder; dragging one of them drags them all, in the order
   // they were picked, and they open side by side (VEAcom 1.x). A plain click picks one and opens it.
@@ -372,7 +379,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
             const loading = loadingIds.has(item.id);
             const active = item.id === activeId;
             const several = picked.length > 1 && picked.includes(item.id);
-            return <button
+            const reference = references.get(item.id);
+            const card = <button
               type="button"
               key={item.id}
               className={`series-card${active ? ' is-active' : ''}${several ? ' is-picked' : ''}`}
@@ -400,6 +408,13 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
               </span>
             </button>;
+            if (!reference) return card;
+            return <div key={item.id} className="series-card-with-reference">{card}
+              <button type="button" className={`series-reference${reference.id === activeId ? ' is-active' : ''}`} aria-pressed={reference.id === activeId} aria-label={t('series.reference')} data-tooltip={t('series.reference')}
+                data-testid={`series-${reference.id}`} data-action="series-reference" draggable onDragStart={event => dragStart(event, reference)} onClick={() => onSelect(reference)} onContextMenu={event => openMenu(event, { item: reference })}>
+                <Preview id={reference.id} small empty={false} failed={Boolean(failedIds?.has(reference.id) && !loadingIds.has(reference.id))} />
+              </button>
+            </div>;
           })}</div>}
         </section>;
           })}
