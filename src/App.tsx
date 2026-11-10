@@ -2474,9 +2474,12 @@ export default function App() {
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
       {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries} hidePatient={settings.hidePatientData}
-        /* Undo brought caliper records back: they measure again at each series' scale now (a calibration may have changed
-           since), from their drawings, which may have moved, or from their own points where the drawing is gone. */
-        onRestored={() => { for (const [seriesId, volume] of displayVolumesRef.current) recordCalipers(seriesId, annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, undefined, volume.series); }}
+        /* Undo brought caliper records back: each series of the study measures them again at its scale now (a calibration
+           may have changed since), from their drawings, which may have moved, or from their own points where the drawing is
+           gone. Drawings keep their series loaded (publishVolumes), so a series whose volume left the cache has records
+           only, and its metadata and calibration are all they need. */
+        onRestored={() => { for (const item of seriesRef.current) if (studyKey(item) === studyKey(activeSeries)) recordCalipers(item.id, annotationRef.current[item.id] ?? EMPTY_ANNOTATIONS, undefined,
+          displayVolumesRef.current.get(item.id)?.series ?? { ...item, measurementScale: calibrationScales[item.id] }); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
         onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view) : null}
