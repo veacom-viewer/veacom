@@ -10,6 +10,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 async function main() {
   const split = process.argv.indexOf('--');
@@ -34,7 +35,7 @@ async function main() {
   } catch (error) { report.error = error.stack || error.message; }
   finally {
     await fs.writeFile(path.join(output, 'renderer-suite.json'), JSON.stringify(report, null, 2));
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
   console.log(`${report.passed ? 'PASS' : 'FAIL'} ${report.checks ?? 0} exact pixel checks on ${report.renderer?.renderer ?? 'no renderer'} (webgl ${report.webgl ?? '-'})`);

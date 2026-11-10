@@ -30,13 +30,14 @@ async function waitFor(condition: () => boolean, what: string, milliseconds = 10
   }
 }
 
-async function start({ primary = true } = {}) {
+// `platform` is what main.cjs reads as process.platform while it loads, so either side of its platform checks runs on any OS.
+async function start({ primary = true, platform = process.platform } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veacom-main-test-'));
   const desktop = path.join(root, 'desktop'), elsewhere = path.join(root, 'elsewhere');
   fs.mkdirSync(desktop); fs.mkdirSync(elsewhere);
   const paths: Record<string, string> = { userData: path.join(root, 'user-data'), desktop, temp: os.tmpdir() };
   const page = { holdsUnload: false, answer: 1, onPrompt: () => {} };
-  const state = { exited: false, prompts: 0, focused: 0, revealed: [] as string[] };
+  const state = { exited: false, prompts: 0, focused: 0, revealed: [] as string[], startup: [] as unknown[] };
   class WebContents extends EventEmitter {
     mainFrame = { url: 'veacom://app/index.html' };
     session = { setPermissionRequestHandler() {} };
@@ -57,7 +58,7 @@ async function start({ primary = true } = {}) {
   }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: false,
-    whenReady: () => Promise.resolve(),
+    whenReady: () => { state.startup.push('whenReady'); return Promise.resolve(); },
     setName() {}, getVersion: () => '0.1.0-test', getAppMetrics: () => [], getGPUFeatureStatus: () => ({}),
     setPath(name: string, value: string) { paths[name] = value; },
     getPath: (name: string) => paths[name] ?? os.tmpdir(),
@@ -86,6 +87,7 @@ async function start({ primary = true } = {}) {
       showSaveDialog: async () => ({ canceled: true }), showMessageBox: async () => ({ response: 0 }), showErrorBox() {},
     },
     clipboard: { writeText() {} }, nativeTheme: {}, net: { fetch: (...args: Parameters<typeof fetch>) => fetch(...args) },
+    systemPreferences: { registerDefaults: (defaults: object) => { state.startup.push(defaults); } },
     protocol: { registerSchemesAsPrivileged() {}, handle() {} },
     shell: { openPath: async (target: string) => { state.revealed.push(target); return ''; }, showItemInFolder: (target: string) => { state.revealed.push(target); }, openExternal: async () => {} },
     safeStorage: { isEncryptionAvailable: () => false },
@@ -106,7 +108,9 @@ async function start({ primary = true } = {}) {
   for (const key of Object.keys(require.cache)) if (key.startsWith(electronFolder + path.sep)) delete require.cache[key];
   process.env.VEACOM_USER_DATA = paths.userData;
   process.env.VEACOM_LOCALE = 'en';
-  require(mainFile);
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...realPlatform, value: platform });
+  try { require(mainFile); } finally { Object.defineProperty(process, 'platform', realPlatform); }
   const window = () => BrowserWindow.all[0];
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!({ senderFrame: window().webContents.mainFrame }, ...args);
   const invoke = async (channel: string, ...args: unknown[]) => call(channel, ...args);
@@ -139,6 +143,19 @@ afterEach(async () => {
 });
 
 describe('desktop app lifecycle', () => {
+  it('on macOS ignores the saved window state before it waits to be ready, so a recorded crash cannot hold its start', async () => {
+    const app = await start({ platform: 'darwin' });
+    // AppKit's "reopen its windows again?" alert comes before Electron's ready, so the default must be in place by then.
+    assert.deepEqual(app.state.startup.slice(0, 2), [{ ApplePersistenceIgnoreState: true }, 'whenReady']);
+  });
+
+  it('registers no macOS default on Windows and Linux, where Electron has none to register', async () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      const app = await start({ platform });
+      assert.deepEqual(app.state.startup.filter(step => step !== 'whenReady'), [], platform);
+    }
+  });
+
   it('reports only trusted renderer fault codes and coalesces repeated notifications', async test => {
     const sent: Array<{process: string; reason: string; exception?: string}> = [];
     test.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {

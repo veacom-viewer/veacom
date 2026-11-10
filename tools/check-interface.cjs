@@ -9,6 +9,7 @@ const os = require('node:os');
 const { execFileSync } = require('node:child_process');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -755,7 +756,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'interface-checks.json'), JSON.stringify({ checks, errors, failure: String(error.stack || error) }, null, 2));
     throw error;
   } finally {
-    await desktop.close();
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true });
   }
 }

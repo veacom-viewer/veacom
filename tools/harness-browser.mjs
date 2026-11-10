@@ -7,6 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium, _electron as electron } from 'playwright';
 import { ignoreOutsideInput } from './lib/outside-input.cjs';
+import { closeDesktop } from './lib/close-desktop.cjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -29,7 +30,7 @@ export async function launchHarness({ width = 640, height = 640 } = {}) {
       window.setMinimumSize(1, 1); window.setContentSize(size.width, size.height);
     }, { width, height });
     await page.setViewportSize({ width, height });
-    return { page, close: async () => { await app.close().catch(() => {}); await rm(userData, { recursive: true, force: true }).catch(() => {}); } };
+    return { page, close: async () => { await closeDesktop(app); await rm(userData, { recursive: true, force: true }).catch(() => {}); } };
   }
   const browser = await chromium.launch({ channel: process.env.VEACOM_BROWSER_CHANNEL ?? 'chrome', headless: true,
     args: ['--enable-gpu', ...(process.env.VEACOM_BROWSER_ARGS ?? '').split(/\s+/).filter(Boolean)] });

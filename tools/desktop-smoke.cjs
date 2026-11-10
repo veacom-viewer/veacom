@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const { ClickBudget } = require('./click-budget.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
 // hardware (default): a graphics driver must draw. software: the PC has no usable driver, so drawing must
 // run in software and the app must say so.
@@ -175,6 +176,6 @@ async function main() {
     if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
     await fs.writeFile(path.join(output, 'desktop-smoke.json'), JSON.stringify({ passed: false, expectedRenderer, error: error.stack, checks, errors, study }, null, 2));
     throw error;
-  } finally { await desktop.close(); await fs.rm(userData, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(userData, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

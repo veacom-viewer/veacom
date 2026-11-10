@@ -4,6 +4,7 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const {execFileSync} = require('node:child_process');
 const { _electron: electron } = require('playwright');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 (async () => {
   const [exe, fixture, result] = process.argv.slice(2);
   if (!exe || !fixture || !result) throw Error('Usage: check-resource-spikes.cjs <packaged-executable> <synthetic-ct-small> <result.json>');
@@ -38,7 +39,7 @@ const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
       return bytes[j];
     });
     await page.waitForTimeout(1550);
-    await app.close(); app=null;
+    await closeDesktop(app); app=null;
     const files=fs.readdirSync(path.join(dir,'usage')).filter(n=>n.endsWith('.jsonl'));
     const events=files.flatMap(n=>fs.readFileSync(path.join(dir,'usage',n),'utf8').trim().split('\n').map(JSON.parse));
     const first=events.find(e=>e.name==='ux.study.first_image'),roles=events.filter(e=>e.name==='perf.resources');
@@ -52,5 +53,5 @@ const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
     const proof={platform:process.platform,version,first:{trace:first.trace,span:first.span},renderer:{trace:renderer.trace,span:renderer.span,...renderer.attributes},roles:roles.map(e=>e.attributes['veacom.perf.role']),medianElectronPollMs:Number(sampleCost.toFixed(3))};
     fs.writeFileSync(result,JSON.stringify(proof,null,2)+'\n');
     console.log('PASS synthetic first image, engine counters and a real renderer CPU/RAM spike.');
-  } finally {if(app) await app.close();fs.rmSync(dir,{recursive:true,force:true});}
+  } finally {await closeDesktop(app);fs.rmSync(dir,{recursive:true,force:true});}
 })().catch(e=>{console.error(e.message);process.exitCode=1;});
