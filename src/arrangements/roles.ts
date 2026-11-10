@@ -86,13 +86,13 @@ export function findRole(spec: RoleSpec, candidates: readonly Series[], anchor: 
   const elsewhere = spec.study === 'prior' || spec.study === 'later';
   const found = candidates.filter(item => ofKind(spec, item) && (!anchor || item.id !== anchor.id)
     && (!anchor || (elsewhere ? otherStudy(anchor, item, spec.study === 'later') : studyKey(item) === studyKey(anchor)))
-    && (!anchor || spec.frame !== 'same' || shareFrame(anchor, item)) && (!anchor || !spec.alike || counterpart(anchor, item) !== null)
+    && (!anchor || spec.frame !== 'same' || shareFrame(anchor, item)) && (!anchor || !spec.alike || counterpart(anchor, item, candidates) !== null)
     && (!fits || fits(item)));
   if (!found.length) return null;
   const ranks = spec.prefer ?? [];
   // Of other studies, the nearest in time first: the latest earlier one, or the earliest later one.
   const score = (item: Series) => [...(elsewhere ? [spec.study === 'later' ? -Number(item.studyDate) : Number(item.studyDate)] : []),
-    ...(anchor && spec.alike ? counterpart(anchor, item) ?? [] : []), ...ranks.map(rank => RANK[rank](item, anchor))];
+    ...(anchor && spec.alike ? counterpart(anchor, item, candidates) ?? [] : []), ...ranks.map(rank => RANK[rank](item, anchor))];
   return found.reduce((best, item) => {
     const a = score(item), b = score(best);
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i] ? item : best;

@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { matchComparison } from '../src/arrangements';
 import { COMPARISONS } from '../src/arrangements/builtin';
 import { bestCounterpart, counterpart } from '../src/arrangements/counterpart';
+import { ctContrast } from '../src/domain/clinical';
 import { levelSlice, patientMatch } from '../src/imaging/linking';
 import { sequenceGuess } from '../src/ui/seriesNames';
 import { en } from '../src/i18n/en';
@@ -156,6 +157,47 @@ describe('the comparison screen', () => {
     const stranger = { ...earlier(t2), patientId: 'Q', patientName: 'Other', patientKey: 'other-patient' };
     assert.equal(plan(t2, [...now, stranger]), null);
     assert.equal(plan(t2, [...now, { ...earlier(t2), studyDate: '' }]), null, 'a study without a date is neither earlier nor later');
+  });
+});
+
+describe('whether a CT series was taken before or after contrast', () => {
+  const ct = (id: string, extra: Partial<Series> = {}) => series({ id, description: 'Abdomen 5.0 B31f', ...extra });
+  const agent = { contrastBolusAgent: 'Iohexol' };
+  it('reads the series\' name, in Turkish and English, before an agent the scanner may have copied onto it', () => {
+    for (const name of ['ABDOMEN KONTRASTSIZ', 'Abdomen native', 'Thorax NC', 'BATIN IVKM\'SİZ', 'Coronary artery calcium']) {
+      assert.equal(ctContrast(ct('x', { description: name, ...agent }), []), 'pre', name);
+    }
+    for (const name of ['Abdomen arteriyel', 'PORTAL VENÖZ FAZ', 'Thorax +C', 'BT anjiyo', 'GEÇ FAZ']) {
+      assert.equal(ctContrast(ct('x', { description: name }), []), 'post', name);
+    }
+  });
+  it('compares the time of the take with the start of the injection', () => {
+    const at = (time: string) => ct('x', { acquisitionTime: time, contrastBolusStartTime: '101700', ...agent });
+    assert.equal(ctContrast(at('101500'), []), 'pre');
+    assert.equal(ctContrast(at('101830'), []), 'post');
+  });
+  it('takes a series of a later take for one after contrast, where the study records contrast', () => {
+    const takes = [ct('first', { acquisitionTime: '101500', ...agent }), ct('second', { acquisitionTime: '101700', ...agent }), ct('third', { acquisitionTime: '101800', ...agent })];
+    assert.deepEqual(takes.map(item => ctContrast(item, takes)), [null, 'post', 'post'], 'the agent on the first take may have been copied from the later ones');
+    // Another reconstruction of the first take is of the first take too; a scout before it is no take.
+    const lung = ct('lung', { description: 'Lung 1.0 B70f', acquisitionTime: '101500', ...agent });
+    const scout = ct('scout', { description: 'Topogram', acquisitionTime: '101200', canReconstruct: false, ...agent });
+    assert.equal(ctContrast(lung, [scout, ...takes, lung]), null);
+    assert.equal(ctContrast(takes[0], [scout, takes[0]]), 'post', 'a study taken once is as its agent says');
+    // Taken twice with no contrast on record (inspiration and expiration): nothing is told.
+    const plain = takes.map(item => ({ ...item, contrastBolusAgent: undefined }));
+    assert.deepEqual(plain.map(item => ctContrast(item, plain)), [null, null, null]);
+  });
+  it('is not told for a series with no record of contrast, and is after contrast for one taken once with an agent', () => {
+    assert.equal(ctContrast(ct('x'), []), null);
+    assert.equal(ctContrast(ct('x', agent), []), 'post');
+  });
+  it('puts a later take beside the earlier study\'s later take, though both studies name every take alike', () => {
+    const now = [ct('n1', { acquisitionTime: '101500', ...agent }), ct('n2', { acquisitionTime: '101700', ...agent })];
+    const before = now.map(item => earlier(item)), session = [...now, ...before];
+    assert.equal(bestCounterpart(now[1], before, session)?.id, 'n2@19991201');
+    // The first take, whose contrast is not told, is neither like nor unlike either: the first listed stands.
+    assert.equal(bestCounterpart(now[0], before, session)?.id, 'n1@19991201');
   });
 });
 

@@ -1384,7 +1384,7 @@ export default function App() {
     // earlier study that has a counterpart, else the nearest later one (the roles of the comparison itself).
     const shownThere = seriesOf(other), elsewhere = shownThere && studyKey(shownThere) !== studyKey(item);
     if (elsewhere && (!samePatient(item, shownThere) || shownThere.studyDate === item.studyDate)) return;
-    const partner = elsewhere ? bestCounterpart(item, seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere)))
+    const partner = elsewhere ? bestCounterpart(item, seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere)), seriesRef.current)
       : findRole(COMPARE_WITH_PRIOR.roles.prior, comparableSeries(item, seriesRef.current), item) ?? findRole(COMPARE_WITH_LATER.roles.later, comparableSeries(item, seriesRef.current), item);
     if (!partner || partner.id === other.seriesId) return;
     // Named as its card in the series list names it: by its own name, or its likely sequence where the name is a site code.
@@ -1420,7 +1420,7 @@ export default function App() {
     }
     const theirs = seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere));
     for (let index = from + direction; from >= 0 && index >= 0 && index < study.length; index += direction) {
-      const next = study[index], partner = bestCounterpart(next, theirs);
+      const next = study[index], partner = bestCounterpart(next, theirs, seriesRef.current);
       if (!partner) continue;
       // Each pane stays where it was when its next series lies in the frame of reference of the one it showed (the
       // series of one study); otherwise this pane's opens level with the other pane, and its counterpart level with it.

@@ -4,13 +4,12 @@
 // kind there is none, and the reader picks. Among CT series of that kind the best is taken: contrast, name, stored
 // window and slice thickness rank them, and none of the four rules a series out.
 import type { Series } from '../model';
+import { ctContrast } from '../domain/clinical';
 import { acquiredPlane } from '../imaging/geometry';
 import { sequenceGuess } from '../ui/seriesNames';
 
 /** A description as it is compared: case, runs of spaces and underscores make no difference. */
 const words = (text: string) => text.trim().toUpperCase().replace(/[\s_]+/g, ' ');
-/** Contrast was given, as the series records it. */
-const enhanced = (item: Series) => Boolean(item.contrastBolusAgent?.trim());
 /** Slice thickness as recorded, else the distance between slices. It only ranks candidates; it is never shown. */
 const thickness = (item: Series) => item.sliceThickness ?? item.spacing[2];
 /** Two stored windows of one look: a lung reconstruction is stored with a lung window, a soft-tissue one with its own. */
@@ -65,10 +64,13 @@ function samePart(a: Series, b: Series): boolean {
  * - MR: the same likely sequence (T1 with contrast is not T1); for diffusion the nearer b-value ranks higher. A series
  *   whose sequence cannot be told matches only one of the same description.
  * - CT: ranked by the same contrast state, the same description, the same stored look (lung or soft tissue), the
- *   nearer slice thickness and the more slices.
+ *   nearer slice thickness and the more slices. Whether a series was taken before or after contrast is read from its
+ *   record, its name and its place in its study (`ctContrast`); where that is not told for one of the two, contrast
+ *   counts neither for nor against the pair.
  * - Anything else: only a series of the same description.
+ * `session` is every loaded series: a CT's contrast state depends on the other series of its study.
  */
-export function counterpart(anchor: Series, item: Series): number[] | null {
+export function counterpart(anchor: Series, item: Series, session: readonly Series[] = [anchor, item]): number[] | null {
   if (anchor.segmentation || item.segmentation || anchor.modality !== item.modality || anchor.canReconstruct !== item.canReconstruct || !samePart(anchor, item)) return null;
   const sameWords = Number(Boolean(words(anchor.description)) && words(anchor.description) === words(item.description));
   if (anchor.modality === 'MR') {
@@ -79,16 +81,19 @@ export function counterpart(anchor: Series, item: Series): number[] | null {
   }
   if (acquiredPlane(anchor) !== acquiredPlane(item)) return null;
   if (anchor.modality === 'CT') {
-    return [Number(enhanced(anchor) === enhanced(item)), sameWords, Number(sameLook(anchor, item)), -Math.abs(thickness(anchor) - thickness(item)), item.dimensions[2]];
+    const mine = ctContrast(anchor, session), theirs = ctContrast(item, session);
+    const sameContrast = mine && theirs ? Number(mine === theirs) : 0.5;
+    return [sameContrast, sameWords, Number(sameLook(anchor, item)), -Math.abs(thickness(anchor) - thickness(item)), item.dimensions[2]];
   }
   return sameWords ? [1] : null;
 }
 
-/** The best counterpart of `anchor` among `candidates`, the first listed of equals, or null when it has none. */
-export function bestCounterpart(anchor: Series, candidates: readonly Series[]): Series | null {
+/** The best counterpart of `anchor` among `candidates`, the first listed of equals, or null when it has none.
+ * `session`: every loaded series, as `counterpart` takes it. */
+export function bestCounterpart(anchor: Series, candidates: readonly Series[], session: readonly Series[] = [anchor, ...candidates]): Series | null {
   let best: Series | null = null, bestScore: number[] = [];
   for (const item of candidates) {
-    const score = item.id === anchor.id ? null : counterpart(anchor, item);
+    const score = item.id === anchor.id ? null : counterpart(anchor, item, session);
     if (!score) continue;
     const at = score.findIndex((value, index) => value !== bestScore[index]);
     if (!best || (at >= 0 && score[at] > bestScore[at])) { best = item; bestScore = score; }
