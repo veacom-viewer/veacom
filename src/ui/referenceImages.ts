@@ -1,10 +1,12 @@
 import { studyKey } from '../domain/patient';
 import { cross, dot, length } from '../imaging/geometry';
+import { pagingPlace } from '../imaging/paging';
 import type { Series, Vec3 } from '../model';
 
 // A scanner puts one image facing another way at the head of a reformatted series: the reference image that shows
-// where the slices lie. The engine lists it as a series of one image beside the stack. The series list shows it on
-// the stack's card instead of on a card of its own.
+// where the slices lie. The engine lists it as a series of one image beside the stack, so that the stack can be
+// reconstructed. To the reader the two are one series: the image is counted among the stack's images, stands on the
+// stack's card, and is reached by paging past the end of the stack it stands at.
 
 const MIN_STACK_IMAGES = 5;
 /** Planes more than this many degrees apart are different planes. A reference image lies across its stack; a single
@@ -43,4 +45,16 @@ export function referenceImages(series: readonly Series[]): Map<string, Series> 
     if (family.length === 2 && single.length === 1 && stacks.length === 1 && stacks[0].canReconstruct && facesAnotherWay(single[0], stacks[0])) references.set(stacks[0].id, single[0]);
   }
   return references;
+}
+
+/** A stack and its reference image as the one sequence a pane pages: how many images it has, and where the reference
+ * image stands in it, from 0 in paging order. The image stands at the end of the stack the scanner numbered it next
+ * to, so that the numbers run on: before the slices where its Instance Number is nearer the first paged slice's,
+ * after them where it is nearer the last's. With no numbers to go by it comes first. */
+export function joinedWith(stack: Series, reference: Series): { total: number; leadAt: number } {
+  const count = stack.dimensions[2], acquired = { plane: 'axial', mode: 'source' } as const;
+  const numberOf = (item: Series, slice: number) => item.frameMetadata?.[slice]?.instanceNumber;
+  const own = numberOf(reference, 0), first = numberOf(stack, pagingPlace(stack, acquired, 0, count)), last = numberOf(stack, pagingPlace(stack, acquired, count - 1, count));
+  const after = own !== undefined && first !== undefined && last !== undefined && Math.abs(own - last) < Math.abs(own - first);
+  return { total: count + 1, leadAt: after ? count : 0 };
 }

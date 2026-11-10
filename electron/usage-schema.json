@@ -39,7 +39,7 @@
       "point-cobb", "point-crosshair", "point-ellipse", "point-length", "point-pan", "point-polygon", "point-polyline", "point-probe",
       "point-rectangle", "point-scroll", "point-text", "point-window", "point-zoom", "preset-abdomen", "preset-angiography", "preset-auto", "preset-bone",
       "preset-brain", "preset-dicom", "preset-full-range", "preset-liver", "preset-lung", "preset-soft-tissue", "preset-temporal-bone", "preset-thorax", "reconnect", "redo", "segmentation-kind",
-      "segmentation-overlay", "segmentation-toggle", "series-clear", "series-collapse-all", "series-drop", "series-expand-all", "series-find", "series-loaded", "series-menu", "series-open-active", "series-pick", "series-reference", "series-remove", "series-remove-cancel", "series-remove-confirm", "series-remove-dialog", "series-search", "series-search-clear",
+      "segmentation-overlay", "segmentation-toggle", "series-clear", "series-collapse-all", "series-drop", "series-expand-all", "series-find", "series-loaded", "series-menu", "series-open-active", "series-pick", "series-remove", "series-remove-cancel", "series-remove-confirm", "series-remove-dialog", "series-search", "series-search-clear",
       "show-crosshair", "show-help", "slice-slider", "software-rendering-notice", "software-rendering-status", "status-mouse", "status-text", "patient-toggle", "study-remove", "study-toggle",
       "tags-search", "tool-3d", "tool-angle", "tool-arrow", "tool-assessment", "tool-cobb", "tool-crosshair", "tool-delete-slice",
       "tool-ellipse", "tool-export", "tool-fusion", "tool-fusion-menu", "tool-help", "tool-inspector", "tool-language", "tool-layout", "tool-length",

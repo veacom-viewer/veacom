@@ -99,6 +99,3 @@
 .series-guess-toggle { display: grid; place-items: center; width: 24px; height: 22px; margin-left: auto; border-radius: 4px; color: var(--text-secondary); }
 .series-guess-toggle[aria-pressed=true] { background: var(--accent-solid); color: var(--on-accent); }
 .series-guess-toggle + button { margin-left: 2px; }
-/* A stack's reference image, on the stack's card: at the bottom left of the card's picture. */
-.series-card-with-reference { position: relative; }
-.series-reference { position: absolute; left: calc(50% - 37px); bottom: 11px; display: grid; place-items: center; width: 32px; height: 34px; padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--bg-image); pointer-events: none; }

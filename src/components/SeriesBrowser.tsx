@@ -119,10 +119,7 @@ export function forgetThumbnail(id: string) {
   if (drawnPreviews.delete(id)) previewUpdates.dispatchEvent(new Event(id));
 }
 
-/** How wide a stack's reference image is drawn on the stack's card. */
-const REFERENCE_WIDTH = 30;
-
-function Preview({ id, empty, failed, small = false }: { id: string; empty: boolean; failed: boolean; small?: boolean }) {
+function Preview({ id, empty, failed }: { id: string; empty: boolean; failed: boolean }) {
   const { t } = useTranslation();
   const subscribe = (notify: () => void) => {
     previewUpdates.addEventListener(id, notify);
@@ -132,10 +129,10 @@ function Preview({ id, empty, failed, small = false }: { id: string; empty: bool
   const paint = (canvas: HTMLCanvasElement | null) => {
     if (picture) canvas?.getContext('2d')?.putImageData(picture, 0, 0);
   };
-  if (picture) return <canvas ref={paint} width={PREVIEW_WIDTH * PREVIEW_SCALE} height={PREVIEW_HEIGHT * PREVIEW_SCALE} style={small ? { width: REFERENCE_WIDTH, height: REFERENCE_WIDTH * PREVIEW_HEIGHT / PREVIEW_WIDTH } : { width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT }} aria-hidden="true" />;
+  if (picture) return <canvas ref={paint} width={PREVIEW_WIDTH * PREVIEW_SCALE} height={PREVIEW_HEIGHT * PREVIEW_SCALE} style={{ width: PREVIEW_WIDTH, height: PREVIEW_HEIGHT }} aria-hidden="true" />;
   if (empty) return <span className="series-preview-note">{t('series.noImages')}</span>;
   if (failed) return <span className="series-preview-note" title={t('series.previewFailed')}>—</span>;
-  return <Images size={small ? 14 : 28} strokeWidth={1.1} className="series-preview-placeholder" />;
+  return <Images size={28} strokeWidth={1.1} className="series-preview-placeholder" />;
 }
 
 function timeLabel(value = '') {
@@ -204,14 +201,17 @@ export function SeriesMenuItems({ series, activeId, shown, onSelect }: {
   series: Series[]; activeId?: string; shown: ReadonlySet<string>; onSelect: (item: Series) => void;
 }) {
   const { t } = useTranslation();
-  const patients = groupStudies(series);
+  // A stack and its reference image are one series here as in the list (ui/referenceImages.ts).
+  const references = referenceImages(series), counted = new Set([...references.values()].map(item => item.id));
+  const patients = groupStudies(series.filter(item => !counted.has(item.id)));
   return patients.map((patient, index) => <Fragment key={patient.key}>
     {index > 0 && <MenuDivider />}
     {patients.length > 1 && <MenuHeading>{patient.first.patientName.replaceAll('^', ' ').trim() || patient.first.patientId || '—'}</MenuHeading>}
     {patient.studies.flatMap(study => study.items.map(item => {
-      const guess = shownGuess(item, sequenceGuess(item, t));
+      const guess = shownGuess(item, sequenceGuess(item, t)), reference = references.get(item.id);
       return <MenuItem action="segmentation-kind" key={item.id} kind={item.segmentation ? 'checkbox' : 'radio'}
-        checked={item.segmentation ? shown.has(item.id) : activeId === item.id} meta={`${item.modality} · ${item.dimensions[2]}`} onClick={() => onSelect(item)}>
+        checked={item.segmentation ? shown.has(item.id) : activeId === item.id || (reference !== undefined && reference.id === activeId)}
+        meta={`${item.modality} · ${item.dimensions[2] + Number(reference !== undefined)}`} onClick={() => onSelect(item)}>
         {item.segmentation ? `${t('segmentation.kind')} · ` : ''}{item.description || item.modality}{item.phase ? ` · ${phaseLabel(item.phase)}` : ''}{guess ? ` · ${guess}` : ''}
       </MenuItem>;
     }))}
@@ -267,8 +267,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const searching = Boolean(query);
   const searchIndex = searching ? new Map(series.map(item => [item.id, searchText(item, guesses.get(item.id))])) : null;
   const words = query.split(/\s+/);
-  // A stack's reference image is shown on the stack's card, not on a card of its own (ui/referenceImages.ts). The
-  // small picture is no button, so a click meant for the series cannot open it: the card's menu opens it.
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): the image has no card of
+  // its own, the stack's card counts it among its images, and paging past the stack's end reaches it.
   const references = referenceImages(series), onCards = new Set([...references.values()].map(item => item.id));
   const listed = series.filter(item => !onCards.has(item.id));
   // The stack's card stands for its reference image too: a search that finds only that image keeps the card.
@@ -384,14 +384,14 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
             // The card is the open one while its series or its reference image is shown.
             const active = item.id === activeId || (reference !== undefined && reference.id === activeId);
             const several = picked.length > 1 && picked.includes(item.id);
-            const card = <button
+            return <button
               type="button"
               key={item.id}
               className={`series-card${active ? ' is-active' : ''}${several ? ' is-picked' : ''}`}
               aria-pressed={active}
-              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2], warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
+              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
               aria-busy={loading}
-              aria-describedby={[item.warnings.length ? `series-warnings-${item.id}` : '', reference ? `series-reference-${item.id}` : ''].filter(Boolean).join(' ') || undefined}
+              aria-describedby={item.warnings.length ? `series-warnings-${item.id}` : undefined}
               data-testid={`series-${item.id}`}
               data-action="series-pick"
               draggable
@@ -407,17 +407,11 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               <span className="series-preview">
                 <Preview id={item.id} empty={item.dimensions[2] === 0} failed={Boolean(failedIds?.has(item.id) && !loading)} />
                 {item.warnings.length > 0 && <span className="series-warning" aria-hidden="true" data-tooltip={warningTexts(item, locale).join(' · ')}><TriangleAlert size={11} /></span>}
-                <span className="series-image-count">{item.dimensions[2]}</span>
+                <span className="series-image-count">{item.dimensions[2] + Number(reference !== undefined)}</span>
                 {several && <span className="sr-only">{t('series.picked', { number: picked.indexOf(item.id) + 1, count: picked.length })}</span>}
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
-                {/* The small picture is hidden from assistive technology: the card says where the image is. */}
-                {reference && <span id={`series-reference-${item.id}`} className="sr-only">{t('series.referenceInMenu')}</span>}
               </span>
             </button>;
-            if (!reference) return card;
-            return <div key={item.id} className="series-card-with-reference">{card}
-              <span className="series-reference" aria-hidden="true"><Preview id={reference.id} small empty={false} failed={Boolean(failedIds?.has(reference.id) && !loadingIds.has(reference.id))} /></span>
-            </div>;
           })}</div>}
         </section>;
           })}
@@ -429,12 +423,11 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
       <input data-action="series-search" ref={searchInput} autoFocus onBlur={event => { if (!search.trim() && event.relatedTarget !== findButton.current) setSearchOpen(false); }} aria-label={t('series.search')} placeholder={t('series.searchPlaceholder')} value={search} onChange={event => setSearch(event.target.value)} spellCheck={false} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSearch(''); setSearchOpen(false); findButton.current?.focus(); } }} />
       {search && <button data-action="series-search-clear" type="button" aria-label={t('series.clearSearch')} onClick={() => { setSearch(''); searchInput.current?.focus(); }}><X size={12} /></button>}
     </div>}
-    <div className="series-browser-footnote"><span>{t('series.count', { count: series.length })}</span><button type="button" className="series-guess-toggle" aria-pressed={guessNames} aria-label={t('series.guessNames')} data-action="series-guess-names" data-tooltip={t('series.guessNames')} onClick={toggleGuessNames}><Glyph name="sequences" size={15} /></button><button ref={findButton} type="button" aria-label={t('series.find')} data-testid="series-find" aria-expanded={searchOpen} data-tooltip={t('series.find')} onClick={() => { setSearchOpen(open => !open); if (searchOpen) setSearch(''); }}><Search size={13} /></button></div>
+    <div className="series-browser-footnote"><span>{t('series.count', { count: series.length - onCards.size })}</span><button type="button" className="series-guess-toggle" aria-pressed={guessNames} aria-label={t('series.guessNames')} data-action="series-guess-names" data-tooltip={t('series.guessNames')} onClick={toggleGuessNames}><Glyph name="sequences" size={15} /></button><button ref={findButton} type="button" aria-label={t('series.find')} data-testid="series-find" aria-expanded={searchOpen} data-tooltip={t('series.find')} onClick={() => { setSearchOpen(open => !open); if (searchOpen) setSearch(''); }}><Search size={13} /></button></div>
     {menu && <div ref={menuRef} className="context-anchor" style={{ left: menu.x, top: menu.y }}>
       <Menu label={t('series.menu')} onClose={() => closeMenu()} className={`context-menu${menu.y > window.innerHeight - 320 ? ' menu-up' : ''}`} testId="series-menu">
         {menu.item && <>
           <MenuItem action="series-open-active" onClick={() => { const item = menu.item!; act(() => onSelect(item)); }}>{t('series.openInActive')}</MenuItem>
-          {references.has(menu.item.id) && <MenuItem action="series-reference" onClick={() => { const reference = references.get(menu.item!.id)!; act(() => onSelect(reference)); }}>{t('series.openReference')}</MenuItem>}
           <MenuItem action="series-remove" onClick={() => { const item = menu.item!, reference = references.get(item.id); act(() => onRemove(reference ? [item.id, reference.id] : [item.id])); }}>{t('series.removeSeries')}</MenuItem>
           <MenuDivider />
         </>}
