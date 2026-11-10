@@ -328,6 +328,8 @@ export class UsageTracker {
     const study = this.study;
     if (!study || study.firstImage || !seriesId || !study.series.has(seriesId)) return;
     study.firstImage = true;
+    // For tools/browser-bench, which reads the browser build's opening step by step from the page's timeline.
+    if (typeof performance !== 'undefined') performance.mark('veacom:first-image');
     this.settle();
     // An instant at the moment the image appeared: its t_ms is the time from opening to the first image.
     const state = this.read(), changed = changedFacets(this.last, state);

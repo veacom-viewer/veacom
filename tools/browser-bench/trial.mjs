@@ -156,6 +156,9 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     line.peakMB = peakMB; line.loadedMB = memoryMB(after);
     let { marks, frames } = readTrace(await trace.stop(), decode);
     Object.assign(line, openMetrics(marks, frames, MAIN));
+    // VEAcom marks its steps of opening (files listed, import, first frame, first image): each one's time after the drop.
+    const steps = Object.entries(marks).filter(([name]) => name.startsWith('veacom:')).map(([name, at]) => [name.slice(7), Math.round(at - marks['bench:drop'])]);
+    if (steps.length) line.openSteps = Object.fromEntries(steps.sort((a, b) => a[1] - b[1]));
     const first = frames.find(f => f.index !== null && f.unit >= MAIN * f.width && f.ts >= marks['bench:drop']);
     if (first) fs.writeFileSync(path.join(outDir, 'shots', `${line.viewer}-${study.name}-r${round}-first.jpg`), Buffer.from(first.jpeg, 'base64'));
     // The window showed a slice but the trace's small screenshots never read it: keep the last one to see why.
