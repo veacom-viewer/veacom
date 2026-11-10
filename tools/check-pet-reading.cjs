@@ -62,6 +62,20 @@ async function main() {
     };
     const number = line => Number(/(-?\d+\.\d+) /.exec(line)[1]);
 
+    // The value under the pointer is written only where the reader asked for it: not at first, and from the overlay
+    // menu's "Value at the pointer" on, which is kept with the other preferences.
+    await page.mouse.move(...await marker(1), { steps: 2 });
+    await page.waitForTimeout(300);
+    assert.equal(await page.locator('[data-testid="pointer-readout"]').count(), 0, 'No value under the pointer before it is asked for.');
+    await page.getByTestId('tool-overlay-menu').click();
+    const option = page.locator('[role="menu"] [data-action="display-choice"]', { hasText: 'Value at the pointer' });
+    assert.equal(await option.getAttribute('aria-checked'), 'false');
+    await option.click();
+    assert.equal(await option.getAttribute('aria-checked'), 'true');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('veacom:workspace:v2')).showPointerValue), true);
+    check('The value under the pointer shows only when asked for');
+
     // PET: its value in SUVbw, two decimals; the nodule (SUV 9, blurred) reads hot.
     const petAt = await marker(1);
     const [pet] = await hover(1, petAt, /^PET -?\d+\.\d\d SUVbw$/);

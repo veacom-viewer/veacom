@@ -205,6 +205,8 @@ export interface ViewportProps {
   showOverlay?: boolean;
   /** The scale bar at the bottom right (off unless asked for). */
   showScale?: boolean;
+  /** The value under the pointer, in the bottom-right corner (off unless asked for). */
+  showPointerValue?: boolean;
   hidePatientData?: boolean;
   hideMeasurements?: boolean;
   /** Segmentations to outline wherever their masks lie in the displayed plane. */

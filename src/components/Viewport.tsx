@@ -427,7 +427,7 @@ export function Viewport(props: ViewportProps) {
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
   }, [props, queue, syncInteractionContext, cancelGesture]);
   const refreshReadout = useEffectEvent(updateReadout);
-  useEffect(() => { refreshReadout(); }, [props.showOverlay, locale]);
+  useEffect(() => { refreshReadout(); }, [props.showOverlay, props.showPointerValue, locale]);
   const resizePane = useEffectEvent((element: HTMLElement) => measurePane(element.getBoundingClientRect()));
   const restore = useEffectEvent(() => queue());
   const wheel = useEffectEvent((event: WheelEvent) => {
@@ -857,9 +857,10 @@ export function Viewport(props: ViewportProps) {
       : petHasSuv(props.fusion.volume.series) ? t('viewport.fusionScale', { upper: general(props.fusion.upperSuv), opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : t('viewport.fusionScaleOwn', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) }),
   ] : [])].map(text => ({ text, fitted: fitWidth(text, lowerWidth, fontFamily) }));
-  // The pointer's value takes the lowest lines of the bottom-right corner (the pane's own, then a fused PET's), kept for
-  // it while the overlay shows, so labels and corner lines stay put as it comes and goes.
-  const readoutLines = props.showOverlay === false || props.volume.series.components === 3 ? 0 : props.fusion && !projected ? 2 : 1;
+  // The pointer's value is written only where the reader asked for it (the overlay menu). It takes the lowest lines of
+  // the bottom-right corner (the pane's own, then a fused PET's), kept for it while the overlay shows, so labels and
+  // corner lines stay put as it comes and goes.
+  const readoutLines = props.showOverlay === false || !props.showPointerValue || props.volume.series.components === 3 ? 0 : props.fusion && !projected ? 2 : 1;
   const keepOut = props.showOverlay === false || (!shownAnnotations.length && !draft) ? NO_BOXES : overlayKeepOut(dimensions[0], dimensions[1], metadataWidth,
     { topLeft: topLeft.length, topRight: topRight.length, bottomLeft: detailLine ? 3 : 2, bottomRight: bottomRight.length + readoutLines });
   // Labels avoid the overlay text and the chips placed before them (hard), and every shape on the slice (soft).
