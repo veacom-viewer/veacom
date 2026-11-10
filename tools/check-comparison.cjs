@@ -297,7 +297,7 @@ async function compareStudies(manifest, followUp, { desktop, page, state, settle
   await strangerIn();
   await warning.waitFor();
   assert.equal(await warning.getAttribute('role'), 'alert');
-  assert.match(await warning.textContent(), /^The two panes show different patients\./);
+  assert.match(await warning.textContent(), /^The patient details in the two panes differ\./);
   assert.deepEqual(await shown(), [before.t2.id, stranger.id], 'The series is shown all the same.');
   await settled();
   // Another message does not take the warning's place: linking the panes again says so in the window's notice.

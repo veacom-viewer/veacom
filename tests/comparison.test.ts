@@ -147,19 +147,24 @@ describe('the comparison screen', () => {
 
 describe('whether two series are of one patient', () => {
   const one = series({ patientKey: 'key-one' });
-  it('is the same for one patient and different for two who are both named', () => {
+  it('is the same for one patient, and different where an ID, a name or a birth date both record differs', () => {
     assert.equal(patientMatch(one, earlier(one)), 'same');
     assert.equal(patientMatch(one, { ...earlier(one), patientId: 'Q', patientKey: 'key-two' }), 'different');
     assert.equal(patientMatch(one, { ...earlier(one), patientName: 'Other', patientKey: 'key-two' }), 'different');
-    // One ID and one name, but the engine keeps the two apart (another birth date, say).
-    assert.equal(patientMatch(one, { ...earlier(one), patientKey: 'key-two' }), 'different');
+    assert.equal(patientMatch({ ...one, patientBirthDate: '19700101' }, { ...earlier(one), patientBirthDate: '19800101', patientKey: 'key-two' }), 'different');
   });
-  it('is unknown, never different, where a series names no patient or only the study tells them apart', () => {
+  it('is unknown, never different, where the field that would tell is missing in one of them', () => {
+    // The same name, but only one of the two records an ID: nothing says they are two patients.
+    assert.equal(patientMatch(one, { ...earlier(one), patientId: '', patientKey: 'key-no-id' }), 'unknown');
+    assert.equal(patientMatch({ ...one, patientName: '' }, { ...earlier(one), patientKey: 'key-no-name' }), 'unknown');
     const unnamed = { ...earlier(one), patientId: '', patientName: ' ', patientKey: 'key-unnamed' };
     assert.equal(patientMatch(one, unnamed), 'unknown');
     assert.equal(patientMatch(unnamed, one), 'unknown');
     assert.equal(patientMatch(unnamed, { ...unnamed, studyUid: 'another-study', patientKey: 'key-other' }), 'unknown');
+    // One ID and one name: the engine's keys alone, or two studies without keys, do not make two patients.
+    assert.equal(patientMatch(one, { ...earlier(one), patientKey: 'key-two' }), 'unknown');
     assert.equal(patientMatch({ ...one, patientKey: undefined }, { ...earlier(one), patientKey: undefined }), 'unknown');
+    assert.equal(patientMatch({ ...one, patientBirthDate: '19700101' }, { ...earlier(one), patientKey: 'key-two' }), 'unknown');
   });
 });
 

@@ -680,7 +680,7 @@ export const tr: Record<keyof typeof en, string> = {
   'compare.offerLater': 'Sonraki {series} burada açılsın mı?',
   'compare.open': 'Aç',
   'compare.noMorePairs': 'Diğer tetkikte eşleşen başka seri yok.',
-  'compare.otherPatient': 'İki bölmede farklı hastalar var. Açtığınız serileri kontrol edin.',
+  'compare.otherPatient': 'İki bölmedeki hasta bilgileri farklı. Açtığınız serileri kontrol edin.',
   'arrangement.petFollowUp.notice': 'Tek SUV ölçeğinde PET takip: bu çalışma · önceki · MIP’leri. İkisini aynı düzeye getirip senkronize edin.',
   'arrangement.spectCt': 'SPECT/BT',
   'arrangement.spectCt.notice': 'SPECT/BT: BT · SPECT · füzyon · MIP',
