@@ -1,4 +1,4 @@
-import type { Joined, Series, ViewState } from '../model';
+import type { Annotation, Joined, Series, ViewState } from '../model';
 import { getPlaneFrame, sliceCount, sub } from './geometry';
 
 // Paging the slices the way VEAcom 1.x does: an axial stack from the top down (the head first; the wheel, a
@@ -53,17 +53,19 @@ export function stackSliceAt(series: Series, view: Paged, place: number, count: 
 
 /** The number a slice shows and the total beside it: its place, from 1, in the sequence its pane pages. What numbers
  * the slice a pane shows asks here, so that the number means one image in all of it: the pane's counter, the slice
- * bar, the image corner, the export window, the tag panel and a checklist note. */
+ * bar, the image corner, the export window, the tag panel, a checklist note and the measurement list (measuredSlice). */
 export function shownSlice(series: Series, view: Paged, slice: number, count: number, joined?: Joined | null): { number: number; total: number } {
   const { place, total } = placeInSequence(series, view, slice, count, joined);
   return { number: place + 1, total };
 }
 
-/** A frame's number in its series as imported, from 1, which the measurement list shows ("Source frame"): the frame
- * at `place` of the `total` its pane pages, counted from the other end where the series is paged against its own
- * order (`backwards`). A stack's reference image is so counted with the stack's frames, as in paging. */
-export function importedNumber(place: number, total: number, backwards: boolean): number {
-  return backwards ? total - place : place + 1;
+/** The number a pane's counter shows on the slice a measurement was drawn on, for a list that names the measurement by
+ * its slice: the acquired image at index `frame`, counted with the stack's reference image where the two are paged as
+ * one (`joined`), or, with no `frame`, the measurement's slice of the reconstructed plane it was drawn on. */
+export function measuredSlice(series: Series, annotation: Pick<Annotation, 'plane' | 'slice' | 'oblique'>, frame?: number, joined?: Joined | null): number {
+  if (frame !== undefined) return shownSlice(series, { mode: 'source', plane: 'axial' }, frame, series.dimensions[2], joined).number;
+  const plane: Paged = { mode: 'mpr', plane: annotation.plane, oblique: annotation.oblique };
+  return shownSlice(series, plane, annotation.slice, sliceCount(series, plane)).number;
 }
 
 /** A paging step (+1 is down the page) as a change of slice index. */

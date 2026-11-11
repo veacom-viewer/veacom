@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
-import { importedNumber, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
+import { sliceCount } from '../src/imaging/geometry';
+import { measuredSlice, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
 
 // Synthetic stacks with no frame metadata: the volume geometry alone places the slices.
 const stack = (direction: number[], slices = 20): Series => ({
@@ -73,19 +74,29 @@ describe('a stack paged with its reference image as one sequence', () => {
     assert.deepEqual([0, 2, 4].map(place => stackSliceAt(feetUp, source, place, 5, last)), [4, 2, 0]);
     for (const joined of [first, last]) for (const slice of [0, 1, 2, 3, 4]) assert.equal(stackSliceAt(feetUp, source, placeInSequence(feetUp, source, slice, 5, joined).place, 5, joined), slice);
   });
-  it('numbers a frame in the series as imported, counting the reference image where it stands', () => {
-    const imported = (slice: number, joined?: typeof first) => { const { place, total } = placeInSequence(feetUp, source, slice, 5, joined); return importedNumber(place, total, true); };
-    // A series alone: the frame's own index from 1, though it is paged from its last slice down.
-    assert.deepEqual([0, 4].map(slice => imported(slice)), [1, 5]);
-    // The image paged first stands after the last stored slice: the slices keep their numbers and it is the sixth.
-    assert.deepEqual([0, 4].map(slice => imported(slice, first)), [1, 5]);
-    assert.equal(importedNumber(first.leadAt, first.total, true), 6);
-    // The image paged last stands before the first stored slice: it is the first and every slice is one higher.
-    assert.deepEqual([0, 4].map(slice => imported(slice, last)), [2, 6]);
-    assert.equal(importedNumber(last.leadAt, last.total, true), 1);
-    // A stack paged in its own order with the image first: every slice is one higher, as its paging number is.
-    const headDown = stack([1, 0, 0, 0, 1, 0, 0, 0, -1], 5);
-    assert.deepEqual([0, 4].map(slice => { const { place, total } = placeInSequence(headDown, source, slice, 5, first); return importedNumber(place, total, false); }), [2, 6]);
-    assert.deepEqual([0, 4].map(slice => shownSlice(headDown, source, slice, 5, first).number), [2, 6]);
+  it('names a measurement on an acquired image by the number the pane shows on it', () => {
+    const drawn = { plane: 'axial' as const, slice: 0 };
+    // A stack alone, paged from its last stored slice down: the top slice is 1, though it is stored last.
+    assert.deepEqual([4, 0].map(frame => measuredSlice(feetUp, drawn, frame)), [1, 5]);
+    // With the reference image first every slice is one higher; with it last the slices keep their numbers.
+    assert.deepEqual([4, 0].map(frame => measuredSlice(feetUp, drawn, frame, first)), [2, 6]);
+    assert.deepEqual([4, 0].map(frame => measuredSlice(feetUp, drawn, frame, last)), [1, 5]);
+    // A measurement on the reference image is named by the image's own place.
+    assert.equal(measuredSlice(feetUp, drawn, 0, { ...first, lead: true }), 1);
+    assert.equal(measuredSlice(feetUp, drawn, 0, { ...last, lead: true }), 6);
+    // Whatever the order, the list says what the counter says.
+    for (const joined of [undefined, first, last]) for (const frame of [0, 1, 2, 3, 4]) assert.equal(measuredSlice(feetUp, drawn, frame, joined), shownSlice(feetUp, source, frame, 5, joined).number);
+  });
+  it('names a measurement on a reconstructed plane by the number that plane\'s pane shows on it', () => {
+    // An axial plane of a volume stored from the feet up is paged from the top, as its pane pages it.
+    const axial = { mode: 'mpr' as const, plane: 'axial' as const }, count = sliceCount(feetUp, axial);
+    assert.ok(count > 1);
+    assert.deepEqual([0, count - 1].map(slice => measuredSlice(feetUp, { plane: 'axial', slice })), [count, 1]);
+    // A coronal plane is paged as stored, from the front.
+    const coronal = { mode: 'mpr' as const, plane: 'coronal' as const };
+    assert.deepEqual([0, 3].map(slice => measuredSlice(feetUp, { plane: 'coronal', slice })), [0, 3].map(slice => shownSlice(feetUp, coronal, slice, sliceCount(feetUp, coronal)).number));
+    assert.equal(measuredSlice(feetUp, { plane: 'coronal', slice: 0 }), 1);
+    // A reference image is no slice of a reconstructed plane: the sequence is not asked.
+    assert.equal(measuredSlice(feetUp, { plane: 'axial', slice: 0 }, undefined, first), count);
   });
 });
