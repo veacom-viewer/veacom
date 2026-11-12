@@ -49,6 +49,14 @@ const viewers = [...new Set(runs.flatMap(r => r.viewers))], studies = [...new Se
 const rounds = Math.max(0, ...runs.map((_, i) => new Set(counted.filter(l => l.runner === i + 1).map(l => l.round)).size));
 const spanText = runs.length > 1 ? `${rounds} rounds on each of ${runs.length} runners` : `${rounds} rounds`;
 const runnerText = runs.length > 1 ? runs.map((r, i) => `runner ${i + 1}: ${r.machine.cpu ?? '?'} (${r.machine.cores} cores)`).join(' · ') : null;
+// VEAcom's steps of opening (src/web/bridge.ts marks them): the median time after the drop at which each was reached.
+const stepViewers = viewers.filter(viewer => counted.some(l => l.viewer === viewer && l.openSteps));
+const steps = studies.map(study => {
+  const names = [...new Set(counted.filter(l => l.study === study && l.openSteps).flatMap(l => Object.keys(l.openSteps)))];
+  const rows = names.map(name => ({ name, values: stepViewers.map(viewer => summarize(counted.filter(l => l.viewer === viewer && l.study === study)
+    .map(l => l.openSteps?.[name]).filter(Number.isFinite)).median) }));
+  return { study, rows: rows.sort((a, b) => (a.values.find(Number.isFinite) ?? Infinity) - (b.values.find(Number.isFinite) ?? Infinity)) };
+}).filter(group => group.rows.length);
 // How far the runners agree: each runner's own median of the first image, per viewer and study.
 const perRunner = runs.length > 1 ? studies.map(study => ({ study, rows: runs.map((_, i) => viewers.map(viewer =>
   summarize(counted.filter(l => l.runner === i + 1 && l.viewer === viewer && l.study === study).map(l => l.firstImageMs).filter(Number.isFinite)).median)) })) : [];
@@ -106,6 +114,8 @@ ${rows.map(row => `<tr><td>${escape(row.label)} <span class="ci">${escape(row.un
 </tbody></table></div>`).join('\n')}
 ${perRunner.map(({ study, rows }) => `<h2>First image on each runner, ${escape(study)} (ms)</h2><div class="scroll"><table><thead><tr><th>Runner</th>${viewers.map(v => `<th>${escape(v)}</th>`).join('')}</tr></thead><tbody>
 ${rows.map((row, i) => `<tr><td>${i + 1}: ${escape(runs[i].machine.cpu ?? '')}</td>${row.map(value => `<td>${format(value, 'ms')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}
+${steps.map(({ study, rows }) => `<h2>VEAcom's opening step by step, ${escape(study)} (ms after the drop)</h2><div class="scroll"><table><thead><tr><th>Step</th>${stepViewers.map(v => `<th>${escape(v)}</th>`).join('')}</tr></thead><tbody>
+${rows.map(row => `<tr><td>${escape(row.name)}</td>${row.values.map(value => `<td>${format(value, 'ms')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}
 <h2>Viewers</h2><div class="scroll"><table><thead><tr><th>Viewer</th><th>Version</th><th>Opened by</th><th>First slice shown</th><th>Licence</th></tr></thead><tbody>
 ${viewers.map(viewer => { const entry = LOCK.viewers.find(e => e.name === viewer), trial = counted.find(l => l.viewer === viewer) ?? lines.find(l => l.viewer === viewer);
   return `<tr><td>${escape(entry?.title ?? viewer)}${entry?.serve.live ? ' <span class="ci">live site, not pinned</span>' : ''}</td><td>${escape(entry?.version ?? run.versions?.[viewer] ?? '')}</td><td>${escape(trial?.openedBy ?? '')}</td><td>${escape(trial?.firstSlice ?? '–')}</td><td>${escape(entry?.licence ?? 'GPL-3.0-or-later')}</td></tr>`; }).join('')}
@@ -128,6 +138,8 @@ const markdown = [
   `Drawn by: ${renderers.join(', ') || 'unknown'}. Median over ${spanText}, with the bootstrap 95% interval.`,
   ...tables.flatMap(({ study, rows }) => ['', `### ${study}`, '', `| Metric | ${viewers.join(' | ')} |`, `|---|${viewers.map(() => '---:').join('|')}|`,
     ...rows.map(row => `| ${row.label} (${row.unit}) | ${row.cells.map(c => `${c.viewer === row.best ? '**' : ''}${cell(c, row.unit)}${c.viewer === row.best ? '**' : ''}`).join(' | ')} |`)]),
+  ...steps.flatMap(({ study, rows }) => ['', `#### VEAcom's opening step by step, ${study} (ms after the drop)`, '', `| Step | ${stepViewers.join(' | ')} |`, `|---|${stepViewers.map(() => '---:').join('|')}|`,
+    ...rows.map(row => `| ${row.name} | ${row.values.map(value => format(value, 'ms')).join(' | ')} |`)]),
   ...perRunner.flatMap(({ study, rows }) => ['', `#### First image on each runner, ${study} (ms)`, '', `| Runner | ${viewers.join(' | ')} |`, `|---|${viewers.map(() => '---:').join('|')}|`,
     ...rows.map((row, i) => `| ${i + 1}: ${runs[i].machine.cpu ?? ''} | ${row.map(value => format(value, 'ms')).join(' | ')} |`)]),
   ...(failed.length ? ['', `Failed trials: ${failed.map(l => `${l.viewer} ${l.study} round ${l.round}: ${l.error.split('\n')[0]}`).join('; ')}`] : []),
