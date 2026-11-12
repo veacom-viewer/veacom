@@ -5,7 +5,9 @@
 // Where the page is cross-origin isolated, the threads build is used: a series is decoded on this Worker's thread and
 // on a few helper Workers that share the module's memory (engine.helper.ts, web/engine/src/helpers.rs). To leave the
 // computer room, the engine works on at most half its cores and never more than 4; the helpers sleep when there is
-// nothing to decode. Elsewhere, or if the helpers cannot start, the single-thread build runs.
+// nothing to decode. One more Worker decodes PNG, JPEG and BMP pictures (picture.worker.ts): the engine thread waits for
+// it, so it needs the shared memory too, and the threads build runs even where the engine gets one thread.
+// Elsewhere, or if these Workers cannot start, the single-thread build runs, which refuses pictures.
 
 import { readHeads } from '../../web/file-heads.js';
 
@@ -14,7 +16,8 @@ type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_eng
 
 const THREADS = Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2)));
 
-/** Asks the page to start `count` helper Workers on the threads build's module and memory, and waits for its answer.
+/** Asks the page to start `count` helper Workers and the picture decoder on the threads build's module and memory, and
+ * waits for its answer.
  * The page starts them, not this Worker: the threads build aborts on a panic, and a helper that stops so must reach the
  * page, which then replaces the engine. Sent here, its error would wait for this Worker, which may be the very thread
  * waiting for that helper. The page gives up after 15 s; then the single-thread build is used. */
@@ -31,7 +34,7 @@ function startHelpers(threaded: ThreadedEngine, count: number): Promise<void> {
 }
 
 async function load(): Promise<{ engine: Engine; threads: number; memory: WebAssembly.Memory }> {
-  if (self.crossOriginIsolated && THREADS > 1) {
+  if (self.crossOriginIsolated) {
     try {
       const threaded: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
       const exports = await threaded.default();

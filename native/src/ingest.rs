@@ -2641,12 +2641,16 @@ pub fn import_session(
             count = MAX_FILES.to_string()
         ));
     }
-    let (sources, warnings) = catalogue(read, true, revision)?;
+    let Catalogue {
+        sources,
+        warnings,
+        unreadable,
+    } = catalogue(read, true, revision)?;
     if sources.is_empty() {
         bail!(coded!(
             "import.noImages",
             "No supported images were found. {details}",
-            details = warnings.clone()
+            details = Vec::from_iter(unreadable)
         ));
     }
     Ok(Imported {
@@ -2676,6 +2680,14 @@ impl IndexedFile {
 /// A file's frames once read; None for an archive entry that is not a candidate (see is_candidate).
 type Slot = OnceLock<Option<Result<IndexedFile>>>;
 
+/// What `catalogue` makes of the files read.
+struct Catalogue {
+    sources: Vec<Arc<SourceSeries>>,
+    warnings: Vec<crate::message::Note>,
+    /// Why files could not be read, in one sentence, for an import that opens nothing.
+    unreadable: Option<crate::message::Note>,
+}
+
 /// The catalogue made from the files read: frames grouped into series, phases told apart, and each series' geometry,
 /// window and warnings. `pooled` measures the windows of series that store none on the import's reading threads; the
 /// series handed over early are measured on the calling thread instead, which leaves those threads to the reading.
@@ -2683,10 +2695,12 @@ fn catalogue(
     read: Vec<(&Path, Result<IndexedFile>)>,
     pooled: bool,
     revision: u64,
-) -> Result<(Vec<Arc<SourceSeries>>, Vec<crate::message::Note>)> {
+) -> Result<Catalogue> {
     let mut groups: BTreeMap<GroupKey, (Series, Vec<Frame>)> = BTreeMap::new();
     let mut warnings = Vec::new();
     let mut rejected = 0usize;
+    // The reason every unreadable file so far gave, while they all gave the same one.
+    let mut shared_reason = None;
     let mut documents = BTreeMap::new();
     // Ordinary images only when nothing opened held DICOM (VEAcom 1.x): beside a study they are a desktop's
     // or a disc viewer's own icons and photos, not series.
@@ -2734,6 +2748,12 @@ fn catalogue(
             }
             Err(error) => {
                 rejected += 1;
+                let reason = crate::message::Param::error(&error);
+                if rejected == 1 {
+                    shared_reason = Some(reason.clone());
+                } else if shared_reason.as_ref() != Some(&reason) {
+                    shared_reason = None;
+                }
                 if warnings.len() < 30 {
                     warnings.push(note!(
                         "import.fileUnreadable",
@@ -2743,12 +2763,27 @@ fn catalogue(
                             .unwrap_or_default()
                             .to_string_lossy()
                             .into_owned(),
-                        reason = crate::message::Param::error(&error),
+                        reason = reason,
                     ));
                 }
             }
         }
     }
+    let unreadable = match (rejected, shared_reason) {
+        (0, _) => None,
+        (1, _) => warnings.first().cloned(),
+        (count, Some(reason)) => Some(note!(
+            "import.unreadableAlike",
+            "{count} files could not be read: {reason}",
+            count = count.to_string(),
+            reason = reason,
+        )),
+        (count, None) => Some(note!(
+            "import.unreadableMany",
+            "{count} files could not be read as supported images",
+            count = count.to_string(),
+        )),
+    };
     if rejected > 30 {
         warnings.push(note!(
             "import.moreUnreadable",
@@ -2978,7 +3013,11 @@ fn catalogue(
             .then(a.info.series_number.cmp(&b.info.series_number))
             .then(a.info.description.cmp(&b.info.description))
     });
-    Ok((sources, warnings))
+    Ok(Catalogue {
+        sources,
+        warnings,
+        unreadable,
+    })
 }
 
 /// Follows an import's reading for series that can be shown before it ends (see `import_with`).
@@ -3074,7 +3113,7 @@ impl EarlyWatch {
                 _ => None,
             })
             .collect::<Vec<_>>();
-        let Ok((sources, _)) = catalogue(read, false, revision) else {
+        let Ok(Catalogue { sources, .. }) = catalogue(read, false, revision) else {
             return;
         };
         let ready: Vec<_> = sources
@@ -5195,6 +5234,37 @@ mod tests {
         assert_eq!(
             crate::message::coded(&error).map(|note| note.code),
             Some("rar.unsupported")
+        );
+    }
+    #[test]
+    fn an_import_that_opens_nothing_says_why_in_one_sentence() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let file = |name: &str, bytes: &[u8]| {
+            let path = temp.path().join(name);
+            fs::write(&path, bytes).unwrap();
+            path.to_string_lossy().into_owned()
+        };
+        let message = |paths: &[String]| {
+            let error = import(paths).err().unwrap();
+            crate::message::coded(&error).unwrap().text.clone()
+        };
+        let text: Vec<_> = (1..=40)
+            .map(|index| file(&format!("{index}.txt"), &[b't'; 200]))
+            .collect();
+        assert_eq!(
+            message(&text[..1]),
+            "No supported images were found. 1.txt: Missing DICOM file meta marker"
+        );
+        assert_eq!(
+            message(&text),
+            "No supported images were found. 40 files could not be read: Missing DICOM file meta marker"
+        );
+        let mut mixed = text.clone();
+        // Too short to hold a DICOM preamble: another reason.
+        mixed.push(file("short.txt", b"short"));
+        assert_eq!(
+            message(&mixed),
+            "No supported images were found. 41 files could not be read as supported images"
         );
     }
     #[test]

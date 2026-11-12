@@ -90,8 +90,12 @@ To put the previous version back, run `pnpm exec wrangler rollback` in `web/site
   - `src/libc_shim.rs` provides the C library calls of `openjp2` (JPEG 2000);
   - `src/allocator.rs` ignores freeing a null pointer, which openjp2 does and WebAssembly's
     allocator does not survive;
-  - no JPEG-LS (charls), and no PNG, JPEG or BMP pictures yet: the desktop decodes those in its
-    renderer process, which the browser build does not have.
+  - `src/pictures.rs` lets the page's picture decoder (`../src/web/picture.worker.ts`) take the
+    PNG, JPEG and BMP pictures the engine reads and answer them. It decodes them with the browser's
+    own decoders, with the desktop's options, as the desktop's sandboxed renderers do. The engine
+    thread waits for the answer, so this needs `pkg-threads`. The page uses that build whenever it
+    is cross-origin isolated, even with no helper. `pkg` refuses pictures;
+  - no JPEG-LS (charls).
 - `index.html`, `style.css`, `main.js`: the page. `worker.js`: runs the engine; a crashed engine is
   replaced with a fresh Worker.
 - `serve.mjs`: local server with the headers the site needs: COOP/COEP, and a Content-Security-Policy
