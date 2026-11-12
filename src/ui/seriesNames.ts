@@ -30,6 +30,17 @@ export function sequenceGuess(item: Series, translate = t): Guess | null {
 /** A series as lists name it: its description, and its phase where it is one of several. */
 export const seriesName = (item: Series) => [item.description || item.modality, item.phase && phaseLabel(item.phase)].filter(Boolean).join(' · ');
 
+/** The fused series' line in a pane's bottom-right corner. With patient details hidden, and in a copied picture, it names
+ * the series as the top-right corner then does, by its modality and phase without its description: "PET" alone for a
+ * PET, as the line says so already. */
+export function fusionLine(item: Series, hidePatient: boolean, translate = t): string {
+  const pet = item.modality === 'PT';
+  if (!hidePatient) return translate(pet ? 'viewport.fusionSeries' : 'viewport.fusionWith', { name: seriesName(item) });
+  const phase = item.phase ? phaseLabel(item.phase) : '';
+  if (!pet) return translate('viewport.fusionWith', { name: [item.modality, phase].filter(Boolean).join(' · ') });
+  return phase ? translate('viewport.fusionSeries', { name: phase }) : translate('viewport.fusionPet');
+}
+
 /** What exporting a series as DICOM writes: its images, or for a gate of a gated SPECT every gate of its file, as the
  * gates share one file and DICOM export copies files whole. */
 export function exportedImages(item: Series): string {

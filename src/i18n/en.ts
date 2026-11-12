@@ -136,6 +136,7 @@ export const en = {
   'viewport.location': 'Loc: {value} mm',
   'viewport.fusionScaleOwn': 'PET on its own values · opacity {opacity}',
   'viewport.fusionSeries': 'PET: {name}',
+  'viewport.fusionPet': 'PET',
   'viewport.fusionWith': 'Fusion: {name}',
   'viewport.fusionOwnValues': 'On its own values · opacity {opacity}',
   'viewport.fusionScale': 'SUV 0–{upper} · opacity {opacity}',

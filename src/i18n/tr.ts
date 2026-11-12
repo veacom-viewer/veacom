@@ -139,6 +139,7 @@ export const tr: Record<keyof typeof en, string> = {
   'viewport.location': 'Loc: {value} mm',
   'viewport.fusionScaleOwn': 'PET kendi değerleriyle · opaklık {opacity}',
   'viewport.fusionSeries': 'PET: {name}',
+  'viewport.fusionPet': 'PET',
   'viewport.fusionWith': 'Füzyon: {name}',
   'viewport.fusionOwnValues': 'Kendi değerleriyle · opaklık {opacity}',
   'viewport.fusionScale': 'SUV 0–{upper} · opaklık {opacity}',
