@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
+import { copyCanvas } from '../src/ui/clipboard';
+import { restoreGlobals, stubGlobal } from './support';
 import { createRequire } from 'node:module';
 
 interface Picture { width: number; height: number; pixels: ArrayBuffer | ArrayBufferView }
@@ -48,5 +50,32 @@ describe('a picture for the clipboard', () => {
     assert.throws(() => writeClipboardImage({ width: 1, height: 1, pixels: rgba(1, 2, 3, 4) }, { clipboard, nativeImage: image(true) }), /Invalid picture/);
     assert.throws(() => writeClipboardImage({ width: 1, height: 2, pixels: rgba(1, 2, 3, 4) }, { clipboard, nativeImage: image(false) }), /Invalid picture/);
     assert.equal(written.length, 1);
+  });
+});
+
+describe('copying a picture in the browser', () => {
+  afterEach(restoreGlobals);
+
+  it('starts the write during the gesture and supplies the PNG after capture', async () => {
+    const capture = Promise.withResolvers<HTMLCanvasElement>();
+    const png = new Blob(['synthetic'], { type: 'image/png' });
+    class Item {
+      readonly data: Record<string, Promise<Blob>>;
+      constructor(data: Record<string, Promise<Blob>>) { this.data = data; }
+    }
+    let writing = false;
+    stubGlobal('window', {});
+    stubGlobal('ClipboardItem', Item);
+    stubGlobal('navigator', { clipboard: { write: async ([item]: Item[]) => {
+      writing = true;
+      assert.equal(await item.data['image/png'], png);
+    } } });
+    const copied = copyCanvas(capture.promise);
+    assert.equal(writing, true);
+    capture.resolve({ toBlob(done: BlobCallback, type: string) {
+      assert.equal(type, 'image/png');
+      done(png);
+    } } as HTMLCanvasElement);
+    await copied;
   });
 });

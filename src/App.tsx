@@ -1686,11 +1686,14 @@ export default function App() {
   const copyImage = async (all: boolean) => {
     const element = all ? gridRef.current : gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
     if (!element) return;
-    let picture: HTMLCanvasElement;
-    try { picture = await captureViewportCanvas(element, { hidePatientData: true }); }
-    catch (error) { usage.milestone('copy-image-done', 'error'); setNotice({ message: errorText(error), kind: 'error' }); return; }
-    try { await copyCanvas(picture); }
-    catch { usage.milestone('copy-image-done', 'error'); say('notice.imageNotCopied', 'error'); return; }
+    const picture = captureViewportCanvas(element, { hidePatientData: true });
+    const [capture, copy] = await Promise.allSettled([picture, copyCanvas(picture)]);
+    if (capture.status === 'rejected' || copy.status === 'rejected') {
+      usage.milestone('copy-image-done', 'error');
+      if (capture.status === 'rejected') setNotice({ message: errorText(capture.reason), kind: 'error' });
+      else say('notice.imageNotCopied', 'error');
+      return;
+    }
     usage.milestone('copy-image-done', 'ok');
     say(all ? 'notice.layoutCopied' : 'notice.imageCopied', 'info', undefined, true);
   };
