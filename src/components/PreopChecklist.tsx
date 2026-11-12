@@ -15,7 +15,7 @@ import './PreopChecklist.css';
 
 /** The pre-operative checklist beside the images: each finding marked per side, with the slice it was seen on, and the
  * items with a caliper measured on the image. */
-export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, headingRef }: {
+export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, onRestored, headingRef }: {
   series: Series; onClose: () => void;
   /** The reader hid the patient's data: the theatre card leaves it out too. */
   hidePatient: boolean;
@@ -28,6 +28,7 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
   measuring: { item: string; side: Side } | null;
   /** Why a caliper cannot be used on the active pane now, or null. */
   measureBlocked: (kind: CaliperKind) => MessageKey | null;
+  onRestored: () => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void;
 }) {
   const { locale, t } = useTranslation();
@@ -71,6 +72,7 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     const clearButton = button.closest('.preop-checklist')?.querySelector<HTMLElement>('[data-action="checklist-clear"]');
     update(undoable.before);
     setUndo(null);
+    onRestored();
     requestAnimationFrame(() => clearButton?.focus());
   };
   const copy = async () => {

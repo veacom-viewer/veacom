@@ -138,7 +138,10 @@ async function main() {
     await page.getByTestId('tool-measure-menu').click();
     await page.locator('[data-action="toolbar-units-calibration"]').click();
     await page.locator('[data-action="calibration-length"]').fill('20');
+    await checklist.locator('[data-action="checklist-clear"]').click();
     await page.locator('[data-action="calibrate"]').click();
+    assert.equal(await value('keros', 'right'), null);
+    await checklist.locator('[data-action="checklist-undo"]').click();
     await settledValue('right', '6.4 mm');
     assert.equal(await answer('keros', 'right'), '2', 'The answer follows the calibrated depth.');
     await settledValue('left', '12.0 mm');
