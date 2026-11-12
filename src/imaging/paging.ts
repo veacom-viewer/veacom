@@ -1,4 +1,4 @@
-import type { Series, ViewState } from '../model';
+import type { Annotation, Series, ViewState } from '../model';
 import { getPlaneFrame, sliceCount, sub } from './geometry';
 import { usesSourceFrames } from './viewState';
 
@@ -59,6 +59,13 @@ export function numbersBackwards(series: Series, view: Paged): boolean {
 /** The number shown for slice index `slice` of `count`, from 1 (see numbersBackwards). */
 export function shownSlice(series: Series, view: Paged, slice: number, count: number): number {
   return numbersBackwards(series, view) ? count - slice : slice + 1;
+}
+
+/** The pane's number for an annotation on an acquired frame or reconstructed slice. */
+export function measuredSlice(series: Series, annotation: Pick<Annotation, 'plane' | 'slice' | 'oblique'>, frame?: number): number {
+  if (frame !== undefined) return shownSlice(series, { mode: 'source', plane: 'axial' }, frame, series.dimensions[2]);
+  const plane: Paged = { mode: 'mpr', plane: annotation.plane, oblique: annotation.oblique };
+  return shownSlice(series, plane, annotation.slice, sliceCount(series, plane));
 }
 
 /** A paging step (+1 is down the page) as a change of slice index. */

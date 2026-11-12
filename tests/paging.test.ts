@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
-import { numbersBackwards, openingSlice, pageStep, pagesBackwards, shownSlice } from '../src/imaging/paging';
+import { measuredSlice, numbersBackwards, openingSlice, pageStep, pagesBackwards, shownSlice } from '../src/imaging/paging';
 
 // Synthetic stacks with no frame metadata: the volume geometry alone places the slices.
 const stack = (direction: number[], slices = 20): Series => ({
@@ -63,6 +63,8 @@ describe('the slice number shown', () => {
     assert.deepEqual(shown(fromTheFeet), [5, 4, 3, 2, 1]);
     const fromTheHead = numbered([5, 4, 3, 2, 1]);
     assert.equal(numbersBackwards(fromTheHead, source), true);
+    assert.equal(measuredSlice(fromTheHead, { plane: 'axial', slice: 0 }, 0), 5);
+    assert.equal(measuredSlice(fromTheFeet, { plane: 'axial', slice: 0 }, 0), 1);
     assert.deepEqual(shown(fromTheHead), [1, 2, 3, 4, 5]);
   });
   it('counts in paging order where the numbers are not 1 to N in order', () => {
