@@ -35,17 +35,65 @@ export function verifySourceGpu(nativeColors = []){
    const sent=mainUploads(before);record(`${kind} uploads only selected frame with exact GPU format`,sent.length===1&&sent[0].target==='2d'&&sent[0].internalFormat===format&&sent[0].bytes===4*(kind==='float64'?4:Ctor.BYTES_PER_ELEMENT),{uploads:summary(sent)});
    record(`${kind} original source values remain unchanged`,data.slice(4,8).every(n=>n===(kind==='float32'?Math.fround(value):value)));
   });
-  attempt('No acquired-frame interpolation',()=>{
-   const data=new Uint8Array([0,100,200,250,120,120,120,120,240,240,240,240]),volume=vol('nearest-source',data,{dimensions:[2,2,3],pixelType:'uint8'}),c=canvas(4);
-   renderer.render(c,volume,baseView);checkPixel('Zoomed source image keeps nearest original intensity',c,1,1,[0,0,0,255]);
+  attempt('Acquired-frame interpolation',()=>{
+   const data=new Uint8Array([0,100,200,250,120,120,120,120,240,240,240,240]),volume=vol('interpolated-source',data,{dimensions:[2,2,3],pixelType:'uint8'}),c=canvas(4);
+   // At (.25,.25) of the frame its four pixels weigh .5625, .1875, .1875 and .0625: 100*.1875+200*.1875+250*.0625 = 71.875.
+   renderer.render(c,volume,baseView);checkPixel('Zoomed source image interpolates between its four nearest pixels',c,1,1,[72,72,72,255]);
    renderer.render(c,volume,{...baseView,slice:.5});checkPixel('Fractional source slice selects one acquired frame',c,1,1,[120,120,120,255]);
+  });
+  attempt('Magnified edge',()=>{
+   // Two pixels, 0 and 240, four screen pixels each: across the edge the screen steps through intermediate greys.
+   const volume=vol('magnified-edge',new Uint8Array([0,240]),{dimensions:[2,1,1],pixelType:'uint8'}),c=canvas(8,4);
+   renderer.render(c,volume,baseView);
+   [0,0,30,90,150,210,240,240].forEach((grey,x)=>checkPixel(`Magnified edge pixel ${x}`,c,x,1,[grey,grey,grey,255]));
+  });
+  attempt('Minified grating',()=>{
+   // Columns of 0 and 200, one pixel wide, shown four times smaller: each screen pixel covers two of each and shows their
+   // mean, where one pixel read per screen pixel would find the same column colour every time.
+   const fine=new Uint8Array(16*16).map((_,i)=>i%2?200:0),c=canvas(4);
+   renderer.render(c,vol('minified-grating',fine,{dimensions:[16,16,1],pixelType:'uint8'}),baseView);
+   for(let x=0;x<4;x++)checkPixel(`Minified grating keeps its mean, pixel ${x}`,c,x,2,[100,100,100,255]);
+   // Shown 2.5 times smaller, a screen pixel takes each column by the width it covers: 200/2.5 = 80 and 300/2.5 = 120.
+   renderer.render(c,vol('minified-grating-fraction',new Uint8Array(10*10).map((_,i)=>i%2?200:0),{dimensions:[10,10,1],pixelType:'uint8'}),baseView);
+   [80,80,120,120].forEach((grey,x)=>checkPixel(`Minified grating weighs each column by its area, pixel ${x}`,c,x,2,[grey,grey,grey,255]));
+   const stripes=vol('sixteen-column-grating',Uint8Array.from({length:64*64},(_,i)=>i%2?200:0),{dimensions:[64,64,1],pixelType:'uint8'});
+   renderer.render(c,stripes,baseView);
+   for(let y=0;y<4;y++)for(let x=0;x<4;x++)checkPixel(`Sixteen-column mean at ${x},${y}`,c,x,y,[100,100,100,255]);
+   renderer.render(c,stripes,{...baseView,pan:[0.5/16,0]});
+   checkPixel('Sixteen-column mean with two partially covered edge texels',c,1,1,[100,100,100,255]);
+   // 32 columns to a screen pixel, more than are read one by one: the even steps stay inside the screen pixel's own columns.
+   const halves=new Uint8Array(64*64).map((_,i)=>i%64<32?0:200),pair=canvas(2);
+   renderer.render(pair,vol('minified-halves',halves,{dimensions:[64,64,1],pixelType:'uint8'}),baseView);
+   [0,200].forEach((grey,x)=>checkPixel(`Wide footprint stays within its screen pixel, pixel ${x}`,pair,x,0,[grey,grey,grey,255]));
+  });
+  attempt('Interpolation leaves padding out',()=>{
+   // Padding at the top left. The screen pixel nearest to it stays empty; the next one weighs the three finite pixels
+   // .5625, .0625 and .1875, renormalized: (100*.5625+200*.0625+300*.1875)/.8125 = 153.85.
+   const volume=vol('padding-interpolation',new Int16Array([-1000,100,200,300]),{dimensions:[2,2,1],pixelType:'int16',paddingRange:[-1000,-1000]}),c=canvas(4);
+   renderer.render(c,volume,baseView);
+   checkPixel('Screen pixel nearest to padding stays empty',c,1,1,[0,0,0,255]);
+   checkPixel('Padding does not darken interpolated neighbours',c,2,1,[154,154,154,255]);
+  });
+  attempt('VOI LUT after interpolation',()=>{
+   // Values 0 and 3, two screen pixels each: the interpolated .75 and 2.25 look up entries 1 and 2, which no blend of the
+   // end entries 0 and 120 gives.
+   const volume=vol('voi-interpolation',new Int16Array([0,3]),{dimensions:[2,1,1],pixelType:'int16',voiLuts:[{first:0,bits:8,data:[0,250,10,120]}]}),c=canvas(4,2);
+   renderer.render(c,volume,{...baseView,voiLut:0});
+   [0,250,10,120].forEach((grey,x)=>checkPixel(`VOI LUT looks up the interpolated value, pixel ${x}`,c,x,0,[grey,grey,grey,255]));
+  });
+  attempt('Colour frame interpolation',()=>{
+   // Red and blue, two screen pixels each: in between, the colours blend a quarter and three quarters of the way.
+   const volume=vol('rgb-interpolation',new Uint8Array([255,0,0,0,0,255]),{dimensions:[2,1,1],components:3,pixelType:'uint8',photometricInterpretation:'RGB',modality:'XC'}),c=canvas(4,2);
+   renderer.render(c,volume,baseView);
+   [[255,0,0],[191,0,64],[64,0,191],[0,0,255]].forEach((rgb,x)=>checkPixel(`Colour frame interpolates, pixel ${x}`,c,x,0,[...rgb,255]));
   });
   attempt('Per-frame physical source geometry',()=>{
    const frames=[{origin:[10,20,30],direction:[1,0,0,0,1,0,0,0,1],spacing:[1,1,1]},
     {origin:[-30,17,101],direction:[0,-1,0,1,0,0,0,0,1],spacing:[2,3,4]}];
    const data=new Uint8Array([240,240,240,240,0,64,128,255]),volume=vol('frame-geometry',data,{dimensions:[2,2,2],pixelType:'uint8',canReconstruct:false,origin:[10,20,30],frameMetadata:frames}),c=canvas(4,6);
    renderer.render(c,volume,{...baseView,slice:1});
-   for(const [x,y,value]of [[1,1,0],[3,1,64],[1,4,128],[3,4,255]])checkPixel(`Selected frame physical geometry pixel${x},${y}`,c,x,y,[value,value,value,255]);
+   // The outer columns, where one pixel of the frame decides the colour; the inner ones show its pixels interpolated.
+   for(const [x,y,value]of [[0,1,0],[3,1,64],[0,4,128],[3,4,255]])checkPixel(`Selected frame physical geometry pixel${x},${y}`,c,x,y,[value,value,value,255]);
    const compact={series:{...volume.series,id:`${run}:compact-frame`},data:data.slice(4),sourceFrameIndex:1},before=uploads.length;
    renderer.render(c,compact,{...baseView,slice:1});checkPixel('Frame-only payload keeps selected acquired geometry and data',c,3,4,[255,255,255,255]);
    const sent=mainUploads(before);record('Frame-only payload uploads exactly one source frame',sent.length===1&&sent[0].target==='2d'&&sent[0].bytes===4,{uploads:summary(sent)});

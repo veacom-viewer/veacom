@@ -1,3 +1,4 @@
+import { FOOTPRINT_TAPS, pixelFootprint } from './footprint';
 import { petScale } from './fusion';
 import { MAX_PROJECTION_HALF, MAX_SLAB_HALF, slabSampling } from './slab';
 import { usesSourceFrames } from './viewState';
@@ -49,23 +50,82 @@ function samplerType(kind: TextureKind, dimension: TextureDimension): string {
   return `${prefix}sampler${dimension === '2d' ? '2D' : '3D'}`;
 }
 
+/** GLSL that visits the pixels of an acquired frame under the screen pixel at `p` (footprint.ts): `body` runs for each
+ * pixel (x, y) with a positive `weight`, the area it shares with the screen pixel's footprint. */
+function footprintLoop(body: string): string {
+  return `vec2 low=p-uFootprint, high=p+uFootprint;
+  ivec2 first=max(ivec2(floor(low+vec2(0.5))),ivec2(0)), last=min(ivec2(ceil(high-vec2(0.5))),ivec2(uDimensions.xy)-1);
+  // A width of ${FOOTPRINT_TAPS} pixels can touch one extra texel when both ends are partial.
+  ivec2 stride=max(ivec2(1),(last-first+${FOOTPRINT_TAPS-1})/${FOOTPRINT_TAPS});
+  for (int j=0;j<=${FOOTPRINT_TAPS};j++) {
+    int y=first.y+j*stride.y;
+    if (y>last.y) break;
+    float height=min(high.y,float(y)+0.5)-max(low.y,float(y)-0.5);
+    for (int i=0;i<=${FOOTPRINT_TAPS};i++) {
+      int x=first.x+i*stride.x;
+      if (x>last.x) break;
+      float weight=height*(min(high.x,float(x)+0.5)-max(low.x,float(x)-0.5));
+      if (weight<=0.0) continue;
+      ${body}
+    }
+  }`;
+}
+
 function scalarSampling(prefix: 'image' | 'pet', sampler: string, dimensions: string, floating: boolean, dimension: TextureDimension): string {
   // Integer texture fetches are converted per sample in the shader, preserving compact GPU storage.
-  const voxel = `
+  const padding = `
 uniform sampler2D ${prefix}Padding;
-uniform bool ${prefix}HasPadding;
+uniform bool ${prefix}HasPadding;`;
+  // An acquired frame is drawn from the stored values of that frame alone, never of the frames beside it. Padding and
+  // missing values are left out as in the trilinear sampling below: a screen pixel whose nearest pixel is padding shows
+  // padding, and otherwise the remaining weights are renormalized, so padding never darkens its neighbours. The frame's
+  // padding range is read once per screen pixel.
+  if (dimension === '2d') return `${padding}
+float ${prefix}Pixel(ivec2 q,vec3 padding) {
+  float value=float(texelFetch(${sampler},q,0).r);
+  return padding.x>0.5&&value>=padding.y&&value<=padding.z ? uintBitsToFloat(0x7fc00000u) : value;
+}
+float ${prefix}Area(vec2 p) {
+  ivec2 edge=ivec2(${dimensions}.xy)-1, b=ivec2(floor(p));
+  vec3 padding=${prefix}HasPadding ? texelFetch(${prefix}Padding,ivec2(0),0).rgb : vec3(0.0);
+  bool exact=${floating ? 'false' : `!${prefix}HasPadding`};
+  float nearest=0.0;
+  if (!exact) {
+    nearest=${prefix}Pixel(clamp(ivec2(floor(p+vec2(0.5))),ivec2(0),edge),padding);
+    if (nonFinite(nearest)) return nearest;
+  }
+  if (uFootprint.x<=0.5&&uFootprint.y<=0.5) {
+    // Magnified: bilinear between the four nearest pixels.
+    vec2 f=p-vec2(b);
+    ivec2 b0=clamp(b,ivec2(0),edge), b1=clamp(b+1,ivec2(0),edge);
+    float v00=${prefix}Pixel(b0,padding), v10=${prefix}Pixel(ivec2(b1.x,b0.y),padding);
+    float v01=${prefix}Pixel(ivec2(b0.x,b1.y),padding), v11=${prefix}Pixel(b1,padding);
+    if (exact) return mix(mix(v00,v10,f.x),mix(v01,v11,f.x),f.y);
+    vec4 weight=vec4((1.0-f.x)*(1.0-f.y),f.x*(1.0-f.y),(1.0-f.x)*f.y,f.x*f.y);
+    if (nonFinite(v00)) { weight.x=0.0; v00=0.0; }
+    if (nonFinite(v10)) { weight.y=0.0; v10=0.0; }
+    if (nonFinite(v01)) { weight.z=0.0; v01=0.0; }
+    if (nonFinite(v11)) { weight.w=0.0; v11=0.0; }
+    // The nearest pixel is finite and weighs at least a quarter.
+    return dot(weight,vec4(v00,v10,v01,v11))/(weight.x+weight.y+weight.z+weight.w);
+  }
+  float weighted=0.0, totalWeight=0.0;
+  ${footprintLoop(`float value=${prefix}Pixel(ivec2(x,y),padding);
+      if (nonFinite(value)) continue;
+      weighted+=value*weight; totalWeight+=weight;`)}
+  // Read at even steps, a wide footprint can find only padding beside a finite nearest pixel.
+  return totalWeight>0.0 ? weighted/totalWeight : nearest;
+}`;
+  return `${padding}
 float ${prefix}Voxel(ivec3 p) {
   p=clamp(p,ivec3(0),ivec3(${dimensions})-1);
-  float value=float(texelFetch(${sampler}, ${dimension === '2d' ? 'p.xy' : 'p'}, 0).r);
+  float value=float(texelFetch(${sampler}, p, 0).r);
   if (${prefix}HasPadding) {
-    vec3 padding=texelFetch(${prefix}Padding,ivec2(${dimension === '2d' ? '0' : 'p.z'},0),0).rgb;
+    vec3 padding=texelFetch(${prefix}Padding,ivec2(p.z,0),0).rgb;
     if (padding.x>0.5&&value>=padding.y&&value<=padding.z) return uintBitsToFloat(0x7fc00000u);
   }
   return value;
-}`;
-  // Acquired frames use exact texel fetches; their shader never calls trilinear sampling.
-  if (dimension === '2d') return voxel;
-  return `${voxel}
+}
 float ${prefix}Linear(vec3 p) {
   if (${floating ? 'true' : `${prefix}HasPadding`}) {
   float nearest=${prefix}Voxel(ivec3(floor(p+vec3(0.5))));
@@ -109,6 +169,7 @@ uniform vec3 uIndexTopLeft;
 uniform vec3 uIndexRight;
 uniform vec3 uIndexDown;
 uniform float uScreenHeight;
+${dimension === '2d' ? 'uniform vec2 uFootprint;' : ''}
 ${color || dimension !== '3d' ? '' : 'uniform int uSlabMode;\nuniform int uSlabHalf;\nuniform vec3 uSlabStep;'}
 ${color ? '' : 'uniform vec2 uWindow;\nuniform bool uInvert;\nuniform int uBasePalette;\nuniform int uVoiFunction;\nuniform bool uVoi;\nuniform usampler2D uVoiLut;\nuniform float uVoiFirst;\nuniform int uVoiCount;\nuniform float uVoiMax;'}
 ${pet ? `uniform ${samplerType(pet, '3d')} uPet;
@@ -129,6 +190,19 @@ bool outside(vec3 p,vec3 size) { return any(lessThan(p,vec3(-0.5))) || any(great
 bool nonFinite(float v) { return (floatBitsToUint(v)&0x7f800000u)==0x7f800000u; }
 ${color ? '' : scalarSampling('image', 'uImage', 'uDimensions', main === 'float32', dimension)}
 ${pet ? scalarSampling('pet', 'uPet', 'uPetDimensions', pet === 'float32', '3d') : ''}
+${color && dimension === '2d' ? `
+// A colour frame is resampled like a scalar one, on its stored colours.
+vec3 colourArea(vec2 p) {
+  if (uFootprint.x<=0.5&&uFootprint.y<=0.5) {
+    ivec2 edge=ivec2(uDimensions.xy)-1, b=ivec2(floor(p)), b0=clamp(b,ivec2(0),edge), b1=clamp(b+1,ivec2(0),edge);
+    vec2 f=p-vec2(b);
+    return mix(mix(texelFetch(uImage,b0,0).rgb,texelFetch(uImage,ivec2(b1.x,b0.y),0).rgb,f.x),
+      mix(texelFetch(uImage,ivec2(b0.x,b1.y),0).rgb,texelFetch(uImage,b1,0).rgb,f.x),f.y);
+  }
+  vec3 weighted=vec3(0.0); float totalWeight=0.0;
+  ${footprintLoop('weighted+=texelFetch(uImage,ivec2(x,y),0).rgb*weight; totalWeight+=weight;')}
+  return weighted/totalWeight;
+}` : ''}
 ${color || dimension !== '3d' ? '' : `
 // Thick slab: the brightest, darkest or mean value of the samples either side of the slice, along its normal.
 float slabValue(vec3 p,float centre) {
@@ -163,11 +237,13 @@ vec3 palette(float t,int selected) {
 void main() {
   vec3 p=uIndexTopLeft+uIndexRight*gl_FragCoord.x+uIndexDown*(uScreenHeight-gl_FragCoord.y);
   if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
-  ${color ? `
-  ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
-  outColor=vec4(texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb,1.0);
+  ${color ? dimension === '2d' ? `
+  outColor=vec4(colourArea(p.xy),1.0);
   ` : `
-  float value=${dimension === '2d' ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};
+  ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
+  outColor=vec4(texelFetch(uImage,sourcePixel,0).rgb,1.0);
+  ` : `
+  float value=${dimension === '2d' ? 'imageArea(p.xy)' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};
   if (nonFinite(value)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
   float grey;
   if (uVoi) {
@@ -444,12 +520,15 @@ class SharedSliceRenderer {
     cached.touched = performance.now();
     return key;
   }
-  private indexMapping(prefix: string, series: Series, origin: Vec3, right: Vec3, down: Vec3): void {
+  /** Sets where the screen's top-left pixel and its steps right and down fall in the series' index space; returns the steps. */
+  private indexMapping(prefix: string, series: Series, origin: Vec3, right: Vec3, down: Vec3): [Vec3, Vec3] {
     const matrix = worldToIndexMatrix(series);
-    const vector = (p: Vec3) => [matrix[0] * p[0] + matrix[1] * p[1] + matrix[2] * p[2], matrix[3] * p[0] + matrix[4] * p[1] + matrix[5] * p[2], matrix[6] * p[0] + matrix[7] * p[1] + matrix[8] * p[2]];
+    const vector = (p: Vec3): Vec3 => [matrix[0] * p[0] + matrix[1] * p[1] + matrix[2] * p[2], matrix[3] * p[0] + matrix[4] * p[1] + matrix[5] * p[2], matrix[6] * p[0] + matrix[7] * p[1] + matrix[8] * p[2]];
+    const steps: [Vec3, Vec3] = [vector(right), vector(down)];
     this.gl.uniform3fv(this.uniform(`${prefix}IndexTopLeft`), worldToIndex(series, origin));
-    this.gl.uniform3fv(this.uniform(`${prefix}IndexRight`), vector(right));
-    this.gl.uniform3fv(this.uniform(`${prefix}IndexDown`), vector(down));
+    this.gl.uniform3fv(this.uniform(`${prefix}IndexRight`), steps[0]);
+    this.gl.uniform3fv(this.uniform(`${prefix}IndexDown`), steps[1]);
+    return steps;
   }
   private configuration(volume: Volume, view: ViewState, fusion?: FusionSettings | null) {
     if (this.lost || this.gl.isContextLost()) throw new Error(t('gpu.contextLost'));
@@ -490,7 +569,8 @@ class SharedSliceRenderer {
     const topLeft = screenToWorld(mapping, 0, 0);
     const right = sub(screenToWorld(mapping, 1 / ratio, 0), topLeft), down = sub(screenToWorld(mapping, 0, 1 / ratio), topLeft);
     const imageSeries = sourceFrame === undefined ? volume.series : sourceFrameSeries(volume.series, sourceFrame);
-    this.indexMapping('u', imageSeries, topLeft, right, down);
+    const [indexRight, indexDown] = this.indexMapping('u', imageSeries, topLeft, right, down);
+    if (sourceFrame !== undefined) gl.uniform2fv(this.uniform('uFootprint'), pixelFootprint(indexRight, indexDown));
     gl.uniform1f(this.uniform('uScreenHeight'), h);
     gl.uniform3fv(this.uniform('uDimensions'), sourceFrame === undefined ? volume.series.dimensions : [volume.series.dimensions[0], volume.series.dimensions[1], 1]);
     if (sourceFrame === undefined && mainKind !== 'rgb8') {

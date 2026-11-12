@@ -28,7 +28,7 @@ node tools/check-panel-sessions.mjs
 
 The runner uses installed Google Chrome. Set `VEACOM_BROWSER_CHANNEL=msedge` to use installed Edge, or `VEACOM_TEST_URL` to change the complete fixture URL. The default URL is `http://127.0.0.1:5188/tools/viewport-check.html`.
 
-`renderer-check.html` checks exact GPU pixels for compact scalar formats, trilinear sampling, PET fusion, source RGB, inversion and palettes. Its machine-readable result is `window.rendererCheckResult`. Unsupported color MPR and uncalibrated SUV fusion must fail explicitly.
+`renderer-check.html` checks exact GPU pixels for compact scalar formats, trilinear sampling, acquired frames (interpolated where magnified, averaged where minified), PET fusion, source RGB, inversion and palettes. Its machine-readable result is `window.rendererCheckResult`. Unsupported color MPR and uncalibrated SUV fusion must fail explicitly.
 
 Float64 source values remain exact for measurements; GPU display uses a cached Float32 copy. NaN/Inf padding stays unchanged in the source and displays as background. Stacks deeper than the GPU3D texture limit still page through source frames using one frame upload at a time; MPR and fusion remain unavailable for those stacks.
 
