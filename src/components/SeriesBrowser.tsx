@@ -264,6 +264,11 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const searchIndex = searching ? new Map(series.map(item => [item.id, searchText(item, guesses.get(item.id))])) : null;
   const words = query.split(/\s+/);
   const studies = groupStudies(searchIndex ? series.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : series);
+  // A study that opens goes to the top of the list, and the list goes there with it: a reader who had scrolled down
+  // sees it arrive.
+  const scroller = useRef<HTMLDivElement>(null);
+  const firstStudy = studies.at(0)?.studies.at(0)?.key;
+  useEffect(() => { scroller.current?.scrollTo({ top: 0 }); }, [firstStudy]);
 
   // Ctrl and Shift pick several cards, as in a folder; dragging one of them drags them all, in the order
   // they were picked, and they open side by side (VEAcom 1.x). A plain click picks one and opens it.
@@ -347,7 +352,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const patientStudies = menuPatient ? new Set(series.filter(item => patientKey(item) === patientKey(menuPatient)).map(item => item.studyUid || item.id)).size : 0;
 
   return <aside className="series-browser" aria-label={t('series.browser')}>
-    <div className="series-browser-scroll" onContextMenu={event => openMenu(event, {})}>
+    <div className="series-browser-scroll" ref={scroller} onContextMenu={event => openMenu(event, {})}>
       {studies.map(patient => {
         const patientHidden = collapsed.has(patient.key) && !search;
         const patientName = patient.first.patientName.replaceAll('^', ' ').trim();

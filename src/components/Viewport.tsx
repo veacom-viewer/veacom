@@ -71,6 +71,11 @@ function sphereOnPlane(annotation: Annotation, frame: PlaneFrame, mapping: Scree
 const rootStyle: CSSProperties = { position: 'relative', width: '100%', height: '100%', minHeight: 80, overflow: 'hidden', background: '#000', touchAction: 'none' };
 const canvasStyle: CSSProperties = { display: 'block', width: '100%', height: '100%' };
 const overlayStyle: CSSProperties = { position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' };
+/** A pane's size until it is first measured, a frame or two after it opens. The overlay is drawn in a box of the pane's
+ * size, so drawn then it is one unit stretched over the pane, and a 3.5-unit handle on an MPR line covers the pane in
+ * the line's colour. The overlay stays hidden until the pane is measured. */
+const UNMEASURED: [number, number] = [1, 1];
+const unmeasuredOverlayStyle: CSSProperties = { ...overlayStyle, visibility: 'hidden' };
 const pointString = (points: Point2[]) => points.map(p => p.join(',')).join(' ');
 const LABEL_CHARACTERS = 30, LABEL_LINE = 15, LABEL_PADDING = 5;
 const NO_BOXES: readonly Box[] = [];
@@ -201,6 +206,7 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }
 
 
+let firstDrawMarked = false;
 function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number) {
   const renderer = sliceRenderer();
   const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion);
@@ -212,6 +218,9 @@ function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed
   canvas.dataset.plane = displayed.plane;
   canvas.dataset.seriesId = current.volume.series.id;
   current.onFrame?.(milliseconds);
+  // The page's first frame handed to the renderer, on its timeline for tools/browser-bench. It is drawn on screen later:
+  // the benchmark's "first image" is the trace screenshot that first shows it.
+  if (!firstDrawMarked) { firstDrawMarked = true; performance.mark('veacom:first-draw'); }
   canvas.dispatchEvent(new CustomEvent('veacom:frame', { bubbles: true, detail: {
     seriesId: current.volume.series.id, slice: displayed.slice, plane: displayed.plane, mode: displayed.mode ?? 'mpr',
     renderSubmitMs: milliseconds, finishedAt: performance.now(), measurementKind: 'cpu-render-submit-and-composite',
@@ -223,7 +232,7 @@ export function Viewport(props: ViewportProps) {
   const container = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props);
   const liveView = useRef(resolveView(props.volume, props.view));
-  const size = useRef<[number, number]>([1, 1]);
+  const size = useRef<[number, number]>(UNMEASURED);
   const sized = useRef(false);
   const drag = useRef<Drag | null>(null);
   const touches = useRef(new Map<number, Point2>()), pinch = useRef<Pinch | null>(null);
@@ -239,7 +248,7 @@ export function Viewport(props: ViewportProps) {
   // Down the page is towards the feet on an axial stack (see paging.ts): wheel, drags and keys step this way.
   const backwards = pagesBackwards(props.volume.series, { plane: props.view.plane, mode: props.view.mode, oblique: props.view.oblique });
   const pageDirection = backwards ? -1 : 1;
-  const [dimensions, setDimensions] = useState<[number, number]>([1, 1]);
+  const [dimensions, setDimensions] = useState<[number, number]>(UNMEASURED);
   const [selected, setSelected] = useState<string | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
   // Hiding a measurement also clears the selection used by Delete.
@@ -517,9 +526,10 @@ export function Viewport(props: ViewportProps) {
         return;
       }
     }
-    if (button === 'left' && event.pointerType === 'mouse' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
+    // A drag that starts in the right edge pages the slices whatever the tool: with the mouse, one finger or a pen.
+    if (button === 'left' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
       event.currentTarget.setPointerCapture(event.pointerId);
-      if (event.detail <= 1) gesture.current = usage.begin('drag-scroll', 'drag');
+      if (event.detail <= 1) gesture.current = usage.begin('drag-scroll', input === 'touch' ? 'touch' : 'drag');
       drag.current = { mode: 'scroll', edge: true, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
       return;
     }
@@ -947,7 +957,7 @@ export function Viewport(props: ViewportProps) {
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
     <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
-    <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={overlayStyle}>
+    <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
       {/* Segmentation masks (from main, #3) sit on the image, under every line, measurement and overlay text. */}
       {segmentationFrames.length > 0 && <g data-testid="segmentation-overlay" pointerEvents="none">
         {segmentationFrames.map(({ id, frame: mask }, index) => <g key={`${id}:${index}`} data-segmentation={id} data-segment={mask.segment} transform={maskTransform(mapping, mask)}>
