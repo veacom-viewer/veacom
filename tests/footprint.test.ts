@@ -28,11 +28,12 @@ describe('the area of an acquired frame one screen pixel shows', () => {
     assert.deepEqual(pixelFootprint([2.5, 0, 0], [0, 4, 0]), [1.25, 2]);
     assert.deepEqual(pixelFootprint([0.25, 0, 0], [0, 4, 0]), [0.5, 2]);
   });
-  it('takes the bounding box of a rotated or flipped screen pixel, and ignores the step across frames', () => {
+  it('keeps the size of a rotated or flipped screen pixel, and ignores the step across frames', () => {
     assert.deepEqual(pixelFootprint([0, 2, 0], [-2, 0, 0]), [1, 1]);
     assert.deepEqual(pixelFootprint([-3, 0, 0], [0, -3, 0]), [1.5, 1.5]);
+    // Turned 45°, a screen pixel two frame pixels wide still spans two of them along each axis, not the 2.83 of its box.
     const [x, y] = pixelFootprint([Math.SQRT2, Math.SQRT2, 0], [-Math.SQRT2, Math.SQRT2, 0]);
-    assertClose(x, Math.SQRT2); assertClose(y, Math.SQRT2);
+    assertClose(x, 1); assertClose(y, 1);
     assert.deepEqual(pixelFootprint([3, 0, 7], [0, 3, -7]), [1.5, 1.5]);
   });
   it('follows the pane size and zoom of a real frame', () => {
@@ -41,6 +42,10 @@ describe('the area of an acquired frame one screen pixel shows', () => {
     pixelFootprint(...steps(frame, view(), 256)).forEach(half => assertClose(half, 1));
     // The same pane zoomed four times: magnified, interpolated between four pixels.
     assert.deepEqual(pixelFootprint(...steps(frame, view({ zoom: 4 }), 256)), [0.5, 0.5]);
+    // Turned 45° at one frame pixel per screen pixel, the frame is still interpolated, not averaged over a wider box
+    // that would dim a one-pixel bright detail.
+    pixelFootprint(...steps(frame, view({ rotation: 45, zoom: 2 }), 256)).forEach(half => assertClose(half, 0.5));
+    pixelFootprint(...steps(frame, view({ rotation: 45 }), 256)).forEach(half => assertClose(half, 1));
     // Rectangular pixels (0.5 × 1 mm) keep their shape on screen: twice as many pixels across as down.
     const tall = series({ dimensions: [512, 256, 1], spacing: [0.5, 1, 3] });
     const [across, down] = pixelFootprint(...steps(tall, view(), 128));
