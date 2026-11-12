@@ -1,10 +1,11 @@
 import type { Annotation, Joined, Series, ViewState } from '../model';
 import { getPlaneFrame, sliceCount, sub } from './geometry';
+import { usesSourceFrames } from './viewState';
 
 // Paging the slices the way VEAcom 1.x does: an axial stack from the top down (the head first; the wheel, a
 // downward drag and the down keys go towards the feet), a coronal one from the front, a sagittal one from the
 // middle, paging from right to left. Slice indices stay in the series' own order; the direction a reader pages
-// in, and where a series opens, follow these rules.
+// in, and where a series opens, follow these rules. The number a slice shows is another matter: numbersBackwards.
 
 type Paged = Pick<ViewState, 'plane' | 'mode' | 'oblique'>;
 
@@ -32,6 +33,29 @@ export function pagesBackwards(series: Series, view: Paged): boolean {
   return axis !== null && (axis === 2 ? step[2] > 0 : step[axis] < 0);
 }
 
+/** The step between consecutive Instance Numbers, or zero for missing or irregular numbering. */
+const steps = new WeakMap<object, number>();
+export function scannerStep(series: Series): number {
+  const frames = series.frameMetadata;
+  if (!frames || frames.length !== series.dimensions[2] || frames.length < 2) return 0;
+  const cached = steps.get(frames);
+  if (cached !== undefined) return cached;
+  const first = frames[0].instanceNumber, second = frames[1].instanceNumber;
+  const step = first === undefined || second === undefined ? 0 : second - first;
+  const result = first !== undefined && Math.abs(step) === 1 && frames.every((frame, i) => frame.instanceNumber === first + i * step) ? step : 0;
+  steps.set(frames, result);
+  return result;
+}
+
+export function numbersBackwards(series: Series, view: Paged): boolean {
+  if (usesSourceFrames(series, view)) {
+    const step = scannerStep(series), first = series.frameMetadata?.[0]?.instanceNumber;
+    if (step === 1 && first === 1) return false;
+    if (step === -1 && first === series.dimensions[2]) return true;
+  }
+  return pagesBackwards(series, view);
+}
+
 /** Where slice `slice` of `count` stands in paging order, from 0: an axial stack counts from the top. The slice at a
  * place is found the same way, since the order is either the slices' own or its reverse. */
 export function pagingPlace(series: Series, view: Paged, slice: number, count: number): number {
@@ -56,7 +80,8 @@ export function stackSliceAt(series: Series, view: Paged, place: number, count: 
  * bar, the image corner, the export window, the tag panel, a checklist note and the measurement list (measuredSlice). */
 export function shownSlice(series: Series, view: Paged, slice: number, count: number, joined?: Joined | null): { number: number; total: number } {
   const { place, total } = placeInSequence(series, view, slice, count, joined);
-  return { number: place + 1, total };
+  if (!joined) return { number: numbersBackwards(series, view) ? count - slice : slice + 1, total };
+  return { number: joined.reverseNumbers ? total - place : place + 1, total };
 }
 
 /** The number a pane's counter shows on the slice a measurement was drawn on, for a list that names the measurement by

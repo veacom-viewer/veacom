@@ -1,3 +1,4 @@
+import { shownSlice } from '../src/imaging/paging';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
@@ -69,6 +70,14 @@ describe('a stack paged with its reference image', () => {
     // An image numbered after the slices stands beside the highest number.
     assert.equal(joinedWith(stack([1, 2, 3, 4, 5]), reference(6)).leadAt, 0);
     assert.equal(joinedWith(stack([5, 4, 3, 2, 1]), reference(6)).leadAt, 5);
+  });
+  it('uses scanner numbers on both sides of the join only for a complete sequence', () => {
+    const ref = reference(1), view = { plane: 'axial', mode: 'source' } as const;
+    for (const [numbers, expected] of [[[2, 3, 4, 5, 6], [2, 1]], [[2, 8, 4, 5, 6], [5, 6]]]) {
+      const series = stack(numbers), joined = joinedWith(series, ref);
+      assert.equal(shownSlice(series, view, 0, 5, { ...joined, lead: false }).number, expected[0]);
+      assert.equal(shownSlice(ref, view, 0, 1, { ...joined, lead: true }).number, expected[1]);
+    }
   });
   it('puts the image first where the numbers do not say', () => {
     assert.equal(joinedWith(stack([2, 3, 4, 5, 6]), reference()).leadAt, 0);

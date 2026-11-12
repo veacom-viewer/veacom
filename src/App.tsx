@@ -355,7 +355,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
     </div>
     {volume && <footer className="viewport-footer" data-export-exclude>
       <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shown.number} / {shown.total}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
-      <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${at.place + 1} / ${at.total}`}
+      <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${shownSlice(volume.series, requestedView, atSlice, count, joined).number} / ${at.total}`}
         label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
         onPosition={toPlace} />
       <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${Math.round(displayView.windowWidth)} · L ${Math.round(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
@@ -1780,9 +1780,11 @@ export default function App() {
       setPlaying(false);
       // The numbers the pane shows for its slices (paging.ts): a stack paged with its reference image counts that image.
       const frames = sliceCount(activeVolume.series, activeSlot.view), joined = joinedFor(activeSlot);
+      const firstNumber = shownSlice(activeVolume.series, activeSlot.view, 0, frames, joined);
+      const lastNumber = shownSlice(activeVolume.series, activeSlot.view, frames - 1, frames, joined);
       setExportVideoTarget({ viewport, seriesId: activeVolume.series.id, originalSlice: activeSlot.view.slice, frameCount: frames,
         nativeSize: plain ? { width: activeVolume.series.dimensions[0], height: activeVolume.series.dimensions[1] } : undefined, backwards: pagesBackwards(activeVolume.series, activeSlot.view),
-        numberOffset: joined ? joined.lead ? joined.leadAt : Number(joined.leadAt === 0) : 0, numberTotal: joined ? joined.total : frames,
+        numbersBackwards: firstNumber.number > lastNumber.number, numberOffset: Math.min(firstNumber.number, lastNumber.number) - 1, numberTotal: firstNumber.total,
         setSlice: slice => setSlots(current => current.map(slot => slot.id === id ? { ...slot, view: { ...slot.view, slice } } : slot)) });
     } else setExportVideoTarget(undefined);
     setExportFor(activeSeries?.id ?? null);

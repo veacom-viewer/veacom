@@ -34,11 +34,11 @@ export interface ExportDialogProps {
     setSlice: (slice: number) => void | Promise<void>;
     /** The series' own pixel size, for 1:1 pictures. */
     nativeSize?: { width: number; height: number };
-    /** The pane pages against the slice order (an axial stack stored from the feet up): what it shows as slice 1 is the last index. */
+    /** The pane pages against the slice order (an axial stack stored from the feet up): down the page is a lower index. */
     backwards?: boolean;
     /** What the pane adds to a slice's own number, and the total it shows beside it: a stack paged with its reference
      * image counts that image too (imaging/paging.ts). */
-    numberOffset?: number; numberTotal?: number;
+    numberOffset?: number; numberTotal?: number; numbersBackwards?: boolean;
   };
   /** The acquired slice on screen (its file), for "current slice" DICOM. */
   currentFrame?: number;
@@ -160,10 +160,10 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const outputSize = size === 'native' ? video?.nativeSize : size === 'fit' ? fitSize : undefined;
   // Slices are numbered as the pane numbers them.
   const backwards = Boolean(video?.backwards), count = video?.frameCount ?? 1, offset = video?.numberOffset ?? 0;
-  const indexOf = (shown: number) => backwards ? count - (shown - offset) : shown - offset - 1;
+  const indexOf = (shown: number) => video?.numbersBackwards ? count - (shown - offset) : shown - offset - 1;
   const sliceRange = shownScope === 'slice' && video ? { start: video.originalSlice, end: video.originalSlice }
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
-  const order = { descending: backwards !== reverse, numberOf: (slice: number) => (backwards ? count - slice : slice + 1) + offset, prefix };
+  const order = { descending: backwards !== reverse, numberOf: (slice: number) => (video?.numbersBackwards ? count - slice : slice + 1) + offset, prefix };
   const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 + offset && start <= end && end <= (video?.frameCount ?? 0) + offset);
   // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs), a disc's as well.
   const tooMany = !captures && ids.length > MAX_EXPORT_SERIES;

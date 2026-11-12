@@ -348,13 +348,13 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const studyItems = (key: string) => series.filter(item => studyKey(item) === key);
   const askStudy = (key: string) => {
     const items = studyItems(key); if (!items.length) return;
-    setQuestion({ ids: items.map(item => item.id), message: t('series.removeStudyQuestion', { name: `${patientName(items[0], t)} · ${dateLabel(items[0].studyDate, t)}`, count: items.length }) });
+    setQuestion({ ids: items.map(item => item.id), message: t('series.removeStudyQuestion', { name: `${patientName(items[0], t)} · ${dateLabel(items[0].studyDate, t)}`, count: items.filter(item => !onCards.has(item.id)).length }) });
   };
   const askPatient = (item: Series) => {
     const items = series.filter(value => patientKey(value) === patientKey(item));
-    setQuestion({ ids: items.map(value => value.id), message: t('series.removePatientQuestion', { name: patientName(item, t), count: items.length }) });
+    setQuestion({ ids: items.map(value => value.id), message: t('series.removePatientQuestion', { name: patientName(item, t), count: items.filter(item => !onCards.has(item.id)).length }) });
   };
-  const askAll = () => setQuestion({ ids: series.map(item => item.id), message: t('series.removeAllQuestion', { count: series.length }) });
+  const askAll = () => setQuestion({ ids: series.map(item => item.id), message: t('series.removeAllQuestion', { count: listed.length }) });
   // Collapse all folds every patient band, as in VEAcom Next.
   const studyKeys = () => studies.map(patient => patient.key);
   const menuStudy = menu?.study ?? (menu?.item ? studies.flatMap(patient => patient.studies).find(study => study.items.some(item => item.id === menu.item!.id))?.key : undefined);

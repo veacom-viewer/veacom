@@ -197,6 +197,8 @@ export interface Joined {
   total: number;
   /** The reference image's place in the sequence, from 0 in paging order: its start (0) or its end (total - 1). */
   leadAt: number;
+  /** The scanner numbered the complete sequence from its last paged image to its first. */
+  reverseNumbers?: boolean;
   /** True in the pane that shows the reference image, false in the pane that shows the stack. */
   lead: boolean;
 }

@@ -1,6 +1,6 @@
 import { studyKey } from '../domain/patient';
 import { cross, dot, length } from '../imaging/geometry';
-import { pagingPlace } from '../imaging/paging';
+import { pagingPlace, scannerStep } from '../imaging/paging';
 import type { Series, Vec3 } from '../model';
 
 // A scanner puts one image facing another way at the head of a reformatted series: the reference image that shows
@@ -51,10 +51,12 @@ export function referenceImages(series: readonly Series[]): Map<string, Series> 
  * image stands in it, from 0 in paging order. The image stands at the end of the stack the scanner numbered it next
  * to, so that the numbers run on: before the slices where its Instance Number is nearer the first paged slice's,
  * after them where it is nearer the last's. With no numbers to go by it comes first. */
-export function joinedWith(stack: Series, reference: Series): { total: number; leadAt: number } {
+export function joinedWith(stack: Series, reference: Series): { total: number; leadAt: number; reverseNumbers?: boolean } {
   const count = stack.dimensions[2], acquired = { plane: 'axial', mode: 'source' } as const;
   const numberOf = (item: Series, slice: number) => item.frameMetadata?.[slice]?.instanceNumber;
   const own = numberOf(reference, 0), first = numberOf(stack, pagingPlace(stack, acquired, 0, count)), last = numberOf(stack, pagingPlace(stack, acquired, count - 1, count));
   const after = own !== undefined && first !== undefined && last !== undefined && Math.abs(own - last) < Math.abs(own - first);
-  return { total: count + 1, leadAt: after ? count : 0 };
+  const total = count + 1;
+  const reverse = (after ? own === 1 && first === total && last === 2 : own === total && first === count && last === 1) && scannerStep(stack) !== 0;
+  return { total, leadAt: after ? count : 0, ...(reverse ? { reverseNumbers: true } : {}) };
 }

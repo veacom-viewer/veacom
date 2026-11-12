@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
 import { sliceCount } from '../src/imaging/geometry';
-import { measuredSlice, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
+import { measuredSlice, numbersBackwards, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
 
 // Synthetic stacks with no frame metadata: the volume geometry alone places the slices.
 const stack = (direction: number[], slices = 20): Series => ({
@@ -98,5 +98,36 @@ describe('a stack paged with its reference image as one sequence', () => {
     assert.equal(measuredSlice(feetUp, { plane: 'coronal', slice: 0 }), 1);
     // A reference image is no slice of a reconstructed plane: the sequence is not asked.
     assert.equal(measuredSlice(feetUp, { plane: 'axial', slice: 0 }, undefined, first), count);
+  });
+});
+
+describe('the slice number shown', () => {
+  // A stack stored from the feet up is paged from its last index down: 4, 3, 2 …
+  const feetUp = stack([1, 0, 0, 0, 1, 0, 0, 0, 1], 5);
+  const numbered = (numbers: number[]): Series => ({ ...feetUp,
+    frameMetadata: numbers.map((instanceNumber, index) => ({ origin: [0, 0, index * 2], direction: feetUp.direction, spacing: feetUp.spacing, instanceNumber })) });
+  const shown = (series: Series) => [4, 3, 2, 1, 0].map(slice => shownSlice(series, source, slice, 5).number);
+
+  it('counts in paging order where the images carry no numbers of their own', () => {
+    assert.equal(numbersBackwards(feetUp, source), true);
+    assert.deepEqual(shown(feetUp), [1, 2, 3, 4, 5]);
+  });
+  it('is the image\'s own number where the scanner numbered the stack 1 to N, though it falls as the reader pages down', () => {
+    const fromTheFeet = numbered([1, 2, 3, 4, 5]);
+    assert.equal(numbersBackwards(fromTheFeet, source), false);
+    assert.deepEqual(shown(fromTheFeet), [5, 4, 3, 2, 1]);
+    const fromTheHead = numbered([5, 4, 3, 2, 1]);
+    assert.equal(numbersBackwards(fromTheHead, source), true);
+    assert.equal(measuredSlice(fromTheHead, { plane: 'axial', slice: 0 }, 0), 5);
+    assert.equal(measuredSlice(fromTheFeet, { plane: 'axial', slice: 0 }, 0), 1);
+    assert.deepEqual(shown(fromTheHead), [1, 2, 3, 4, 5]);
+  });
+  it('counts in paging order where the numbers are not 1 to N in order', () => {
+    for (const numbers of [[2, 3, 4, 5, 6], [1, 3, 2, 4, 5], [7, 7, 7, 7, 7], [1, 2, 3, 4]]) assert.deepEqual(shown(numbered(numbers)), [1, 2, 3, 4, 5], String(numbers));
+  });
+  it('counts a reconstructed plane in paging order, whatever the acquired images are numbered', () => {
+    const fromTheFeet = numbered([1, 2, 3, 4, 5]);
+    assert.equal(numbersBackwards(fromTheFeet, { plane: 'axial', mode: 'mpr' }), true);
+    assert.equal(shownSlice(fromTheFeet, { plane: 'axial', mode: 'mpr' }, 4, 5).number, 1);
   });
 });

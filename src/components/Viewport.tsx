@@ -941,7 +941,7 @@ export function Viewport(props: ViewportProps) {
   const planeName = source ? (sourcePlane ? t(`plane.${sourcePlane}` as const) : '') : tilt ? t('viewport.obliquePlane', { plane: t(`plane.${overlayView.plane}` as const), angle: tilt }) : t(`plane.${overlayView.plane}` as const);
   // The slice's number in the sequence the pane pages: 1 at the top of an axial stack (imaging/paging.ts).
   const numbered = shownSlice(props.volume.series, overlayView, Math.round(overlayView.slice), frame.slices, props.joined);
-  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${numbered.number} / ${numbered.total}${source && props.volume.series.frameMetadata?.[overlayView.slice]?.instanceNumber !== undefined ? t('viewport.instance', { number: props.volume.series.frameMetadata[overlayView.slice].instanceNumber! }) : ''}`;
+  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${numbered.number} / ${numbered.total}`;
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
