@@ -129,5 +129,6 @@ describe('the slice number shown', () => {
     const fromTheFeet = numbered([1, 2, 3, 4, 5]);
     assert.equal(numbersBackwards(fromTheFeet, { plane: 'axial', mode: 'mpr' }), true);
     assert.equal(shownSlice(fromTheFeet, { plane: 'axial', mode: 'mpr' }, 4, 5).number, 1);
+    assert.deepEqual([0, 4].map(slice => measuredSlice(fromTheFeet, { plane: 'axial', slice })), [5, 1]);
   });
 });
