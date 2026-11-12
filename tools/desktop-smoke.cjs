@@ -85,9 +85,23 @@ async function main() {
     check('Annotation undo and redo');
     await screenshot('after-measurement.png');
 
+    // A pane draws its overlay in a box of the pane's own size, which is one unit until the pane is measured. Shown then,
+    // the handles on the plane lines cover the pane in their colours: note every frame that shows such an overlay.
+    await page.evaluate(() => {
+      const early = window.__earlyOverlays = [];
+      const watch = () => {
+        for (const overlay of document.querySelectorAll('[data-testid="annotation-overlay"]')) {
+          if (overlay.getAttribute('viewBox') === '0 0 1 1' && getComputedStyle(overlay).visibility !== 'hidden') early.push(overlay.dataset.plane);
+        }
+        if (window.__earlyOverlays === early) requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+    });
     await budget.task('mpr', () => page.getByTestId('tool-mpr').click(), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
     const planes = await page.locator('canvas[data-renderer]').evaluateAll(nodes => nodes.map(node => node.dataset.plane).sort());
     assert.deepEqual(planes, ['axial', 'coronal', 'sagittal']);
+    const early = await page.evaluate(() => { const seen = window.__earlyOverlays; delete window.__earlyOverlays; return seen; });
+    assert.deepEqual(early, [], 'A pane showed its overlay before the pane was measured.');
     check('Three-plane MPR');
     await screenshot('after-mpr.png');
 
