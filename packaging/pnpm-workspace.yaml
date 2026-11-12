@@ -11,6 +11,8 @@ blockExoticSubdeps: true
 strictDepBuilds: true
 
 overrides:
+  # glob 13 can keep traversing files after cancellation (GHSA-3g3m-2fjr-6pw4).
+  '@electron/asar@4.3.1>glob': 14.0.4
   # GHSA-g3hv-75wg-m249 is fixed from minimatch 11.0.1.
   '@electron/universal>minimatch': 11.0.4
   'app-builder-lib>minimatch': 11.0.4
