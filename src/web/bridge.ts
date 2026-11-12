@@ -172,7 +172,11 @@ export function createWebBridge(): DesktopBridge {
   let helpers: Worker[] = [];
 
   const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
-  const setCancel = (value: number) => { if (cancel) Atomics.store(cancel, 0, value); if (shared) Atomics.store(shared.cancel, 0, value); };
+  const setCancel = (value: number) => {
+    if (cancel) Atomics.store(cancel, 0, value);
+    if (shared) Atomics.store(shared.cancel, 0, value);
+    if (value && pending.get(value)?.op === 'volume') worker?.postMessage({ cancelVolume: value });
+  };
 
   /** Fails every request sent or waiting: the engine that had them answers none. */
   function failPending(): void {
@@ -292,7 +296,7 @@ export function createWebBridge(): DesktopBridge {
    * than in the engine Worker so that one that stops (a panic aborts the threads build) reaches the page, which then
    * replaces the engine: an engine run waiting for that Worker would otherwise wait for ever, and its Worker could hear
    * nothing. */
-  function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort }): void {
+  function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort; files: MessagePort[] }): void {
     const started: Worker[] = [];
     let waiting = request.count + 1, settled = false;
     const settle = (error?: string) => {
@@ -306,7 +310,7 @@ export function createWebBridge(): DesktopBridge {
     };
     const stopped = (error: string) => { if (!settled) settle(error); else if (engine === worker) crashed(); };
     const timer = setTimeout(() => settle('the threads did not start in time'), HELPER_START_MS);
-    const watch = (helper: Worker) => {
+    const watch = (helper: Worker, files?: MessagePort) => {
       started.push(helper); helpers.push(helper);
       helper.onmessage = ({ data }) => {
         if (data?.type === 'ready') { if (--waiting === 0) settle(); return; }
@@ -316,9 +320,9 @@ export function createWebBridge(): DesktopBridge {
         }
       };
       helper.onerror = () => stopped('a thread could not start');
-      helper.postMessage({ module: request.module, memory: request.memory });
+      helper.postMessage({ module: request.module, memory: request.memory, files }, files ? [files] : []);
     };
-    for (let index = 0; index < request.count; index++) watch(new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' }));
+    for (let index = 0; index < request.count; index++) watch(new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' }), request.files[index]);
     watch(new Worker(new URL('./picture.worker.ts', import.meta.url), { type: 'module' }));
   }
 

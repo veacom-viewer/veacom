@@ -59,6 +59,11 @@ pub fn begin_request(id: u32) {
     REQUEST_ID.store(id, Ordering::Release);
 }
 
+pub(super) fn request_cancelled() -> bool {
+    let cancelled = SHARED_CANCEL.load(Ordering::Acquire) as u32;
+    cancelled != 0 && cancelled == REQUEST_ID.load(Ordering::Acquire)
+}
+
 fn cancel(id: i32) {
     if id != 0 && id as u32 == REQUEST_ID.load(Ordering::Acquire) {
         progress::cancel();
@@ -121,26 +126,103 @@ pub fn set_hold_limit(bytes: f64) {
     HOLD_LIMIT.store(bytes as u64, Ordering::Relaxed);
 }
 
-/// Decodes a whole series, from the cache when it is there. In the threads build the series' files are first read
-/// whole into shared memory, as the decoding threads cannot reach the page's files, and given back after.
+/// The files a series' frames are read from, each once.
+#[cfg(feature = "threads")]
+fn frame_files(source: &veacom_core::model::SourceSeries) -> Vec<&std::path::Path> {
+    let mut paths: Vec<&std::path::Path> = source
+        .frames
+        .iter()
+        .map(|frame| frame.source.path.as_path())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Files to preload for a volume. None means there is no helper transfer to wait for (cached, unknown, or already
+/// available to every helper). An empty list still allows pending transfers to finish: a volume above the preload
+/// limit can decode on the helpers once they have its files.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = volumeFiles)]
+pub fn volume_files(id: &str) -> Option<Vec<u32>> {
+    if SESSION.with_borrow(|session| session.has_volume(id)) {
+        return None;
+    }
+    let source = SESSION.with_borrow(|session| session.source(id)).ok()?;
+    let paths = frame_files(&source);
+    if crate::blob::on_helpers(&paths) {
+        return None;
+    }
+    Some(crate::blob::unheld(
+        &paths,
+        HOLD_LIMIT.load(Ordering::Relaxed),
+    ))
+}
+
+/// On a helper: takes the page files the engine Worker listed, by their numbers (`addFile`), so that parallel runs
+/// read them on this thread too.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = helperTakeFiles)]
+pub fn helper_take_files(ids: Vec<u32>, files: Vec<web_sys::Blob>) {
+    for (id, file) in ids.into_iter().zip(files) {
+        crate::blob::add_here(id, file);
+    }
+}
+
+/// On a helper: lets go of files the engine Worker no longer lists.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = helperForgetFiles)]
+pub fn helper_forget_files(ids: Vec<u32>) {
+    crate::blob::forget_here(&ids);
+}
+
+/// Every helper has taken these files: parallel runs may read them on any thread from now on.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = filesOnHelpers)]
+pub fn files_on_helpers(ids: Vec<u32>) {
+    crate::blob::mark_on_helpers(&ids);
+}
+
+/// Sends the helpers back to their Workers' events, to take the files just sent to them.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = wakeHelpers)]
+pub fn wake_helpers() {
+    crate::helpers::wake();
+}
+
+/// File `id`, read whole by the Worker. False when it is not a listed file of that length: then it is read here.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = holdFile)]
+pub fn hold_file(id: u32, bytes: Vec<u8>) -> bool {
+    crate::blob::hold_read(id, bytes)
+}
+
+/// Drops files held before a volume request stopped in the Worker.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = releaseHeldFiles)]
+pub fn release_held_files() {
+    crate::blob::release();
+}
+
+/// Decodes a whole series, from the cache when it is there. In the threads build, when every helper has the series'
+/// files, each thread reads the files of the frames it decodes, and nothing is held. Otherwise the files are first held
+/// whole in shared memory, and given back after: the Worker reads most of them beforehand (`volumeFiles`), and `hold`
+/// reads the rest here.
 fn decode_volume_of(id: &str, revision: Option<u64>) -> anyhow::Result<Arc<PixelBuffer>> {
     #[cfg(feature = "threads")]
     if !SESSION.with_borrow(|session| session.has_volume(id)) {
         let source = SESSION.with_borrow(|session| session.source(id))?;
-        let mut paths: Vec<&std::path::Path> = source
-            .frames
-            .iter()
-            .map(|frame| frame.source.path.as_path())
-            .collect();
-        paths.sort();
-        paths.dedup();
+        let paths = frame_files(&source);
+        if crate::blob::on_helpers(&paths) {
+            return SESSION.with_borrow_mut(|session| session.volume(id, revision));
+        }
         // Above HOLD_LIMIT, or when memory runs short, the series is decoded on this thread alone, reading as it goes.
         let volume = match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
             Ok(true) => SESSION.with_borrow_mut(|session| session.volume(id, revision)),
             Ok(false) => SESSION.with_borrow_mut(|session| {
                 parallel::on_this_thread(|| session.volume(id, revision))
             }),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         };
         crate::blob::release();
         return volume;
@@ -170,10 +252,16 @@ pub fn progress() -> String {
 }
 
 /// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold the
-/// file's first 64 KiB, read by the page beforehand.
+/// file's first 64 KiB, read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
 #[wasm_bindgen(js_name = addFile)]
-pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) {
-    crate::blob::add(path, file, head);
+pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
+    crate::blob::add(path, file, head)
+}
+
+/// The numbers of the files listed now: an import and a removal forget the files no series reads from.
+#[wasm_bindgen(js_name = listedFiles)]
+pub fn listed_files() -> Vec<u32> {
+    crate::blob::listed()
 }
 
 /// Closes everything and forgets every listed file.
@@ -183,7 +271,9 @@ pub fn reset() {
     crate::blob::clear();
 }
 
-/// Imports files, folders or ZIPs by path and adds their series to the catalog; returns `{series, warnings}`.
+/// Imports files, folders or ZIPs by path and adds their series to the catalog; returns `{series, warnings}`. The files
+/// are listed on this thread alone: on every thread, the header parsing's many small allocations waited for each other
+/// on the module's one allocator, and the listing took longer.
 #[wasm_bindgen(js_name = importPaths)]
 pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
     let imported = session(|session| session.import(&paths));
@@ -193,7 +283,8 @@ pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
 
 /// After an import, whatever its outcome, and after a removal: the page's files that no series reads from go (a failed
 /// import's, an archive once extracted, a closed series'), and so do the first pieces read ahead for the import.
-fn release_files() {
+#[wasm_bindgen(js_name = pruneFiles)]
+pub fn release_files() {
     crate::blob::drop_heads();
     crate::blob::retain(&SESSION.with_borrow_mut(Session::prune_archives));
 }

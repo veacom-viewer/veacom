@@ -1,6 +1,8 @@
 // @ts-check
 const HEAD_BYTES = 64 * 1024;
-const MAX_PREFETCH_BYTES = 16 * 1024 * 1024;
+// The heads of 1024 files: a PET/CT is often 500 to 1000. The engine reads the head of every file beyond this one by one
+// while it lists them, about 0.7 ms each; these are read several at once, and dropped once the listing ends.
+const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
 // Larger files use 1 MiB pieces in web/engine/src/blob.rs and discard a 64 KiB head.
 const LARGE_FILE_BYTES = 16 * 1024 * 1024;
 
