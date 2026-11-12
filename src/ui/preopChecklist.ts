@@ -187,11 +187,11 @@ const MOVES: Partial<Record<string, 'up' | 'down' | 'left' | 'right'>> = { Arrow
  * layout change the character it types. ⌘ and Ctrl combinations belong to the app; so does AltGr, which Windows reports
  * as Ctrl+Alt and which types characters on a Turkish keyboard. Only the top-row digits answer: with Alt, the keypad's
  * digits type characters by their codes on Windows. */
-export function checklistKey(event: { key: string; code: string; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }): ChecklistKey | null {
+export function checklistKey(event: { key: string; code: string; repeat: boolean; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }): ChecklistKey | null {
   if (event.metaKey || event.ctrlKey) return null;
   const move = MOVES[event.key];
   if (move) return event.shiftKey || event.altKey ? null : { move };
-  const digit = event.altKey ? /^Digit([1-9])$/.exec(event.code) : null;
+  const digit = event.altKey && !event.repeat ? /^Digit([1-9])$/.exec(event.code) : null;
   return digit ? { answer: Number(digit[1]) - 1, both: event.shiftKey } : null;
 }
 

@@ -4,8 +4,8 @@ import { CHECKLISTS, answerByKey, checklistKey, moveCell, type ChecklistState } 
 
 const items = CHECKLISTS.pns.groups.flatMap(group => group.items);
 const row = (id: string) => items.findIndex(item => item.id === id);
-const press = (key: string, code = '', modifiers: Partial<Record<'shiftKey' | 'metaKey' | 'ctrlKey' | 'altKey', boolean>> = {}) =>
-  checklistKey({ key, code, shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, ...modifiers });
+const press = (key: string, code = '', modifiers: Partial<Record<'repeat' | 'shiftKey' | 'metaKey' | 'ctrlKey' | 'altKey', boolean>> = {}) =>
+  checklistKey({ key, code, repeat: false, shiftKey: false, metaKey: false, ctrlKey: false, altKey: false, ...modifiers });
 const empty: ChecklistState = { kind: 'pns', answers: {}, notes: {} };
 
 describe('the checklist keys', () => {
@@ -13,6 +13,9 @@ describe('the checklist keys', () => {
     assert.deepEqual(press('ArrowDown'), { move: 'down' });
     assert.deepEqual(press('ArrowLeft'), { move: 'left' });
     assert.deepEqual(press('2', 'Digit2', { altKey: true }), { answer: 1, both: false });
+    assert.equal(press('1', 'Digit1', { altKey: true, repeat: true }), null);
+    assert.equal(press('!', 'Digit1', { altKey: true, shiftKey: true, repeat: true }), null);
+    assert.deepEqual(press('ArrowDown', '', { repeat: true }), { move: 'down' });
     // ⌥2 types ™ on a Mac, and Alt+Shift+2 another character on each layout: still the second answer, both sides with Shift.
     assert.deepEqual(press('™', 'Digit2', { altKey: true }), { answer: 1, both: false });
     assert.deepEqual(press('€', 'Digit2', { altKey: true, shiftKey: true }), { answer: 1, both: true });
