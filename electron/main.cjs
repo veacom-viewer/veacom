@@ -1,10 +1,11 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme, systemPreferences } = require('electron');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, protocol, net, shell, nativeTheme, systemPreferences } = require('electron');
 const path = require('node:path');
 app.setName('VEAcom');
 if (process.env.VEACOM_USER_DATA) app.setPath('userData', path.resolve(process.env.VEACOM_USER_DATA));
 // One VEAcom per user data folder: a second launch brings the first window forward instead. Two copies would share
 // the usage-sharing choice and its local copy on disk, so turning sharing off in one would not stop the other.
-const primary = app.requestSingleInstanceLock();
+// A later launch sends its own arguments and folder with the request: Chromium reorders the arguments it relays.
+const primary = app.requestSingleInstanceLock({ argv: process.argv, cwd: process.cwd() });
 if (!primary) app.quit();
 const crashes = primary ? require('./crash-reports.cjs').registerCrashReports(app) : null;
 
@@ -14,8 +15,10 @@ const { createImportView } = require('./import-view.cjs');
 const { registerUsageHandlers } = require('./usage.cjs');
 const { JS_EXCEPTIONS } = require('./crash-schema.cjs');
 const fs = require('node:fs/promises');
+const { statSync } = require('node:fs');
 const os = require('node:os');
 const { pathToFileURL } = require('node:url');
+const { launchPaths } = require('./launch-paths.cjs');
 const { EngineProcess } = require('./engine-process.cjs');
 const { createHash, randomUUID } = require('node:crypto');
 const { ImagingBroker, validateApplicationSender } = require('./imaging-broker.cjs');
@@ -37,7 +40,13 @@ if (process.platform === 'darwin') systemPreferences.registerDefaults({ ApplePer
 // falling back as Windows does with WARP. VEACOM_SOFTWARE_GL=llvmpipe lets a development run use that driver, so the
 // desktop checks draw in .github/workflows/ci.yml. A packaged app ignores it.
 if (!app.isPackaged && process.platform === 'linux' && process.env.VEACOM_SOFTWARE_GL === 'llvmpipe') app.commandLine.appendSwitch('ignore-gpu-blocklist');
-app.on('second-instance', () => {
+// What each launch named (launch-paths.cjs): this one's study, and those of later launches, which hand their arguments
+// over and end. Explorer's "Open with VEAcom" is such a launch: this window comes forward and opens what it named.
+const launches = [{ argv: process.argv, cwd: process.cwd() }];
+let openLaunches = () => {};
+app.on('second-instance', (_event, _relayed, _folder, launch) => {
+  if (Array.isArray(launch?.argv)) launches.push({ argv: launch.argv, cwd: typeof launch.cwd === 'string' ? launch.cwd : process.cwd() });
+  openLaunches();
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
   window.show(); window.focus();
@@ -120,11 +129,23 @@ app.whenReady().then(async () => {
   const testHooks = process.env.VEACOM_TEST_MODE === '1' ? require('./imaging-test-hooks.cjs').createImagingTestHooks() : undefined;
   imaging = new ImagingBroker({ engine, devOrigin: devUrl ? new URL(devUrl).origin : undefined,
     beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport, preparePictures: pictureDecoder.prepare });
-  // A study named on the command line starts importing while the window loads.
-  const studyArgument = process.argv.indexOf('--study');
-  const startupStudy = studyArgument >= 0 && process.argv[studyArgument + 1] ? [path.resolve(process.argv[studyArgument + 1])] : [];
-  let startupCapabilities = startupStudy.length ? imaging.authorizeImportPaths(startupStudy).then(capabilities => { imaging.prefetchImport(capabilities); return capabilities; }) : null;
-  startupCapabilities?.catch(() => {});
+  // A study named on the command line starts importing while the window loads; one a later launch names starts when
+  // that launch arrives. The page takes them with files:startup: when it starts, and whenever main says more came.
+  const opened = [];
+  const isFile = file => { try { return statSync(file).isFile(); } catch { return false; } };
+  openLaunches = () => {
+    for (const { argv, cwd } of launches.splice(0)) {
+      const paths = launchPaths(argv, { packaged: app.isPackaged, cwd, isFile });
+      if (!paths.length) continue;
+      // A path that is not there (a disc taken out, a folder moved) is said in plain words, not as the system's error.
+      const pending = imaging.authorizeImportPaths(paths).then(capabilities => { imaging.prefetchImport(capabilities); return capabilities; },
+        () => { throw new Error(t('launch.cannotOpen', { path: paths.join(', ') })); });
+      pending.catch(() => {});
+      opened.push(pending);
+    }
+    if (opened.length && window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send('files:opened');
+  };
+  openLaunches();
   const assets = path.join(root, 'dist');
   // The application's files with its content security policy; the import window's view serves them too (import-view.cjs).
   const serveFile = async url => {
@@ -204,7 +225,14 @@ app.whenReady().then(async () => {
   handle('imaging:remove', (ids, generation) => imaging.removeSeries(ids, generation));
   handle('imaging:pixels', request => imaging.getPixels(request));
   handle('files:drop-capabilities', paths => imaging.authorizeImportPaths(paths));
-  handle('files:startup', () => { const pending = startupCapabilities; startupCapabilities = null; return pending ?? []; });
+  handle('files:startup', async () => {
+    const results = await Promise.allSettled(opened.splice(0));
+    const capabilities = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
+    const failed = results.find(result => result.status === 'rejected');
+    // A launch whose path cannot be opened says so, unless another launch's study opens in its place.
+    if (failed && !capabilities.length) throw failed.reason;
+    return capabilities;
+  });
   // A packaged app adds no switch for PCs without a usable graphics driver. Chromium 156 (Electron 45) already draws
   // WebGL in software on Windows through Direct3D WARP. On the Windows VM with its GPU disabled, adding
   // --enable-unsafe-swiftshader swapped WARP for SwiftShader, whose first WebGL context was lost at startup
@@ -262,6 +290,8 @@ app.whenReady().then(async () => {
   handle('export:folder', () => exportFolder.folder());
   // Text for a report (the checklist's summary): the system clipboard, which the page itself may not reach.
   handle('clipboard:write', text => { if (typeof text !== 'string' || text.length > 100000) throw new Error('Invalid text.'); clipboard.writeText(text); });
+  // The picture on screen (Ctrl+C), as the pixels the page drew (clipboard-image.cjs).
+  handle('clipboard:write-image', picture => require('./clipboard-image.cjs').writeClipboardImage(picture, { clipboard, nativeImage }));
   handle('export:chooseFolder', () => exportFolder.choose());
   handle('export:reveal', async target => {
     if (typeof target !== 'string' || !(exported.has(target) || await exportFolder.holds(target))) throw new Error('Not an export of this session.');

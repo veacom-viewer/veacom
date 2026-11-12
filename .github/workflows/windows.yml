@@ -207,6 +207,13 @@ jobs:
         run: |
           node tools/fixtures/make-nm-study.mjs "$env:RUNNER_TEMP\nm-study"
           node tools/check-gamma-camera.cjs "$env:RUNNER_TEMP\nm-study" "$env:EVIDENCE\gamma-camera"
+      # What Explorer's "Open with VEAcom" does while VEAcom runs: a later launch hands its study to the open window.
+      - name: A later launch opens its study in the running window
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$env:RUNNER_TEMP\open-with-first"
+          node tools/fixtures/make-nm-study.mjs "$env:RUNNER_TEMP\open-with-second"
+          node tools/check-open-with.cjs --study "$env:RUNNER_TEMP\open-with-first" --second "$env:RUNNER_TEMP\open-with-second" --output "$env:EVIDENCE\open-with"
       - name: GPU startup on WARP
         if: ${{ !cancelled() && steps.source.outcome == 'success' }}
         run: node tools/check-gpu-startup.cjs "$env:STUDY\S01" "$env:EVIDENCE\gpu-startup.json"
@@ -239,6 +246,15 @@ jobs:
         env:
           INSTALLED_APP: ${{ steps.installed.outputs.executable }}
         run: node tools/check-file-drop.cjs --study "$env:STUDY\S01" --output "$env:EVIDENCE\installed\file-drop" --app "$env:INSTALLED_APP"
+      # The installed program as Explorer's entries run it: the second study is a bare argument, as for "Open with".
+      - name: Open with, installed
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
+        env:
+          INSTALLED_APP: ${{ steps.installed.outputs.executable }}
+        run: |
+          if (!(Test-Path "$env:RUNNER_TEMP\open-with-first")) { node tools/fixtures/make-petct-study.mjs "$env:RUNNER_TEMP\open-with-first" }
+          if (!(Test-Path "$env:RUNNER_TEMP\open-with-second")) { node tools/fixtures/make-nm-study.mjs "$env:RUNNER_TEMP\open-with-second" }
+          node tools/check-open-with.cjs --study "$env:RUNNER_TEMP\open-with-first" --second "$env:RUNNER_TEMP\open-with-second" --output "$env:EVIDENCE\installed\open-with" --app "$env:INSTALLED_APP"
       - name: Silent uninstall
         if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Uninstall -Output "$env:EVIDENCE\installed"

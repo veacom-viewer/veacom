@@ -15,6 +15,7 @@ function groups(t: Translator): { title: MessageKey; rows: Row[] }[] {
   return [
     { title: 'help.group.file', rows: [
       [t('help.openFolder'), [[mod, 'O']]], [t('help.export'), [[mod, 'E']]], [t('toolbar.exportMedia'), [[mod, shift, 'E']]],
+      [t('help.copyImage'), [[mod, 'C']]], [t('help.copyLayout'), [[mod, shift, 'C']]],
     ] },
     { title: 'help.group.tools', rows: [
       [t('tool.window'), [['W']]], [t('tool.scroll'), [['S']]], [t('tool.pan'), [['P']]], [t('tool.zoom'), [['Z']]], [t('tool.crosshair'), [['C']]],
