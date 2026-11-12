@@ -721,6 +721,9 @@ async function main() {
     const mr = (await page.evaluate(() => window.__VEACOM_TEST__.state())).series.find(item => item.modality === 'MR');
     if (await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId) !== mr.id) await page.locator(`[data-testid="series-${mr.id}"]`).click();
     await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, mr.id, { timeout: 90_000 });
+    // The study just opened leads the series list, above the one opened before it. This list is too short to scroll:
+    // its move to its top is checked on a long one, in check-gamma-camera.cjs.
+    await page.waitForFunction(id => document.querySelector('.series-study')?.querySelector(`[data-testid="series-${id}"]`), mr.id, { timeout: 30_000 });
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus(); await page.keyboard.press('w');
     const mrPanes = await panes();
     // The lesion pre-diagnosis is switched off while its knowledge base is out of the repository: on an MR its button
