@@ -196,6 +196,19 @@ async function main() {
     assert.match(await cells.nth(3).locator('[data-testid="image-overlay"]').textContent(), /MIP · \d+°/);
     check('A MIP paged while its volume loads stays a MIP', { turn: s.panes[3].slice });
 
+    const ctCard = page.getByTestId('series-' + ct.id);
+    await ctCard.click();
+    await settled();
+    const previousPanes = (await state()).panes.map(pane => pane.seriesId);
+    await toggleMpr(page);
+    await page.waitForFunction(() => document.querySelectorAll('canvas[data-mode="mpr"]').length === 3);
+    await ctCard.click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.every(pane => !pane.seriesId));
+    await toggleMpr(page);
+    assert.deepEqual((await state()).panes.map(pane => pane.seriesId), previousPanes.map(id => id === ct.id ? null : id));
+    check('The toolbar restores the previous panes after the MPR series is removed');
+
     assert.deepEqual(errors, [], 'No page errors.');
     await fs.writeFile(path.join(output, 'arrangement-checks.json'), JSON.stringify({ checks, errors }, null, 2));
     console.log(`All ${checks.length} arrangement checks passed.`);

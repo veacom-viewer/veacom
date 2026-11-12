@@ -2205,7 +2205,7 @@ export default function App() {
     // One button that opens the planes' menu: a reader who presses MPR expects choices, not three panes at once. The
     // three-plane screen is the menu's first entry, and the M key still opens it straight away.
     { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu>
-      <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('toolbar.mprPlanes')}`} testId="tool-mpr" popup="menu" indicator active={isMpr} expanded={menu === 'mpr'} disabled={noImage || (!canReconstruct && !isMpr)} why={mprWhy} onClick={() => toggleMenu('mpr')} />
+      <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('toolbar.mprPlanes')}`} testId="tool-mpr" popup="menu" indicator active={isMpr} expanded={menu === 'mpr'} disabled={!isMpr && (noImage || !canReconstruct)} why={mprWhy} onClick={() => toggleMenu('mpr')} />
       {menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
         <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
         <MenuDivider />
