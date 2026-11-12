@@ -10,6 +10,7 @@ const DEFAULT_LOCALE = 'tr';
 
 const en = {
   'startup.failed': 'VEAcom could not start',
+  'launch.cannotOpen': 'Could not open {path}.',
   'dialog.openStudy': 'Open imaging study',
   'dialog.archives': 'Archives',
   'dialog.exportFolder': 'Choose export folder',
@@ -138,6 +139,7 @@ const en = {
 
 const tr = {
   'startup.failed': 'VEAcom başlatılamadı',
+  'launch.cannotOpen': '{path} açılamadı.',
   'dialog.openStudy': 'DICOM içe aktar — klasör, dosya ya da arşiv seçin',
   'dialog.archives': 'Arşivler',
   'dialog.exportFolder': 'Dışa aktarma klasörünü seçin',

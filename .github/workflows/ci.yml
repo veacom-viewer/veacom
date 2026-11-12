@@ -325,6 +325,13 @@ jobs:
         run: |
           node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
           node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
+      # What Explorer's "Open with VEAcom" does while VEAcom runs: a later launch hands its study to the open window.
+      - name: A later launch opens its study in the running window
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/open-with-first"
+          node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/open-with-second"
+          node tools/check-open-with.cjs --study "$RUNNER_TEMP/open-with-first" --second "$RUNNER_TEMP/open-with-second" --output "$EVIDENCE/open-with"
       - name: Renderer pixel suite on llvmpipe
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: node tools/check-padding-gpu.mjs "$EVIDENCE/padding" llvmpipe

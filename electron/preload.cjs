@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('veacom', {
   removeSeries: (ids, generation) => invoke('imaging:remove', ids, generation),
   getPixels: request => invoke('imaging:pixels', request),
   takeStartupPaths: () => invoke('files:startup'),
+  onOpened: listener => { const notify = () => listener(); ipcRenderer.on('files:opened', notify); return () => ipcRenderer.removeListener('files:opened', notify); },
   getCoreState: () => invoke('core:state'),
   getGraphicsStatus: () => invoke('gpu:status'),
   // Page zoom (View > Zoom In/Out) shrinks a wheel notch's legacy units; wheelSliceSteps undoes it.
