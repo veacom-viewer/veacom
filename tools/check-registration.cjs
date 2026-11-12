@@ -95,7 +95,10 @@ async function main() {
   } finally {
     await engine.stop();
   }
-  if (output) await fs.writeFile(output, JSON.stringify(report, null, 2) + '\n');
+  if (output) {
+    await fs.mkdir(path.dirname(output), { recursive: true });
+    await fs.writeFile(output, JSON.stringify(report, null, 2) + '\n');
+  }
   console.log('Registration checks passed.');
 }
 
