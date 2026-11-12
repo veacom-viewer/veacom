@@ -10,6 +10,7 @@ if (!primary) app.quit();
 const crashes = primary ? require('./crash-reports.cjs').registerCrashReports(app) : null;
 
 const { reviewExportPixels } = require('./export-review.cjs');
+const { MAX_EXPORT_SERIES } = require('./export-limits.mjs');
 const { createImportView } = require('./import-view.cjs');
 const { registerUsageHandlers } = require('./usage.cjs');
 const { JS_EXCEPTIONS } = require('./crash-schema.cjs');
@@ -110,7 +111,7 @@ function validateSender(event) {
 function handle(channel, fn) { ipcMain.handle(channel, (event, ...args) => { validateSender(event); return fn(...args); }); }
 function seriesSelection(value) {
   const ids = Array.isArray(value) ? value : [value];
-  if (!ids.length || ids.length > 256 || ids.some(id => typeof id !== 'string' || !id.length)) throw new Error(t('export.chooseSeries'));
+  if (!ids.length || ids.length > MAX_EXPORT_SERIES || ids.some(id => typeof id !== 'string' || !id.length)) throw new Error(t('export.chooseSeries'));
   return { seriesIds: [...new Set(ids)] };
 }
 

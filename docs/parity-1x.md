@@ -33,6 +33,7 @@ yerini gösterir (app/... dosyası).
 - [x] Tıkla → aktif hücrede aç; Ctrl/Shift çoklu seçim (seçim sırası korunur)
 - [x] Sürükle-bırak: tek seri → o hücre; çoklu (en çok 6) → 2:1×2, 3:1×3, 4:2×2, 5-6:2×3, seçim sırasıyla
 - [x] Aktif hücrenin serisi #6a6a6a ile vurgulu (liste kaydırılmadan)
+- [x] Yeni açılan çalışma listenin başına gelir, önceki çalışmalar sıralarını korur; liste başa kayar
 
 ## 3. Izgara (ui/layout_picker.py, ui/grid_view.py)
 - [x] 1×1 – 5×5, üzerinde gezinerek seçilen ızgara, "{r} satır × {c} sütun"
@@ -44,7 +45,7 @@ yerini gösterir (app/... dosyası).
 - [x] Fare işlevleri: Kaydır (T), W/L (W), Kesit kaydırma (S), Yakınlaştır (Z), Döndür (R), Ölçüm (M),
   Artı imleç (H), 3D alan seçimi (V), İşlem yok (N); varsayılan sol W/L, sağ zoom, tekerlek kesit, orta pan
 - [x] Ctrl+tekerlek yakınlaştırma (×1.1, imleç çevresinde), tekerlekle döndürme 5°, sağ sürükleme yakınlaştırma
-- [x] Görüntünün sağ %12'sinde sol sürükleme kesit kaydırır (6 px/kesit)
+- [x] Görüntünün sağ %12'sinde sol sürükleme kesit kaydırır (6 px/kesit); fareyle, tek parmakla ya da kalemle
 - [x] Sol alttaki düzlem adına tık: Aksiyel→Koronal→Sagittal
 - [x] Dokunmatik: tek parmak sol tuş, iki parmak pan + pinch (dokunmatik ekranda elle denenmedi)
 - [x] Tuşlar: Del, Esc, Enter, oklar, PgUp/PgDn ±10; 0 DICOM pencere, Shift+A otomatik, 1–9 ön ayar, I ters,

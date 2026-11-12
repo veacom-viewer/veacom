@@ -63,6 +63,7 @@ import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
 import { seriesName } from './ui/seriesNames';
+import { withFound, withImported } from './ui/seriesOrder';
 // Tokens first: component rules in styles.css must win over the shared ones at equal specificity.
 import './theme.css';
 import './styles.css';
@@ -971,7 +972,7 @@ export default function App() {
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
         for (const item of images) { early.set(item.id, item); earlySeries.current.add(item.id); }
-        setSeries(current => { const next = new Map(current.map(item => [item.id, item])); for (const item of images) next.set(item.id, item); return [...next.values()]; });
+        setSeries(current => withFound(current, images, listedBefore));
         if (!opened) { opened = true; assignSeries(activeIdRef.current, images[0]); }
       }
     })();
@@ -1006,14 +1007,10 @@ export default function App() {
       });
       const visibleIds = new Set([...slotsRef.current.map(slot => slot.seriesId), fusionIdRef.current, ...assessmentPinnedIds.current]);
       for (const item of result.series) if (visibleIds.has(item.id) && !settled.has(item.id)) loadPaneImage(item);
-      // The list in the import's own order: series listed before it stay where they were; its new ones, those opened
-      // early among them, follow in its catalogue order rather than the order they were found in.
-      setSeries(current => {
-        const latest = new Map(result.series.map(item => [item.id, item]));
-        const placed = new Set([...result.series.map(item => item.id), ...early.keys()].filter(id => !listedBefore.has(id)));
-        const kept = current.filter(item => !placed.has(item.id)).map(item => latest.get(item.id) ?? item);
-        return [...kept, ...result.series.filter(item => !listedBefore.has(item.id))];
-      });
+      // The study just opened leads the list (src/ui/seriesOrder.ts): its new series, those opened early among them,
+      // in the import's catalogue order rather than the order they were found in. Series listed before it follow
+      // where they were.
+      setSeries(current => withImported(current, result.series, listedBefore, early.keys()));
       if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
       const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0) ?? result.series.find(item => !item.segmentation);
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the

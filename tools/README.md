@@ -262,6 +262,7 @@ anterior and posterior views, named by their detectors' View Code Sequence.
 - SPECT/CT opens with the first image. Requesting its nuclear medicine screen shows CT, SPECT, fusion and MIP. The SPECT is placed from its detector geometry, fused on
   its own scale, and nothing on it is called SUV.
 - A click on the SPECT MIP sends the linked panes to the vertebral lesion.
+- The whole body, opened second with the series list scrolled to its end, leads the list, and the list comes to its top.
 - The requested whole-body screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share one
   window, and each pages on its own. Undo puts the linking back.
 - The projections name their detector.

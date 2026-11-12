@@ -19,6 +19,7 @@ mod archive_owner_windows;
 #[path = "archive_temp_memory.rs"]
 pub mod archive_temp;
 pub mod catalog;
+pub mod clock;
 pub mod codec_guard;
 pub mod color;
 pub mod confidentiality;
