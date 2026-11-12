@@ -4,6 +4,7 @@ import { assertFields } from './support';
 import { setLocale } from '../src/i18n';
 import { ageText, dicomDate, dicomTime, general, scannerLines, sliceDetail, topLeftLines, topRightLines } from '../src/ui/overlayCorners';
 import { overlayKeepOut } from '../src/ui/labelPlacement';
+import { fusionLine } from '../src/ui/seriesNames';
 import type { Series } from '../src/model';
 
 const series = (overrides: Partial<Series> = {}): Series => ({
@@ -47,6 +48,18 @@ describe('image corner texts', () => {
     assert.deepEqual(topRightLines(series(), false).map(line => line.text), ['Deneme Hastanesi', 'Beyin MR', 'T1 aks', 'MR']);
     assert.deepEqual(topRightLines(series({ studyDescription: 'T1 aks' }), false).map(line => line.text), ['Deneme Hastanesi', 'T1 aks', 'MR']);
     assert.deepEqual(topRightLines(series(), true).map(line => line.text), ['MR']);
+  });
+  it('names a fused series by its description, and with patient data hidden by its modality, as top right does', () => {
+    const pet = series({ modality: 'PT', description: 'WB AC' }), spect = series({ modality: 'NM', description: 'SPECT Bq/ml' });
+    assert.equal(fusionLine(pet, false), 'PET: WB AC');
+    assert.equal(fusionLine(pet, true), 'PET');
+    assert.equal(fusionLine(spect, false), 'Füzyon: SPECT Bq/ml');
+    assert.equal(fusionLine(spect, true), 'Füzyon: NM');
+    // The phase stays: it tells one of several series apart and names no one.
+    const delayed = series({ modality: 'PT', description: 'WB AC 2 h', phase: { kind: 'time', value: '2', label: '2 h', order: 2 } });
+    assert.equal(fusionLine(delayed, true), 'PET: 2 h');
+    setLocale('en');
+    assert.equal(fusionLine(spect, true), 'Fusion: NM');
   });
   it('gives MR field strength and timings, nothing for CT', () => {
     assert.deepEqual(scannerLines(series()), ['FS: 1.5', 'TR: 500 TE: 15']);
