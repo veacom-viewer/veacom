@@ -101,6 +101,9 @@ function usePatientCorners(series: Volume['series'], visible: boolean, hidePatie
     fontFamily,
     topLeft: visible ? fitCorners(topLeftLines(series, hidePatient, t), width, fontFamily) : [],
     topRight: visible ? fitCorners(topRightLines(series, hidePatient, nm, t), width, fontFamily) : [],
+    // The same corners as they read with patient details hidden, for a copied picture; none when they are hidden.
+    plainLeft: visible && !hidePatient ? fitCorners(topLeftLines(series, true, t), width, fontFamily) : [],
+    plainRight: visible && !hidePatient ? fitCorners(topRightLines(series, true, nm, t), width, fontFamily) : [],
   };
 }
 
@@ -854,7 +857,7 @@ export function Viewport(props: ViewportProps) {
   const source = usesSourceFrames(props.volume.series, overlayView);
   const displayedSeries = source ? sourceFrameSeries(props.volume.series, overlayView.slice) : props.volume.series;
   const nm = source ? props.volume.series.frameMetadata?.[overlayView.slice]?.nm : undefined;
-  const { fontFamily, topLeft, topRight } = usePatientCorners(props.volume.series, props.showOverlay !== false, props.hidePatientData === true, metadataWidth, t, nm);
+  const { fontFamily, topLeft, topRight, plainLeft, plainRight } = usePatientCorners(props.volume.series, props.showOverlay !== false, props.hidePatientData === true, metadataWidth, t, nm);
   // The thickness only where the acquired slices are shown: a reformatted plane is not that thick.
   const direction = props.volume.series.direction;
   const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
@@ -986,9 +989,15 @@ export function Viewport(props: ViewportProps) {
         handles={!projected} mapping={mapping} layout={labelLayouts[index]} selected={selected === annotation.id} />)}
       {!props.hideMeasurements && draft && <AnnotationDrawing annotation={draft} shown={draftShown} mapping={mapping} layout={draftLayout} selected={false} />}
       {/* Overlay text last: laterality and patient identification stay on top of everything else. */}
-      {props.showOverlay !== false && <g data-testid="patient-overlay" fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
+      {props.showOverlay !== false && <g data-testid="patient-overlay" data-patient-corners fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         {topLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16} data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}
         {topRight.map((line, index) => <text key={`r${index}`} x={dimensions[0] - 10} y={18 + index * 16} textAnchor="end" data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}
+      </g>}
+      {/* The corners without patient details, never drawn here: a copied picture shows them in place of the ones above
+          (svgImage in export-video.ts), so a paste carries no name or number. */}
+      {props.showOverlay !== false && !props.hidePatientData && <g data-plain-corners display="none" aria-hidden="true" fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
+        {plainLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16}>{line.fitted}</text>)}
+        {plainRight.map((line, index) => <text key={`r${index}`} x={dimensions[0] - 10} y={18 + index * 16} textAnchor="end">{line.fitted}</text>)}
       </g>}
       {props.showOverlay !== false && <g data-testid="image-overlay" fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         <g className="orientation-labels" fontSize={13} fontWeight={600} strokeWidth={4}>
