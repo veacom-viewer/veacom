@@ -81,7 +81,8 @@ async function main() {
     assert.deepEqual(await notice(), ['SPECT/CT: CT · SPECT · fusion · MIPUndo']);
     const spectText = await overlay(1), fusedText = await overlay(2);
     assert.match(spectText, /W \d+ \/ L \d+ Bq\/ml/, 'The SPECT window reads in its own Bq/ml.');
-    assert.match(fusedText, /Fusion: Synthetic SPECT\/CT · SPECT Bq\/ml/);
+    // The fused series' name sits with the patient corners: with patient details hidden it is named by its modality.
+    assert.match(await corner(2), /Fusion: Synthetic SPECT\/CT · SPECT Bq\/ml/);
     assert.match(fusedText, /On its own values/);
     for (const index of [1, 2, 3]) assert.doesNotMatch(await overlay(index) + await corner(index), /SUV/, `Nothing on pane ${index + 1} is called SUV.`);
     assert.match(await overlay(3), /MIP · 0°/);
@@ -232,11 +233,11 @@ async function main() {
     await settled();
     s = await state();
     assert.deepEqual([s.panes[2].seriesId, s.panes[2].unfused], [ct.id, false]);
-    const fused = await overlay(2);
-    assert.match(fused, new RegExp(`Fusion: Synthetic SPECT/CT · gated SPECT · Gate 5/8 · ${acquired(gated.slotTimes[4])} s acquired`));
+    const fused = await overlay(2), fusedName = await corner(2);
+    assert.match(fusedName, new RegExp(`Fusion: Synthetic SPECT/CT · gated SPECT · Gate 5/8 · ${acquired(gated.slotTimes[4])} s acquired`));
     assert.match(fused, /On its own values/);
     assert.equal((await page.getByTestId('notice').textContent()).trim(), `Fusion: ${gated.description} · ${fifth.phase.label} + ${ct.description}`, 'The notice names the gate.');
-    assert.doesNotMatch(fused + await corner(1) + await overlay(1), /SUV/, 'Nothing on a gate is called SUV.');
+    assert.doesNotMatch(fused + fusedName + await corner(1) + await overlay(1), /SUV/, 'Nothing on a gate is called SUV.');
     await shot('gated-1-spect-ct');
     check('A gate fuses over the CT, named in the fusion strip and the pane, never in SUV');
 
