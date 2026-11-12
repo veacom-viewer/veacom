@@ -139,24 +139,24 @@ fn frame_files(source: &veacom_core::model::SourceSeries) -> Vec<&std::path::Pat
     paths
 }
 
-/// The page files series `id` will be decoded from that are not held yet, by number. The Worker reads them several at
-/// a time and hands each over with `holdFile` before it asks for the series: read here one after another, they took
-/// most of a series' load, while the decoding threads waited. None when the series is cached, when every helper has
-/// its files (then each thread reads the files it decodes), or when it is too large to hold.
+/// Files to preload for a volume. None means there is no helper transfer to wait for (cached, unknown, or already
+/// available to every helper). An empty list still allows pending transfers to finish: a volume above the preload
+/// limit can decode on the helpers once they have its files.
 #[cfg(feature = "threads")]
 #[wasm_bindgen(js_name = volumeFiles)]
-pub fn volume_files(id: &str) -> Vec<u32> {
+pub fn volume_files(id: &str) -> Option<Vec<u32>> {
     if SESSION.with_borrow(|session| session.has_volume(id)) {
-        return Vec::new();
+        return None;
     }
-    let Ok(source) = SESSION.with_borrow(|session| session.source(id)) else {
-        return Vec::new();
-    };
+    let source = SESSION.with_borrow(|session| session.source(id)).ok()?;
     let paths = frame_files(&source);
     if crate::blob::on_helpers(&paths) {
-        return Vec::new();
+        return None;
     }
-    crate::blob::unheld(&paths, HOLD_LIMIT.load(Ordering::Relaxed))
+    Some(crate::blob::unheld(
+        &paths,
+        HOLD_LIMIT.load(Ordering::Relaxed),
+    ))
 }
 
 /// On a helper: takes the page files the engine Worker listed, by their numbers (`addFile`), so that parallel runs

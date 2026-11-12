@@ -114,9 +114,13 @@ async function prepareVolume(threaded: ThreadedEngine, seriesId: string, request
     preparingVolume = { id: request, stop: () => { active = false; resolve(); } };
   });
   const preload = async () => {
-    await Promise.all(Array.from(waiting.values(), batch => batch.shared));
+    const beforeSharing = threaded.volumeFiles(seriesId);
+    if (!beforeSharing) return;
+    const pending = waiting.size > 0;
+    if (pending) await Promise.all(Array.from(waiting.values(), batch => batch.shared));
     if (cancelled()) return;
-    const ids = threaded.volumeFiles(seriesId);
+    const ids = pending ? threaded.volumeFiles(seriesId) : beforeSharing;
+    if (!ids?.length) return;
     let next = 0;
     const read = async () => {
       while (next < ids.length && !cancelled()) {

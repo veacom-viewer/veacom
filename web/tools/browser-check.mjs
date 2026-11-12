@@ -289,6 +289,14 @@ async function checkUnacknowledgedFiles(page) {
   await assert.rejects(importPickedFiles(page, files), /Cannot register bad.dcm/);
   await page.waitForFunction(before => window.forgottenFiles.size === before + 1, forgotten);
   assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 2);
+
+  // The helpers still withhold every batch for five seconds. The large cached volume needs none of these MR files.
+  await importPickedFiles(page, [path.join(mrStudy, 'S01', name)]);
+  const cachedBytes = await page.evaluate(async volume => {
+    const pixels = await window.veacom.fetchPixels(volume, AbortSignal.timeout(4000));
+    return Number(pixels.headers.get('Content-Length'));
+  }, volume);
+  assert.equal(cachedBytes, result.bytes, 'A cache hit must return while an unrelated helper transfer is pending.');
 }
 
 const browser = await chromium.launch();
