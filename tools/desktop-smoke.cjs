@@ -55,6 +55,25 @@ async function main() {
     await screenshot('after-window.png');
 
     const canvas = page.locator('canvas[data-renderer]').first();
+    // The 128-pixel phantom fills the pane several times magnified. Under a window from air to bone, each of its edges
+    // ramps across the screen pixels between two stored pixels; one stored pixel per screen pixel would jump from black
+    // to white. (The window applies to the interpolated values, so a narrower one makes the ramps steeper.)
+    const shown = await page.evaluate(() => { const state = window.__VEACOM_TEST__.state(); return { view: state.view, width: state.displayedView.windowWidth }; });
+    const showWindow = async (patch, width) => {
+      await page.evaluate(patch => window.__VEACOM_TEST__.setView(patch), patch);
+      await page.waitForFunction(width => window.__VEACOM_TEST__.state().displayedView.windowWidth === width, width);
+      await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    };
+    await showWindow({ windowMode: 'manual', windowCenter: 100, windowWidth: 2200 }, 2200);
+    const steepest = await canvas.evaluate(node => {
+      const row = node.getContext('2d').getImageData(0, Math.floor(node.height / 2), node.width, 1).data;
+      let largest = 0;
+      for (let i = 4; i < row.length; i += 4) largest = Math.max(largest, Math.abs(row[i] - row[i - 4]));
+      return largest;
+    });
+    await showWindow({ windowMode: shown.view.windowMode, windowCenter: shown.view.windowCenter, windowWidth: shown.view.windowWidth }, shown.width);
+    assert(steepest > 0 && steepest < 128, `Neighbouring screen pixels across the phantom differ by up to ${steepest} grey levels`);
+    check('A magnified acquired frame is interpolated', { steepestStep: steepest });
     const bounds = await canvas.boundingBox();
     await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
     const beforeScroll = await page.evaluate(() => window.__VEACOM_TEST__.state().view.slice);
