@@ -104,14 +104,21 @@ async function openPictures() {
     const imported = await bridge.importSelected(await bridge.importFiles(files));
     const [series] = imported.series;
     const { generation } = await bridge.getCoreState();
-    const frames = [];
+    const frames = [], checked = new Set();
+    window.checkPictureFrame = ({ index, bytes }) => {
+      // Files are numbered PNG, JPEG, BMP. Only JPEG may round the samples during encoding.
+      const tolerance = index === 1 ? 3 : 0;
+      if (bytes.length === width * height * 3 && bytes.every((value, at) => Math.abs(value - colour[at % 3]) <= tolerance)) checked.add(index);
+    };
     for (let index = 0; index < series.dimensions[2]; index++) {
       const { headers } = await bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision, index });
       frames.push(`${headers.get('Content-Length')} ${headers.get('X-Pixel-Type')} ${headers.get('X-Components')}`);
     }
-    return { series: imported.series.length, dimensions: series.dimensions, frames };
+    return { series: imported.series.length, dimensions: series.dimensions, frames, rgbFrames: [...checked] };
   } catch (error) {
     return { error: String(error?.message ?? error) };
+  } finally {
+    delete window.checkPictureFrame;
   }
 }
 
@@ -184,6 +191,17 @@ try {
   for (const isolated of [true, false]) {
     const server = await serve(isolated);
     const page = await browser.newPage();
+    await page.addInitScript(() => {
+      // The bridge hands the transferred buffer to the viewer outside the Response body. Read it at the Worker boundary.
+      window.Worker = class extends Worker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            if (data.ok && data.value?.bytes && data.value.components === 3) window.checkPictureFrame?.(data.value);
+          });
+        }
+      };
+    });
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -214,6 +232,7 @@ try {
       const pictures = await page.evaluate(openPictures);
       if (isolated) {
         check(pictures.series === 1 && pictures.dimensions?.join('x') === '32x24x3', `pictures: ${JSON.stringify(pictures)}`);
+        check(pictures.rgbFrames?.join(',') === '0,1,2', `incorrect decoded RGB: ${JSON.stringify(pictures)}`);
         check(pictures.frames?.every(frame => frame === `${32 * 24 * 3} uint8 3`), `picture samples: ${JSON.stringify(pictures.frames)}`);
       } else {
         check(pictures.error === 'Desteklenen görüntü bulunamadı. 3 dosya okunamadı: PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.',

@@ -1,6 +1,5 @@
 //! The clock the engine's own timeouts read. In WebAssembly std's `Instant` has no clock and panics, so the browser
-//! engine sets one: milliseconds that every Worker reads alike (`Date.now()`), since a wait may start on one Worker and
-//! be checked on another.
+//! engine supplies monotonic milliseconds on a common time origin: a wait may start on one Worker and end on another.
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use std::time::Instant;
