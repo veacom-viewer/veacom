@@ -1827,9 +1827,12 @@ export default function App() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); key('open-folder'); void openImport(); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e') { event.preventDefault(); if (activeSeries) { if (event.shiftKey) { key('export-media'); openExport('media'); } else { key('tool-export'); openExport('dicom'); } } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); key(event.shiftKey ? 'redo' : 'undo'); undo(event.shiftKey); return; }
-    // ⌘C / Ctrl+C copies the picture, with Shift the whole layout. Text the reader selected is copied as text, as anywhere.
+    // ⌘C / Ctrl+C copies the picture, with Shift the whole layout. Text the reader selected is copied as text, as anywhere,
+    // but on an image pane only text selected in that pane (a drawing error's message): a selection left elsewhere (a tag
+    // value copied earlier) does not take the picture's place.
     if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'c') {
-      if (!activeSeries || window.getSelection()?.toString()) return;
+      const selection = window.getSelection(), pane = target.closest('.viewport-cell');
+      if (!activeSeries || (selection?.toString() && (!pane || pane.contains(selection.anchorNode)))) return;
       event.preventDefault(); key(event.shiftKey ? 'copy-layout' : 'copy-image'); void copyImage(event.shiftKey); return;
     }
     // Letters, 0, m, ? and + / − only without ⌘, Ctrl or Alt (Alt + letter types characters and opens menus).
