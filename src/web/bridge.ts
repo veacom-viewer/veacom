@@ -172,7 +172,11 @@ export function createWebBridge(): DesktopBridge {
   let helpers: Worker[] = [];
 
   const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
-  const setCancel = (value: number) => { if (cancel) Atomics.store(cancel, 0, value); if (shared) Atomics.store(shared.cancel, 0, value); };
+  const setCancel = (value: number) => {
+    if (cancel) Atomics.store(cancel, 0, value);
+    if (shared) Atomics.store(shared.cancel, 0, value);
+    if (value && pending.get(value)?.op === 'volume') worker?.postMessage({ cancelVolume: value });
+  };
 
   /** Fails every request sent or waiting: the engine that had them answers none. */
   function failPending(): void {

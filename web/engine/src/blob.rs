@@ -285,7 +285,7 @@ pub fn clear() {
     not(feature = "threads"),
     allow(dead_code, reason = "only the threaded build calls it")
 )]
-pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
+pub fn hold(paths: &[&Path], limit: u64) -> anyhow::Result<bool> {
     let wanted: Vec<Arc<BlobSource>> = {
         let sources = sources();
         paths
@@ -297,6 +297,9 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
         return Ok(false);
     }
     for source in wanted {
+        if crate::api::request_cancelled() {
+            anyhow::bail!(veacom_core::coded!("job.cancelled", "Operation cancelled"));
+        }
         let mut whole = source
             .whole
             .lock()
@@ -318,7 +321,7 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
         if !matches!(read, Ok(true)) {
             drop(whole);
             release();
-            return read;
+            return Ok(read?);
         }
         *whole = Some(Arc::new(bytes));
     }

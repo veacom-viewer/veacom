@@ -20,9 +20,7 @@ const THREADS = Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrenc
 // One channel to each helper, for the page's files (`shareFiles`), and the batches it has not answered yet.
 let helperPorts: MessagePort[] = [];
 let batches = 0;
-// The last import's files on their way to the helpers.
-let sharing: Promise<void> = Promise.resolve();
-const waiting = new Map<number, { left: number; done: () => void }>();
+const waiting = new Map<number, { left: number; done: () => void; shared: Promise<void> }>();
 // A helper takes a batch the moment it is woken; one that has not after this long has stopped, and the page replaces
 // the engine. Until then a series is decoded from files held in memory, as without the helpers' files.
 const SHARE_TIMEOUT_MS = 5000;
@@ -57,17 +55,20 @@ function startHelpers(threaded: ThreadedEngine, count: number): Promise<void> {
 
 /** Sends every helper these page files, by the numbers the engine knows them by, and waits until each has taken them;
  * then the engine reads them on every thread (`filesOnHelpers`). */
-async function shareFiles(threaded: ThreadedEngine, ids: number[], files: File[]): Promise<void> {
+function shareFiles(threaded: ThreadedEngine, ids: number[], files: File[]): void {
   if (!helperPorts.length || !ids.length) return;
   const batch = ++batches;
-  const taken = new Promise<boolean>(resolve => {
-    waiting.set(batch, { left: helperPorts.length, done: () => { resolve(true); } });
-    setTimeout(() => { waiting.delete(batch); resolve(false); }, SHARE_TIMEOUT_MS);
-  });
+  let finish!: () => void;
+  const shared = new Promise<void>(resolve => { finish = resolve; });
+  const timer = setTimeout(() => { waiting.delete(batch); finish(); }, SHARE_TIMEOUT_MS);
+  waiting.set(batch, { left: helperPorts.length, shared, done: () => {
+    clearTimeout(timer);
+    threaded.filesOnHelpers(Uint32Array.from(ids));
+    finish();
+  } });
   const message: HelperFiles = { batch, ids, files };
   for (const port of helperPorts) port.postMessage(message);
   threaded.wakeHelpers();
-  if (await taken) threaded.filesOnHelpers(Uint32Array.from(ids));
 }
 
 async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; threads: number; memory: WebAssembly.Memory }> {
@@ -88,7 +89,7 @@ async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; thre
 let engine: Engine;
 
 // The page's files by the number the engine knows each by (`addFile`), for reading a series' files here before it is
-// decoded (`holdInParallel`); and the page's cancel flag, when it has shared memory.
+// decoded (`prepareVolume`); and the page's cancel flag, when it has shared memory.
 const pageFiles = new Map<number, File>();
 let cancelFlag: Int32Array | undefined;
 const READS_AT_ONCE = 8;
@@ -104,24 +105,42 @@ function forgetUnlisted(): void {
   for (const port of helperPorts) port.postMessage(message);
 }
 
-/** Reads the page files series `seriesId` is decoded from, READS_AT_ONCE at a time, and hands each to the engine
- * whole. The engine read them one after another on this thread, which took most of a series' load while the
- * decoding threads waited; the browser reads several at once, off this thread. A file that cannot be read here is left
- * to the engine, which reads it itself and says why. Stops when request `request` is cancelled. */
-async function holdInParallel(threaded: ThreadedEngine, seriesId: string, request: number): Promise<void> {
-  const ids = threaded.volumeFiles(seriesId);
-  const cancelled = () => cancelFlag !== undefined && Atomics.load(cancelFlag, 0) === request;
-  let next = 0;
-  const read = async () => {
-    while (next < ids.length && !cancelled()) {
-      const id = ids[next++], file = pageFiles.get(id);
-      if (!file) continue;
-      try {
-        threaded.holdFile(id, new Uint8Array(await file.arrayBuffer()));
-      } catch { /* The engine reads it itself, and reports a failure. */ }
-    }
+let preparingVolume: { id: number; stop: () => void } | undefined;
+
+async function prepareVolume(threaded: ThreadedEngine, seriesId: string, request: number): Promise<void> {
+  let active = true;
+  const cancelled = () => !active || (cancelFlag !== undefined && (Atomics.load(cancelFlag, 0) >>> 0) === request);
+  const stopped = new Promise<void>(resolve => {
+    preparingVolume = { id: request, stop: () => { active = false; resolve(); } };
+  });
+  const preload = async () => {
+    await Promise.all(Array.from(waiting.values(), batch => batch.shared));
+    if (cancelled()) return;
+    const ids = threaded.volumeFiles(seriesId);
+    let next = 0;
+    const read = async () => {
+      while (next < ids.length && !cancelled()) {
+        const id = ids[next++], file = pageFiles.get(id);
+        if (!file) continue;
+        let bytes: ArrayBuffer;
+        try { bytes = await file.arrayBuffer(); }
+        catch { continue; } // The engine retries unreadable files and reports the error.
+        if (!cancelled()) threaded.holdFile(id, new Uint8Array(bytes));
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(READS_AT_ONCE, ids.length) }, read));
   };
-  await Promise.all(Array.from({ length: READS_AT_ONCE }, read));
+  try {
+    await Promise.race([preload(), stopped]);
+    if (cancelled()) throw new Error(JSON.stringify({ note: { code: 'job.cancelled', text: 'Operation cancelled' } }));
+  } catch (error) {
+    threaded.releaseHeldFiles();
+    throw error;
+  } finally {
+    // Reads already started can finish after the bridge clears this request's shared flag.
+    active = false;
+    preparingVolume = undefined;
+  }
 }
 
 export type EngineRequest =
@@ -145,7 +164,7 @@ export interface EngineExport { result: { directory: string; files: number; warn
 export interface EnginePixels { bytes: Uint8Array; pixelType: string; components: number; index?: number; sopInstanceUid?: string; sourceFrameNumber?: number }
 
 const ready = load().then(loaded => { engine = loaded.engine; return loaded; });
-const scope = self as unknown as { postMessage(message: unknown, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<EngineRequest>) => void) | null };
+const scope = self as unknown as { postMessage(message: unknown, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<EngineRequest | { cancelVolume: number }>) => void) | null };
 
 // A panic's message is written to console.error just before the engine stops; it goes with the crash report.
 let lastError = '';
@@ -180,19 +199,23 @@ async function answer(data: EngineRequest): Promise<void> {
       }
       case 'import': {
         const first = await readHeads(data.files);
-        const ids = data.files.map(({ path, file }, i) => {
-          const id = engine.addFile(path, file, first[i]);
-          pageFiles.set(id, file);
-          return id;
-        });
+        const ids: number[] = [];
         try {
+          for (const [i, { path, file }] of data.files.entries()) {
+            const id = engine.addFile(path, file, first[i]);
+            ids.push(id);
+            pageFiles.set(id, file);
+          }
           value = JSON.parse(engine.importPaths(data.roots));
-        } finally { forgetUnlisted(); }
+        } finally {
+          if (ids.length < data.files.length) engine.pruneFiles();
+          forgetUnlisted();
+        }
         // The helpers take the files the import kept while the page asks for its first images; decoding a series waits
         // for them.
         if (loaded.threaded) {
           const kept = ids.flatMap(id => { const file = pageFiles.get(id); return file ? [{ id, file }] : []; });
-          sharing = shareFiles(loaded.threaded, kept.map(({ id }) => id), kept.map(({ file }) => file));
+          shareFiles(loaded.threaded, kept.map(({ id }) => id), kept.map(({ file }) => file));
         }
         break;
       }
@@ -209,8 +232,7 @@ async function answer(data: EngineRequest): Promise<void> {
       case 'volume':
       case 'frame': {
         if (data.op === 'volume' && loaded.threaded) {
-          await sharing;
-          await holdInParallel(loaded.threaded, data.seriesId, data.id);
+          await prepareVolume(loaded.threaded, data.seriesId, data.id);
         }
         const pixels =(data.op === 'volume' ? engine.volume(data.seriesId, data.revision) : engine.frame(data.seriesId, data.index, data.revision)) as EnginePixels;
         value = pixels; transfer = [pixels.bytes.buffer];
@@ -226,4 +248,8 @@ async function answer(data: EngineRequest): Promise<void> {
   }
 }
 
-scope.onmessage = ({ data }) => { void answer(data); };
+scope.onmessage = ({ data }) => {
+  if ('cancelVolume' in data) {
+    if (preparingVolume?.id === data.cancelVolume) preparingVolume.stop();
+  } else { void answer(data); }
+};

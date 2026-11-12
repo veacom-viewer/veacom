@@ -185,6 +185,12 @@ async function checkQueuedImports() {
   if (!cancelled.requested || !await queued) throw new Error('The queued import did not cancel');
 }
 
+function waitForWorker(worker, event) {
+  return worker.evaluate(event => Promise.race([self[event], new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('Timed out waiting for ' + event)), 30_000);
+  })]), event);
+}
+
 /** A threaded engine whose helpers start but never get the file batch must still decode all the loose slices. */
 async function checkUnacknowledgedFiles(page) {
   const folder = path.join(scratch, 'many-small');
@@ -194,11 +200,13 @@ async function checkUnacknowledgedFiles(page) {
 
   await page.addInitScript(() => {
     window.withheldFiles = 0;
+    window.forgottenFiles = new Set();
     const send = Worker.prototype.postMessage;
     Worker.prototype.postMessage = function (message, ...args) {
       if (!(message.files instanceof MessagePort)) return send.call(this, message, ...args);
       message.files.onmessage = ({ data }) => {
         if (data.files) window.withheldFiles = Math.max(window.withheldFiles, data.files.length);
+        for (const id of data.forget ?? []) window.forgottenFiles.add(id);
       };
       const { port1, port2 } = new MessageChannel();
       port1.close();
@@ -207,15 +215,80 @@ async function checkUnacknowledgedFiles(page) {
   });
   await page.reload();
   await page.waitForFunction(() => Number(document.documentElement.dataset.engineThreads) > 1);
-  const picker = page.waitForEvent('filechooser').then(chooser => chooser.setFiles(paths));
-  const [result] = await Promise.all([page.evaluate(async () => {
+  const worker = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
+  assert(worker, 'The engine Worker is running.');
+  await worker.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    let release, notify;
+    const gate = new Promise(resolve => { release = resolve; });
+    self.releaseReads = release;
+    self.readsPending = new Promise(resolve => { notify = resolve; });
+    self.reads = 0;
+    File.prototype.arrayBuffer = async function () {
+      // The ninth read starts after the first file was held. Leave the rest in flight until after Cancel.
+      self.reads++;
+      if (self.reads === 9) notify();
+      if (self.reads > 1) await gate;
+      return read.call(this);
+    };
+    const readSync = FileReaderSync.prototype.readAsArrayBuffer;
+    self.syncReads = 0;
+    FileReaderSync.prototype.readAsArrayBuffer = function (blob) { self.syncReads++; return readSync.call(this, blob); };
+  });
+  assert.deepEqual(await importPickedFiles(page, paths), [1024]);
+  const name = path.basename(studyFiles[0]);
+  const zip = zipStored([{ name, bytes: readFileSync(path.join(mrStudy, 'S01', name)) }]);
+  assert.deepEqual(await importPickedFiles(page, [{ name: 'mr.zip', mimeType: 'application/zip', buffer: Buffer.from(await zip.arrayBuffer()) }]), [1]);
+
+  const volume = await page.evaluate(async () => {
     const bridge = window.veacom;
-    const { series: [series] } = await bridge.importSelected(await bridge.openPaths('files'));
-    const { generation } = await bridge.getCoreState();
-    const volume = await bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision });
-    return { withheld: window.withheldFiles, dimensions: series.dimensions, bytes: Number(volume.headers.get('Content-Length')) };
-  }), picker]);
-  assert.deepEqual(result, { withheld: 1024, dimensions: [16, 16, 1024], bytes: 16 * 16 * 1024 * 2 });
+    const { series } = await bridge.listSeries();
+    const { id, catalogRevision } = series.find(item => item.dimensions[2] === 1024);
+    return { seriesId: id, generation: (await bridge.getCoreState()).generation, revision: catalogRevision };
+  });
+  await worker.evaluate(() => {
+    self.syncReads = 0;
+    self.volumeDispatched = new Promise(resolve => {
+      self.addEventListener('message', ({ data }) => { if (data.op === 'volume') setTimeout(resolve, 0); }, { once: true });
+    });
+  });
+  await page.evaluate(volume => {
+    window.cancelledVolume = window.veacom.fetchPixels(volume).then(() => 'decoded', error => error.message);
+  }, volume);
+  await waitForWorker(worker, 'volumeDispatched');
+  assert.equal(await worker.evaluate(() => self.reads), 0, 'The ZIP import must not bypass the earlier helper transfer.');
+  await waitForWorker(worker, 'readsPending');
+  const cancelled = await page.evaluate(async () => {
+    const bridge = window.veacom;
+    const { id } = await bridge.getProgress();
+    const { requested } = await bridge.cancelOperation(id);
+    const message = await window.cancelledVolume;
+    return { requested, message, restarted: (await bridge.getCoreState()).restartCount };
+  });
+  assert.deepEqual(cancelled, { requested: true, message: 'Operation cancelled', restarted: 0 });
+  assert.equal(await worker.evaluate(() => self.syncReads), 0, 'Cancel must skip the synchronous fallback.');
+  await worker.evaluate(() => self.releaseReads());
+  const before = await worker.evaluate(() => self.reads);
+  const result = await page.evaluate(async volume => {
+    const pixels = await window.veacom.fetchPixels(volume);
+    return { withheld: window.withheldFiles, bytes: Number(pixels.headers.get('Content-Length')) };
+  }, volume);
+  assert.deepEqual(result, { withheld: 1024, bytes: 16 * 16 * 1024 * 2 });
+  assert.equal(await worker.evaluate(() => self.reads) - before, 1024, 'The retry must reload every file held by the cancelled request.');
+
+  // Fail registration of the second file after both file headers were read.
+  await worker.evaluate(() => {
+    const slice = File.prototype.slice;
+    File.prototype.slice = function (...args) {
+      if (this.name === 'bad.dcm') Object.defineProperty(this, 'size', { get() { throw new Error('Cannot register bad.dcm'); } });
+      return slice.apply(this, args);
+    };
+  });
+  const forgotten = await page.evaluate(() => window.forgottenFiles.size);
+  const files = ['good.dcm', 'bad.dcm'].map(name => ({ name, mimeType: 'application/dicom', buffer: readFileSync(path.join(study, studyFiles[0])) }));
+  await assert.rejects(importPickedFiles(page, files), /Cannot register bad.dcm/);
+  await page.waitForFunction(before => window.forgottenFiles.size === before + 1, forgotten);
+  assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 2);
 }
 
 const browser = await chromium.launch();

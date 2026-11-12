@@ -59,6 +59,11 @@ pub fn begin_request(id: u32) {
     REQUEST_ID.store(id, Ordering::Release);
 }
 
+pub(super) fn request_cancelled() -> bool {
+    let cancelled = SHARED_CANCEL.load(Ordering::Acquire) as u32;
+    cancelled != 0 && cancelled == REQUEST_ID.load(Ordering::Acquire)
+}
+
 fn cancel(id: i32) {
     if id != 0 && id as u32 == REQUEST_ID.load(Ordering::Acquire) {
         progress::cancel();
@@ -192,6 +197,13 @@ pub fn hold_file(id: u32, bytes: Vec<u8>) -> bool {
     crate::blob::hold_read(id, bytes)
 }
 
+/// Drops files held before a volume request stopped in the Worker.
+#[cfg(feature = "threads")]
+#[wasm_bindgen(js_name = releaseHeldFiles)]
+pub fn release_held_files() {
+    crate::blob::release();
+}
+
 /// Decodes a whole series, from the cache when it is there. In the threads build, when every helper has the series'
 /// files, each thread reads the files of the frames it decodes, and nothing is held. Otherwise the files are first held
 /// whole in shared memory, and given back after: the Worker reads most of them beforehand (`volumeFiles`), and `hold`
@@ -210,7 +222,7 @@ fn decode_volume_of(id: &str, revision: Option<u64>) -> anyhow::Result<Arc<Pixel
             Ok(false) => SESSION.with_borrow_mut(|session| {
                 parallel::on_this_thread(|| session.volume(id, revision))
             }),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         };
         crate::blob::release();
         return volume;
@@ -271,7 +283,8 @@ pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
 
 /// After an import, whatever its outcome, and after a removal: the page's files that no series reads from go (a failed
 /// import's, an archive once extracted, a closed series'), and so do the first pieces read ahead for the import.
-fn release_files() {
+#[wasm_bindgen(js_name = pruneFiles)]
+pub fn release_files() {
     crate::blob::drop_heads();
     crate::blob::retain(&SESSION.with_borrow_mut(Session::prune_archives));
 }
