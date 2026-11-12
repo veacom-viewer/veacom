@@ -10,9 +10,8 @@
 // stored pixels. Picture and video exports copy the screen, so they show the same resampled picture.
 import type { Vec3 } from '../model';
 
-/** At most this many pixels of the frame are read across, and as many down, for one screen pixel. A wider footprint
- * (a frame shown more than this many times smaller than its matrix) is read at even steps, and a pattern as fine as
- * the step can alias there. */
+/** Frame-pixel widths averaged exactly along each axis. A fractional offset can touch one extra texel.
+ * Wider footprints are sampled at even steps and fine patterns can alias. */
 export const FOOTPRINT_TAPS = 16;
 
 /** Half the width and height, in pixels of the frame, of the area one screen pixel covers: at least half a pixel each.

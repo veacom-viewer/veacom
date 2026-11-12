@@ -56,6 +56,11 @@ export function verifySourceGpu(nativeColors = []){
    // Shown 2.5 times smaller, a screen pixel takes each column by the width it covers: 200/2.5 = 80 and 300/2.5 = 120.
    renderer.render(c,vol('minified-grating-fraction',new Uint8Array(10*10).map((_,i)=>i%2?200:0),{dimensions:[10,10,1],pixelType:'uint8'}),baseView);
    [80,80,120,120].forEach((grey,x)=>checkPixel(`Minified grating weighs each column by its area, pixel ${x}`,c,x,2,[grey,grey,grey,255]));
+   const stripes=vol('sixteen-column-grating',Uint8Array.from({length:64*64},(_,i)=>i%2?200:0),{dimensions:[64,64,1],pixelType:'uint8'});
+   renderer.render(c,stripes,baseView);
+   for(let y=0;y<4;y++)for(let x=0;x<4;x++)checkPixel(`Sixteen-column mean at ${x},${y}`,c,x,y,[100,100,100,255]);
+   renderer.render(c,stripes,{...baseView,pan:[0.5/16,0]});
+   checkPixel('Sixteen-column mean with two partially covered edge texels',c,1,1,[100,100,100,255]);
    // 32 columns to a screen pixel, more than are read one by one: the even steps stay inside the screen pixel's own columns.
    const halves=new Uint8Array(64*64).map((_,i)=>i%64<32?0:200),pair=canvas(2);
    renderer.render(pair,vol('minified-halves',halves,{dimensions:[64,64,1],pixelType:'uint8'}),baseView);

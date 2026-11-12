@@ -54,14 +54,14 @@ function samplerType(kind: TextureKind, dimension: TextureDimension): string {
  * pixel (x, y) with a positive `weight`, the area it shares with the screen pixel's footprint. */
 function footprintLoop(body: string): string {
   return `vec2 low=p-uFootprint, high=p+uFootprint;
-  ivec2 first=max(ivec2(floor(low+vec2(0.5))),ivec2(0)), last=min(ivec2(floor(high+vec2(0.5))),ivec2(uDimensions.xy)-1);
-  // Wider than ${FOOTPRINT_TAPS} pixels, the footprint is read at even steps.
-  ivec2 stride=(last-first)/${FOOTPRINT_TAPS}+1;
-  for (int j=0;j<${FOOTPRINT_TAPS};j++) {
+  ivec2 first=max(ivec2(floor(low+vec2(0.5))),ivec2(0)), last=min(ivec2(ceil(high-vec2(0.5))),ivec2(uDimensions.xy)-1);
+  // A width of ${FOOTPRINT_TAPS} pixels can touch one extra texel when both ends are partial.
+  ivec2 stride=max(ivec2(1),(last-first+${FOOTPRINT_TAPS-1})/${FOOTPRINT_TAPS});
+  for (int j=0;j<=${FOOTPRINT_TAPS};j++) {
     int y=first.y+j*stride.y;
     if (y>last.y) break;
     float height=min(high.y,float(y)+0.5)-max(low.y,float(y)-0.5);
-    for (int i=0;i<${FOOTPRINT_TAPS};i++) {
+    for (int i=0;i<=${FOOTPRINT_TAPS};i++) {
       int x=first.x+i*stride.x;
       if (x>last.x) break;
       float weight=height*(min(high.x,float(x)+0.5)-max(low.x,float(x)-0.5));
