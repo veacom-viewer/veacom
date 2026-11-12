@@ -21,6 +21,7 @@ use crate::{
 use anyhow::{Result, bail};
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
+use veacom_core::coded;
 
 /// Joint histogram bins for each image.
 const BINS: usize = 48;

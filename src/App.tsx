@@ -2253,7 +2253,7 @@ export default function App() {
   const showPlane = (plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
   const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
   // An MR fuses with another MR beside it, or with a PET or SPECT of the same patient acquired apart, aligned first.
-  const mrApart = Boolean(mrActive && activeSeries && overlayChoices.some(item => !shareFrame(item, activeSeries)));
+  const mrApart = mrActive && overlayChoices.some(item => !shareFrame(item, activeSeries));
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length && !mrApart : !petSeries.length);
   const fusionWhy = mrActive ? (mrBeside.length || mrApart ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
   // The nuclear medicine screen of the active pane's study (PET follow-up, PET/CT, whole body or SPECT/CT, as kept),

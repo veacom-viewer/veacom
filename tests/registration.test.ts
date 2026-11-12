@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import { facesSame, linkedSlice, type Pane } from '../src/imaging/linking';
-import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, transformBetween, withAlignment, withoutAlignment, type Alignment } from '../src/imaging/registration';
+import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
 import { angleOf, applyPoint, applyVector, compose, IDENTITY, invert, isIdentity, rotation, translation } from '../src/imaging/rigid';
 import type { EngineRegistration, FusionSettings, Series, Vec3, ViewState } from '../src/model';
 
@@ -13,7 +13,7 @@ const series = (overrides: Partial<Series>): Series => ({
   seriesNumber: 1, dimensions: [8, 8, 80], spacing: [4, 4, 4], origin: [-14, -14, -316], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, spacingKnown: true, orientationKnown: true, positionKnown: true,
   warnings: [], photometricInterpretation: 'MONOCHROME2', frameOfReferenceUid: 'current-frame', ...overrides,
-} as Series);
+});
 const currentCt = series({ id: 'current-ct' }), currentPet = series({ id: 'current-pet', modality: 'PT' });
 const prior = { studyUid: 'prior', studyDate: '19991001', frameOfReferenceUid: 'prior-frame', dimensions: [8, 8, 84] as Vec3, origin: [-14, -14, -332] as Vec3 };
 const priorCt = series({ id: 'prior-ct', ...prior }), priorPet = series({ id: 'prior-pet', modality: 'PT', ...prior });
@@ -118,7 +118,7 @@ describe('aligned frames of reference', () => {
 
   it('say when the measured match does not support the alignment', () => {
     assert.deepEqual(alignmentCautions(aligned), []);
-    assert.deepEqual(alignmentCautions({ ...aligned, similarity: 0.7, similarityBefore: 0.7, overlap: 0.2 } as Alignment), ['noBetter', 'littleOverlap']);
+    assert.deepEqual(alignmentCautions({ ...aligned, similarity: 0.7, similarityBefore: 0.7, overlap: 0.2 }), ['noBetter', 'littleOverlap']);
   });
 });
 
