@@ -262,6 +262,7 @@ anterior and posterior views, named by their detectors' View Code Sequence.
 - SPECT/CT opens with the first image. Requesting its nuclear medicine screen shows CT, SPECT, fusion and MIP. The SPECT is placed from its detector geometry, fused on
   its own scale, and nothing on it is called SUV.
 - A click on the SPECT MIP sends the linked panes to the vertebral lesion.
+- The whole body, opened second with the series list scrolled to its end, leads the list, and the list comes to its top.
 - The requested whole-body screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share one
   window, and each pages on its own. Undo puts the linking back.
 - The projections name their detector.
@@ -302,4 +303,6 @@ The memory report identifies the running build by its engine and either its load
 
 ## Windows scripts
 
-`pwsh -NoProfile -File tools/check-powershell.ps1` parses every PowerShell script in the repository and rejects what Windows PowerShell 5.1 cannot run: syntax errors, PowerShell 7 operators and parameters, and non-ASCII characters. CI runs it on Linux. `tools/check-windows-package.ps1 -Action Package|Install|Uninstall` checks the packaged engine and runtime, then a silent install and uninstall, for the hosted Windows job. `tools/windows-vm/README.md` describes that job and the Tesla T4 checks on the Windows VM.
+`pwsh -NoProfile -File tools/check-powershell.ps1` parses every PowerShell script in the repository and rejects what Windows PowerShell 5.1 cannot run: syntax errors, PowerShell 7 operators and parameters, and non-ASCII characters. CI runs it on Linux. `tools/check-windows-package.ps1 -Action Package|Install|Uninstall` checks the packaged engine and runtime, then a silent install and uninstall, for the hosted Windows job. The install must leave Explorer's **Open with VEAcom** entries running the installed program, and the uninstall must remove them (`docs/electron-updates.md`).
+
+`node tools/check-open-with.cjs --study FOLDER --second FOLDER [--app PACKAGED_EXECUTABLE]` checks what those entries do while VEAcom runs: a later launch ends at once and the running window opens the study it named. It needs two different synthetic studies. With `--app` the second study is given as a bare argument, as Windows passes a file for **Open with**. `tools/windows-vm/README.md` describes that job and the Tesla T4 checks on the Windows VM.

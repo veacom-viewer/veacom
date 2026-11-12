@@ -59,11 +59,11 @@ thread_local! {
     static PIECES: RefCell<VecDeque<Piece>> = const { RefCell::new(VecDeque::new()) };
     static STATS: RefCell<Stats> = RefCell::new(Stats::default());
     static READER: web_sys::FileReaderSync = web_sys::FileReaderSync::new().expect("FileReaderSync is only available in a Worker");
-    static CLOCK: Option<web_sys::Performance> = js_sys::global().unchecked_into::<web_sys::WorkerGlobalScope>().performance();
+    static CLOCK: web_sys::Performance = js_sys::global().unchecked_into::<web_sys::WorkerGlobalScope>().performance().expect("A Worker needs a performance clock");
 }
 
 pub(crate) fn now() -> f64 {
-    CLOCK.with(|clock| clock.as_ref().map_or(0., |clock| clock.now()))
+    CLOCK.with(|clock| clock.time_origin() + clock.now())
 }
 
 struct BlobSource {

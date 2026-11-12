@@ -259,15 +259,15 @@ function VoiEditor({ volume, initialView, annotations, disabled, onApply }: {
   useEffect(() => {
     const host = previewRef.current;
     if (!host) return;
-    let frame = 0;
+    const resize = { frame: 0 };
     const observer = new ResizeObserver(() => {
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
+      cancelAnimationFrame(resize.frame);
+      resize.frame = requestAnimationFrame(() => {
         const rect = host.getBoundingClientRect();
         if (rect.width > 0 && rect.height > 0) setSize(previous => previous[0] === rect.width && previous[1] === rect.height ? previous : [rect.width, rect.height]);
       });
     });
-    observer.observe(host); return () => { observer.disconnect(); cancelAnimationFrame(frame); };
+    observer.observe(host); return () => { observer.disconnect(); cancelAnimationFrame(resize.frame); };
   }, []);
 
   const addKey = (key: VoiKey) => {
@@ -396,7 +396,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
   useEffect(() => {
     const canvas = canvasRef.current, host = hostRef.current;
     if (!canvas || !host || !canRender) return;
-    let disposed = false, requestId = 0, settledTimer = 0, firstFrame = false;
+    const drawing = { disposed: false, requestId: 0, settledTimer: 0, firstFrame: false };
     let renderer: THREE.WebGLRenderer | null = null;
     let observer: ResizeObserver | null = null;
     let scalarTexture: THREE.Data3DTexture | null = null;
@@ -552,8 +552,8 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       }
 
       function render() {
-        requestId = 0;
-        if (disposed || !renderer) return;
+        drawing.requestId = 0;
+        if (drawing.disposed || !renderer) return;
         try { drawFrame(renderer); } catch (caught) { setError(errorMessage(caught)); }
       }
 
@@ -575,14 +575,14 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
         renderer.render(scene, camera);
         updateMarker(width, height);
         // The end of the "open 3D" task in usage timings: the first frame of the volume is on screen.
-        if (!firstFrame) { firstFrame = true; usage.milestone('view3d-ready'); }
+        if (!drawing.firstFrame) { drawing.firstFrame = true; usage.milestone('view3d-ready'); }
       }
 
       function requestRender(isInteractive = false) {
         interactive = isInteractive;
-        if (!requestId) requestId = requestAnimationFrame(render);
-        clearTimeout(settledTimer);
-        if (isInteractive) settledTimer = window.setTimeout(() => requestRender(false), 120);
+        if (!drawing.requestId) drawing.requestId = requestAnimationFrame(render);
+        clearTimeout(drawing.settledTimer);
+        if (isInteractive) drawing.settledTimer = window.setTimeout(() => requestRender(false), 120);
       }
 
       function finishStroke() {
@@ -772,7 +772,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
     try { initializeScene(canvas, host); } catch (caught) { setError(errorMessage(caught)); }
     return () => {
       exportRef.current?.abort(); exportRef.current = null;
-      disposed = true; sessionRef.current = null; cancelAnimationFrame(requestId); clearTimeout(settledTimer);
+      drawing.disposed = true; sessionRef.current = null; cancelAnimationFrame(drawing.requestId); clearTimeout(drawing.settledTimer);
       observer?.disconnect(); removeEvents();
       scalarTexture?.dispose(); maskTexture?.dispose(); maskUploadSource?.dispose(); labelTexture?.dispose(); material?.dispose(); geometry?.dispose(); renderer?.dispose();
     };

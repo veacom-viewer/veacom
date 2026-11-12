@@ -81,7 +81,8 @@ async function main() {
     assert.deepEqual(await notice(), ['SPECT/CT: CT · SPECT · fusion · MIPUndo']);
     const spectText = await overlay(1), fusedText = await overlay(2);
     assert.match(spectText, /W \d+ \/ L \d+ Bq\/ml/, 'The SPECT window reads in its own Bq/ml.');
-    assert.match(fusedText, /Fusion: Synthetic SPECT\/CT · SPECT Bq\/ml/);
+    // The fused series' name sits with the patient corners: with patient details hidden it is named by its modality.
+    assert.match(await corner(2), /Fusion: Synthetic SPECT\/CT · SPECT Bq\/ml/);
     assert.match(fusedText, /On its own values/);
     for (const index of [1, 2, 3]) assert.doesNotMatch(await overlay(index) + await corner(index), /SUV/, `Nothing on pane ${index + 1} is called SUV.`);
     assert.match(await overlay(3), /MIP · 0°/);
@@ -106,10 +107,17 @@ async function main() {
     check('A click on the SPECT MIP sends the linked panes to the hottest voxel there', { location: await location(1) });
 
     // The whole body opens in the active pane; its screen shows the two views side by side, named in the corner,
-    // inverted grey, not linked.
+    // inverted grey, not linked. The series list is long enough to scroll here, so it is scrolled to its end first:
+    // the study opened second leads the list, and the list comes to its top with it.
+    const seriesList = page.locator('.series-browser-scroll');
+    await seriesList.evaluate(list => { list.scrollTop = list.scrollHeight; });
+    assert.ok(await seriesList.evaluate(list => list.scrollTop) > 0, 'The series list scrolls with the SPECT/CT in it.');
     await privileged.importPaths(desktop, page, [wholeBody]);
     await page.waitForFunction(() => (window.__VEACOM_TEST__.state().series.find(item => item.id === document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.seriesId)?.description ?? '').endsWith('whole body'), undefined, { timeout: 120_000 });
     await settled();
+    assert.equal(await page.locator('.series-study').first().locator(`[data-testid="series-${named(await state(), /whole body$/).id}"]`).count(), 1, 'The study just opened is the first in the series list.');
+    assert.equal(await seriesList.evaluate(list => list.scrollTop), 0, 'The series list shows its top, where the new study is.');
+    check('A study opened second leads the series list, and the list comes to its top');
     assert.equal((await state()).layout.join('x'), '2x2', 'Opening the whole body leaves the screen as it is.');
     await openScreen();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().layout.join('x') === '1x2', undefined, { timeout: 120_000 });
@@ -225,11 +233,11 @@ async function main() {
     await settled();
     s = await state();
     assert.deepEqual([s.panes[2].seriesId, s.panes[2].unfused], [ct.id, false]);
-    const fused = await overlay(2);
-    assert.match(fused, new RegExp(`Fusion: Synthetic SPECT/CT · gated SPECT · Gate 5/8 · ${acquired(gated.slotTimes[4])} s acquired`));
+    const fused = await overlay(2), fusedName = await corner(2);
+    assert.match(fusedName, new RegExp(`Fusion: Synthetic SPECT/CT · gated SPECT · Gate 5/8 · ${acquired(gated.slotTimes[4])} s acquired`));
     assert.match(fused, /On its own values/);
     assert.equal((await page.getByTestId('notice').textContent()).trim(), `Fusion: ${gated.description} · ${fifth.phase.label} + ${ct.description}`, 'The notice names the gate.');
-    assert.doesNotMatch(fused + await corner(1) + await overlay(1), /SUV/, 'Nothing on a gate is called SUV.');
+    assert.doesNotMatch(fused + fusedName + await corner(1) + await overlay(1), /SUV/, 'Nothing on a gate is called SUV.');
     await shot('gated-1-spect-ct');
     check('A gate fuses over the CT, named in the fusion strip and the pane, never in SUV');
 
@@ -241,6 +249,19 @@ async function main() {
     await page.locator('input[data-action="export-scope"][value="picked"]').check();
     const row = page.locator('.export-series-row', { hasText: fifth.phase.label });
     assert.equal((await row.locator('small').textContent()).trim(), `NM · ${gated.dimensions[2] * gated.gates} images: all ${gated.gates} gates of its file`);
+    // With one series left out, the box over the list shows a dash; a click on it then picks every series.
+    const listBox = page.locator('.export-dialog [data-action="export-select-all"]');
+    await row.locator('input').uncheck();
+    assert.equal(await listBox.evaluate(box => box.indeterminate), true, 'With one series left out the box over the list shows a dash.');
+    await listBox.click();
+    assert.equal(await page.locator('.export-dialog [data-action="export-series"]:not(:checked)').count(), 0, 'A click on the dash picks every series.');
+    assert.equal(await listBox.isChecked(), true, 'With every series picked the box over the list is ticked.');
+    // The list is longer than its frame. Scrolled to its end, the row with the list's own box is still at its top.
+    const stuck = await page.locator('.export-series-list').evaluate(list => {
+      list.scrollTop = list.scrollHeight;
+      return { scrolled: list.scrollTop, gap: Math.round(list.querySelector('.export-pick-all').getBoundingClientRect().top - list.getBoundingClientRect().top) };
+    });
+    assert.ok(stuck.scrolled > 0 && Math.abs(stuck.gap) <= 2, `The box over the list stays in view while the list scrolls: ${JSON.stringify(stuck)}`);
     await page.locator('input[data-action="export-scope"][value="all"]').check();
     assert.equal(await page.getByTestId('export-gates').count(), 0, 'Every series exported needs no note.');
     await page.getByTestId('export-close').click();

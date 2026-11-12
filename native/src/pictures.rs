@@ -8,7 +8,11 @@
 //! The engine thread that asked waits in `decode` until then. Answers carry four samples
 //! a pixel, as Chromium reads them back, and the alpha samples are dropped here: in JavaScript that cost more than the
 //! decoding.
+//!
+//! In the browser the decoder is a Worker of the page on the engine's shared memory (web/engine/src/pictures.rs), which
+//! takes and answers pictures through the same calls.
 
+use crate::clock::Instant;
 use anyhow::{Context, Result, bail};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -18,7 +22,7 @@ use std::{
         Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Maximum encoded size of one picture.
@@ -222,13 +226,22 @@ impl Drop for Request {
     }
 }
 
+/// Set once a decoder runs in this process: the browser's picture Worker.
+static DECODER_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Called by a decoder in this process before it takes pictures. In WebAssembly, pictures are refused until one has.
+pub fn decoder_started() {
+    DECODER_STARTED.store(true, Ordering::Release);
+}
+
 /// Checks the signature on the open file before allocating for its contents.
 pub fn index(path: &Path) -> Result<std::sync::Arc<crate::source_file::SourceFile>> {
-    // A page has no picture decoder to answer yet; waiting for one would only delay the rest of the import.
-    if cfg!(target_arch = "wasm32") {
+    // A page without the decoder (no shared memory, so no threads build) has none to answer; waiting for one would only
+    // delay the rest of the import.
+    if cfg!(target_arch = "wasm32") && !DECODER_STARTED.load(Ordering::Acquire) {
         bail!(coded!(
             "pictures.browser",
-            "PNG, JPEG and BMP pictures cannot be opened in the browser yet"
+            "PNG, JPEG and BMP pictures cannot be opened in this browser"
         ));
     }
     use std::io::{Seek, SeekFrom};

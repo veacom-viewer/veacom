@@ -241,6 +241,41 @@ async function main() {
     await page.locator('input[data-action="export-scope"][value="series"]').check();
     assert.equal(await estimate.textContent(), seriesEstimate);
     check('ZIP estimates follow the export scope and reuse the completed series estimate');
+
+    // Selected series: the list's first row and each study's heading are boxes over several series. A click picks all
+    // of them, or none when all were picked; with only some of them picked the box shows a dash.
+    await page.locator('[data-action="export-zip"]').uncheck();
+    await page.locator('input[data-action="export-scope"][value="picked"]').check();
+    const pickAll = page.locator('.export-dialog [data-action="export-select-all"]');
+    const firstStudy = page.locator('.export-dialog .export-study').first();
+    const picks = () => page.locator('.export-series-list').evaluate(list => {
+      const state = input => input.indeterminate ? 'some' : input.checked ? 'all' : 'none';
+      return { list: state(list.querySelector('[data-action="export-select-all"]')),
+        studies: [...list.querySelectorAll('.export-study')].map(study => ({ box: state(study.querySelector('[data-action="export-select-study"]')),
+          series: [...study.querySelectorAll('[data-action="export-series"]')].map(input => input.checked) })) };
+    });
+    const studySizes = (await picks()).studies.map(study => study.series.length);
+    const everySeries = { list: 'all', studies: studySizes.map(count => ({ box: 'all', series: Array(count).fill(true) })) };
+    if ((await picks()).list !== 'all') await pickAll.click();
+    assert.deepEqual(await picks(), everySeries, 'The box over the list picks every series.');
+    await pickAll.click();
+    assert.deepEqual(await picks(), { list: 'none', studies: studySizes.map(count => ({ box: 'none', series: Array(count).fill(false) })) }, 'Pressed with all picked, it picks none.');
+    assert.equal(await page.getByTestId('export-submit').isDisabled(), true, 'With no series picked there is nothing to export.');
+    await firstStudy.locator('[data-action="export-select-study"]').click();
+    assert.deepEqual(await picks(), { list: studySizes.length > 1 ? 'some' : 'all', studies: studySizes.map((count, index) => ({ box: index ? 'none' : 'all', series: Array(count).fill(!index) })) },
+      'A study\'s box picks that study\'s series only.');
+    assert.equal(await page.getByTestId('export-submit').isDisabled(), false);
+    if (studySizes[0] > 1) {
+      await firstStudy.locator('[data-action="export-series"]').first().click();
+      assert.deepEqual(await picks(), { list: 'some', studies: studySizes.map((count, index) => index ? { box: 'none', series: Array(count).fill(false) }
+        : { box: 'some', series: [false, ...Array(count - 1).fill(true)] }) }, 'With some of its series picked, a box shows a dash.');
+    }
+    if ((await picks()).list === 'some') {
+      await pickAll.click();
+      assert.deepEqual(await picks(), everySeries, 'Pressed with some picked, the box over the list picks all.');
+    }
+    check('Selected series: the boxes over the list and over a study pick all of their series, or none', { studies: studySizes });
+    await page.locator('input[data-action="export-scope"][value="series"]').check();
     await page.getByTestId('export-close').click();
     await page.locator('.export-dialog').waitFor({ state: 'detached' });
     check('⌘E / Ctrl+E opens the export window');
@@ -625,11 +660,143 @@ async function main() {
     await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
     await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
     check('Slice bar pages, drags to the last slice, and follows pane resizing');
+
+    // A drag that starts in the image's right edge pages the slices whatever the tool, 6 px a slice: with the mouse
+    // and with one finger. The window stays as it was.
+    const middleSlice = Math.floor(max / 2);
+    const toMiddle = async () => {
+      await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), middleSlice);
+      await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, middleSlice);
+    };
+    const pagedFive = () => page.waitForFunction(value => Math.abs(window.__VEACOM_TEST__.state().view.slice - value) === 5, middleSlice);
+    const windowNow = () => page.evaluate(() => { const { windowWidth, windowCenter } = window.__VEACOM_TEST__.state().view; return `${windowWidth}/${windowCenter}`; });
+    const image = await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').boundingBox();
+    const edgeX = Math.round(image.x + image.width * 0.94), edgeY = Math.round(image.y + image.height * 0.3);
+    const windowBeforeEdge = await windowNow();
+    await toMiddle();
+    await page.mouse.move(edgeX, edgeY); await page.mouse.down();
+    await page.mouse.move(edgeX, edgeY + 32, { steps: 4 }); await page.mouse.up();
+    await pagedFive();
+    await toMiddle();
+    const finger = await page.context().newCDPSession(page);
+    await finger.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: edgeX, y: edgeY, id: 1 }] });
+    for (const moved of [8, 16, 24, 32]) await finger.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: edgeX, y: edgeY + moved, id: 1 }] });
+    await finger.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await pagedFive();
+    await finger.detach();
+    assert.equal(await windowNow(), windowBeforeEdge, 'An edge drag leaves the window as it was.');
+    await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
+    await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
+    check('A drag from the right edge of the image pages the slices with the mouse and with one finger');
     const layers = await page.evaluate(() => [...document.querySelector('.viewport-cell.is-active').querySelectorAll('canvas,svg,[data-export-label]')]
       .filter(layer => !layer.closest('[data-export-exclude]')).filter(layer => { const r = layer.getBoundingClientRect(); return r.width && r.height && getComputedStyle(layer).display !== 'none'; })
       .map(layer => layer.dataset.testid || layer.getAttribute('data-testid')));
     assert.deepEqual(layers, ['dicom-canvas', 'annotation-overlay'], 'Exports draw only the image and its overlay.');
     check('Slider value text and export layers', layers);
+
+    // Ctrl+C copies a picture of the active pane, and with Shift of the whole layout. The app's clipboard is swapped
+    // for one in memory, so the check never touches the system's. A copy carries the corners as they read with patient
+    // details hidden, so it is the picture, pixel for pixel, that a copy with the details hidden gives.
+    assert(await desktop.evaluate(({ clipboard }) => {
+      const pictures = globalThis.veacomCheckPictures = [];
+      const write = image => { pictures.push({ png: image.toPNG().toString('base64'), ...image.getSize() }); };
+      clipboard.writeImage = write;
+      return clipboard.writeImage === write;
+    }), 'The app writes pictures to a clipboard in memory.');
+    const copies = () => desktop.evaluate(() => globalThis.veacomCheckPictures.length);
+    const imagePane = page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]');
+    // A notice takes room above the images: each copy is made with none showing, so the copies are of one layout.
+    const noNotice = async () => {
+      if (await page.getByTestId('notice').count()) await page.getByTestId('notice-dismiss').click();
+      await page.getByTestId('notice').waitFor({ state: 'detached' });
+    };
+    const copy = async (keys, said) => {
+      const before = await copies();
+      await noNotice();
+      await imagePane.focus();
+      await page.keyboard.press(keys);
+      for (let tries = 0; await copies() === before; tries++) {
+        if (tries === 100) throw new Error(`${keys} put no picture on the clipboard.`);
+        await page.waitForTimeout(50);
+      }
+      await page.locator(`[data-testid="notice"][data-code="${said}"]`).waitFor();
+      await noNotice();
+      return desktop.evaluate((_electron, at) => globalThis.veacomCheckPictures[at], before);
+    };
+    const copiedBox = await page.getByTestId('dicom-canvas').first().boundingBox();
+    const drawnBeforeCopy = await page.locator('[data-annotation-id]:not([data-annotation-id="draft"])').count();
+    await imagePane.focus();
+    await page.keyboard.press('l');
+    await page.mouse.click(copiedBox.x + copiedBox.width * 0.4, copiedBox.y + copiedBox.height * 0.6);
+    await page.mouse.move(copiedBox.x + copiedBox.width * 0.6, copiedBox.y + copiedBox.height * 0.6, { steps: 4 });
+    await page.mouse.click(copiedBox.x + copiedBox.width * 0.6, copiedBox.y + copiedBox.height * 0.6);
+    await page.waitForFunction(before => document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])').length === before + 1, drawnBeforeCopy);
+    // Esc puts the new measurement down: it is drawn in its own yellow, not the white of a selected one.
+    await imagePane.focus();
+    await page.keyboard.press('Escape');
+    await settle();
+    const shownCorners =await page.locator('.viewport-cell.is-active [data-patient-corners] text').count();
+    const plainCorners = await page.locator('.viewport-cell.is-active [data-plain-corners] text').count();
+    assert(shownCorners > plainCorners, 'The pane shows patient details that a copy leaves out.');
+    const withDetails = await copy('ControlOrMeta+c', 'notice.imageCopied');
+    await fs.writeFile(path.join(output, 'copied-pane.png'), Buffer.from(withDetails.png, 'base64'));
+    const cell = await page.locator('.viewport-cell.is-active').boundingBox();
+    assert(withDetails.width > 0 && Math.abs(withDetails.width / withDetails.height - cell.width / cell.height) < 0.02,
+      `The copy is a picture of the pane: ${JSON.stringify({ picture: [withDetails.width, withDetails.height], pane: [cell.width, cell.height] })}`);
+    // The measurement's yellow tells the colour channels are in order: red and green without blue, never the reverse.
+    const colours = await page.evaluate(async base64 => {
+      const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(base64), character => character.charCodeAt(0))], { type: 'image/png' }));
+      const context = new OffscreenCanvas(bitmap.width, bitmap.height).getContext('2d');
+      context.drawImage(bitmap, 0, 0);
+      const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      let yellow = 0, swapped = 0, clear = 0;
+      for (let at = 0; at < data.length; at += 4) {
+        const green = data[at + 1] > 170 && data[at + 1] < 235;
+        if (green && data[at] > 230 && data[at + 2] < 50) yellow++;
+        if (green && data[at + 2] > 230 && data[at] < 50) swapped++;
+        if (data[at + 3] !== 255) clear++;
+      }
+      return { yellow, swapped, clear };
+    }, withDetails.png);
+    assert(colours.yellow > 50 && colours.swapped === 0 && colours.clear === 0, `The copy keeps the measurement's colour and is opaque: ${JSON.stringify(colours)}`);
+    await page.keyboard.press('Shift+F12');
+    await page.waitForFunction(() => !document.querySelector('.viewport-cell.is-active [data-plain-corners]'));
+    const detailsHidden = await copy('ControlOrMeta+c', 'notice.imageCopied');
+    await page.keyboard.press('Shift+F12');
+    await page.waitForFunction(() => document.querySelector('.viewport-cell.is-active [data-plain-corners]'));
+    assert.equal(withDetails.png, detailsHidden.png, 'A copy shows the corners as they read with patient details hidden.');
+    const wholeLayout = await copy('ControlOrMeta+Shift+c', 'notice.layoutCopied');
+    const grid = await page.locator('.viewport-cell.is-active').evaluate(element => { const r = element.parentElement.getBoundingClientRect(); return { width: r.width, height: r.height }; });
+    assert(wholeLayout.width >= withDetails.width && Math.abs(wholeLayout.width / wholeLayout.height - grid.width / grid.height) < 0.02, 'Shift copies the whole layout.');
+    // A field keeps Ctrl+C for its text.
+    const copiesBeforeField = await copies();
+    await page.getByTestId('series-find').click();
+    const searchField = page.locator('[data-action="series-search"]');
+    await searchField.fill('ct');
+    await searchField.press('ControlOrMeta+a');
+    await searchField.press('ControlOrMeta+c');
+    await page.waitForTimeout(300);
+    assert.equal(await copies(), copiesBeforeField, 'Ctrl+C in a text field copies no picture.');
+    await searchField.press('Escape');
+    await imagePane.focus();
+    await page.keyboard.press('ControlOrMeta+z');
+    await page.waitForFunction(before => document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])').length === before, drawnBeforeCopy);
+    await page.keyboard.press('w');
+    // Text selected elsewhere and left there does not take Ctrl+C from the image: on a pane it copies the picture.
+    await noNotice();
+    const copiesBeforeSelection = await copies();
+    const leftSelected = await page.evaluate(() => { getSelection().selectAllChildren(document.querySelector('.series-browser')); return getSelection().toString().trim().length; });
+    assert(leftSelected > 0, 'Text is selected in the series list.');
+    await imagePane.focus();
+    await page.keyboard.press('ControlOrMeta+c');
+    for (let tries = 0; await copies() === copiesBeforeSelection; tries++) {
+      if (tries === 100) throw new Error('Ctrl+C on the image copied the text selected in the series list, not the picture.');
+      await page.waitForTimeout(50);
+    }
+    await page.locator('[data-testid="notice"][data-code="notice.imageCopied"]').waitFor();
+    await noNotice();
+    await page.evaluate(() => getSelection().removeAllRanges());
+    check('Ctrl+C copies the picture without patient details; Shift copies the layout; a text field keeps its own copy, and text selected elsewhere does not', { pane: [withDetails.width, withDetails.height], layout: [wholeLayout.width, wholeLayout.height], colours });
 
     // Narrow and zoomed windows keep every control reachable, and dialogs stay out of the window's drag strip:
     // Electron decides dragging by rectangle, so a dialog control inside the strip would move the window.
@@ -693,6 +860,9 @@ async function main() {
     const mr = (await page.evaluate(() => window.__VEACOM_TEST__.state())).series.find(item => item.modality === 'MR');
     if (await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId) !== mr.id) await page.locator(`[data-testid="series-${mr.id}"]`).click();
     await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, mr.id, { timeout: 90_000 });
+    // The study just opened leads the series list, above the one opened before it. This list is too short to scroll:
+    // its move to its top is checked on a long one, in check-gamma-camera.cjs.
+    await page.waitForFunction(id => document.querySelector('.series-study')?.querySelector(`[data-testid="series-${id}"]`), mr.id, { timeout: 30_000 });
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus(); await page.keyboard.press('w');
     const mrPanes = await panes();
     // The lesion pre-diagnosis is switched off while its knowledge base is out of the repository: on an MR its button
