@@ -168,7 +168,7 @@ export function createWebBridge(): DesktopBridge {
   let shared: { cancel: Int32Array; progress: Uint32Array } | null = null;
   // The DICOM export under way, for its Cancel.
   let exporting: { id: number; cancelled: boolean } | null = null;
-  // The threads build's helper Workers, started here for the engine Worker (see startHelpers).
+  // The threads build's helper Workers and picture decoder, started here for the engine Worker (see startHelpers).
   let helpers: Worker[] = [];
 
   const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
@@ -287,13 +287,14 @@ export function createWebBridge(): DesktopBridge {
     }, () => {});
   }
 
-  /** Starts the threads build's helper Workers for the engine Worker `engine`, on its module and memory, and tells it on
-   * `port` whether they all started. They are started here rather than in the engine Worker so that one that stops (a
-   * panic aborts the threads build) reaches the page, which then replaces the engine: an engine run waiting for that
-   * helper would otherwise wait for ever, and its Worker could hear nothing. */
+  /** Starts the threads build's helper Workers and its picture decoder (picture.worker.ts) for the engine Worker
+   * `engine`, on its module and memory, and tells it on `port` whether they all started. They are started here rather
+   * than in the engine Worker so that one that stops (a panic aborts the threads build) reaches the page, which then
+   * replaces the engine: an engine run waiting for that Worker would otherwise wait for ever, and its Worker could hear
+   * nothing. */
   function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort }): void {
     const started: Worker[] = [];
-    let waiting = request.count, settled = false;
+    let waiting = request.count + 1, settled = false;
     const settle = (error?: string) => {
       if (settled) return;
       settled = true;
@@ -305,8 +306,7 @@ export function createWebBridge(): DesktopBridge {
     };
     const stopped = (error: string) => { if (!settled) settle(error); else if (engine === worker) crashed(); };
     const timer = setTimeout(() => settle('the threads did not start in time'), HELPER_START_MS);
-    for (let index = 0; index < request.count; index++) {
-      const helper = new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' });
+    const watch = (helper: Worker) => {
       started.push(helper); helpers.push(helper);
       helper.onmessage = ({ data }) => {
         if (data?.type === 'ready') { if (--waiting === 0) settle(); return; }
@@ -317,7 +317,9 @@ export function createWebBridge(): DesktopBridge {
       };
       helper.onerror = () => stopped('a thread could not start');
       helper.postMessage({ module: request.module, memory: request.memory });
-    }
+    };
+    for (let index = 0; index < request.count; index++) watch(new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' }));
+    watch(new Worker(new URL('./picture.worker.ts', import.meta.url), { type: 'module' }));
   }
 
   function call<T>(request: Request, { busy = false, signal, onQueued }: CallOptions = {}): Promise<T> {
