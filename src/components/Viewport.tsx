@@ -461,10 +461,10 @@ export function Viewport(props: ViewportProps) {
   });
   useEffect(() => {
     const element = container.current!;
-    let resizeFrame: number | null = null;
+    const resizeState = { frame: null as number | null };
     const resize = () => {
-      if (resizeFrame !== null) return;
-      resizeFrame = requestAnimationFrame(() => { resizeFrame = null; resizePane(element); });
+      if (resizeState.frame !== null) return;
+      resizeState.frame = requestAnimationFrame(() => { resizeState.frame = null; resizePane(element); });
     };
     const observer = new ResizeObserver(resize); observer.observe(element); resize();
     const pick = (event: Event) => { if (!latest.current.hideMeasurements) setPicked((event as CustomEvent<string>).detail); };
@@ -478,7 +478,7 @@ export function Viewport(props: ViewportProps) {
       element.removeEventListener('wheel', wheel);
       window.removeEventListener('resize', resize);
       window.removeEventListener('veacom-gpu-restored', restore);
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      if (resizeState.frame !== null) cancelAnimationFrame(resizeState.frame);
       if (raf.current !== null) { cancelAnimationFrame(raf.current); raf.current = null; }
     };
   }, []);
