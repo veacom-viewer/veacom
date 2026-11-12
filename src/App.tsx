@@ -28,7 +28,8 @@ import { isSoftwareWebglStatus } from './imaging/rendererInfo';
 import { patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
 import { SourceFrameCache } from './sourceFrames';
 import { useEngineRecovery } from './useEngineRecovery';
-import { captureViewportPng } from './export-video';
+import { captureViewportCanvas, captureViewportPng } from './export-video';
+import { copyCanvas } from './ui/clipboard';
 import type { ExportDialogProps } from './components/ExportDialog';
 import { trimInactiveVolumes } from './domain/volumeCache';
 import { createVolumeDecorator } from './domain/decoratedVolumes';
@@ -797,15 +798,15 @@ export default function App() {
   const hasWork = Boolean(busy || loadingIds.size || importing);
   useEffect(() => {
     if (!hasWork) { setProgress(null); setCancelledId(null); return; }
-    let disposed = false, polling = false;
+    const pollState = { disposed: false, polling: false };
     const poll = async () => {
-      if (polling) return; polling = true;
-      await getProgress().then(value => { if (!disposed) setProgress(value.running ? value : null); })
+      if (pollState.polling) return; pollState.polling = true;
+      await getProgress().then(value => { if (!pollState.disposed) setProgress(value.running ? value : null); })
         .catch(() => { /* The initiating operation reports connection errors. */ })
-        .finally(() => { polling = false; });
+        .finally(() => { pollState.polling = false; });
     };
     void poll(); const timer = setInterval(() => void poll(), 400);
-    return () => { disposed = true; clearInterval(timer); };
+    return () => { pollState.disposed = true; clearInterval(timer); };
   }, [hasWork]);
   useEffect(() => { try { localStorage.setItem('veacom:workspace:v2', JSON.stringify(settings)); } catch { /* Storage may be disabled by the host. */ } }, [settings]);
   useEffect(() => {
@@ -939,9 +940,9 @@ export default function App() {
     };
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
-    let complete = false;
+    const load = { complete: false };
     const full = loadVolume(item).then(async volume => {
-      complete = true;
+      load.complete = true;
       await prepareSourceProgram(volume);
       if (mounted.current && isCurrent()) {
         fullyLoaded.current.add(item.id); storeVolume(volume);
@@ -949,7 +950,7 @@ export default function App() {
       }
       return volume;
     }).catch(error => {
-      complete = true;
+      load.complete = true;
       if (mounted.current && isCurrent()) setLoadErrors(current => ({ ...current, [item.id]: errorText(error) }));
       throw error;
     }).finally(() => {
@@ -960,7 +961,7 @@ export default function App() {
     });
     pending.current.set(item.id, full);
     // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
-    const previewWanted = () => !complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
+    const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
     if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
       if (!previewWanted()) return;
       await prepareSourceProgram(volume);
@@ -979,7 +980,7 @@ export default function App() {
 
   useEffect(() => {
     if (importing || loadingIds.size) return;
-    let stopped = false, cursor = 0;
+    const work = { stopped: false, cursor: 0 };
     const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
       const volume = fullyLoaded.current.has(item.id) ? volumesRef.current.get(item.id) : undefined;
@@ -991,17 +992,17 @@ export default function App() {
       }
     }
     const preload = async () => {
-      while (!stopped && cursor < candidates.length) {
-        const item = candidates[cursor], generation = volumeGenerations.current.get(item.id) ?? 0;
-        cursor += 1;
-        const current = () => !stopped && generation === (volumeGenerations.current.get(item.id) ?? 0);
+      while (!work.stopped && work.cursor < candidates.length) {
+        const item = candidates[work.cursor], generation = volumeGenerations.current.get(item.id) ?? 0;
+        work.cursor += 1;
+        const current = () => !work.stopped && generation === (volumeGenerations.current.get(item.id) ?? 0);
         await preloadOne(item, current).catch(() => {
           if (current()) setFailedPreviews(failed => failed.has(item.id) ? failed : new Set(failed).add(item.id));
         });
       }
     };
     void preload(); void preload();
-    return () => { stopped = true; };
+    return () => { work.stopped = true; };
   }, [series, importing, loadingIds.size, frameCache]);
 
   useEffect(() => {
@@ -1070,9 +1071,9 @@ export default function App() {
     // The engine publishes each series whose folders it has read whole while it reads the rest (its /import/early):
     // the first opens at once and the others join the list. The import's own result is the final word on them.
     const early = new Map<string, Series>();
-    let watching = true, opened = false;
+    const earlyWatch = new AbortController();
     // Asked after each wait: the import's own result ends the watch, and so does the app unmounting.
-    const stillWatching = () => watching && mounted.current;
+    const stillWatching = () => !earlyWatch.signal.aborted && mounted.current;
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
     void (async () => {
       let after = 0;
@@ -1087,13 +1088,14 @@ export default function App() {
         if (!images.length) continue;
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
+        const first = early.size === 0;
         for (const item of images) { early.set(item.id, item); earlySeries.current.add(item.id); }
         setSeries(current => withFound(current, images, listedBefore));
-        if (!opened) { opened = true; assignSeries(activeIdRef.current, images[0]); }
+        if (first) assignSeries(activeIdRef.current, images[0]);
       }
     })();
     await importPaths(paths).then(result => {
-      watching = false;
+      earlyWatch.abort();
       // A series published early that came out the same keeps its pane, its view and the volume already loading.
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
       const settled = new Set(result.series.filter(same).map(item => item.id));
@@ -1132,14 +1134,14 @@ export default function App() {
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
       // PET/CT screen) is laid out now that every series is known.
       const shownEarly = slotsRef.current.flatMap(slot => slot.seriesId && early.has(slot.seriesId) ? [slot.seriesId] : []);
-      const keep = opened && shownEarly.length > 0 && shownEarly.every(id => settled.has(id));
+      const keep = shownEarly.length > 0 && shownEarly.every(id => settled.has(id));
       const known = new Map(seriesRef.current.map(item => [item.id, item]));
       for (const item of result.series) known.set(item.id, item);
       if (firstImage) openStudy.current(firstImage, [...known.values()].filter(item => studyKey(item) === studyKey(firstImage)), keep, [...known.values()]);
       else if (result.series.length) say('segmentation.onlySegmentations', 'info');
       else say('notice.noDicomFound', 'info');
     }).catch(error => {
-      watching = false;
+      earlyWatch.abort();
       usage.studyOpened({ modalities: [], series: 0, slices: 0, result: 'error' }, []); setNotice({ message: errorText(error), kind: 'error' });
       // The series published early go with the failed import (the engine has taken them back).
       if (early.size) {
@@ -1148,7 +1150,7 @@ export default function App() {
         setSlots(current => current.map(slot => slot.seriesId && early.has(slot.seriesId) ? { ...slot, seriesId: null } : slot));
       }
     }).finally(() => {
-      watching = false;
+      earlyWatch.abort();
       for (const id of early.keys()) earlySeries.current.delete(id);
       importCount.current = Math.max(0, importCount.current - 1); setImporting(importCount.current); setBusy(null);
     });
@@ -1178,22 +1180,33 @@ export default function App() {
   const restoreCatalog = async () => {
     // A launch-time study may already be importing in the main process; it opens through importStudies,
     // so the catalog must not open its first series as well.
-    const startupPaths = await window.veacom?.takeStartupPaths();
+    let startupPaths: string[][] = [];
+    try { startupPaths = await window.veacom?.takeStartupPaths() ?? []; }
+    catch (error) { if (mounted.current) setNotice({ message: errorText(error), kind: 'error' }); }
     const result = await listSeries(); if (!mounted.current) return;
     setSeries(current => {
       const merged = new Map(current.map(item => [item.id, item]));
       for (const item of result.series) merged.set(item.id, item);
       return [...merged.values()];
     });
-    if (!startupPaths?.length && result.series[0] && !slotsRef.current.some(slot => slot.seriesId)) {
+    if (!startupPaths.length && result.series[0] && !slotsRef.current.some(slot => slot.seriesId)) {
       // Series the engine already holds (the window reloaded) open as a study of their own.
       const images = result.series.filter(item => !item.segmentation);
       usage.beginStudy('catalog');
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0), result: 'ok' }, result.series.map(item => item.id));
       assignSeries(activeIdRef.current, result.series[0]);
     }
-    if (startupPaths?.length) await importStudies(startupPaths, 'startup');
+    for (const paths of startupPaths) await importStudies(paths, 'startup');
   };
+  // A study a later launch named while VEAcom runs (Explorer's "Open with VEAcom"): main queues it and says so, and
+  // it opens as a study named at the start does.
+  const openLaunched = useEffectEvent(async () => {
+    try {
+      const launches = await window.veacom?.takeStartupPaths();
+      for (const paths of launches ?? []) await importStudies(paths, 'startup');
+    } catch (error) { if (mounted.current) setNotice({ message: errorText(error), kind: 'error' }); }
+  });
+  useEffect(() => window.veacom?.onOpened?.(() => { void openLaunched(); }), []);
   const connect = async () => {
     setBusy('status.connecting'); setConnectionError(null);
     try { await restoreCatalog(); } catch (error) { if (mounted.current) setConnectionError(errorText(error)); }
@@ -1837,6 +1850,22 @@ export default function App() {
     usage.milestone('export-image-done', path ? 'ok' : 'cancel');
     if (path) say('notice.imageExported', 'info', undefined, true);
   };
+  /** ⌘C / Ctrl+C: the active pane, or with Shift the whole layout, onto the clipboard as a picture of what is drawn.
+   * Its corners read as they do with patient details hidden, so a paste elsewhere carries no name or number. */
+  const copyImage = async (all: boolean) => {
+    const element = all ? gridRef.current : gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
+    if (!element) return;
+    const picture = captureViewportCanvas(element, { hidePatientData: true });
+    const [capture, copy] = await Promise.allSettled([picture, copyCanvas(picture)]);
+    if (capture.status === 'rejected' || copy.status === 'rejected') {
+      usage.milestone('copy-image-done', 'error');
+      if (capture.status === 'rejected') setNotice({ message: errorText(capture.reason), kind: 'error' });
+      else say('notice.imageNotCopied', 'error');
+      return;
+    }
+    usage.milestone('copy-image-done', 'ok');
+    say(all ? 'notice.layoutCopied' : 'notice.imageCopied', 'info', undefined, true);
+  };
   const openExport = (mode: ExportDialogProps['mode']) => {
     setMenu(null);
     // An export going on in the background: its window comes back instead of a new one.
@@ -1980,6 +2009,14 @@ export default function App() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); key('open-folder'); void openImport(); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e') { event.preventDefault(); if (activeSeries) { if (event.shiftKey) { key('export-media'); openExport('media'); } else { key('tool-export'); openExport('dicom'); } } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); key(event.shiftKey ? 'redo' : 'undo'); undo(event.shiftKey); return; }
+    // ⌘C / Ctrl+C copies the picture, with Shift the whole layout. Text the reader selected is copied as text, as anywhere,
+    // but on an image pane only text selected in that pane (a drawing error's message): a selection left elsewhere (a tag
+    // value copied earlier) does not take the picture's place.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'c') {
+      const selection = window.getSelection(), pane = target.closest('.viewport-cell');
+      if (!activeSeries || (selection?.toString() && (!pane || pane.contains(selection.anchorNode)))) return;
+      event.preventDefault(); key(event.shiftKey ? 'copy-layout' : 'copy-image'); void copyImage(event.shiftKey); return;
+    }
     // Letters, 0, m, ? and + / − only without ⌘, Ctrl or Alt (Alt + letter types characters and opens menus).
     if (event.key === 'F1') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
     // Space opens the quick menu over the images; on a button, a link or a menu it presses that, as it should.
