@@ -241,6 +241,41 @@ async function main() {
     await page.locator('input[data-action="export-scope"][value="series"]').check();
     assert.equal(await estimate.textContent(), seriesEstimate);
     check('ZIP estimates follow the export scope and reuse the completed series estimate');
+
+    // Selected series: the list's first row and each study's heading are boxes over several series. A click picks all
+    // of them, or none when all were picked; with only some of them picked the box shows a dash.
+    await page.locator('[data-action="export-zip"]').uncheck();
+    await page.locator('input[data-action="export-scope"][value="picked"]').check();
+    const pickAll = page.locator('.export-dialog [data-action="export-select-all"]');
+    const firstStudy = page.locator('.export-dialog .export-study').first();
+    const picks = () => page.locator('.export-series-list').evaluate(list => {
+      const state = input => input.indeterminate ? 'some' : input.checked ? 'all' : 'none';
+      return { list: state(list.querySelector('[data-action="export-select-all"]')),
+        studies: [...list.querySelectorAll('.export-study')].map(study => ({ box: state(study.querySelector('[data-action="export-select-study"]')),
+          series: [...study.querySelectorAll('[data-action="export-series"]')].map(input => input.checked) })) };
+    });
+    const studySizes = (await picks()).studies.map(study => study.series.length);
+    const everySeries = { list: 'all', studies: studySizes.map(count => ({ box: 'all', series: Array(count).fill(true) })) };
+    if ((await picks()).list !== 'all') await pickAll.click();
+    assert.deepEqual(await picks(), everySeries, 'The box over the list picks every series.');
+    await pickAll.click();
+    assert.deepEqual(await picks(), { list: 'none', studies: studySizes.map(count => ({ box: 'none', series: Array(count).fill(false) })) }, 'Pressed with all picked, it picks none.');
+    assert.equal(await page.getByTestId('export-submit').isDisabled(), true, 'With no series picked there is nothing to export.');
+    await firstStudy.locator('[data-action="export-select-study"]').click();
+    assert.deepEqual(await picks(), { list: studySizes.length > 1 ? 'some' : 'all', studies: studySizes.map((count, index) => ({ box: index ? 'none' : 'all', series: Array(count).fill(!index) })) },
+      'A study\'s box picks that study\'s series only.');
+    assert.equal(await page.getByTestId('export-submit').isDisabled(), false);
+    if (studySizes[0] > 1) {
+      await firstStudy.locator('[data-action="export-series"]').first().click();
+      assert.deepEqual(await picks(), { list: 'some', studies: studySizes.map((count, index) => index ? { box: 'none', series: Array(count).fill(false) }
+        : { box: 'some', series: [false, ...Array(count - 1).fill(true)] }) }, 'With some of its series picked, a box shows a dash.');
+    }
+    if ((await picks()).list === 'some') {
+      await pickAll.click();
+      assert.deepEqual(await picks(), everySeries, 'Pressed with some picked, the box over the list picks all.');
+    }
+    check('Selected series: the boxes over the list and over a study pick all of their series, or none', { studies: studySizes });
+    await page.locator('input[data-action="export-scope"][value="series"]').check();
     await page.getByTestId('export-close').click();
     await page.locator('.export-dialog').waitFor({ state: 'detached' });
     check('⌘E / Ctrl+E opens the export window');
@@ -713,6 +748,34 @@ async function main() {
     await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
     await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
     check('Slice bar pages, drags to the last slice, and follows pane resizing');
+
+    // A drag that starts in the image's right edge pages the slices whatever the tool, 6 px a slice: with the mouse
+    // and with one finger. The window stays as it was.
+    const middleSlice = Math.floor(max / 2);
+    const toMiddle = async () => {
+      await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), middleSlice);
+      await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, middleSlice);
+    };
+    const pagedFive = () => page.waitForFunction(value => Math.abs(window.__VEACOM_TEST__.state().view.slice - value) === 5, middleSlice);
+    const windowNow = () => page.evaluate(() => { const { windowWidth, windowCenter } = window.__VEACOM_TEST__.state().view; return `${windowWidth}/${windowCenter}`; });
+    const image = await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').boundingBox();
+    const edgeX = Math.round(image.x + image.width * 0.94), edgeY = Math.round(image.y + image.height * 0.3);
+    const windowBeforeEdge = await windowNow();
+    await toMiddle();
+    await page.mouse.move(edgeX, edgeY); await page.mouse.down();
+    await page.mouse.move(edgeX, edgeY + 32, { steps: 4 }); await page.mouse.up();
+    await pagedFive();
+    await toMiddle();
+    const finger = await page.context().newCDPSession(page);
+    await finger.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: edgeX, y: edgeY, id: 1 }] });
+    for (const moved of [8, 16, 24, 32]) await finger.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: edgeX, y: edgeY + moved, id: 1 }] });
+    await finger.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await pagedFive();
+    await finger.detach();
+    assert.equal(await windowNow(), windowBeforeEdge, 'An edge drag leaves the window as it was.');
+    await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
+    await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
+    check('A drag from the right edge of the image pages the slices with the mouse and with one finger');
     const layers = await page.evaluate(() => [...document.querySelector('.viewport-cell.is-active').querySelectorAll('canvas,svg,[data-export-label]')]
       .filter(layer => !layer.closest('[data-export-exclude]')).filter(layer => { const r = layer.getBoundingClientRect(); return r.width && r.height && getComputedStyle(layer).display !== 'none'; })
       .map(layer => layer.dataset.testid || layer.getAttribute('data-testid')));
@@ -781,6 +844,9 @@ async function main() {
     const mr = (await page.evaluate(() => window.__VEACOM_TEST__.state())).series.find(item => item.modality === 'MR');
     if (await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId) !== mr.id) await page.locator(`[data-testid="series-${mr.id}"]`).click();
     await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().fullVolumeLoaded, mr.id, { timeout: 90_000 });
+    // The study just opened leads the series list, above the one opened before it. This list is too short to scroll:
+    // its move to its top is checked on a long one, in check-gamma-camera.cjs.
+    await page.waitForFunction(id => document.querySelector('.series-study')?.querySelector(`[data-testid="series-${id}"]`), mr.id, { timeout: 30_000 });
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus(); await page.keyboard.press('w');
     const mrPanes = await panes();
     // The lesion pre-diagnosis is switched off while its knowledge base is out of the repository: on an MR its button

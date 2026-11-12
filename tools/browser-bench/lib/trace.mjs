@@ -35,7 +35,8 @@ export async function startTrace(devtools) {
 export function readTrace(events, decode) {
   const marks = {}, frames = [];
   for (const event of events) {
-    if (event.cat === 'blink.user_timing' && event.name?.startsWith('bench:') && marks[event.name] === undefined) marks[event.name] = event.ts / 1000;
+    // The harness's own marks, and VEAcom's steps of opening a study (src/web/bridge.ts): the first of each name.
+    if (event.cat === 'blink.user_timing' && /^(bench|veacom):/.test(event.name ?? '') && marks[event.name] === undefined) marks[event.name] = event.ts / 1000;
   }
   const shots = events.filter(event => event.name === 'Screenshot' && event.args?.snapshot).sort((a, b) => a.ts - b.ts);
   for (const shot of shots) frames.push({ ts: shot.ts / 1000, ...readPicture(decode(shot.args.snapshot)), jpeg: shot.args.snapshot });
