@@ -116,8 +116,10 @@
 .layout-readout strong { color: var(--text-strong); font-size: var(--text-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
 .layout-grid { display: grid; grid-template-columns: repeat(5, 26px); gap: 4px; }
 .layout-grid button { width: 26px; height: 26px; border: 1px solid var(--line-control); border-radius: 3px; background: var(--bg-input); }
-.layout-grid button.in-preview { border-color: var(--accent); background: var(--accent-bg-hover); }
-.layout-grid button[aria-pressed=true] { box-shadow: inset 0 0 0 2px var(--bg-menu); background: var(--accent); border-color: var(--accent); }
+/* Every cell of the grid shown is filled alike: the layout in use, or the one under the pointer or the focus. While
+   a smaller one is tried, the corner of the layout in use keeps a faint fill. */
+.layout-grid button.in-preview { border-color: var(--accent); background: var(--accent); }
+.layout-grid button[aria-pressed=true]:not(.in-preview) { border-color: var(--accent); background: var(--accent-bg-hover); }
 .layout-grid button:focus-visible { outline-offset: 1px; }
 
 /* ── Workspace and viewports ────────────────────────────────────────────── */
