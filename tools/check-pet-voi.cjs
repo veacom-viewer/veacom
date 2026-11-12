@@ -6,7 +6,7 @@
 // - the same sphere drawn on the fused CT also gives the PET's values;
 // - at 41% of its SUVmax the lesion gives MTV and TLG, drawn as the voxels it counts, and the lesion table lists it;
 // - in a new session on the same computer, the study's references and lesion table come back;
-// - opened after its prior, the study lays out as the PET follow-up screen and aligns the prior, which lies 24 mm along
+// - choosing PET follow-up after opening both studies aligns the prior, which lies 24 mm along
 //   in its own frame of reference, by the two CTs (native/src/registration.rs): the note says so, the two page together
 //   through the alignment, and a nudge in the display panel moves it a millimetre and back; the lesion table gives each
 //   value's change against the prior's lesion selected by the reader, live and as kept;
@@ -313,7 +313,7 @@ async function main() {
     check('In a new session the study\'s references and lesion table come back');
     await closeDesktop(desktop);
 
-    // Opened after its prior: the PET follow-up screen, this study's PET and the prior's, each over its MIP. The prior lies
+    // Choose PET follow-up after opening both studies: this study's PET and the prior's, each over its MIP. The prior lies
     // in its own frame of reference, 24 mm further along: it is aligned by the two CTs while the screen is shown.
     await launch(priorStudy);
     await privileged.importPaths(desktop, page, [study]);
