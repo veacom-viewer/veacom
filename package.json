@@ -1,6 +1,6 @@
 {
   "name": "veacom-desktop",
-  "version": "0.1.0-beta.2",
+  "version": "0.1.0-beta.3",
   "private": true,
   "license": "GPL-3.0-or-later",
   "veacomPublicUpdates": false,
@@ -11,9 +11,11 @@
     "dev:web": "vite --host 127.0.0.1",
     "build:core": "cargo build --release --locked --manifest-path native/Cargo.toml",
     "build:web": "tsc --noEmit && vite build",
+    "build:browser": "tsc --noEmit -p tsconfig.web.json && vite build --config vite.web.config.ts",
     "build": "pnpm run setup:runtime && pnpm run build:core && pnpm run build:web",
     "start": "node scripts/setup-runtime.cjs && electron .",
     "test": "node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec \"tests/**/*.test.ts\"",
+    "test:coverage": "node --import ./tests/setup.ts --test --test-timeout=30000 --test-reporter=spec --experimental-test-coverage --test-coverage-include=\"src/**\" --test-coverage-include=\"electron/**\" --test-coverage-include-all --test-coverage-lines=77 --test-coverage-branches=78 --test-coverage-functions=73 \"tests/**/*.test.ts\"",
     "test:core": "cargo test --locked --manifest-path native/Cargo.toml",
     "package": "pnpm run build && pnpm --dir packaging install --frozen-lockfile && node packaging/node_modules/electron-builder/cli.js --dir",
     "setup:runtime": "node scripts/setup-runtime.cjs"

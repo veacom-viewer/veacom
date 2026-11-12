@@ -102,7 +102,7 @@ export function storedAcquisition(pet: PetAcquisition | undefined): StoredAcquis
   if (positive(pet?.glucose)) kept.glucose = pet.glucose;
   return Object.keys(kept).length ? kept : undefined;
 }
-const readAcquisition = (value: unknown) => value && typeof value === 'object' ? storedAcquisition(value as PetAcquisition) : undefined;
+const readAcquisition = (value: unknown) => value && typeof value === 'object' ? storedAcquisition(value) : undefined;
 
 const holds = (record: PetSeriesRecord) => !!(record.acquisition || record.limitedView || record.lesions?.length || Object.keys(record.references).length);
 
@@ -149,7 +149,7 @@ export function readPetStudies(raw: string | null): PetStudyRecords {
 export function withPetSeries(records: PetStudyRecords, study: string, series: string, record: PetSeriesRecord | null, now: number,
   info: { patient?: string; date?: string } = {}, limit = PET_STUDIES_LIMIT): PetStudyRecords {
   const next: PetStudyRecords = { ...records };
-  const entries = { ...(next[study]?.series ?? {}) };
+  const entries = { ...next[study]?.series };
   if (record && holds(record)) entries[series] = record; else delete entries[series];
   return withStudy(next, study, entries, next[study]?.glucose, now, info, limit);
 }
@@ -158,7 +158,7 @@ export function withPetSeries(records: PetStudyRecords, study: string, series: s
 export function withStudyGlucose(records: PetStudyRecords, study: string, glucose: number | null, now: number,
   info: { patient?: string; date?: string } = {}, limit = PET_STUDIES_LIMIT): PetStudyRecords {
   if (glucose !== null && !plausibleGlucose(glucose)) return records;
-  return withStudy({ ...records }, study, { ...(records[study]?.series ?? {}) }, glucose ?? undefined, now, info, limit);
+  return withStudy({ ...records }, study, { ...records[study]?.series }, glucose ?? undefined, now, info, limit);
 }
 
 /** `next` with a study's series and typed glucose, its patient and date set; the study goes when it keeps nothing. */

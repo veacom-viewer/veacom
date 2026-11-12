@@ -1,10 +1,20 @@
+const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme, systemPreferences } = require('electron');
+const path = require('node:path');
+app.setName('VEAcom');
+if (process.env.VEACOM_USER_DATA) app.setPath('userData', path.resolve(process.env.VEACOM_USER_DATA));
+// One VEAcom per user data folder: a second launch brings the first window forward instead. Two copies would share
+// the usage-sharing choice and its local copy on disk, so turning sharing off in one would not stop the other.
+const primary = app.requestSingleInstanceLock();
+if (!primary) app.quit();
+const crashes = primary ? require('./crash-reports.cjs').registerCrashReports(app) : null;
+
 const { reviewExportPixels } = require('./export-review.cjs');
+const { MAX_EXPORT_SERIES } = require('./export-limits.mjs');
 const { createImportView } = require('./import-view.cjs');
-const { app, BrowserWindow, clipboard, dialog, ipcMain, protocol, net, shell, nativeTheme } = require('electron');
 const { registerUsageHandlers } = require('./usage.cjs');
+const { JS_EXCEPTIONS } = require('./crash-schema.cjs');
 const fs = require('node:fs/promises');
 const os = require('node:os');
-const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { EngineProcess } = require('./engine-process.cjs');
 const { createHash, randomUUID } = require('node:crypto');
@@ -14,18 +24,19 @@ const i18n = require('./i18n.cjs');
 const { t, coreErrorText } = i18n;
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'veacom', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
-app.setName('VEAcom');
 nativeTheme.themeSource = 'dark';
+// Once macOS has recorded a crash of the app, its next start asks "The last time you opened VEAcom, it unexpectedly quit
+// while reopening windows. Do you want to try to reopen its windows again?" before the app is ready: no window and no
+// engine until someone answers. VEAcom opens its own window at every start and has nothing for macOS to reopen, so it
+// ignores macOS's saved window state, as SDL does for every app (registerUserDefaults in
+// src/video/cocoa/SDL_cocoaevents.m) and Electron's own tests do (electron/electron#51488). Registered, so it holds only
+// while this process runs and nothing is written to disk. macOS logs "ApplePersistenceIgnoreState: Existing state will
+// not be touched" once per start.
+if (process.platform === 'darwin') systemPreferences.registerDefaults({ ApplePersistenceIgnoreState: true });
 // Linux CI has no GPU, and Chromium refuses WebGL on the Mesa software driver it finds there (llvmpipe) rather than
 // falling back as Windows does with WARP. VEACOM_SOFTWARE_GL=llvmpipe lets a development run use that driver, so the
 // desktop checks draw in .github/workflows/ci.yml. A packaged app ignores it.
 if (!app.isPackaged && process.platform === 'linux' && process.env.VEACOM_SOFTWARE_GL === 'llvmpipe') app.commandLine.appendSwitch('ignore-gpu-blocklist');
-if (process.env.VEACOM_USER_DATA) app.setPath('userData', path.resolve(process.env.VEACOM_USER_DATA));
-// One VEAcom per user data folder: a second launch brings the first window forward instead. Two copies would share
-// the usage-sharing choice and its local copy on disk, so turning sharing off in one would not stop the other.
-const primary = app.requestSingleInstanceLock();
-if (!primary) app.quit();
-const crashes = primary ? require('./crash-reports.cjs').registerCrashReports(app) : null;
 app.on('second-instance', () => {
   if (!window || window.isDestroyed()) return;
   if (window.isMinimized()) window.restore();
@@ -49,8 +60,8 @@ function createEngine() {
   const executable = process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core';
   const binary = process.env.VEACOM_CORE_PATH || (app.isPackaged ? path.join(process.resourcesPath, 'native', executable) : path.join(root, 'native', 'target', 'release', executable));
   const manager = new EngineProcess({ binary });
-  manager.on('incident', ({ reason, code, signal }) => crashes?.record('engine', reason,
-    { code, signal, recovery: manager.closed ? 'unknown' : 'pending' }));
+  manager.on('incident', ({ reason, code, signal, work }) => crashes?.record('engine', reason,
+    { code, signal, work, recovery: manager.closed ? 'unknown' : 'pending' }));
   manager.on('state', state => {
     if (state.status === 'ready') crashes?.settleEngine('restarted');
     if (state.status === 'failed') crashes?.settleEngine('failed');
@@ -91,7 +102,7 @@ function validateSender(event) {
 function handle(channel, fn) { ipcMain.handle(channel, (event, ...args) => { validateSender(event); return fn(...args); }); }
 function seriesSelection(value) {
   const ids = Array.isArray(value) ? value : [value];
-  if (!ids.length || ids.length > 256 || ids.some(id => typeof id !== 'string' || !id.length)) throw new Error(t('export.chooseSeries'));
+  if (!ids.length || ids.length > MAX_EXPORT_SERIES || ids.some(id => typeof id !== 'string' || !id.length)) throw new Error(t('export.chooseSeries'));
   return { seriesIds: [...new Set(ids)] };
 }
 
@@ -99,14 +110,16 @@ app.whenReady().then(async () => {
   if (!primary) return;
   // Before anything can fail, so the "could not start" box is in the user's language.
   i18n.load(app.getPath('userData'));
+  crashes?.setStage('engine-start');
   engine = createEngine();
   await engine.start();
+  crashes?.setStage('window-create');
   // The engine parses no picture format: PNG, JPEG and BMP files it meets go to a sandboxed renderer (picture-decoder.cjs).
   pictureDecoder = createPictureDecoder();
   stopPictures = servePictures({ engine, decode: pictureDecoder.decode });
   const testHooks = process.env.VEACOM_TEST_MODE === '1' ? require('./imaging-test-hooks.cjs').createImagingTestHooks() : undefined;
   imaging = new ImagingBroker({ engine, devOrigin: devUrl ? new URL(devUrl).origin : undefined,
-    beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport });
+    beforePixel: testHooks?.beforePixel, afterImport: testHooks?.afterImport, preparePictures: pictureDecoder.prepare });
   // A study named on the command line starts importing while the window loads.
   const studyArgument = process.argv.indexOf('--study');
   const startupStudy = studyArgument >= 0 && process.argv[studyArgument + 1] ? [path.resolve(process.argv[studyArgument + 1])] : [];
@@ -140,6 +153,25 @@ app.whenReady().then(async () => {
   window = new BrowserWindow({ width: 1500, height: 960, minWidth: 900, minHeight: 640, backgroundColor: '#111519', title: 'VEAcom', show: false, ...chrome, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true,
     // The preload reads the saved language from here, so the first frame is already in it.
     additionalArguments: [`--veacom-locale=${i18n.getLocale()}`, `--veacom-version=${app.getVersion()}`, `--veacom-local-usage-check=${process.env.VEACOM_USAGE_CHECK_LOCAL === '1' ? 1 : 0}`] } });
+  const nextRendererFault = new Map();
+  const reportRendererFault = (reason, exception) => {
+    const key = exception ? reason + '/' + exception : reason, now = performance.now();
+    if (!crashes || quitting || now < (nextRendererFault.get(key) ?? 0)) return;
+    nextRendererFault.set(key, now + 60_000);
+    crashes.record('renderer', reason, { exception });
+  };
+  ipcMain.on('fault:renderer', (event, reason, exception) => {
+    try { validateSender(event); } catch { return; }
+    if (['render-failed', 'uncaught-exception', 'unhandled-rejection'].includes(reason) && JS_EXCEPTIONS.includes(exception)) {
+      reportRendererFault(reason, exception);
+    }
+  });
+  let unresponsive = false;
+  window.on('unresponsive', () => {
+    if (!unresponsive) reportRendererFault('unresponsive');
+    unresponsive = true;
+  });
+  window.on('responsive', () => { unresponsive = false; });
   window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
@@ -204,8 +236,13 @@ app.whenReady().then(async () => {
   });
   handle('files:open', async kind => {
     if (!['files', 'folder', 'archive'].includes(kind)) throw new Error('Invalid import type.');
-    const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
-    return selected.canceled ? [] : imaging.authorizeImportPaths(selected.filePaths);
+    const finish = kind === 'files' ? pictureDecoder.prepareFileDialog() : undefined;
+    let paths = [];
+    try {
+      const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
+      if (!selected.canceled) paths = selected.filePaths;
+      return paths.length ? imaging.authorizeImportPaths(paths) : [];
+    } finally { finish?.(paths); }
   });
   // The import window, in a view of its own (import-view.cjs): this page only opens it, right after the user's own
   // click or key press, and receives import capabilities for what the user opened there.
@@ -300,8 +337,14 @@ app.whenReady().then(async () => {
   // default export folder) at startup would make macOS ask for access before the user did anything.
   void media.sweepExportLeftovers([os.tmpdir()]).catch(() => {});
   await loading;
+  crashes?.setStage('running');
   if (process.env.VEACOM_DEVTOOLS === '1') window.webContents.openDevTools({ mode: 'detach' });
-}).catch(error => { process.stderr.write(`${error.stack || error.message}\n`); dialog.showErrorBox(t('startup.failed'), error.message); app.quit(); });
+}).catch(error => {
+  crashes?.startupFailed(error);
+  process.stderr.write(`${error.stack || error.message}\n`);
+  dialog.showErrorBox(t('startup.failed'), error.message);
+  app.quit();
+});
 
 app.on('window-all-closed', () => app.quit());
 // Services stop only once every window has closed. Electron emits before-quit before it closes any window, so
@@ -315,7 +358,7 @@ app.on('will-quit', event => {
   disposeUpdates?.();
   stopPictures?.();
   pictureDecoder?.close();
-  Promise.allSettled([engine?.stop(), disposeMedia?.(), usage?.flush()]).then(results => {
+  Promise.allSettled([engine?.stop(), disposeMedia?.(), usage?.flush(), crashes?.flush()]).then(results => {
     for (const result of results) if (result.status === 'rejected') process.stderr.write(`Shutdown cleanup failed: ${result.reason.message}\n`);
   }).finally(() => app.quit());
 });

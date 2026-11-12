@@ -45,7 +45,7 @@ describe('imaging engine process lifecycle', () => {
     await assert.rejects(first.request('import', { paths: ['bad-file.dcm'] }), { message: /unavailable|stopped/ });
     await until(() => f.manager.state().status === 'ready' && f.manager.state().generation === 2);
     const second = f.manager.connection();
-    assert.deepEqual(incidents, [{ reason: 'unexpected-exit', code: 17, signal: null }]);
+    assert.deepEqual(incidents, [{ reason: 'unexpected-exit', code: 17, signal: null, work: 'import' }]);
     assert.notEqual(second.request, first.request);
     assert.equal(second.generation, 2);
     assert.throws(() => f.manager.connection(first.generation), { message: /Reopen this study/ });
@@ -64,7 +64,7 @@ describe('imaging engine process lifecycle', () => {
     const first = await f.manager.start();
     await assert.rejects(first.request('corrupt'), /too long/);
     await until(() => f.manager.state().status === 'ready' && f.manager.state().generation === 2);
-    assert.deepEqual(incidents, [{ reason: 'protocol-error', code: null, signal: null }]);
+    assert.deepEqual(incidents, [{ reason: 'protocol-error', code: null, signal: null, work: 'other' }]);
     assert.equal(f.manager.state().restartCount, 1);
     assert.equal((await f.manager.connection().request('health')).ok, true);
     assert.ok(f.spawned[0].exitCode !== null || f.spawned[0].signalCode !== null);

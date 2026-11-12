@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it } from 'node:test';
 import { createRequire } from 'node:module';
-import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const require = createRequire(import.meta.url);
 const { registerImageExport } = require('../electron/image-export.cjs');
+// The module's own fs/promises object, so a test can make one write fail.
+const files = require('node:fs/promises') as typeof import('node:fs/promises');
 const folders: string[] = [];
 const picture = new Uint8Array([137, 80, 78, 71]).buffer;
 
@@ -40,7 +42,7 @@ describe('picture export', () => {
   });
 
   it('keeps a finished export and records it, and never removes files it did not write', async () => {
-    const { parent, call, recorded, exports } = await fixture();
+    const { call, recorded, exports } = await fixture();
     const done = await call('images:begin', 'SYNTHETIC - CT', true);
     await call('images:append', done.id, '001.png', picture);
     assert.equal(await call('images:finish', done.id), done.directory);
@@ -53,6 +55,34 @@ describe('picture export', () => {
     assert.deepEqual(await readdir(open.directory), ['notes.txt']);
     assert.deepEqual(await readdir(done.directory), ['001.png']);
     await assert.rejects(call('images:append', open.id, '002.png', picture), { message: /Unknown picture export/ });
+  });
+
+  it('writes only the bytes of a typed array, not the rest of the buffer it views', async () => {
+    const { call } = await fixture();
+    const job = await call('images:begin', 'SYNTHETIC - CT', true);
+    const backing = new Uint8Array([9, 9, 137, 80, 78, 71, 9]);
+    await call('images:append', job.id, '001.png', backing.subarray(2, 6));
+    assert.deepEqual([...await readFile(path.join(job.directory, '001.png'))], [137, 80, 78, 71]);
+  });
+
+  it('reports a cancelled export, not the file error, when the cancel removes the folder under a write', async () => {
+    const { parent, call } = await fixture();
+    const job = await call('images:begin', 'SYNTHETIC - CT', true);
+    const original = files.writeFile;
+    files.writeFile = async () => {
+      await call('images:cancel', job.id);
+      throw Object.assign(new Error('ENOENT: no such file or directory'), { code: 'ENOENT' });
+    };
+    try {
+      await assert.rejects(call('images:append', job.id, '001.png', picture), { message: /Unknown picture export/ });
+    } finally { files.writeFile = original; }
+    assert.deepEqual(await readdir(parent), []);
+    // While the export is still open, a failed write is the error the caller sees.
+    const open = await call('images:begin', 'SYNTHETIC - MR', true);
+    files.writeFile = async () => { throw new Error('Disk full'); };
+    try {
+      await assert.rejects(call('images:append', open.id, '001.png', picture), { message: 'Disk full' });
+    } finally { files.writeFile = original; }
   });
 
   it('removes a picture whose export was cancelled while it was being written', async () => {

@@ -45,6 +45,7 @@
     "import.tooManyFiles": "Seçimde {count} dosyadan fazlası var; daha dar bir klasör seçin.",
     "import.tooManyPaths": "Bir içe aktarmada en çok 50.000 dosya ya da klasör seçilebilir.",
     "import.tooManyArchives": "Bu oturumda zaten 24 arşiv açıldı; başka arşiv açmadan önce görüntüleyiciyi yeniden başlatın.",
+    "import.browserArchiveLimit": "Bir oturumda aynı anda en fazla {limit} ZIP arşivi açık olabilir. Daha az ZIP seçin veya açık bir arşivin tüm serilerini kapatın.",
     "import.catalogFull": "Bu oturumun çalışma listesi kaynak sınırına ulaştı; başka çalışma açmadan önce görüntüleyiciyi yeniden başlatın.",
     "import.frameLimit": "İçe aktarma 50.000 kesitlik kaynak sınırını aşıyor.",
     "import.retainedLimit": "Saklanan kesit bilgisi 256 MiB içe aktarma sınırını aşıyor.",
@@ -55,6 +56,8 @@
     "import.noImages": "Desteklenen görüntü bulunamadı. {details}",
     "import.fileUnreadable": "{file} okunamadı: {reason}",
     "import.moreUnreadable": "{count} dosya daha desteklenen bir DICOM görüntüsü olarak okunamadı.",
+    "import.unreadableAlike": "{count} dosya okunamadı: {reason}",
+    "import.unreadableMany": "{count} dosya desteklenen bir görüntü olarak okunamadı.",
 
     "file.notDicom": "DICOM dosyası değil (DICOM başlığı yok)",
     "file.tooLarge": "dosya okunabilecek en büyük boyutu aşıyor",
@@ -68,6 +71,7 @@
     "zip.entryTooLarge": "ZIP içindeki bir dosya, dosya başına sınırı aşıyor.",
     "zip.tooLarge": "ZIP açıldığında içe aktarma sınırını aşıyor.",
     "rar.unsupported": "RAR arşivleri açılamaz. Arşivi çıkarıp klasörü açın.",
+    "pictures.browser": "PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.",
 
     "decode.cannotRead": "{path} okunamadı: {reason}",
     "decode.noMemory": "Hacmi açmaya yetecek bellek yok.",

@@ -299,6 +299,13 @@ describe('selected-volume outlines', () => {
     assert.throws(() => buildVoiMask(volume, { plane: 'axial', keys: [first, second] }), { message: /not on its selected plane/ });
   });
 
+  it('rejects a contour with a missing patient coordinate', () => {
+    const volume = makeVolume([7, 7, 7]);
+    const keys = [rectangleKey(volume, 1, [1, 1], [5, 5]), rectangleKey(volume, 3, [1, 1], [5, 5])];
+    keys[0].outline[3].pop();
+    assert.throws(() => buildVoiMask(volume, { plane: 'axial', keys }), { message: /three.*points/i });
+  });
+
   it('uses patient-space boundaries in a sheared grid and preserves every source value', () => {
     const volume = makeVolume([7, 7, 7]);
     volume.series.direction = [1, 0, 0.5, 0, 1, 0, 0, 0, 1];
@@ -575,7 +582,7 @@ describe('binary STL isosurface export', () => {
     for (let i = 1; i < mask.length; i += 2) mask[i] = 1;
     const triangles = readTriangles(extractStl(volume, 0.25, fullCrop(volume), mask));
     const positions = new Set(triangles.flatMap(triangle => triangle.vertices.map(point => point[0])));
-    assert.deepEqual([...positions].sort(), [0.25, 0.5]);
+    assert.deepEqual([...positions].sort((a, b) => a - b), [0.25, 0.5]);
     for (const triangle of triangles) {
       const x = triangle.vertices[0][0];
       assert.equal(triangle.vertices.every(point => point[0] === x), true);

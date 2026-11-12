@@ -29,6 +29,8 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
+const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
   const root = path.resolve(process.argv[2]);
@@ -65,6 +67,7 @@ async function main() {
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     await settled();
+    await choosePetLayout(page);
   };
   const state = () => page.evaluate(() => window.__VEACOM_TEST__.state());
   const settled = async () => {
@@ -150,7 +153,7 @@ async function main() {
     await launch(priorStudy);
     await page.waitForFunction(() => Object.values(JSON.parse(localStorage.getItem('veacom:pet-studies:v1') ?? '{}'))
       .some(study => Object.values(study.series).some(series => series.acquisition && !series.lesions)));
-    await desktop.close();
+    await closeDesktop(desktop);
     await launch();
     let s = await state();
     const ct = s.series.find(item => item.modality === 'CT'), pet = s.series.find(item => item.modality === 'PT');
@@ -286,7 +289,7 @@ async function main() {
     const legacySeries = digest(JSON.stringify([selectedPet.uid, selectedPet.previousPetId]));
     records[legacyStudy] = { ...record, patient: digest(selectedPet.patientId.trim() + '\u0000' + selectedPet.patientName.trim().toUpperCase()), series: { [legacySeries]: kept } };
     await page.evaluate(records => localStorage.setItem('veacom:pet-studies:v1', JSON.stringify(records)), records);
-    await desktop.close();
+    await closeDesktop(desktop);
 
     // A new session on this computer: the references and the lesion table are back, the lesion with its name, threshold
     // and confirmed score.
@@ -308,13 +311,14 @@ async function main() {
     await goTo(1, lesion.center[2]);
     await shot('4-reopened');
     check('In a new session the study\'s references and lesion table come back');
-    await desktop.close();
+    await closeDesktop(desktop);
 
     // Opened after its prior: the PET follow-up screen, this study's PET and the prior's, each over its MIP. The prior lies
     // in its own frame of reference, 24 mm further along: it is aligned by the two CTs while the screen is shown.
     await launch(priorStudy);
     await privileged.importPaths(desktop, page, [study]);
     await settled();
+    await choosePetLayout(page, 'layout-pet-follow-up');
     await page.waitForFunction(() => { const s = window.__VEACOM_TEST__.state(); return s.alignments.length === 1 && !s.aligning; }, undefined, { timeout: 120_000 });
     s = await state();
     const now = s.series.find(item => item.modality === 'PT' && item.dimensions[2] === petGrid.dimensions[2]);
@@ -549,7 +553,7 @@ async function main() {
     await page.waitForFunction(() => /PET 10\.00 SUVbw/.test([...document.querySelectorAll('[data-testid="viewport-cell"]')[0]?.querySelectorAll('[data-testid="pointer-readout"] text') ?? []].map(node => node.textContent).join('\n')));
     await shot('5c-fused-apart');
     check('A PET over a CT acquired apart is aligned by its own CT, then read in its own voxels through the alignment');
-    await desktop.close();
+    await closeDesktop(desktop);
 
     // The current study alone, in a new session: the change comes from what was kept for the prior.
     await launch();
@@ -604,7 +608,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'pet-voi-checks.json'), JSON.stringify({ checks, errors, failure: String(error.stack || error) }, null, 2));
     throw error;
   } finally {
-    await desktop?.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
 }

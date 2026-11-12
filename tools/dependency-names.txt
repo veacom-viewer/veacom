@@ -1,4 +1,4 @@
-# Every package name that may appear in this repository's lockfiles (pnpm-lock.yaml and native/Cargo.lock).
+# Every package name that may appear in the pnpm lockfiles and the workspace Cargo.lock.
 # tools/check-repository.mjs fails when a lockfile gains a name that is not listed here, and when a listed name is in
 # no lockfile any more. Version bumps need no change.
 #
@@ -21,6 +21,7 @@ crate charls
 crate charls-sys
 crate chrono
 crate cmake
+crate console_error_panic_hook
 crate core-foundation-sys
 crate cpufeatures
 crate crc32fast
@@ -69,6 +70,7 @@ crate miniz_oxide
 crate nix
 crate num-traits
 crate once_cell
+crate openjp2
 crate openjpeg-sys
 crate pin-project-lite
 crate proc-macro2
@@ -87,6 +89,7 @@ crate slab
 crate smallvec
 crate snafu
 crate snafu-derive
+crate sprintf
 crate syn
 crate thiserror
 crate thiserror-impl
@@ -100,6 +103,7 @@ crate wasm-bindgen
 crate wasm-bindgen-macro
 crate wasm-bindgen-macro-support
 crate wasm-bindgen-shared
+crate web-sys
 crate windows-core
 crate windows-implement
 crate windows-interface
@@ -110,6 +114,14 @@ crate windows-sys
 crate zip
 crate zlib-rs
 crate zmij
+npm @cloudflare/kv-asset-handler
+npm @cloudflare/unenv-preset
+npm @cloudflare/workerd-darwin-64
+npm @cloudflare/workerd-darwin-arm64
+npm @cloudflare/workerd-linux-64
+npm @cloudflare/workerd-linux-arm64
+npm @cloudflare/workerd-windows-64
+npm @cspotcode/source-map-support
 npm @electron/asar
 npm @electron/fuses
 npm @electron/get
@@ -117,8 +129,37 @@ npm @electron/notarize
 npm @electron/osx-sign
 npm @electron/rebuild
 npm @electron/universal
+npm @esbuild/aix-ppc64
+npm @esbuild/android-arm
+npm @esbuild/android-arm64
+npm @esbuild/android-x64
+npm @esbuild/darwin-arm64
+npm @esbuild/darwin-x64
+npm @esbuild/freebsd-arm64
+npm @esbuild/freebsd-x64
+npm @esbuild/linux-arm
+npm @esbuild/linux-arm64
+npm @esbuild/linux-ia32
+npm @esbuild/linux-loong64
+npm @esbuild/linux-mips64el
+npm @esbuild/linux-ppc64
+npm @esbuild/linux-riscv64
+npm @esbuild/linux-s390x
+npm @esbuild/linux-x64
+npm @esbuild/netbsd-arm64
+npm @esbuild/netbsd-x64
+npm @esbuild/openbsd-arm64
+npm @esbuild/openbsd-x64
+npm @esbuild/openharmony-arm64
+npm @esbuild/sunos-x64
+npm @esbuild/win32-arm64
+npm @esbuild/win32-ia32
+npm @esbuild/win32-x64
 npm @isaacs/fs-minipass
 npm @isaacs/nonrecursive-glob-match
+npm @jridgewell/resolve-uri
+npm @jridgewell/sourcemap-codec
+npm @jridgewell/trace-mapping
 npm @malept/cross-spawn-promise
 npm @malept/flatpak-bundler
 npm @noble/hashes
@@ -160,6 +201,9 @@ npm @pnpm/exe.linux-x64
 npm @pnpm/exe.linux-x64-musl
 npm @pnpm/exe.win32-arm64
 npm @pnpm/exe.win32-x64
+npm @poppinss/colors
+npm @poppinss/dumper
+npm @poppinss/exception
 npm @rolldown/binding-android-arm-eabi
 npm @rolldown/binding-android-arm64
 npm @rolldown/binding-darwin-arm64
@@ -177,6 +221,7 @@ npm @rolldown/binding-win32-arm64-msvc
 npm @rolldown/binding-win32-x64-msvc
 npm @rolldown/pluginutils
 npm @sindresorhus/is
+npm @speed-highlight/core
 npm @szmarczak/http-timer
 npm @types/cacheable-request
 npm @types/debug
@@ -224,6 +269,7 @@ npm at-least-node
 npm aws4
 npm balanced-match
 npm base64-js
+npm blake3-wasm
 npm bluebird
 npm boolean
 npm brace-expansion
@@ -246,6 +292,7 @@ npm combined-stream
 npm commander
 npm compare-version
 npm concat-map
+npm cookie
 npm core-util-is
 npm cross-spawn
 npm csstype
@@ -271,11 +318,13 @@ npm emoji-regex
 npm end-of-stream
 npm env-paths
 npm err-code
+npm error-stack-parser-es
 npm es-define-property
 npm es-errors
 npm es-object-atoms
 npm es-set-tostringtag
 npm es6-error
+npm esbuild
 npm escalade
 npm escape-string-regexp
 npm exponential-backoff
@@ -322,6 +371,7 @@ npm json-stringify-safe
 npm json5
 npm jsonfile
 npm keyv
+npm kleur
 npm lazy-val
 npm lightningcss
 npm lightningcss-android-arm64
@@ -344,6 +394,7 @@ npm mime
 npm mime-db
 npm mime-types
 npm mimic-response
+npm miniflare
 npm minimatch
 npm minimist
 npm minipass
@@ -363,6 +414,8 @@ npm p-cancelable
 npm p-limit
 npm path-is-absolute
 npm path-key
+npm path-to-regexp
+npm pathe
 npm pe-library
 npm picocolors
 npm picomatch
@@ -427,6 +480,7 @@ npm type-fest
 npm typescript
 npm undici
 npm undici-types
+npm unenv
 npm universalify
 npm unzipper
 npm utf8-byte-length
@@ -434,11 +488,16 @@ npm util-deprecate
 npm vite
 npm webcrypto-core
 npm which
+npm workerd
+npm wrangler
 npm wrap-ansi
 npm wrappy
+npm ws
 npm xmlbuilder
 npm y18n
 npm yallist
 npm yargs
 npm yargs-parser
 npm yocto-queue
+npm youch
+npm youch-core

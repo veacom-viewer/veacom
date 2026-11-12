@@ -5,7 +5,8 @@ export function usesSourceFrames(series: Series, view: Pick<ViewState, 'mode'>):
 }
 
 export function resolveView(volume: Volume, view: ViewState): ViewState {
-  const source = volume.sourceFrameIndex !== undefined || usesSourceFrames(volume.series, view);
+  // A projection pages through angles even while renderedView shows the single acquired preview frame.
+  const source = usesSourceFrames(volume.series, view) || (volume.sourceFrameIndex !== undefined && !view.projection);
   const slice = source ? Math.max(0, Math.min(volume.series.dimensions[2] - 1, Math.round(view.slice))) : view.slice;
   let center = view.windowCenter, width = view.windowWidth, voiLut: number | undefined;
   // The displayed frame's window curve shapes manual windows too: dragging changes the centre and width

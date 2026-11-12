@@ -89,10 +89,14 @@ pub fn check_pair(fixed: &SourceSeries, moving: &SourceSeries) -> Result<()> {
     check(fixed)?;
     check(moving)?;
     let (a, b) = (&fixed.info, &moving.info);
-    if a.patient_key.is_empty() || a.patient_key != b.patient_key
+    if a.patient_key.is_empty()
+        || a.patient_key != b.patient_key
         || (a.patient_id.is_empty() && a.patient_name.is_empty())
     {
-        bail!(coded!("registration.patientMismatch", "Alignment requires both series to belong to the same identified patient"));
+        bail!(coded!(
+            "registration.patientMismatch",
+            "Alignment requires both series to belong to the same identified patient"
+        ));
     }
     Ok(())
 }
@@ -1233,7 +1237,10 @@ mod tests {
         flat.info.can_reconstruct = true;
         flat.info.patient_key = "different-issuer".into();
         let error = register((&flat, &pixels), (&other, &other_pixels), &NEVER).unwrap_err();
-        assert_eq!(crate::message::coded(&error).map(|note| note.code), Some("registration.patientMismatch"));
+        assert_eq!(
+            crate::message::coded(&error).map(|note| note.code),
+            Some("registration.patientMismatch")
+        );
         flat.info.patient_key.clone_from(&other.info.patient_key);
         let blank = PixelBuffer::F32(vec![5.0; 16 * 16 * 16]);
         let error = register((&flat, &blank), (&other, &other_pixels), &NEVER).unwrap_err();

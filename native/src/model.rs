@@ -1,7 +1,7 @@
 use crate::geometry::{FrameGeometry, Geometry};
+use crate::source_file::SourceFile;
 use serde::Serialize;
 use std::sync::Arc;
-use crate::source_file::SourceFile;
 
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -438,12 +438,26 @@ pub enum PixelBuffer {
     F64(Vec<f64>),
 }
 impl PixelBuffer {
+    /// Bytes retained by the pixel allocation, including spare capacity after removing an alpha channel.
+    pub fn allocated_bytes(&self) -> usize {
+        match self {
+            Self::I16(v) => v.capacity() * size_of::<i16>(),
+            Self::U16(v) => v.capacity() * size_of::<u16>(),
+            Self::U8(v) => v.capacity(),
+            Self::F32(v) => v.capacity() * size_of::<f32>(),
+            Self::F64(v) => v.capacity() * size_of::<f64>(),
+        }
+    }
+
     pub fn is_padding(&self, source: &SourceSeries, frame: usize, value: f64) -> bool {
         let metadata = source.frames.get(frame).map(|f| &f.metadata);
         if value.is_nan() {
             return metadata.is_some_and(|m| m.padding_is_nan);
         }
-        let Some(range) = metadata.and_then(|m| m.padding_range).or(source.info.padding_range) else {
+        let Some(range) = metadata
+            .and_then(|m| m.padding_range)
+            .or(source.info.padding_range)
+        else {
             return false;
         };
         let [a, b] = if matches!(self, Self::F32(_)) {
@@ -462,6 +476,9 @@ impl PixelBuffer {
             Self::F32(v) => v.len(),
             Self::F64(v) => v.len(),
         }
+    }
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
     pub fn value(&self, index: usize) -> f64 {
         match self {
@@ -504,7 +521,9 @@ impl Plain for f64 {}
 fn bytes_of<T: Plain>(values: &[T]) -> &[u8] {
     // SAFETY: `Plain` types are primitive numbers, without padding or uninitialised bytes, and u8 needs no alignment;
     // the byte slice covers exactly the values' memory and borrows it for as long as they are borrowed.
-    unsafe { std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values)) }
+    unsafe {
+        std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    }
 }
 
 #[derive(Clone)]
@@ -529,11 +548,17 @@ mod tests {
 
     #[test]
     fn pixel_bytes_are_the_samples_little_endian() {
-        assert_eq!(PixelBuffer::I16(vec![-2, 0x0102]).bytes(), [0xfe, 0xff, 0x02, 0x01]);
+        assert_eq!(
+            PixelBuffer::I16(vec![-2, 0x0102]).bytes(),
+            [0xfe, 0xff, 0x02, 0x01]
+        );
         assert_eq!(PixelBuffer::U16(vec![0xabcd]).bytes(), [0xcd, 0xab]);
         assert_eq!(PixelBuffer::U8(vec![7, 8]).bytes(), [7, 8]);
         assert_eq!(PixelBuffer::F32(vec![1.0]).bytes(), 1.0f32.to_le_bytes());
-        assert_eq!(PixelBuffer::F64(vec![-0.5, f64::NAN]).bytes(), [(-0.5f64).to_le_bytes(), f64::NAN.to_le_bytes()].concat());
+        assert_eq!(
+            PixelBuffer::F64(vec![-0.5, f64::NAN]).bytes(),
+            [(-0.5f64).to_le_bytes(), f64::NAN.to_le_bytes()].concat()
+        );
         assert!(PixelBuffer::F64(Vec::new()).bytes().is_empty());
     }
 }

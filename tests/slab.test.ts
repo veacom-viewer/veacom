@@ -8,7 +8,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   id: 's', uid: 'u', studyUid: 'study', patientId: 'P', patientName: 'Synthetic', studyDate: '', description: '', modality: 'CT',
   seriesNumber: 1, dimensions: [64, 64, 80], spacing: [0.5, 0.5, 2.5], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2', ...overrides,
-} as Series);
+});
 const view = (plane: ViewState['plane'], slab?: ViewState['slab']): ViewState => ({ plane, slice: 10, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false, mode: 'mpr', slab });
 
 describe('thick slab as in VEAcom Next', () => {

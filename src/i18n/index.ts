@@ -6,12 +6,13 @@ import { tr } from './tr';
 export type Locale = 'tr' | 'en';
 export type MessageKey = keyof typeof en;
 export type MessageParams = Record<string, string | number>;
-export type Messages = Record<MessageKey, string>;
 
 export const LOCALES: readonly Locale[] = ['tr', 'en'];
 export const DEFAULT_LOCALE: Locale = 'tr';
 export const LOCALE_STORAGE_KEY = 'veacom:locale';
-const dictionaries: Record<Locale, Messages> = { tr, en };
+// Read as partial: a key that reached `t` through a cast (a place name from the main process) may be missing, and
+// shows as itself. No English fallback: tr.ts is typed to carry every key.
+const dictionaries: Record<Locale, Partial<Record<string, string>>> = { tr, en };
 const listeners = new Set<() => void>();
 
 export const isLocale = (value: unknown): value is Locale => value === 'tr' || value === 'en';
@@ -23,12 +24,12 @@ function initialLocale(): Locale {
     const desktop = (window as { veacom?: { locale?: unknown } }).veacom?.locale;
     if (isLocale(desktop)) return desktop;
     try {
-      const stored = window.localStorage?.getItem(LOCALE_STORAGE_KEY);
+      const stored = window.localStorage.getItem(LOCALE_STORAGE_KEY);
       if (isLocale(stored)) return stored;
     } catch { /* Storage may be disabled by the host. */ }
   }
   // Node (tests, tools) can choose with VEACOM_LOCALE, as the Electron main process does.
-  const environment = typeof process === 'undefined' ? undefined : process.env?.VEACOM_LOCALE;
+  const environment = typeof process === 'undefined' ? undefined : process.env.VEACOM_LOCALE;
   return isLocale(environment) ? environment : DEFAULT_LOCALE;
 }
 
@@ -50,7 +51,7 @@ export function setLocale(next: Locale): void {
 export function chooseLocale(next: Locale): void {
   setLocale(next);
   if (typeof window === 'undefined') return;
-  try { window.localStorage?.setItem(LOCALE_STORAGE_KEY, next); } catch { /* Storage may be disabled by the host. */ }
+  try { window.localStorage.setItem(LOCALE_STORAGE_KEY, next); } catch { /* Storage may be disabled by the host. */ }
   const desktop = (window as { veacom?: { setLocale?: (locale: Locale) => Promise<void> } }).veacom;
   void desktop?.setLocale?.(next).catch(() => { /* The interface still switches; the next start uses the default. */ });
 }
@@ -62,14 +63,14 @@ export function subscribeLocale(listener: () => void): () => void {
 
 /** The message for `key` in the current language, with each {name} replaced from `params`. */
 export function t(key: MessageKey, params?: MessageParams): string {
-  return format(dictionaries[current][key] ?? en[key] ?? key, params);
+  return format(dictionaries[current][key] ?? key, params);
 }
 
 export type Translator = typeof t;
 
 /** The message in a given language, whatever the current one is. */
 export function translate(locale: Locale, key: MessageKey, params?: MessageParams): string {
-  return format(dictionaries[locale][key] ?? en[key] ?? key, params);
+  return format(dictionaries[locale][key] ?? key, params);
 }
 
 function format(template: string, params?: MessageParams): string {

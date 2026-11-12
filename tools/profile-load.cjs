@@ -5,6 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 const repo = path.resolve(__dirname, '..');
 const work = path.resolve(repo, '..', 'work');
@@ -198,7 +199,7 @@ async function run(index) {
     };
     const pixels = await page.locator('canvas[data-renderer]').first().evaluate(canvas => ({ png: canvas.toDataURL(), width: canvas.width, height: canvas.height, slice: canvas.dataset.slice }));
     return { index, summary, proof, gpu, pixels: { hash: sha256(pixels.png), width: pixels.width, height: pixels.height, slice: pixels.slice }, errors, processLog };
-  } finally { await desktop.close(); await fs.rm(profile, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(profile, { recursive: true, force: true }); }
 }
 
 (async () => {

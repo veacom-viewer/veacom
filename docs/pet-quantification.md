@@ -88,11 +88,11 @@ The viewer outlines thresholded uptake inside the sphere. When it contains disco
 
 ## PET follow-up screen
 
-`pet-follow-up` in `src/arrangements/builtin.ts` applies when a PET study opens while an earlier PET of the same patient is loaded:
+`pet-follow-up` is available from Layout and from the menu beside Fusion when an earlier PET of the same patient and tracer is loaded.
 
 - This study's PET and the prior's sit side by side, each over its MIP, inverted grey at SUV 0–10 when both have SUVbw calibration.
 - The four panes keep one SUV scale (`scale: 'shared'`), as EANM 2025 asks for response assessment (section 14): windowing one PET gives the other the same SUV range, converted through each study's own values per SUV, and inverting it inverts both. The notice says so.
-- It is listed before the PET/CT screen, so a study without a loaded prior still opens as PET/CT.
+- Routine PET/CT opens in one fused pane even when a prior is loaded. A follow-up layout the reader explicitly kept opens automatically when it matches.
 - The `prior` role is found among every series in the session (`MatchContext.session`), not only the study that opened.
 
 The two studies lie in their own frames of reference, so the screen aligns the prior to this study by their CTs ([alignment](arrangements.md#alignment-of-frames-of-reference)). Its note says so: "Prior aligned to this study by CT: moved 24.0 mm, turned 0.0°" on the synthetic follow-up. The prior's panes then go to where this study's PET is, and page and follow the crosshair with it through the alignment. Measurements still read each study's own voxels. If the alignment fails, the reader brings both to the same level and presses the link button, which anchors them there (`linkHere`), and they page together slice for slice from those anchors, scaled by slice spacing.
@@ -134,7 +134,7 @@ The copy waits while the PET is loading. If the clipboard refuses the text, the 
 ## Known limits
 
 - Roles, thresholds and the Deauville helper are offered on spheres drawn on the PET itself. A sphere on a fused CT reports the PET's values, but takes no role.
-- The synthetic follow-up has no noise, so every value is known. Nothing here has been tried with real PET data.
+- The synthetic follow-up has no noise, so every value is known. Nothing here has been tried with real PET data. [PET validation](pet-validation.md) is the protocol, and the tool, for checking these numbers against the vendor workstation on real studies.
 
 ## Checks
 

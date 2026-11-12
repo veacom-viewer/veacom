@@ -5,6 +5,7 @@ const os = require('node:os');
 const assert = require('node:assert/strict');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 async function main() {
   const repo = path.resolve(__dirname, '..');
@@ -138,6 +139,6 @@ async function main() {
     await page.screenshot({path:path.join(output,'secured-viewer.png')});
     await fs.writeFile(path.join(output,'results.json'),JSON.stringify({passed:true,checks,errors},null,2));
   }catch(error){await page?.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});await fs.writeFile(path.join(output,'results.json'),JSON.stringify({passed:false,error:error.stack,checks,errors},null,2));throw error;}
-  finally{await desktop.close();await fs.rm(temporary,{recursive:true,force:true});}
+  finally{await closeDesktop(desktop);await fs.rm(temporary,{recursive:true,force:true});}
 }
 main().catch(error=>{console.error(error.stack);process.exitCode=1;});

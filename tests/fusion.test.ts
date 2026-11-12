@@ -10,7 +10,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   id: 's', uid: 'u', studyUid: 'study', patientId: 'P', patientName: 'Synthetic', studyDate: '', description: '', modality: 'CT',
   seriesNumber: 1, dimensions: [4, 4, 100], spacing: [1, 1, 2.5], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2', ...overrides,
-} as Series);
+});
 
 describe('MR over MR', () => {
   const mr = (id: string, description: string, extra: Partial<Series> = {}) => series({ id, description, modality: 'MR', valueUnit: '', windowCenter: 1000, windowWidth: 2000, ...extra });

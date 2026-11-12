@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, describe, it } from 'node:test';
+import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
 import { roiStatistics } from '../src/imaging/annotations';
 import type { ClinicalVolumeDescriptor, ClinicalWorkerRequest, ClinicalWorkerResult } from '../src/domain/clinical.worker';
@@ -149,6 +149,9 @@ describe('contrast phase and MR acquisition metadata', () => {
     assert.ok(result.repeat.basis.includes('Assumed'));
     const datetime = repeatedStudy().map(series => ({ ...series, acquisitionDateTime: `20261103${series.acquisitionTime}`, acquisitionTime: undefined }));
     assert.equal(inferStudySequences(datetime).repeat.role, 't1c');
+    // A DICOM TM may stop at the minutes (HHMM).
+    const minutes = repeatedStudy().map(series => ({ ...series, acquisitionTime: series.acquisitionTime?.slice(0, 4) }));
+    assert.equal(inferStudySequences(minutes).repeat.role, 't1c');
   });
   it('rejects a motion repeat, same-time reformats, and a later non-T1 acquisition', () => {
     assert.equal(inferStudySequences(repeatedStudy().filter(s => s.id !== 'coronal')).repeat.role, 't1');
@@ -462,6 +465,12 @@ describe('background measurement protocol', () => {
       assertFields(await request({ type: 'commit', id: 12, seriesId: 'one' }), { type: 'committed' });
       const invalidPreview = await request({ type: 'begin', id: 13, volumes: [{ ...preview, sourceFrameIndex: 2 }] });
       assertFields(invalidPreview, { type: 'error', message: 'Invalid source frame index.' });
+      // Descriptors as a faulty sender could post them, each with a byte count its shape would otherwise match.
+      const shaped = (dimensions: number[]) => ({ ...descriptor(9), series: { ...input.series, dimensions: dimensions as unknown as Vec3 } });
+      assertFields(await request({ type: 'begin', id: 14, volumes: [shaped([5, 5, 2, 1])] }), { type: 'error', message: 'Invalid image dimensions.' });
+      assertFields(await request({ type: 'begin', id: 15, volumes: [{ ...shaped([5, 5]), sourceFrameIndex: 0, byteLength: 100 }] }), { type: 'error', message: 'Invalid image dimensions.' });
+      const unknownType = { ...descriptor(10), pixelType: 'float16' } as unknown as ClinicalVolumeDescriptor;
+      assertFields(await request({ type: 'begin', id: 16, volumes: [unknownType] }), { type: 'error', message: 'Invalid pixel representation or image version.' });
     } finally {
       if (previousMessage) scope.onmessage = previousMessage; else delete scope.onmessage;
       if (previousPost) scope.postMessage = previousPost; else delete scope.postMessage;

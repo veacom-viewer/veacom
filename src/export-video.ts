@@ -66,7 +66,7 @@ export async function waitForSlice(viewport: HTMLElement, slice: number, signal?
       return;
     }
     const error = viewport.querySelector('[role="alert"]');
-    if (error) throw error.textContent?.trim() ? new Error(error.textContent.trim()) : videoError('video.renderFailed', 'The selected image could not be rendered.');
+    if (error) throw error.textContent.trim() ? new Error(error.textContent.trim()) : videoError('video.renderFailed', 'The selected image could not be rendered.');
   } while (performance.now() < deadline);
   throw videoError('video.sliceMissing', `The viewer did not present slice ${slice + 1}. No video was saved.`, { number: slice + 1 });
 }
@@ -115,7 +115,7 @@ async function captureViewportCanvas(viewport: HTMLElement, options: Pick<Viewpo
     }
   }
   const alert = viewport.querySelector('[role="alert"]');
-  if (alert) throw alert.textContent?.trim() ? new Error(alert.textContent.trim()) : videoError('video.imageFailed', 'The image could not be rendered.');
+  if (alert) throw alert.textContent.trim() ? new Error(alert.textContent.trim()) : videoError('video.imageFailed', 'The image could not be rendered.');
   const sourceBounds = source.getBoundingClientRect();
   const requested = options.outputSize;
   if (requested && (!Number.isInteger(requested.width) || !Number.isInteger(requested.height)
@@ -167,9 +167,9 @@ export async function captureViewportPng(viewport: HTMLElement, options: Pick<Vi
   return blob.arrayBuffer();
 }
 
-// What x264 at CRF 18 spent on a noisy synthetic CT: quality comes first in an exported study. The rate
-// is an upper limit, so smooth images stay much smaller. Frames are key frames every two seconds.
-const BITS_PER_PIXEL = 1.2;
+// Target bits per output pixel per frame. The paired desktop test measures encoded bytes and
+// decodes a CT frame to check it against the uncompressed export.
+const BITS_PER_PIXEL = 0.30;
 const MAX_BITRATE = 240e6;
 const MAX_QUEUED_FRAMES = 2;
 const MAX_QUEUED_WRITES = 8;
@@ -279,7 +279,7 @@ export async function exportViewportVideo(options: ViewportVideoOptions): Promis
       const bytes = (ArrayBuffer.isView(source) ? new Uint8Array(source.buffer, source.byteOffset, source.byteLength) : new Uint8Array(source)).slice();
       // The file holds one configuration, so a changed one would corrupt every frame after it.
       if (configuration && !sameBytes(configuration, bytes)) { fail(encodingFailed()); return; }
-      if (!configuration) { configuration = bytes; description = bytes.buffer as ArrayBuffer; }
+      if (!configuration) { configuration = bytes; description = bytes.buffer; }
     }
     queuedWrites++;
     writes = writes.then(async () => {
@@ -295,16 +295,19 @@ export async function exportViewportVideo(options: ViewportVideoOptions): Promis
     await document.fonts.ready;
     onProgress?.(0, total);
     let pixels: Uint8Array | null = null;
+    const captureOptions = { ...options };
     for (let step = 0; step < total; step++) {
       const slice = options.descending ? end - step : start + step;
       checkAbort(signal);
       await setSlice(slice);
       await waitForSlice(viewport, slice, signal, options.seriesId);
-      const canvas = await captureViewportCanvas(viewport, options, { slice, seriesId: options.seriesId });
+      const canvas = await captureViewportCanvas(viewport, captureOptions, { slice, seriesId: options.seriesId });
       checkAbort(signal);
       const frameWidth = canvas.width + canvas.width % 2, frameHeight = canvas.height + canvas.height % 2;
       if (!encoder) {
         width = frameWidth; height = frameHeight;
+        // Keep one MP4 size when the viewer shows or dismisses a notice during the export.
+        captureOptions.outputSize ??= { width: canvas.width, height: canvas.height };
         encoder = await openEncoder(width, height, fps, output, () => fail(encodingFailed()));
         pixels = new Uint8Array(width * height * 3 / 2);
       } else if (frameWidth !== width || frameHeight !== height) throw videoError('video.sizeChanged', 'Keep the viewport size unchanged while exporting.');

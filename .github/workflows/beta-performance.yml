@@ -1,0 +1,127 @@
+name: Beta performance comparison
+
+# Beta 2 against the candidate on Linux and macOS, about eleven minutes (tools/README.md, "Beta performance
+# comparison"). It runs nightly on main, by hand, and on a pull request with the `performance` label: when the label
+# is added and on each later push while it stays, so ordinary pull requests do not wait for it.
+on:
+  schedule:
+    - cron: '47 2 * * *'
+  workflow_dispatch:
+  # No path filter: GitHub would drop the label event of a pull request outside the paths, and the label would do
+  # nothing. The job condition below skips every pull request without the label.
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    # A label added to the pull request starts it only when it is the performance label; other events need the label on.
+    if: >
+      github.event_name != 'pull_request' ||
+      (github.event.action == 'labeled' && github.event.label.name == 'performance') ||
+      (github.event.action != 'labeled' && contains(github.event.pull_request.labels.*.name, 'performance'))
+    # On the job, not the workflow: a run whose job is skipped (another label, a push without this one) then cancels
+    # nothing. One group per runner, so the Linux and macOS legs do not cancel each other.
+    concurrency:
+      group: beta-performance-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}
+      cancel-in-progress: true
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> native/target
+      - name: Prepare Linux desktop
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb ffmpeg libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libnotify4 libsecret-1-0 libgl1-mesa-dri libegl1 libegl-mesa0
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+          echo "DISPLAY=:99" >> "$GITHUB_ENV"
+          echo "VEACOM_SOFTWARE_GL=llvmpipe" >> "$GITHUB_ENV"
+      - name: Prepare Mac video verification
+        if: runner.os == 'macOS'
+        run: command -v ffmpeg >/dev/null || brew install ffmpeg
+      # Beta 2 never changes, so its build (the page in dist/ and the release engine) is kept between runs: without it
+      # each run compiled beta 2's engine and all its crates from nothing, in a target folder no cache covered.
+      - name: Beta 2's source
+        id: beta2
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNNER_TEMP/beta2" v0.1.0-beta.2
+          echo "sha=$(git rev-parse 'v0.1.0-beta.2^{commit}')" >> "$GITHUB_OUTPUT"
+      - name: Beta 2's build from the cache
+        id: beta2-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/beta2/dist
+            ${{ runner.temp }}/beta2/native/target/release/veacom-core
+          key: beta2-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.beta2.outputs.sha }}
+      - name: Build beta 2 and the candidate
+        env:
+          BETA2_CACHED: ${{ steps.beta2-cache.outputs.cache-hit }}
+        run: |
+          set -euo pipefail
+          release="$RUNNER_TEMP/beta2"
+          roots=("$release" "$GITHUB_WORKSPACE")
+          if [ "$BETA2_CACHED" = true ]; then roots=("$GITHUB_WORKSPACE"); fi
+          for root in "${roots[@]}"; do
+            (cd "$root" && pnpm install --frozen-lockfile && pnpm run build:web)
+            (cd "$root" && cargo build --release --locked --manifest-path native/Cargo.toml)
+          done
+          if ! git diff --quiet v0.1.0-beta.2 HEAD -- native/src && cmp -s "$release/native/target/release/veacom-core" "$GITHUB_WORKSPACE/native/target/release/veacom-core"; then
+            echo "Changed engine sources produced identical benchmark executables"
+            exit 1
+          fi
+          pnpm run setup:runtime
+          echo "BASE_APP=$release" >> "$GITHUB_ENV"
+          echo "HEAD_APP=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+      - name: Keep beta 2's build
+        if: steps.beta2-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/beta2/dist
+            ${{ runner.temp }}/beta2/native/target/release/veacom-core
+          key: beta2-build-${{ runner.os }}-${{ runner.arch }}-${{ steps.beta2.outputs.sha }}
+      - name: Check source changes during and after import
+        run: |
+          cargo test --locked --release --manifest-path native/Cargo.toml source_file::tests
+          cargo test --locked --release --manifest-path native/Cargo.toml changed_source_never_supplies_pixels_tags_or_exports
+      - name: Compare cold and warm imports and count study reads
+        run: >
+          node tools/check-open-speed.cjs "--output=$RUNNER_TEMP/open-speed"
+          "--base=$BASE_APP/native/target/release/veacom-core" --base-label=beta.2 --head-label=candidate
+          --fixture=${{ runner.os == 'macOS' && 'ct-1000-apfs' || 'ct-1000-local' }}
+          --rounds=10 --cold-rounds=5 --threshold=12 --min-ms=20 "--summary=$GITHUB_STEP_SUMMARY"
+      - name: Compare seven paired desktop runs
+        if: ${{ !cancelled() && env.BASE_APP != '' }}
+        run: node tools/check-beta-performance.cjs "$RUNNER_TEMP/beta-desktop" 7
+      - name: Keep raw measurements
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: beta-performance-${{ matrix.os }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/open-speed/open-speed.json
+            ${{ runner.temp }}/open-speed/open-speed.md
+            ${{ runner.temp }}/beta-desktop/desktop.json
+            ${{ runner.temp }}/beta-desktop/desktop.md
+          retention-days: 30

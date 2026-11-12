@@ -307,7 +307,10 @@ pub struct Server {
     workers: Vec<thread::JoinHandle<()>>,
 }
 impl Server {
-    #[allow(clippy::disallowed_methods)] // All long-lived engine workers are owned here.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "all long-lived engine workers are owned here"
+    )]
     pub fn start(
         input: impl Read + Send + 'static,
         output: impl Write + Send + 'static,

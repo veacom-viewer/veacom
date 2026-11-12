@@ -8,6 +8,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 const repo = path.resolve(__dirname, '..');
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
@@ -35,7 +36,7 @@ async function run(index) {
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 120_000, polling: 'raf' });
     const fullVolumeMs = performance.now() - launched;
     return { run: index, firstImageMs: Math.round(firstImageMs), fullVolumeMs: Math.round(fullVolumeMs), errors };
-  } finally { await desktop.close(); await fs.rm(profile, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(profile, { recursive: true, force: true }); }
 }
 
 (async () => {

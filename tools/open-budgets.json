@@ -1,0 +1,43 @@
+{
+  "about": "Exact work for opening each synthetic study with the engine (tools/check-open-speed.cjs): regular files opened and bytes read under the study folder, per step. More than the budget fails; less passes and asks for the budget to come down. Record with VEACOM_RECORD_BUDGETS=1.",
+  "studies": {
+    "ct-1000-mac": {
+      "listing": { "filesOpened": 1001, "bytesRead": 8192132 },
+      "firstFrame": { "filesOpened": 1, "bytesRead": 525208 },
+      "volume": { "filesOpened": 1000, "bytesRead": 525215570 }
+    },
+    "ct-1000-apfs": {
+      "listing": { "filesOpened": 2006, "bytesRead": 8200000 },
+      "firstFrame": { "filesOpened": 2, "bytesRead": 525208 },
+      "volume": { "filesOpened": 2000, "bytesRead": 525215570 }
+    },
+    "ct-1000-local": {
+      "listing": {
+        "filesOpened": 1001,
+        "bytesRead": 8192132
+      },
+      "firstFrame": {
+        "filesOpened": 1,
+        "bytesRead": 525208
+      },
+      "volume": {
+        "filesOpened": 1000,
+        "bytesRead": 525215570
+      }
+    },
+    "ct-1000": {
+      "listing": {
+        "filesOpened": 1001,
+        "bytesRead": 8192132
+      },
+      "firstFrame": {
+        "filesOpened": 1,
+        "bytesRead": 525208
+      },
+      "volume": {
+        "filesOpened": 1000,
+        "bytesRead": 525215570
+      }
+    }
+  }
+}

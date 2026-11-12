@@ -1,6 +1,6 @@
 # VEAcom native imaging core
 
-The installer includes the codec notices in `THIRD_PARTY_NOTICES.txt` and Rust dependency notices in `RUST_LICENSES.txt`. After changing the lockfile, regenerate the Rust notices from the repository root with cargo-about 0.9.3:
+The installer includes the codec notices in `THIRD_PARTY_NOTICES.txt` and Rust dependency notices in `RUST_LICENSES.txt`. When desktop dependencies change in the workspace `Cargo.lock`, regenerate the Rust notices from the repository root with cargo-about 0.9.3:
 
 ```sh
 cargo about generate --locked --manifest-path native/Cargo.toml --config native/about.toml native/licenses.hbs --output-file native/RUST_LICENSES.txt

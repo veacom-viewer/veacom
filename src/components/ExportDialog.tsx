@@ -2,12 +2,14 @@ import { patientKey, studyKey } from '../domain/patient';
 import { useEffect, useRef, useState } from 'react';
 import { Download, Film, FolderOpen, HardDrive, X } from './icons';
 import type { ExportEstimate, Series } from '../model';
-import { assertSeriesEngine } from '../api';
+import { assertSeriesEngine, bridgeCan } from '../api';
 import { exportViewportImages, exportViewportVideo } from '../export-video';
 import { errorMessage, type Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
+import { MAX_EXPORT_SERIES } from '../../electron/export-limits.mjs';
+import { pickState, togglePicked } from '../ui/exportSelection';
 import { phaseLabel } from '../ui/overlayCorners';
 import { exportedImages } from '../ui/seriesNames';
 import './ExportDialog.css';
@@ -98,6 +100,12 @@ function Choice<T extends string>({ label, value, options, onChange, name, actio
       <input type="radio" name={name} value={key} data-action={action} checked={value === key} disabled={disabled} onChange={() => onChange(key)} /><span>{text}</span></label>)}</div></div>;
 }
 
+/** A box over several series: ticked when all of them are picked, a dash when only some are (src/ui/exportSelection.ts). */
+function PickAll({ ids, picked, action, onToggle }: { ids: string[]; picked: ReadonlySet<string>; action: string; onToggle: (ids: string[]) => void }) {
+  const state = pickState(ids, picked);
+  return <input type="checkbox" data-action={action} checked={state.all} ref={box => { if (box) box.indeterminate = state.partial; }} onChange={() => onToggle(ids)} />;
+}
+
 export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture }: ExportDialogProps) {
   const { locale, t } = useTranslation();
   const active = series.find(item => item.id === activeSeriesId);
@@ -109,6 +117,8 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const [openAfter, setOpenAfter] = useState(() => remembered(OPEN_AFTER) === '1');
   const [anonymity, setAnonymity] = useState<Anonymity>('none');
   const [target, setTarget] = useState<Target>('folder');
+  const targets = ([['cd', 'discBurning'], ['usb', 'usbExport'], ['folder', null]] as const)
+    .filter(([, feature]) => !feature || bridgeCan(feature)).map(([key]) => key);
   const [neuro, setNeuro] = useState(false);
   // Off each time the window opens, as in VEAcom 1.x: a plain DICOM folder unless asked for.
   const [zip, setZip] = useState(false);
@@ -151,10 +161,12 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
   const order = { descending: backwards !== reverse, numberOf: (slice: number) => backwards ? count - slice : slice + 1, prefix };
   const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && start <= end && end <= (video?.frameCount ?? 0));
+  // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs), a disc's as well.
+  const tooMany = !captures && ids.length > MAX_EXPORT_SERIES;
   const ready = Boolean(window.veacom) && (shownScope === 'layout' || (captures ? rangeValid && (isImages || (fps >= 1 && fps <= 120)) : ids.length > 0))
-    && !(mode === 'dicom' && shownScope === 'slice' && currentFrame === undefined);
+    && !(mode === 'dicom' && shownScope === 'slice' && currentFrame === undefined) && !tooMany;
   // "1 seri, 24 dosya: 12,4 MB → yaklaşık 6,1 MB, 2 sn": a few of the files compressed for real, a moment after a change.
-  const zipping = mode === 'dicom' && zip && ids.length > 0;
+  const zipping = mode === 'dicom' && zip && ids.length > 0 && !tooMany;
   const estimateOptions = {
     anonymize: anonymity !== 'none', full: anonymity === 'full', smallest,
     frame: shownScope === 'slice' ? currentFrame : undefined, engineGeneration: series.find(item => item.id === ids[0])?.engineGeneration,
@@ -174,7 +186,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
     what: shownScope === 'slice' ? t('export.estimateOne') : t('export.estimateFiles', { series: ids.length, files: result.files }),
     before: sizeText(result.before, locale), after: sizeText(result.after, locale), time: timeText(result.seconds, t),
   });
-  const toggle = (id: string) => setPicked(current => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  const toggle = (toggled: string[]) => setPicked(current => togglePicked(current, toggled));
   const chooseFolder = async () => { const chosen = await window.veacom?.chooseExportFolder?.(); if (chosen) setFolder(chosen); };
 
   const submit = async () => {
@@ -213,6 +225,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
         if (!path) { usage.milestone(task, 'cancel'); onClose(); return; }
         message = t('export.videoSaved', { path }); reveal = path;
       } else if (isMedia && target === 'cd') {
+        if (!bridge.exportIso) throw new Error(t('export.desktopRequired'));
         const exported = await bridge.exportIso(ids, { anonymize: anonymity !== 'none', full: anonymity === 'full', decompress: neuro, label, openBurner: isWindows, engineGeneration });
         if (!exported) { usage.milestone(task, 'cancel'); onClose(); return; }
         message = isWindows ? t('export.isoSavedBurner', { path: exported.path }) : t('export.isoSaved', { path: exported.path });
@@ -262,17 +275,30 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
             </div>
             {scopes.length > 1 && <Choice name="scope" action="export-scope" label={t('export.scope')} value={shownScope} onChange={setScope}
               options={scopes.map(key => [key, scopeName(key), mode === 'dicom' && key === 'slice' && currentFrame === undefined])} />}
+            {/* A box on the list and one on each study pick all of their series, or none when all were picked. */}
             {shownScope === 'picked' && <div className="export-series-list" role="group" aria-label={t('export.seriesHeading')}>
-              {groups.map(([key, items]) => <section className="export-study" key={key}>
-                <h4>{items[0].patientName.replaceAll('^', ' ').trim() || items[0].patientId || t('series.unnamedPatient')}<span>{studyDate(items[0].studyDate) || t('export.undatedStudy')}</span></h4>
-                {items.map(item => <label className="export-series-row" key={item.id}>
-                  <input type="checkbox" data-action="export-series" checked={picked.has(item.id)} onChange={() => toggle(item.id)} />
-                  <span><strong>{[item.description || t('export.seriesNumber', { number: item.seriesNumber }), item.phase && phaseLabel(item.phase)].filter(Boolean).join(' · ')}</strong><small>{exportedImages(item)}</small></span>
-                </label>)}
-              </section>)}
+              <label className="export-pick-row export-pick-all">
+                <PickAll action="export-select-all" ids={series.map(item => item.id)} picked={picked} onToggle={toggle} />
+                <span><strong>{t('export.selectAll')}</strong><small>{t('export.seriesPicked', { picked: ids.length, total: series.length })}</small></span>
+              </label>
+              {groups.map(([key, items]) => {
+                const studyIds = items.map(item => item.id);
+                return <section className="export-study" key={key}>
+                  <h4><label className="export-pick-row">
+                    <PickAll action="export-select-study" ids={studyIds} picked={picked} onToggle={toggle} />
+                    <span><strong>{items[0].patientName.replaceAll('^', ' ').trim() || items[0].patientId || t('series.unnamedPatient')}</strong>
+                      <small>{studyDate(items[0].studyDate) || t('export.undatedStudy')} · {pickState(studyIds, picked).count} / {items.length}</small></span>
+                  </label></h4>
+                  {items.map(item => <label className="export-series-row" key={item.id}>
+                    <input type="checkbox" data-action="export-series" checked={picked.has(item.id)} onChange={() => toggle([item.id])} />
+                    <span><strong>{[item.description || t('export.seriesNumber', { number: item.seriesNumber }), item.phase && phaseLabel(item.phase)].filter(Boolean).join(' · ')}</strong><small>{exportedImages(item)}</small></span>
+                  </label>)}
+                </section>;
+              })}
             </div>}
             {!captures && shownScope !== 'all' && series.some(item => ids.includes(item.id) && item.phase?.gate)
               && <p className="export-note" data-testid="export-gates">{t('export.gatesNote')}</p>}
+            {tooMany && <p className="export-note" data-testid="export-too-many">{t('export.tooManySeries', { max: MAX_EXPORT_SERIES })}</p>}
             {captures && <>
               {isImages && <Choice name="picture-format" action="export-picture-format" label={t('export.format')} value={pictureFormat} onChange={setPictureFormat} options={[['png', 'PNG'], ['jpeg', 'JPEG']]} />}
               {shownScope !== 'layout' && <Choice name="annotations" action="export-annotations" label={t('export.annotations')} value={annotations} onChange={setAnnotations}
@@ -300,21 +326,22 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
             </>}
             {mode === 'dicom' && anonymityRow}
             {isMedia && <>
-              <Choice name="target" action="export-target" label={t('export.target')} value={target} onChange={setTarget}
-                options={[['cd', t('export.targetCd')], ['usb', t('export.targetUsb')], ['folder', t('export.targetFolder')]]} />
+              {/* Where the bridge cannot burn a disc or write a stick's root (the browser), a folder is the only target. */}
+              {targets.length > 1 && <Choice name="target" action="export-target" label={t('export.target')} value={target} onChange={setTarget}
+                options={targets.map(key => [key, t(key === 'cd' ? 'export.targetCd' : key === 'usb' ? 'export.targetUsb' : 'export.targetFolder')])} />}
               {target === 'cd' && <div className="export-row"><span className="export-row-label">{t('export.discLabel')}</span><input data-action="export-disc-label" value={label} maxLength={32} onChange={event => setLabel(event.target.value)} /></div>}
               {target === 'usb' && <p className="export-note">{t('export.usbNote')}</p>}
               <label className="export-check"><input type="checkbox" data-action="export-neuro" checked={neuro} onChange={event => setNeuro(event.target.checked)} /><span>{t('export.neuro')}</span></label>
               {anonymityRow}
             </>}
             {anonymity !== 'none' && (mode === 'dicom' || isMedia) && <p className="export-note export-caution">{anonymity === 'full' ? t('export.anonFullNote') : t('export.anonymizeNote')}</p>}
-            {mode === 'dicom' && <div className="export-zip">
+            {mode === 'dicom' && bridgeCan('zipExport') && <div className="export-zip">
               <label className="export-check"><input type="checkbox" data-action="export-zip" checked={zip} onChange={event => { setZip(event.target.checked); if (!event.target.checked) setSmallest(false); }} /><span>{t('export.zip')}</span></label>
               <label className={`export-check export-sub${zip ? '' : ' is-disabled'}`}><input type="checkbox" data-action="export-smallest" checked={smallest} disabled={!zip} onChange={event => setSmallest(event.target.checked)} /><span>{t('export.smallest')}</span></label>
               {zip && <p className="export-estimate" data-testid="export-estimate" aria-live="polite">{estimateText || '…'}</p>}
             </div>}
-            {shownScope !== 'layout' && !(isMedia && target !== 'folder') && folderRow}
-            {shownScope !== 'layout' && <label className="export-check"><input type="checkbox" data-action="export-open-after" checked={openAfter} onChange={event => { setOpenAfter(event.target.checked); remember(OPEN_AFTER, event.target.checked ? '1' : '0'); }} /><span>{t('export.openAfter')}</span></label>}
+            {shownScope !== 'layout' && !(isMedia && target !== 'folder') && bridgeCan('exportFolder') && folderRow}
+            {shownScope !== 'layout' && bridgeCan('exportFolder') && <label className="export-check"><input type="checkbox" data-action="export-open-after" checked={openAfter} onChange={event => { setOpenAfter(event.target.checked); remember(OPEN_AFTER, event.target.checked ? '1' : '0'); }} /><span>{t('export.openAfter')}</span></label>}
           </fieldset>
           {!window.veacom && <p className="export-error">{t('export.desktopRequired')}</p>}
           {error && <p className="export-error" role="alert">{error}</p>}

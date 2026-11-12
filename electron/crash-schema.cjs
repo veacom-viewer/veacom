@@ -3,11 +3,15 @@
 const PROCESSES = ['main', 'renderer', 'gpu', 'utility', 'helper', 'engine'];
 const REASONS = ['abnormal-exit', 'killed', 'crashed', 'oom', 'launch-failed', 'integrity-failure', 'memory-eviction',
   'unexpected-exit', 'signal', 'pipe-closed', 'pipe-error', 'protocol-error', 'startup-timeout',
-  'uncaught-exception', 'unhandled-rejection', 'unclean-exit', 'unknown'];
+  'uncaught-exception', 'unhandled-rejection', 'unclean-exit', 'startup-failed', 'render-failed', 'unresponsive', 'unknown'];
+const STAGES = ['startup', 'engine-start', 'window-create', 'running', 'shutdown'];
+const ENGINE_WORK = ['import', 'pixels', 'export', 'other', 'multiple', 'idle'];
+const JS_EXCEPTIONS = ['type', 'range', 'reference', 'syntax', 'unknown'];
 const SIGNALS = new Set(['SIGABRT', 'SIGALRM', 'SIGBUS', 'SIGFPE', 'SIGHUP', 'SIGILL', 'SIGINT', 'SIGIO', 'SIGKILL',
   'SIGPIPE', 'SIGPROF', 'SIGQUIT', 'SIGSEGV', 'SIGSYS', 'SIGTERM', 'SIGTRAP', 'SIGUSR1', 'SIGUSR2', 'SIGVTALRM',
   'SIGXCPU', 'SIGXFSZ', 'SIGBREAK']);
 const FIELDS = ['id', 'at', 'version', 'platform', 'arch', 'environment', 'process', 'reason', 'code', 'signal', 'recovery'];
+const ALLOWED_FIELDS = new Set([...FIELDS, 'build', 'stage', 'work', 'exception']);
 const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)\.\d{1,4})?$/;
 function buildInfo(version, platform, arch, environment, revision) {
   return { version: typeof version === 'string' && VERSION.test(version) ? version : 'unknown',
@@ -18,9 +22,17 @@ function buildInfo(version, platform, arch, environment, revision) {
 }
 function isCode(code) { return Number.isInteger(code) && code >= -2147483648 && code <= 4294967295; }
 function validReport(r, pending = false) {
-  return r !== null && typeof r === 'object' && !Array.isArray(r) && Object.keys(r).length === FIELDS.length + Number(Object.hasOwn(r, 'build'))
+  return r !== null && typeof r === 'object' && !Array.isArray(r) && Object.keys(r).every(key => ALLOWED_FIELDS.has(key))
     && FIELDS.every(key => Object.hasOwn(r, key))
     && (!Object.hasOwn(r, 'build') || r.build === 'unknown' || (typeof r.build === 'string' && /^[0-9a-f]{40}$/.test(r.build)))
+    && (!Object.hasOwn(r, 'stage') || STAGES.includes(r.stage))
+    && (!Object.hasOwn(r, 'work') || (r.process === 'engine' && ENGINE_WORK.includes(r.work)))
+    && (!Object.hasOwn(r, 'exception') || (JS_EXCEPTIONS.includes(r.exception)
+      && ((r.process === 'renderer' && r.reason === 'render-failed')
+        || (r.process === 'main' && r.reason === 'startup-failed')
+        || (['main', 'renderer'].includes(r.process) && ['uncaught-exception', 'unhandled-rejection'].includes(r.reason)))))
+    && (r.reason !== 'startup-failed' || r.process === 'main')
+    && (!['render-failed', 'unresponsive'].includes(r.reason) || r.process === 'renderer')
     && typeof r.id === 'string' && /^[0-9a-f]{32}$/.test(r.id) && !/^0+$/.test(r.id)
     && Number.isSafeInteger(r.at) && r.at >= 1483228800000 && r.at < 4102444800000
     && typeof r.version === 'string' && (r.version === 'unknown' || VERSION.test(r.version))
@@ -29,4 +41,4 @@ function validReport(r, pending = false) {
     && (r.code === null || isCode(r.code)) && (r.signal === null || SIGNALS.has(r.signal))
     && (['unknown', 'restarted', 'failed'].includes(r.recovery) || (pending && r.recovery === 'pending'));
 }
-module.exports = { REASONS, SIGNALS, buildInfo, isCode, validReport };
+module.exports = { REASONS, SIGNALS, STAGES, ENGINE_WORK, JS_EXCEPTIONS, buildInfo, isCode, validReport };

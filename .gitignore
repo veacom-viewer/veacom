@@ -4,6 +4,7 @@ __pycache__/
 *.pyc
 build/
 dist/
+dist-web/
 packaging/version_info.txt
 
 # Local tool settings
@@ -11,6 +12,7 @@ packaging/version_info.txt
 .vscode/
 .idea/
 .context/
+/.wrangler/
 /reports/
 /research_notes/
 
@@ -48,3 +50,6 @@ evidence/
 electron/telemetry-endpoint.json
 
 electron/telemetry-endpoint.json.tmp
+
+# Browser benchmark results (tools/browser-bench/README.md)
+/tools/browser-bench/results/

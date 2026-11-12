@@ -85,11 +85,18 @@ function search(alignments: readonly Alignment[], start: string, end: string): M
 export const alignedTransform = (alignments: readonly Alignment[], from: Series, to: Series): Matrix | null =>
   shareFrame(from, to) ? null : transformBetween(alignments, from, to);
 
-/** The alignment that places `series` against another frame, the one it moves first. */
-export const alignmentOf = (alignments: readonly Alignment[], series: Series): Alignment | null => {
+/** An overlay can be adjusted only through the registration between its frame and the pane's.
+ * Without a distinct overlay frame, show controls only when this pane has one unambiguous registration. */
+export function alignmentOf(alignments: readonly Alignment[], series: Series, overlay?: Series): Alignment | null {
   const frame = frameOf(series);
-  return frame ? alignments.find(item => item.moving === frame) ?? alignments.find(item => item.fixed === frame) ?? null : null;
-};
+  if (!frame) return null;
+  if (overlay && !shareFrame(series, overlay)) {
+    const other = frameOf(overlay);
+    return other ? alignments.find(item => samePair(item, { fixed: frame, moving: other })) ?? null : null;
+  }
+  const matches = alignments.filter(item => item.moving === frame || item.fixed === frame);
+  return matches.length === 1 ? matches[0] : null;
+}
 
 const mapped = new WeakMap<Matrix, WeakMap<Vec3, Vec3>>();
 /** `point` in the other frame; the same array for the same point and matrix, so a pane is not redrawn for nothing. */

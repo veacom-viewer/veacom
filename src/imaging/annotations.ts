@@ -154,7 +154,7 @@ export function roiPlane(annotation: Annotation, series: Series): RoiPlane | nul
     if (!vertical) return null;
     v = vertical;
     // A plane ROI cannot silently become a projection of non-coplanar points.
-    if (points.some(point => Math.abs(dot(subtract(point, origin), normal!)) > 1e-3)) return null;
+    if (points.some(point => Math.abs(dot(subtract(point, origin), normal)) > 1e-3)) return null;
     polygon = points.map(point => [dot(subtract(point, origin), u), dot(subtract(point, origin), v)]);
     if (boxed) {
       if (points.length !== 4) return null;

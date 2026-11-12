@@ -21,6 +21,11 @@ receivers:
           authenticator: bearertokenauth
 
 processors:
+  # Crash traces must come through the schema-validated crash intake and its private storage service.
+  filter/reserve-crashes:
+    error_mode: propagate
+    trace_conditions:
+      - 'resource.attributes["service.name"] == "veacom-crash"'
   memory_limiter:
     check_interval: 1s
     limit_percentage: 80
@@ -74,7 +79,7 @@ service:
   pipelines:
     traces:
       receivers: [otlp]
-      processors: [memory_limiter, transform/allowlist, batch]
+      processors: [memory_limiter, filter/reserve-crashes, transform/allowlist, batch]
       exporters: [clickhouse, googlecloudpubsub]
     metrics:
       receivers: [otlp]

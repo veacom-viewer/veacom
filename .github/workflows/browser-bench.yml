@@ -1,0 +1,187 @@
+name: Browser benchmark
+
+# Times VEAcom's browser build against the pinned browser viewers (tools/browser-bench/README.md) on a GitHub-hosted Linux runner, so
+# no developer's computer runs it. Runners differ from run to run (the CPU and its load are a lottery), so viewers are
+# compared only within one run: they alternate there, and the same VEAcom build runs twice (A/A) to show that run's own
+# noise. Each workflow run times everything three times at once, on three runners, and pools them, so one slow or busy
+# machine cannot decide the result; a table per runner shows how far they agree. The runners have no GPU: every viewer
+# draws with Mesa's software rasterizer, the same for all of them.
+on:
+  workflow_dispatch:
+    inputs:
+      viewers:
+        description: Viewers to time beside VEAcom, comma-separated (tools/browser-bench/viewers.json; plexusmd is the live site)
+        default: veacom,ohif,volview,dwv,niivue,bluelight
+        type: string
+      studies:
+        description: Bench studies (ct-300, ct-1000)
+        default: ct-300
+        type: string
+      rounds:
+        description: Rounds counted, after one warm-up round
+        default: '5'
+        type: string
+      scenarios:
+        description: What to time (open, paging, wl)
+        default: open,paging,wl
+        type: string
+      base:
+        description: A branch, tag or commit whose browser build runs as veacom-base, for an A/B of two VEAcom versions
+        default: ''
+        type: string
+  schedule:
+    # Nightly, on main.
+    - cron: '41 2 * * *'
+  pull_request:
+    paths:
+      - 'tools/browser-bench/**'
+      - '.github/workflows/browser-bench.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: browser-bench-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  bench:
+    name: bench (runner ${{ matrix.runner }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [1, 2, 3]
+    env:
+      VEACOM_SOFTWARE_GL: llvmpipe # tools/browser-bench/trial.mjs: lets Chromium use Mesa's llvmpipe for WebGL
+      # A pull request runs a short smoke check of the harness; the nightly and manual runs time all the pinned viewers.
+      # The live PlexusMD site is left out unless a manual run names it.
+      VIEWERS: ${{ inputs.viewers || (github.event_name == 'pull_request' && 'veacom,ohif' || 'veacom,ohif,volview,dwv,niivue,bluelight') }}
+      STUDIES: ${{ inputs.studies || 'ct-300' }}
+      ROUNDS: ${{ inputs.rounds || (github.event_name == 'pull_request' && '1' || '5') }}
+      WARMUP: ${{ github.event_name == 'pull_request' && '0' || '1' }}
+      SCENARIOS: ${{ inputs.scenarios || 'open,paging,wl' }}
+      AA: ${{ github.event_name != 'pull_request' }}
+      BASE: ${{ inputs.base }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Rust toolchains for WebAssembly (web/build.ps1 pins both)
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --target wasm32-unknown-unknown
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src --target wasm32-unknown-unknown
+          # Dated to the nightly's own day, so the cached standard library build below stays current (see ci.yml).
+          find "$(rustc +nightly-2026-11-01 --print sysroot)/lib/rustlib/src" -exec touch -h -d '2026-11-01 00:00:00 UTC' {} +
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: . -> web/engine/target
+          shared-key: browser-bench
+      - name: Threaded engine build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: web/engine/target-threads
+          key: bench-wasm-threads-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'web/build.ps1', 'web/engine/Cargo.toml', 'native/Cargo.toml') }}
+          restore-keys: bench-wasm-threads-${{ runner.os }}-
+      - run: cargo +1.99.1 install wasm-bindgen-cli --version 0.2.130 --locked
+      - name: Desktop libraries and a virtual display
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends xvfb libgtk-3-0t64 libnss3 libgbm1 libasound2t64 libxss1 libnotify4 libsecret-1-0 \
+            libgl1-mesa-dri libegl1 libegl-mesa0
+          # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox uses. Allow them on this
+          # throwaway runner instead of turning the sandbox off.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+          {
+            echo 'DISPLAY=:99'
+            echo "RESULTS=$RUNNER_TEMP/bench-results"
+          } >> "$GITHUB_ENV"
+      - name: VEAcom's browser build
+        run: |
+          pwsh -NoProfile -File web/build.ps1
+          pnpm install --frozen-lockfile
+          pnpm run setup:runtime
+          pnpm run build:browser
+      - name: The browser build to compare with
+        if: env.BASE != ''
+        run: |
+          # A ref name, a tag or a commit: nothing that could be read as an option or a path.
+          [[ "$BASE" =~ ^[A-Za-z0-9._/-]+$ && "$BASE" != -* ]] || { echo "Not a ref: $BASE" >&2; exit 1; }
+          git fetch --no-tags --depth=1 origin "$BASE"
+          git worktree add --detach "$RUNNER_TEMP/base" FETCH_HEAD
+          cd "$RUNNER_TEMP/base"
+          pnpm install --frozen-lockfile
+          CARGO_TARGET_DIR="$RUNNER_TEMP/base-wasm" pwsh -NoProfile -File web/build.ps1
+          pnpm run build:browser
+          echo "BASE_DIST=$RUNNER_TEMP/base/dist-web" >> "$GITHUB_ENV"
+      - name: The pinned viewers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/veacom-bench/viewers
+          key: bench-viewers-${{ hashFiles('tools/browser-bench/viewers.json') }}
+      # Fetches what the cache lacks and checks every viewer against its pinned tree hash either way.
+      - run: node tools/browser-bench/bench.mjs fetch
+      - name: Time the viewers
+        run: |
+          args=(--viewers "$VIEWERS" --studies "$STUDIES" --rounds "$ROUNDS" --warmup "$WARMUP" --scenarios "$SCENARIOS" --out "$RESULTS")
+          if [ "$AA" = true ]; then args+=(--aa); fi
+          if [ -n "${BASE_DIST:-}" ]; then args+=(--base "$BASE_DIST"); fi
+          node tools/browser-bench/bench.mjs run "${args[@]}"
+      # This runner's own report, kept with its results; the report job pools all three. hashFiles() sees only the
+      # workspace, so the results folder in the runner's temp is checked here instead.
+      - name: This runner's report
+        if: ${{ !cancelled() }}
+        run: |
+          if [ ! -s "$RESULTS/results.jsonl" ]; then echo 'No trial finished.'; exit 0; fi
+          node tools/browser-bench/bench.mjs report "$RESULTS"
+      - name: Keep the results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-bench-${{ github.run_id }}-runner-${{ matrix.runner }}
+          path: ${{ runner.temp }}/bench-results
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # The three runners' trials pooled into one report, posted on the run's summary page.
+  report:
+    needs: bench
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: browser-bench-${{ github.run_id }}-runner-*
+          path: ${{ runner.temp }}/runs
+      - name: Pool the runners
+        run: |
+          folders=()
+          for folder in "$RUNNER_TEMP"/runs/*/; do
+            if [ -s "$folder/results.jsonl" ]; then folders+=("$folder"); fi
+          done
+          if [ ${#folders[@]} -eq 0 ]; then echo 'No runner finished a trial.' | tee -a "$GITHUB_STEP_SUMMARY"; exit 1; fi
+          # Fails the run when any viewer has no successful trial, after the report is written and posted.
+          status=0
+          node tools/browser-bench/bench.mjs report --require-every-viewer --out "$RUNNER_TEMP/combined" "${folders[@]}" || status=$?
+          cat "$RUNNER_TEMP/combined/report.md" >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+      - if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-bench-${{ github.run_id }}-pooled
+          path: ${{ runner.temp }}/combined
+          retention-days: 90

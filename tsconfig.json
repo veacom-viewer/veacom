@@ -3,8 +3,15 @@
     "target": "ES2022", "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext", "moduleResolution": "Bundler", "jsx": "react-jsx",
     "strict": true, "skipLibCheck": true, "esModuleInterop": true,
+    // Dead code and slips the compiler can see: unused names and parameters (prefix an unused one with _), a switch case
+    // that falls through, an override without the keyword, code after a return.
+    "noUnusedLocals": true, "noUnusedParameters": true, "noFallthroughCasesInSwitch": true, "noImplicitOverride": true,
+    "allowUnreachableCode": false, "allowUnusedLabels": false,
     "resolveJsonModule": true, "allowImportingTsExtensions": true, "noEmit": true, "erasableSyntaxOnly": true,
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "tests", "vite.config.ts"]
+  "include": ["src", "tests", "vite.config.ts"],
+  // The browser build's bridge and engine Worker need the WebAssembly engine's generated modules (web/build.ps1):
+  // tsconfig.web.json checks them. Its MP4 writer, ZIP and Trusted Types rule are checked here through their tests.
+  "exclude": ["src/web"]
 }

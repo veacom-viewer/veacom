@@ -14,9 +14,9 @@ const base = {
   photometricInterpretation: 'MONOCHROME2', frameOfReferenceUid: 'frame', orientationKnown: true, spacingKnown: true,
 };
 const petSeries = (overrides: Partial<Series> = {}): Series => ({ ...base, id: 'pet', description: 'PET', modality: 'PT',
-  dimensions: [8, 8, 8], spacing: [4, 4, 4], origin: [0, 0, 0], valueUnit: 'Bq/ml', suvFactor: 0.001, ...overrides } as Series);
+  dimensions: [8, 8, 8], spacing: [4, 4, 4], origin: [0, 0, 0], valueUnit: 'Bq/ml', suvFactor: 0.001, ...overrides });
 const ctSeries: Series = { ...base, id: 'ct', description: 'CT', modality: 'CT', dimensions: [20, 20, 20], spacing: [2, 2, 2], origin: [-1, -1, -1],
-  valueUnit: 'HU', suvFactor: null } as Series;
+  valueUnit: 'HU', suvFactor: null };
 const HOT: Vec3 = [5, 2, 3];
 const petVolume = (overrides: Partial<Series> = {}): Volume => {
   const series = petSeries(overrides), data = new Float32Array(8 * 8 * 8).fill(1500);

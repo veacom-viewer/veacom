@@ -67,6 +67,15 @@ describe('aligned frames of reference', () => {
     assert.equal(alignmentOf(alignments, series({ frameOfReferenceUid: 'elsewhere' })), null);
   });
 
+  it('adjusts the displayed PET when two registrations share the same CT', () => {
+    const other = { ...priorPet, id: 'other-pet', frameOfReferenceUid: 'other-frame' };
+    const second = alignmentFrom(engine(), currentCt, other)!;
+    const both = [aligned, second];
+    assert.equal(alignmentOf(both, currentCt, other), second);
+    assert.equal(alignmentOf(both, currentCt, priorPet), aligned);
+    assert.equal(alignmentOf(both, currentCt), null);
+  });
+
   it('are replaced and removed by pair of frames, either way round', () => {
     const again = alignmentFrom(engine([...translation([0, 0, -23])]), priorCt, currentCt)!;
     assert.deepEqual(withAlignment([aligned], again), [again]);

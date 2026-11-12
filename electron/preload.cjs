@@ -79,6 +79,12 @@ contextBridge.exposeInMainWorld('veacom', {
   installUpdate: () => invoke('updates:install'),
   openUpdateNotes: () => invoke('updates:notes'),
   onUpdateStatus: listener => { const notify = (_event, status) => listener(status); ipcRenderer.on('updates:status', notify); return () => ipcRenderer.removeListener('updates:status', notify); },
+  reportRendererFailure: (reason, exception) => {
+    if (['render-failed', 'uncaught-exception', 'unhandled-rejection'].includes(reason) &&
+        ['type', 'range', 'reference', 'syntax', 'unknown'].includes(exception)) {
+      ipcRenderer.send('fault:renderer', reason, exception);
+    }
+  },
   // Usage timings (electron/usage.cjs): consent, and events the main process checks again before keeping them.
   usageStatus: () => invoke('usage:status'),
   usageConsent: value => invoke('usage:consent', value),

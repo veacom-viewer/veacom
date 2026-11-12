@@ -6,16 +6,19 @@ import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry'
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
 import { samePatient, shareFrame } from '../imaging/linking';
-import { BUILTIN_ARRANGEMENTS } from './builtin';
+import { BUILTIN_ARRANGEMENTS, PET_FOLLOW_UP } from './builtin';
+import { studyKey } from '../domain/patient';
 
 export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from './roles';
 
 /** The gamma camera views a pane can open on (CID 26, as NM readers abbreviate them). */
 export const VIEWS = ['ANT', 'POST', 'RAO', 'LAO', 'RPO', 'LPO', 'R LAT', 'L LAT'] as const;
 
-/** When an arrangement is tried: a study opens, one series is picked into a pane, several are picked together, or the
- * fusion button is pressed. */
-export type Trigger = 'open' | 'pick' | 'pick-several' | 'fuse';
+/** When an arrangement is tried: a study opens, the reader asks for a screen (the nuclear medicine screen in the fusion
+ * button's menu), one series is picked into a pane, several are picked together, or the fusion button is pressed. */
+export type Trigger = 'open' | 'screen' | 'pick' | 'pick-several' | 'fuse';
+/** The arrangements a reader can keep: a whole screen, laid out when a study opens or when asked for. */
+const keepable = (arrangement: Arrangement) => arrangement.when === 'open' || arrangement.when === 'screen';
 /** What a pane shows of its series: the series itself, the series with another one fused over it, or a whole-volume MIP. */
 export type PaneShow = 'plain' | 'fused' | 'mip';
 export type Palette = NonNullable<ViewState['palette']>;
@@ -86,7 +89,7 @@ export function match(arrangements: readonly Arrangement[], trigger: Trigger, co
  * next SPECT, as a PET without its CT gives way to the next PET. */
 export function resolveRoles(arrangement: Arrangement, series: readonly Series[], picked?: Series, session: readonly Series[] = series): Record<string, Series> | null {
   const roles: Record<string, Series> = {};
-  const pickedSpec = arrangement.roles.picked;
+  const pickedSpec = Object.hasOwn(arrangement.roles, 'picked') ? arrangement.roles.picked : undefined;
   if (pickedSpec) { if (!picked || !ofKind(pickedSpec, picked)) return null; roles.picked = picked; }
   else if (picked) roles.picked = picked;
   const pending = Object.entries(arrangement.roles).filter(([name]) => name !== 'picked');
@@ -126,8 +129,9 @@ function planFor(arrangement: Arrangement, context: MatchContext): Plan | null {
   const roles = resolveRoles(arrangement, context.series, picked[0], context.session ?? context.series);
   if (!roles) return null;
   const grid = Array.isArray(arrangement.grid) ? [arrangement.grid[0], arrangement.grid[1]] as [number, number] : null;
-  const panes = arrangement.panes.map(spec => ({ spec, series: roles[spec.role] }));
-  return panes.every(pane => pane.series) ? { arrangement, roles, grid, panes } : null;
+  // Pane roles are plain strings the types do not tie to `roles`: a pane whose role is unfilled leaves no plan.
+  if (!arrangement.panes.every(spec => Object.hasOwn(roles, spec.role))) return null;
+  return { arrangement, roles, grid, panes: arrangement.panes.map(spec => ({ spec, series: roles[spec.role] })) };
 }
 
 /** The two series an arrangement aligns (its `align`): `fixed` is laid under, `moving` over it. Null without `align`, or
@@ -170,8 +174,9 @@ export function paneView(series: Series, spec: PaneSpec, base: ViewState): ViewS
 /** The role a fused pane's overlay comes from, in a plan. */
 export const overlayRole = (plan: Plan) => plan.panes.find(pane => pane.spec.show === 'fused')?.spec.over ?? null;
 
-// A reader's kept arrangements: per built-in `open` arrangement, the panes as they rearranged them, or `off` when they
-// kept the screen VEAcom shows without it.
+// A reader's kept arrangements: per built-in screen, the panes as they rearranged them, or, for one laid out when a
+// study opens, `off` when they kept the screen VEAcom shows without it. A screen opened on request is never `off`: the
+// reader who does not want it does not ask for it.
 export const KEPT_STORAGE = 'veacom:arrangements:v1';
 export type KeptVariant = { grid: [number, number]; panes: PaneSpec[] } | { off: true };
 export type Kept = Record<string, KeptVariant>;
@@ -213,10 +218,10 @@ export function readKept(raw: string | null, builtins: readonly Arrangement[] = 
   if (!stored || typeof stored !== 'object' || Array.isArray(stored)) return {};
   const kept: Kept = {};
   for (const [id, value] of Object.entries(stored as Record<string, unknown>)) {
-    const builtin = builtins.find(item => item.id === id && item.when === 'open');
+    const builtin = builtins.find(item => item.id === id && keepable(item));
     if (!builtin || !value || typeof value !== 'object') continue;
     const variant = value as Record<string, unknown>;
-    if (variant.off === true) { kept[id] = { off: true }; continue; }
+    if (variant.off === true) { if (builtin.when === 'open') kept[id] = { off: true }; continue; }
     const grid = variant.grid;
     if (!Array.isArray(grid) || grid.length !== 2 || !grid.every(n => Number.isInteger(n) && n >= 1 && n <= 5)) continue;
     if (!Array.isArray(variant.panes) || !variant.panes.length || variant.panes.length > grid[0] * grid[1]) continue;
@@ -226,14 +231,25 @@ export function readKept(raw: string | null, builtins: readonly Arrangement[] = 
   return kept;
 }
 
-/** The built-in arrangements with the reader's kept variants in their place; one kept `off` is left out. */
+/** A saved opt-out controls automatic opening. An explicit request can always open the built-in screen. */
 export function withKept(kept: Kept, builtins: readonly Arrangement[] = BUILTIN_ARRANGEMENTS): Arrangement[] {
   return builtins.flatMap(arrangement => {
+    if (!Object.hasOwn(kept, arrangement.id) || !keepable(arrangement)) return [arrangement];
     const variant = kept[arrangement.id];
-    if (!variant || arrangement.when !== 'open') return [arrangement];
-    if ('off' in variant) return [];
+    if ('off' in variant) return arrangement.when === 'screen' ? [arrangement] : [];
     return [{ ...arrangement, grid: variant.grid, panes: variant.panes, kept: true }];
   });
+}
+
+export function matchOnOpen(kept: Kept, context: MatchContext): Plan | null {
+  const automatic = withKept(kept).filter(rule => rule.id !== PET_FOLLOW_UP.id || rule.kept);
+  return match(automatic, 'open', context);
+}
+
+/** Match roles in the active patient’s study. Only an explicitly defined prior role searches the wider session. */
+export function activeStudyContext(active: Series, session: Series[]): MatchContext {
+  const key = studyKey(active);
+  return { series: session.filter(item => studyKey(item) === key), session };
 }
 
 /** What a pane on screen shows, for keeping: its series and view, and the series fused over it, if any. */

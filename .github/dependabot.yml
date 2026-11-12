@@ -2,9 +2,10 @@ version: 2
 # Cooldowns hold routine version updates until a release has been public for a week, long enough for a poisoned one
 # to be caught. Security updates are not delayed: GitHub applies cooldown to version updates only.
 updates:
-  # GitHub uses the npm ecosystem for pnpm lockfiles. packaging/ holds electron-builder's own install.
+  # GitHub uses the npm ecosystem for pnpm lockfiles. packaging/ holds electron-builder's own install, web/site
+  # wrangler's.
   - package-ecosystem: npm
-    directories: [/, /packaging]
+    directories: [/, /packaging, /web/site]
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
@@ -19,7 +20,7 @@ updates:
       minor-and-patch:
         update-types: [minor, patch]
   - package-ecosystem: cargo
-    directory: /native
+    directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5

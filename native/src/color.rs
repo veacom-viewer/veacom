@@ -71,7 +71,9 @@ pub fn rgb_frame(
         } else {
             ensure!(bytes.len() % 2 == 0, "Incomplete color sample");
             bytes
-                .chunks_exact(2)
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|p| u16::from_le_bytes([p[0], p[1]]))
                 .collect()
         };
@@ -288,12 +290,16 @@ mod tests {
             image.put(DataElement::new(tag, VR::US, PrimitiveValue::from(256u16)));
         }
         image.put(DataElement::new(
-            Tag(0x7fe0, 0x0010), VR::OB, PrimitiveValue::U8(RGB.repeat(256 * 256 / 4).into()),
+            Tag(0x7fe0, 0x0010),
+            VR::OB,
+            PrimitiveValue::U8(RGB.repeat(256 * 256 / 4).into()),
         ));
         let mut costs = Vec::new();
         for name in ["native", "jpeg"] {
             if name == "jpeg" {
-                image.transcode(&dicom_transfer_syntax_registry::entries::JPEG_BASELINE.erased()).unwrap();
+                image
+                    .transcode(&dicom_transfer_syntax_registry::entries::JPEG_BASELINE.erased())
+                    .unwrap();
             }
             let path = directory.path().join(format!("{name}.dcm"));
             image.write_to_file(&path).unwrap();
@@ -302,7 +308,10 @@ mod tests {
             costs.push(source.frames[0].jpeg_component_threads);
             let frame = crate::decode::decode_frame(source, 0).unwrap();
             assert_eq!(frame.bytes().len(), 256 * 256 * 3);
-            assert_eq!(crate::decode::decode_volume(source).unwrap().bytes(), frame.bytes());
+            assert_eq!(
+                crate::decode::decode_volume(source).unwrap().bytes(),
+                frame.bytes()
+            );
         }
         assert_eq!(costs, [0, 3]);
         assert_eq!(crate::decode::frame_workers(8, costs.iter().copied()), 2);
@@ -317,7 +326,9 @@ mod tests {
         object("YBR_FULL", true, true).write_to_file(&path).unwrap();
         let result = crate::export::export_series(
             &[path],
-            &crate::export::ExportOptions { operation: None, cancelled: None,
+            &crate::export::ExportOptions {
+                operation: None,
+                cancelled: None,
                 directory: destination.path().to_string_lossy().into_owned(),
                 anonymize: false,
                 dicomdir: false,
@@ -355,7 +366,7 @@ mod tests {
         let mut o = object("YBR_FULL", false, false);
         o.put_str(Tag(0x0028, 0x0008), VR::IS, "2");
         let mut pixels = YBR.to_vec();
-        pixels.extend(YBR.chunks_exact(3).rev().flatten());
+        pixels.extend(YBR.as_chunks::<3>().0.iter().rev().flatten());
         o.put(DataElement::new(
             Tag(0x7fe0, 0x0010),
             VR::OB,
@@ -365,7 +376,9 @@ mod tests {
         assert_eq!(rgb_frame(&o, &decoded, 0, 0).unwrap(), RGB);
         assert_eq!(
             rgb_frame(&o, &decoded, 1, 1).unwrap(),
-            RGB.chunks_exact(3)
+            RGB.as_chunks::<3>()
+                .0
+                .iter()
                 .rev()
                 .flatten()
                 .copied()

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 import { assertClose, assertFields, waitFor } from './support';
-import type { Annotation, PixelArray, Series, Volume } from '../src/model';
+import type { Annotation, PixelArray, Series, Vec3, Volume } from '../src/model';
 import { roiStatistics } from '../src/imaging/annotations';
 import { RoiStatisticsService, type RoiWorkerLike } from '../src/imaging/roiStatisticsService';
 import { createRoiWorkerHandler, ROI_COPY_CHUNK_BYTES, type RoiFrameDescriptor, type RoiWorkerRequest, type RoiWorkerResult } from '../src/imaging/roiStatistics.worker';
@@ -331,7 +331,7 @@ describe('source ROI worker protocol and bounded cache', () => {
       receive({ type: 'begin', id, descriptor: descriptor(key, version) });
       const reply = replies.at(-1);
       assert.equal(reply?.type, 'ready');
-      return (reply as Extract<RoiWorkerResult, { type: 'ready' }>).cached;
+      return (reply).cached;
     };
     const commit = (id: number) => {
       receive({ type: 'chunk', id, offset: 0, bytes: new Float32Array([0, 100, 100, 0]).buffer });
@@ -359,6 +359,13 @@ describe('source ROI worker protocol and bounded cache', () => {
     const result = f.replies.at(-1) as Extract<RoiWorkerResult, { type: 'result' }>;
     assertFields(result.statistics, { count: 4, mean: 50, min: 0, max: 100, standardDeviation: 50 });
     assert.equal(f.begin(2, 'large'), false);
+  });
+
+  it('refuses a descriptor whose dimensions are not three sizes', () => {
+    const f = direct(32);
+    // As a faulty sender could post it: the fourth size leaves the byte count matching.
+    f.receive({ type: 'begin', id: 1, descriptor: { ...descriptor('four'), series: { ...base, pixelType: 'float32', dimensions: [2, 2, 1, 1] as unknown as Vec3 } } });
+    assertFields(f.replies.at(-1), { type: 'error', id: 1, message: 'ROI measurement requires valid scalar source frames.' });
   });
 
   it('discards partial uploads after protocol errors and rejects incomplete commits', () => {

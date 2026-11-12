@@ -1,15 +1,55 @@
 //! Work spread over threads with the standard library alone: the three places the engine works in parallel (reading an
 //! import's files, decoding a volume's frames, re-encoding an export's files) once took five crates from rayon for this.
 //! Threads take the next item as each finishes one, so a slow file or frame does not hold the others up.
+//!
+//! In a browser the engine cannot start threads; the page lends it some (`Helpers`, `lend`), and without them every
+//! item runs on the calling thread.
 
-use std::sync::{
-    Arc, Mutex, PoisonError,
-    atomic::{AtomicBool, Ordering},
-    mpsc,
+use std::{
+    cell::Cell,
+    sync::{
+        Arc, Mutex, OnceLock, PoisonError,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
 };
 
-/// How many threads this computer runs at once, or `fallback` if it cannot tell.
+/// Threads lent by the host where the engine cannot start its own: in a browser, Web Workers that share the engine's
+/// memory and wait for work (web/engine). `run` then hands its items to them instead of starting threads.
+pub trait Helpers: Sync {
+    /// How many threads are lent.
+    fn count(&self) -> usize;
+    /// Runs `work` on the calling thread and on up to `count` lent threads at once, and returns once each has
+    /// returned from it.
+    fn run(&self, count: usize, work: &(dyn Fn() + Sync));
+}
+
+static HELPERS: OnceLock<&'static dyn Helpers> = OnceLock::new();
+
+/// Lends `helpers` to every parallel run from now on (once; later calls are ignored).
+pub fn lend(helpers: &'static dyn Helpers) {
+    let _ = HELPERS.set(helpers);
+}
+
+thread_local! {
+    static ALONE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Runs `work` with every parallel run it starts kept on this thread: in a browser only the thread that received the
+/// page's files can read them.
+pub fn on_this_thread<R>(work: impl FnOnce() -> R) -> R {
+    let before = ALONE.replace(true);
+    let result = work();
+    ALONE.set(before);
+    result
+}
+
+/// How many threads this computer runs at once, or `fallback` if it cannot tell. Where threads are lent, those and
+/// the calling thread.
 pub fn available(fallback: usize) -> usize {
+    if let Some(helpers) = HELPERS.get() {
+        return helpers.count() + 1;
+    }
     std::thread::available_parallelism().map_or(fallback, usize::from)
 }
 
@@ -76,7 +116,10 @@ pub struct Pool {
 }
 
 impl Pool {
-    #[allow(clippy::disallowed_methods)] // The fixed ZIP encoder pool shares its limit across exports.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the fixed ZIP encoder pool shares its limit across exports"
+    )]
     pub fn new(name: &str, limit: usize) -> Self {
         let (jobs, receive) = mpsc::channel::<Job>();
         let receive = Arc::new(Mutex::new(receive));
@@ -155,6 +198,12 @@ where
             work(item);
         }
     };
+    // Kept on this thread (`on_this_thread`), or spread over the threads a host lends instead of new ones.
+    let threads = if ALONE.get() { 1 } else { threads };
+    if let Some(helpers) = HELPERS.get().filter(|_| threads > 1) {
+        helpers.run(threads - 1, &take);
+        return;
+    }
     std::thread::scope(|scope| {
         let helpers: Vec<_> = (1..threads)
             .map_while(|index| {
@@ -197,6 +246,22 @@ mod tests {
             "{} threads",
             threads.len()
         );
+    }
+
+    #[test]
+    fn work_kept_on_this_thread_stays_there_for_that_call_only() {
+        let caller = std::thread::current().id();
+        on_this_thread(|| {
+            for_each("test-alone", 8, 0..200, |_| {
+                assert_eq!(std::thread::current().id(), caller)
+            })
+        });
+        let threads = Mutex::new(HashSet::new());
+        for_each("test-after", 4, 0..1000, |_| {
+            std::thread::sleep(Duration::from_micros(50));
+            threads.lock().unwrap().insert(std::thread::current().id());
+        });
+        assert!(threads.into_inner().unwrap().len() > 1);
     }
 
     #[test]
@@ -246,7 +311,7 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         std::thread::scope(|scope| {
-            let other = scope.spawn(&request);
+            let other = scope.spawn(request);
             let ids: HashSet<_> = request().into_iter().chain(other.join().unwrap()).collect();
             assert_eq!(ids.len(), 2);
         });

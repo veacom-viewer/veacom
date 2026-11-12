@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import type { Series, Vec3, ViewState } from '../src/model';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, sameFacing, indexToWorld, inverse3, isPaddingValue, orientationLabel, sampleVolume, screenMapping, screenToWorld, sliceAtWorld, sliceCount, sourceFrameSeries, worldToIndex, worldToScreen } from '../src/imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, sameFacing, indexToWorld, inverse3, isPaddingValue, orientationLabel, reconstructedWindow, sampleVolume, screenMapping, screenToWorld, sliceAtWorld, sliceCount, sourceFrameSeries, windowPlane, worldToIndex, worldToScreen } from '../src/imaging/geometry';
 
 const base: Series = {
   id: 'geometry', uid: '1', studyUid: '2', patientId: 'TEST', patientName: 'Synthetic',
@@ -267,6 +267,27 @@ describe('patient plane intersections', () => {
 
 
 describe('full range window (key 1)', () => {
+  it('takes both reconstructed windows from the displayed plane, including per-frame padding and oblique interpolation', async () => {
+    const data = Float32Array.from({ length: 120 }, (_, i) => i === 119 ? 32_000 : i);
+    const volume = { series: { ...base, paddingRange: [0, 8] as [number, number] }, data };
+    for (const plane of ['axial', 'coronal', 'sagittal'] as const) for (const tilt of [0, 11]) {
+      const shown = { ...view, mode: 'mpr' as const, plane, oblique: [tilt, 0] as [number, number] };
+      const grid = windowPlane(base, shown), values: number[] = [];
+      for (let y = 0; y < grid.rows; y++) for (let x = 0; x < grid.columns; x++) {
+        const point = grid.origin.map((v, i) => v + grid.right[i] * x + grid.down[i] * y) as Vec3;
+        const value = sampleVolume(volume, point, true);
+        if (value !== null && Number.isFinite(value)) values.push(value);
+      }
+      values.sort((a, b) => a - b);
+      for (const automatic of [true, false]) {
+        const at = (q: number) => { const n = q * (values.length - 1), f = n % 1; return values[Math.floor(n)] * (1 - f) + values[Math.ceil(n)] * f; };
+        const low = at(automatic ? 0.01 : 0), high = at(automatic ? 0.99 : 1);
+        const result = await reconstructedWindow(volume, shown, automatic, () => true);
+        assertClose(result!.windowCenter, (low + high) / 2, 6);
+        assertClose(result!.windowWidth, Math.max(1, high - low), 6);
+      }
+    }
+  });
   it('spans the lowest and highest values of the slice shown, padding left out', () => {
     const series: Series = { ...base, dimensions: [2, 1, 2], paddingRange: [-2000, -2000] };
     const volume = { series, data: new Float32Array([-1000, 1000, -2000, 50]) };

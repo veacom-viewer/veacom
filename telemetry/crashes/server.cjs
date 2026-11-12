@@ -4,7 +4,7 @@ const { validReport } = require('../../electron/crash-schema.cjs');
 
 const path = '/v1/crashes';
 const maxBytes = 1024;
-const collector = 'https://otel-collector-5phqzw3wxq-nw.a.run.app/v1/traces';
+const identityEndpoint = 'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity';
 const strings = fields => Object.entries(fields).map(([key, value]) => ({ key, value: { stringValue: value } }));
 
 // Build a fresh trace. Only values checked by validReport enter either backend exporter.
@@ -16,11 +16,22 @@ function toTrace(r) {
     scope: { name: 'veacom.crash', version: '1' }, spans: [{ traceId: r.id, spanId: r.id.slice(-16) === '0000000000000000' ? '0000000000000001' : r.id.slice(-16),
       name: 'crash.' + r.process, kind: 1, startTimeUnixNano: time, endTimeUnixNano: time,
       status: { code: 2, message: [r.signal, r.code === null ? null : 'exit ' + r.code].filter(Boolean).join(', ') },
-      attributes: strings({ 'veacom.error_kind': r.reason, 'veacom.result': r.recovery }) }],
+      attributes: strings({ 'veacom.error_kind': r.reason, 'veacom.result': r.recovery,
+        ...(r.stage ? { 'veacom.crash.stage': r.stage } : {}), ...(r.work ? { 'veacom.crash.work': r.work } : {}),
+        ...(r.exception ? { 'veacom.crash.exception': r.exception } : {}) }) }],
   }] }] };
 }
-function createServer({ token, endpoint = collector, fetchImpl = fetch }) {
-  if (!token) throw new Error('Missing collector credential.');
+async function identityToken(audience, signal) {
+  const url = new URL(identityEndpoint);
+  url.searchParams.set('audience', audience);
+  const response = await fetch(url, { headers: { 'Metadata-Flavor': 'Google' }, redirect: 'error', signal });
+  if (!response.ok) throw new Error('Storage identity unavailable.');
+  return response.text();
+}
+function createServer({ storageUrl, fetchImpl = fetch, getToken = identityToken, log = console.log }) {
+  const storage = new URL(storageUrl);
+  if (storage.protocol !== 'https:' || storage.href !== storage.origin + '/') throw new Error('Expected an HTTPS service origin.');
+  const endpoint = new URL('/v1/traces', storage);
   // A global limit per instance needs no IP address or installation identifier.
   let available = 60, last = Date.now();
   return http.createServer({ requestTimeout: 10_000, headersTimeout: 10_000, maxHeaderSize: 8192 }, async (req, res) => {
@@ -43,15 +54,18 @@ function createServer({ token, endpoint = collector, fetchImpl = fetch }) {
     } catch { return finish(400); }
     if (!validReport(report)) return finish(400);
     try {
+      const signal = AbortSignal.timeout(5000);
+      const token = await getToken(storage.origin, signal);
       const response = await fetchImpl(endpoint, { method: 'POST', redirect: 'error', credentials: 'omit',
         headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token },
-        body: JSON.stringify(toTrace(report)), signal: AbortSignal.timeout(5000) });
-      if (!response.ok) { await response.body?.cancel(); return finish(503); }
+        body: JSON.stringify(toTrace(report)), signal });
+      if (response.status !== 200) { await response.body?.cancel(); return finish(503); }
       const ack = await response.json();
-      if (Number(ack.partialSuccess?.rejectedSpans ?? 0) !== 0) return finish(503);
+      if (!ack || typeof ack !== 'object' || Array.isArray(ack) || Number(ack.partialSuccess?.rejectedSpans ?? 0) !== 0) return finish(503);
+      if (report.environment === 'field') log('{"event":"veacom.field_fault_stored"}');
       finish(204);
     } catch { finish(503); }
   });
 }
-if (require.main === module) createServer({ token: process.env.INGEST_TOKEN }).listen(Number(process.env.PORT || 8080), '0.0.0.0');
+if (require.main === module) createServer({ storageUrl: process.env.CRASH_STORAGE_URL }).listen(Number(process.env.PORT || 8080), '0.0.0.0');
 module.exports = { createServer, toTrace };

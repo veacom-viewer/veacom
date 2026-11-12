@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { messages } = require('../electron/i18n.cjs');
 const hash = value => createHash('sha256').update(value).digest('hex');
 
@@ -18,7 +19,9 @@ async function main() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-recovery-'));
   const checks = [], errors = [];
   const nativeSha256 = hash(await fs.readFile(process.env.VEACOM_CORE_PATH || path.resolve(__dirname, '../native/target/release/veacom-core')));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study],
+  // The preceding crash test can trigger macOS's restore-windows prompt before Electron is ready.
+  const restoreArgs = process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [];
+  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study, ...restoreArgs],
     env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
   let page;
   const check = (name, detail) => { checks.push({ name, passed: true, detail }); console.log(`PASS ${name}`); };
@@ -103,6 +106,6 @@ async function main() {
     await page?.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
     await fs.writeFile(path.join(output, 'engine-recovery.json'), JSON.stringify({ passed: false, nativeSha256, checks, error: error.stack, errors }, null, 2));
     throw error;
-  } finally { await desktop.close(); await fs.rm(profile, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(profile, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

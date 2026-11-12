@@ -8,7 +8,11 @@
 //! The engine thread that asked waits in `decode` until then. Answers carry four samples
 //! a pixel, as Chromium reads them back, and the alpha samples are dropped here: in JavaScript that cost more than the
 //! decoding.
+//!
+//! In the browser the decoder is a Worker of the page on the engine's shared memory (web/engine/src/pictures.rs), which
+//! takes and answers pictures through the same calls.
 
+use crate::clock::Instant;
 use anyhow::{Context, Result, bail};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -18,7 +22,7 @@ use std::{
         Condvar, Mutex, MutexGuard, PoisonError,
         atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// Maximum encoded size of one picture.
@@ -222,21 +226,45 @@ impl Drop for Request {
     }
 }
 
+/// Set once a decoder runs in this process: the browser's picture Worker.
+static DECODER_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Called by a decoder in this process before it takes pictures. In WebAssembly, pictures are refused until one has.
+pub fn decoder_started() {
+    DECODER_STARTED.store(true, Ordering::Release);
+}
+
 /// Checks the signature on the open file before allocating for its contents.
 pub fn index(path: &Path) -> Result<std::sync::Arc<crate::source_file::SourceFile>> {
+    // A page without the decoder (no shared memory, so no threads build) has none to answer; waiting for one would only
+    // delay the rest of the import.
+    if cfg!(target_arch = "wasm32") && !DECODER_STARTED.load(Ordering::Acquire) {
+        bail!(coded!(
+            "pictures.browser",
+            "PNG, JPEG and BMP pictures cannot be opened in this browser"
+        ));
+    }
     use std::io::{Seek, SeekFrom};
     let mut file = crate::source_file::open_file(path)?;
     let len = file.metadata()?.len();
-    if len > MAX_FILE_BYTES { bail!("Not a picture file of a supported size"); }
+    if len > MAX_FILE_BYTES {
+        bail!("Not a picture file of a supported size");
+    }
     let mut prefix = [0; 8];
     let prefix = &mut prefix[..len.min(8) as usize];
     file.read_exact(prefix)?;
-    if !is_picture(prefix) { bail!("Only PNG, JPEG and BMP images can be opened"); }
+    if !is_picture(prefix) {
+        bail!("Only PNG, JPEG and BMP images can be opened");
+    }
     file.seek(SeekFrom::Start(0))?;
     crate::source_file::SourceFile::index_handle(path, file)
 }
 
-pub fn read(source: &std::sync::Arc<crate::source_file::SourceFile>, want: Want, check: fn() -> Result<()>) -> Result<Request> {
+pub fn read(
+    source: &std::sync::Arc<crate::source_file::SourceFile>,
+    want: Want,
+    check: fn() -> Result<()>,
+) -> Result<Request> {
     let mut file = source.open()?;
     let file_length = source.len as usize;
     let want = if want == Want::Probe && file_length <= PROBE_BYTES {
@@ -469,15 +497,20 @@ pub mod testing {
 
     /// Starts the tests' decoder once: it takes pictures as the desktop app does and answers from what `picture` wrote,
     /// or that the picture cannot be decoded.
-    #[allow(clippy::disallowed_methods)] // The test decoder stands in for the desktop process.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "the test decoder stands in for the desktop process"
+    )]
     pub fn serve() {
         static SERVING: OnceLock<()> = OnceLock::new();
+        // Never cancelled.
+        static KEPT: AtomicBool = AtomicBool::new(false);
         SERVING.get_or_init(|| {
             std::thread::Builder::new()
                 .name("test-picture-decoder".into())
                 .spawn(|| {
                     loop {
-                        let Some(task) = next(Duration::from_secs(3600), &crate::KEPT) else {
+                        let Some(task) = next(Duration::from_secs(3600), &KEPT) else {
                             continue;
                         };
                         decoded().lock().unwrap().push(task.bytes.clone());
@@ -657,10 +690,7 @@ mod tests {
             .set_len(MAX_FILE_BYTES)
             .unwrap();
         assert_eq!(
-            index(&disguised)
-            .err()
-            .unwrap()
-            .to_string(),
+            index(&disguised).err().unwrap().to_string(),
             "Only PNG, JPEG and BMP images can be opened"
         );
         // A JPEG named .png is read: what decodes it follows the contents.
@@ -681,6 +711,8 @@ mod tests {
         let path = dir.path().join("synthetic.png");
         std::fs::write(&path, testing::picture(testing::PNG, 1, 1, &[1, 2, 3])).unwrap();
         let source = index(&path).unwrap();
+        // File times tick a few milliseconds apart on Linux and Windows; a later write moves them.
+        std::thread::sleep(std::time::Duration::from_millis(50));
         std::fs::write(&path, testing::picture(testing::PNG, 1, 1, &[4, 5, 6])).unwrap();
         for want in [Want::Probe, Want::Size, Want::Pixels] {
             let error = read(&source, want, || Ok(())).err().unwrap();

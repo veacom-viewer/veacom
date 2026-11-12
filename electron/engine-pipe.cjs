@@ -7,6 +7,17 @@ const CHUNK = 1024 * 1024, INLINE = 16 * 1024, WINDOW = 8 * CHUNK;
 const MAX_REQUEST = 16 * CHUNK, MAX_QUEUED = 32;
 const controlOps = new Set(['shutdown', 'progress', 'cancel', 'exportCancel', 'health', 'processCounters']);
 
+function workCategory(op) {
+  // pictureNext waits even on an idle viewer; importEarly polls the catalog during an import.
+  if (controlOps.has(op) || op === 'pictureNext' || op === 'importEarly') return null;
+  switch (op) {
+    case 'import': return 'import';
+    case 'volume': case 'frame': case 'warm': case 'sample': case 'measure': case 'pictureAnswer': return 'pixels';
+    case 'export': case 'exportEstimate': return 'export';
+    default: return 'other';
+  }
+}
+
 function encodeRequest(op, body, data) {
   const json = Buffer.from(JSON.stringify(body === undefined ? { op } : { op, body }));
   const length = 4 + json.length + (data?.length ?? 0);
@@ -118,7 +129,7 @@ class EngineChannel {
     do { this.nextId = this.nextId === 0xffffffff ? 1 : this.nextId + 1; } while (this.pending.has(this.nextId));
     const id = this.nextId;
     return new Promise((resolve, reject) => {
-      const entry = { id, group, payload, size: payload.length, signal, resolve, reject, sent: false,
+      const entry = { id, group, work: workCategory(op), payload, size: payload.length, signal, resolve, reject, sent: false,
         exportId: op === 'export' ? body?.operation : undefined, controller: null, length: 0, received: 0, credit: 0, pulled: null };
       this.pending.set(id, entry);
       this.requestBytes += entry.size;
@@ -142,7 +153,9 @@ class EngineChannel {
     }
   }
   send(kind, id, payload) {
-    if (!this.failure) try { this.output.write(encode(kind, id, payload)); } catch (error) { this.close(error, 'pipe-error'); }
+    if (!this.failure) try { this.output.write(encode(kind, id, payload)); } catch (error) {
+      this.close(error, 'pipe-error', kind === TO_ENGINE.request ? id : undefined);
+    }
   }
   message(kind, id, payload) {
     if (kind === FROM_ENGINE.hello) {
@@ -240,12 +253,17 @@ class EngineChannel {
       this.grant();
     }
   }
-  close(error, reason = 'protocol-error') {
+  close(error, reason = 'protocol-error', unsentId) {
     if (this.failure) return;
     this.failure = error;
     this.helloSettled.reject(error);
-    for (const entry of this.pending.values()) this.fail(entry, error);
-    this.onFailure?.(error, reason);
+    const active = new Set();
+    for (const entry of this.pending.values()) {
+      if (entry.sent && entry.id !== unsentId && entry.work) active.add(entry.work);
+      this.fail(entry, error);
+    }
+    const work = active.size > 1 ? 'multiple' : active.values().next().value ?? 'idle';
+    this.onFailure?.(error, reason, work);
   }
 }
 

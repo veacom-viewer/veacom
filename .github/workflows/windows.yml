@@ -36,6 +36,8 @@ jobs:
       CI: 'true'
       VEACOM_CRASH_ENVIRONMENT: lab
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      BUILDER_CONFIG: ${{ (github.ref_type == 'tag' || (github.event_name == 'workflow_dispatch' && inputs.keep_installer)) && 'electron-builder.release.cjs' || 'packaging/electron-builder.smoke.cjs' }}
+      VEACOM_TELEMETRY_ENVIRONMENT: lab
       PACKAGED_APP: ${{ github.workspace }}\release-electron\win-unpacked\VEAcom Electron.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -51,7 +53,7 @@ jobs:
             packaging/pnpm-lock.yaml
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: native
+          workspaces: . -> native/target
 
       - name: Record the machine
         run: |
@@ -109,18 +111,22 @@ jobs:
         id: builder
         if: ${{ !cancelled() }}
         run: pnpm --dir packaging install --frozen-lockfile
-      - name: Package
+      - name: Configure release telemetry
+        id: telemetry
+        if: env.BUILDER_CONFIG == 'electron-builder.release.cjs'
+        shell: bash
+        env:
+          VEACOM_RELEASE_INGEST_TOKEN: ${{ secrets.VEACOM_RELEASE_INGEST_TOKEN }}
+        run: |
+          : "${VEACOM_RELEASE_INGEST_TOKEN:?Missing release ingest token}"
+          telemetry/write-endpoint.sh
+      - name: Package viewer and installer
         id: package
-        if: ${{ !cancelled() && steps.builder.outcome == 'success' && steps.runtime.outcome == 'success' && steps.web.outcome == 'success' && steps.crt.outcome == 'success' }}
-        run: node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win --x64 --dir --publish never '-c.forceCodeSigning=false'
+        if: ${{ !cancelled() && steps.builder.outcome == 'success' && (env.BUILDER_CONFIG != 'electron-builder.release.cjs' || steps.telemetry.outcome == 'success') && steps.runtime.outcome == 'success' && steps.web.outcome == 'success' && steps.crt.outcome == 'success' }}
+        run: node packaging/node_modules/electron-builder/cli.js --config $env:BUILDER_CONFIG --win nsis --x64 --publish never '-c.forceCodeSigning=false'
       - name: Packaged engine and runtime
         if: ${{ !cancelled() && steps.package.outcome == 'success' }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Package -Output "$env:EVIDENCE\package"
-      - name: Installer
-        id: installer
-        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
-        run: node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win nsis --x64 --prepackaged release-electron\win-unpacked --publish never '-c.forceCodeSigning=false'
-
       - name: Synthetic study
         id: study
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
@@ -205,8 +211,13 @@ jobs:
 
       - name: Silent install
         id: installed
-        if: ${{ !cancelled() && steps.installer.outcome == 'success' && steps.study.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.study.outcome == 'success' }}
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Install -Output "$env:EVIDENCE\installed"
+      - name: Installed release sends lab faults with usage off
+        if: ${{ !cancelled() && steps.installed.outcome == 'success' && env.BUILDER_CONFIG == 'electron-builder.release.cjs' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ steps.installed.outputs.executable }}
+        run: node tools/check-crash-reporting.cjs "$env:EVIDENCE\installed\crash-receipt.json" --live
       - name: Installed DICOM export, linked paging and MPR
         if: ${{ !cancelled() && steps.installed.outcome == 'success' }}
         env:
@@ -228,7 +239,7 @@ jobs:
         run: powershell -NoProfile -ExecutionPolicy Bypass -File tools\check-windows-package.ps1 -Action Uninstall -Output "$env:EVIDENCE\installed"
 
       - name: Keep the tested installer
-        if: ${{ success() && github.event_name == 'workflow_dispatch' && inputs.keep_installer }}
+        if: ${{ success() && env.BUILDER_CONFIG == 'electron-builder.release.cjs' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-installer-${{ github.sha }}

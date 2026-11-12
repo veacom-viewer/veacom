@@ -8,6 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises');
 const { validReport } = require('../../electron/crash-schema.cjs');
 async function main() {
   const receipt = JSON.parse(fs.readFileSync(process.argv[2],'utf8'));
+  assert.equal(receipt.packaged,true); assert.equal(receipt.usageCollectorConfigured,true);
   assert.equal(receipt.live,true); assert.equal(receipt.usageConsent,'denied'); assert.equal(receipt.localUsageRequests,0);
   assert.equal(receipt.usageControlAccepted,0); assert.match(receipt.usageControlId,/^[0-9a-f]{32}$/);
   assert.ok(receipt.reports.length >= 3 && receipt.reports.every(r=>validReport(r) && r.environment==='lab'));
@@ -35,7 +36,9 @@ async function main() {
       assert.equal(row.SpanName,'crash.'+r.process); assert.equal(row.ScopeName,'veacom.crash');
       assert.equal(row.StatusCode,'Error');
       assert.equal(row.StatusMessage,[r.signal,r.code===null?null:'exit '+r.code].filter(Boolean).join(', '));
-      assert.deepEqual(row.SpanAttributes,{'veacom.error_kind':r.reason,'veacom.result':r.recovery});
+      assert.deepEqual(row.SpanAttributes,{'veacom.error_kind':r.reason,'veacom.result':r.recovery,
+        ...(r.stage ? {'veacom.crash.stage':r.stage} : {}), ...(r.work ? {'veacom.crash.work':r.work} : {}),
+        ...(r.exception ? {'veacom.crash.exception':r.exception} : {})});
       assert.deepEqual(row.ResourceAttributes,{'service.name':'veacom-crash','service.version':r.version,
         'deployment.environment':'lab','os.type':r.platform,'host.arch':r.arch,
         ...(r.build && r.build !== 'unknown' ? {'veacom.commit':r.build} : {})});

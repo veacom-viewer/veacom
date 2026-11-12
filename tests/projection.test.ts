@@ -13,7 +13,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   seriesNumber: 1, dimensions: [20, 16, 30], spacing: [5, 5, 4], origin: [-47.5, -37.5, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 0, windowWidth: 1, valueUnit: 'Bq/ml', suvFactor: 3.5e-4, canReconstruct: true, warnings: [], photometricInterpretation: 'MONOCHROME2',
   frameOfReferenceUid: 'frame', orientationKnown: true, ...overrides,
-} as Series);
+});
 const mip = (slice = 0): ViewState => ({ mode: 'mpr', windowMode: 'manual', plane: 'coronal', slice, windowCenter: 0, windowWidth: 1, zoom: 1, pan: [0, 0], rotation: 0,
   flipX: false, flipY: false, inverted: true, projection: 'mip' });
 const centre = (item: Series): Vec3 => indexToWorld(item, item.dimensions.map(n => (n - 1) / 2) as Vec3);

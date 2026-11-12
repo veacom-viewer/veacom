@@ -8,7 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { importEarly, importPaths, listSeries, loadPreviewVolume, loadSourceFrame, loadVolume, getProgress, cancelOperation, registerSeries, removeSeries } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, registerSeries, removeSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
@@ -18,7 +18,7 @@ import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -59,13 +59,14 @@ import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, 
 import { applyPoint, IDENTITY } from './imaging/rigid';
 import { AlignmentSection } from './components/AlignmentSection';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
-import { alignmentPair, deriveKept, findRole, KEPT_STORAGE, match, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION } from './arrangements/builtin';
+import { activeStudyContext, alignmentPair, deriveKept, findRole, KEPT_STORAGE, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
+import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
 import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
 import { seriesName } from './ui/seriesNames';
+import { withFound, withImported } from './ui/seriesOrder';
 // Tokens first: component rules in styles.css must win over the shared ones at equal specificity.
 import './theme.css';
 import './styles.css';
@@ -89,7 +90,7 @@ type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showRef
   /** Single-character shortcuts (W, S, L, 0, M, +, −…) can be turned off (WCAG 2.1.4). */ singleKeys: boolean;
   /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
 const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
-type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | null;
+type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | 'fusion' | null;
 type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'alignment' | 'workspace' | 'units' | 'mouse';
 const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'alignment', 'workspace', 'units', 'mouse'];
 const SECTION_STORAGE = 'veacom:inspector-sections';
@@ -127,7 +128,7 @@ const measureIcon = (tool: Tool, size = 18, tagged = false) => { const Icon = ME
 /** softTissue → soft-tissue: action ids and window classes are kebab-case. */
 const kebab = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 // The engine reports progress by stage name; unknown stages are shown as reported.
-const STAGES: Record<string, MessageKey> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
+const STAGES: Partial<Record<string, MessageKey>> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
 const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
 const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
 /** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
@@ -217,7 +218,11 @@ function defaultView(series: Series): ViewState {
     windowWidth: Math.max(1, frame?.windowWidth ?? series.windowWidth), ...petLook(series) };
 }
 /** The arrangements VEAcom applies, with the reader's kept ones in place of its own. */
-const KEPT_ARRANGEMENTS = (kept: Kept) => withKept(kept, BUILTIN_ARRANGEMENTS);
+const PET_LAYOUTS = [
+  [PET_CT, 'layout-pet-fused', 'arrangement.petCt.fused'],
+  [PET_CT_READING, 'layout-pet-reading', 'arrangement.petCt.reading'],
+  [PET_FOLLOW_UP, 'layout-pet-follow-up', 'arrangement.petFollowUp'],
+] as const;
 function readKeptArrangements(): Kept {
   try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
 }
@@ -385,7 +390,7 @@ export default function App() {
   const { locale, t } = useTranslation();
   const toolLabel = (tool: Tool) => t(`tool.${tool}` as const);
   const presetName = (preset: typeof PRESETS[number]) => t(`preset.${preset.key}` as const);
-  const stageLabel = (stage: string) => STAGES[stage] ? t(STAGES[stage]) : stage;
+  const stageLabel = (stage: string) => { const key = STAGES[stage]; return key ? t(key) : stage; };
   const planeLabel = (plane: Plane) => t(`planeLower.${plane}` as const);
   const [series, setSeries] = useState<Series[]>([]);
   const seriesById = new Map(series.map(item => [item.id, item]));
@@ -453,6 +458,12 @@ export default function App() {
   // The engine job Cancel was pressed for: "Cancelling…" shows while that job is the one in progress, not for the next.
   const [cancelledId, setCancelledId] = useState<number | null>(null);
   const cancelling = progress !== null && cancelledId !== null && progress.id === cancelledId;
+  // Cancel for the job the progress shows: in the strip above the images, or in the status bar while a series decodes.
+  const cancelProgress = () => {
+    if (!progress) return;
+    setCancelledId(progress.id ?? null);
+    void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); });
+  };
   const [notice, setNotice] = useState<Notice | null>(null);
   const say = (key: MessageKey, kind: Notice['kind'], params?: MessageParams, transient = false) => setNotice({ message: t(key, params), kind, key, params, transient });
   const [graphics, setGraphics] = useState<Graphics | null>(null);
@@ -626,7 +637,7 @@ export default function App() {
   const pictureNote = activeSeries?.warningNotes?.find(note => note.code === 'series.ordinaryImage');
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
-  const activeVolume = activeSlot ? volumeForSlot(activeSlot) : undefined;
+  const activeVolume = volumeForSlot(activeSlot);
   if (activeVolume?.series.sourceFramesOnly) {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
@@ -636,7 +647,7 @@ export default function App() {
   const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
-  const activeAnnotations = activeSlot?.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
+  const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
   const inspectorShown = Boolean(settings.panel) && (!showAssessment || assessmentBehind);
@@ -701,7 +712,8 @@ export default function App() {
   const toActive = activeVolume && crosshairOrigin ? transformBetween(alignments, crosshairOrigin.series, activeVolume.series) : null;
   const activeCrosshair = crosshair && toActive ? mapPoint(toActive, crosshair) : crosshair;
   // The alignment that places the active pane's series or its fused overlay: the display panel's alignment section.
-  const activeAlignment = activeSeries ? alignmentOf(alignments, activeSeries) ?? (fusionPet && fusesOver(activeSeries, fusionPet, alignments) ? alignmentOf(alignments, fusionPet) : null) : null;
+  const displayedOverlay = activeVolume && fusion && !activeSlot.unfused && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && fusesOver(activeVolume.series, fusion.volume.series, alignments) ? fusion.volume.series : undefined;
+  const activeAlignment = activeSeries ? alignmentOf(alignments, activeSeries, displayedOverlay) : null;
   const nudgeAlignment = (alignment: Alignment, nudge: Nudge) => {
     // Turned about the middle of what the active pane shows, so what the reader is looking at stays put.
     const slot = slotsRef.current.find(item => item.id === activeIdRef.current), shown = slot?.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
@@ -879,10 +891,12 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
-    void loadPreviewVolume(item).then(async volume => {
-      if (complete || !mounted.current || !isCurrent() || fullyLoaded.current.has(item.id)) return;
+    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
+    const previewWanted = () => !complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
+    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
+      if (!previewWanted()) return;
       await prepareSourceProgram(volume);
-      if (!complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id)) storeVolume(volume);
+      if (previewWanted()) storeVolume(volume);
     }).catch(() => { /* The full decoder supplies the actionable error. */ });
     return full;
   };
@@ -896,20 +910,16 @@ export default function App() {
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
   useEffect(() => {
-    if (loadingIds.size) return;
+    if (importing || loadingIds.size) return;
     let stopped = false, cursor = 0;
-    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && (!hasThumbnail(item.id) || !volumesRef.current.has(item.id))).slice(0, 40);
+    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
-      // The card shows the middle frame. An opened pane can use the first frame while the volume loads.
-      if (!hasThumbnail(item.id)) {
-        const middle = await loadSourceFrame(item, thumbnailFrame(item));
-        if (!current()) return;
-        keepThumbnail(middle);
-      }
-      if (!current() || volumesRef.current.has(item.id)) return;
-      const volume = await loadPreviewVolume(item);
-      if (current() && !pending.current.has(item.id) && !fullyLoaded.current.has(item.id)) {
-        const next = new Map(volumesRef.current); next.set(item.id, volume); publishLoadedVolumes(next);
+      const volume = fullyLoaded.current.has(item.id) ? volumesRef.current.get(item.id) : undefined;
+      const middle = volume ?? await frameCache.get(item, thumbnailFrame(item));
+      if (!current()) return;
+      keepThumbnail(middle);
+      if (!volumesRef.current.has(item.id) && !pending.current.has(item.id)) {
+        const next = new Map(volumesRef.current); next.set(item.id, middle); publishLoadedVolumes(next);
       }
     }
     const preload = async () => {
@@ -924,7 +934,7 @@ export default function App() {
     };
     void preload(); void preload();
     return () => { stopped = true; };
-  }, [series, loadingIds.size]);
+  }, [series, importing, loadingIds.size, frameCache]);
 
   useEffect(() => {
     // While a study is read, frames come only for the series it has already published (see importStudies).
@@ -993,22 +1003,24 @@ export default function App() {
     // the first opens at once and the others join the list. The import's own result is the final word on them.
     const early = new Map<string, Series>();
     let watching = true, opened = false;
+    // Asked after each wait: the import's own result ends the watch, and so does the app unmounting.
+    const stillWatching = () => watching && mounted.current;
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
     void (async () => {
       let after = 0;
-      while (watching) {
+      while (stillWatching()) {
         await new Promise(resolve => setTimeout(resolve, 40));
-        if (!watching || !mounted.current) return;
+        if (!stillWatching()) return;
         let found: Series[];
         try { found = await importEarly(paths, after); } catch { return; /* An engine restart: the import's own result reports it. */ }
-        if (!watching || !mounted.current) return;
+        if (!stillWatching()) return;
         after += found.length;
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
         for (const item of images) { early.set(item.id, item); earlySeries.current.add(item.id); }
-        setSeries(current => { const next = new Map(current.map(item => [item.id, item])); for (const item of images) next.set(item.id, item); return [...next.values()]; });
+        setSeries(current => withFound(current, images, listedBefore));
         if (!opened) { opened = true; assignSeries(activeIdRef.current, images[0]); }
       }
     })();
@@ -1029,26 +1041,24 @@ export default function App() {
       setAnnotations(current => {
         const next = { ...current }; let changed = false;
         for (const item of result.series) {
-          if (!current[item.id]) continue;
-          next[item.id] = current[item.id].map(annotation => {
+          if (!Object.hasOwn(current, item.id)) continue;
+          const kept = current[item.id];
+          const moved = kept.map(annotation => {
             if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
             const index = annotationSourceIndex(annotation, item);
             if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
-            changed = true; return { ...annotation, sourceFrame: index, slice: index };
+            return { ...annotation, sourceFrame: index, slice: index };
           });
+          if (moved.some((annotation, i) => annotation !== kept[i])) { next[item.id] = moved; changed = true; }
         }
         return changed ? next : current;
       });
       const visibleIds = new Set([...slotsRef.current.map(slot => slot.seriesId), fusionIdRef.current, ...assessmentPinnedIds.current]);
       for (const item of result.series) if (visibleIds.has(item.id) && !settled.has(item.id)) loadPaneImage(item);
-      // The list in the import's own order: series listed before it stay where they were; its new ones, those opened
-      // early among them, follow in its catalogue order rather than the order they were found in.
-      setSeries(current => {
-        const latest = new Map(result.series.map(item => [item.id, item]));
-        const placed = new Set([...result.series.map(item => item.id), ...early.keys()].filter(id => !listedBefore.has(id)));
-        const kept = current.filter(item => !placed.has(item.id)).map(item => latest.get(item.id) ?? item);
-        return [...kept, ...result.series.filter(item => !listedBefore.has(item.id))];
-      });
+      // The study just opened leads the list (src/ui/seriesOrder.ts): its new series, those opened early among them,
+      // in the import's catalogue order rather than the order they were found in. Series listed before it follow
+      // where they were.
+      setSeries(current => withImported(current, result.series, listedBefore, early.keys()));
       if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
       const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0) ?? result.series.find(item => !item.segmentation);
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
@@ -1100,7 +1110,7 @@ export default function App() {
   const restoreCatalog = async () => {
     // A launch-time study may already be importing in the main process; it opens through importStudies,
     // so the catalog must not open its first series as well.
-    const startupPaths = await window.veacom?.takeStartupPaths?.();
+    const startupPaths = await window.veacom?.takeStartupPaths();
     const result = await listSeries(); if (!mounted.current) return;
     setSeries(current => {
       const merged = new Map(current.map(item => [item.id, item]));
@@ -1131,12 +1141,18 @@ export default function App() {
   useEffect(() => {
     const externalFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files')
       && !event.dataTransfer.types.includes('application/x-veacom-series');
+    // A link dragged in from elsewhere would make the browser leave the page, and the open studies with it: refused.
+    const link = (event: DragEvent) => Boolean(event.dataTransfer?.types.includes('text/uri-list')) && !externalFiles(event);
     const dragOver = (event: DragEvent) => {
+      if (link(event)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
       if (!externalFiles(event)) return;
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
     };
-    const drop = async (event: DragEvent) => {
+    // Up to its first await (the checks and preventDefault) this runs while the drop is dispatched; a failed import is
+    // reported in the notice.
+    const dropFiles = async (event: DragEvent) => {
+      if (link(event)) { event.preventDefault(); return; }
       if (!externalFiles(event)) return;
       event.preventDefault();
       const files = Array.from(event.dataTransfer?.files ?? []);
@@ -1153,6 +1169,7 @@ export default function App() {
         void onImport(paths, 'drop');
       } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
     };
+    const drop = (event: DragEvent) => { void dropFiles(event); };
     document.addEventListener('dragover', dragOver); document.addEventListener('drop', drop);
     return () => { document.removeEventListener('dragover', dragOver); document.removeEventListener('drop', drop); };
   }, []);
@@ -1351,7 +1368,7 @@ export default function App() {
     beforeMpr.current = null; setIsMpr(false); setMenu(null); setLayout([rows, columns]);
     const current = slotsRef.current;
     const panes = Array.from({ length: rows * columns }, (_, index) => {
-      const item = items[index], slot = current[index] ?? makeSlot();
+      const item = items.at(index), slot = current[index] ?? makeSlot();
       return item ? { ...slot, seriesId: item.id, view: defaultView(item) } : { ...slot, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] as [number, number] } };
     });
     setSlots(panes); activateSlot(panes[0].id);
@@ -1550,8 +1567,7 @@ export default function App() {
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
-  // Arrangements (src/arrangements, docs/arrangements.md): a study that opens lays itself out, the reader corrects it,
-  // VEAcom remembers. Applying one records no usage action: nothing was pressed.
+  // Automatic PET fusion records no click. Requested reading screens record the control the reader pressed.
   const arrangementName = (plan: Plan) => plan.arrangement.name ? t(plan.arrangement.name) : '';
   /** The panes on screen as an arrangement sees them: each one's series, view, and the PET fused over it. */
   const shownPanes = () => slotsRef.current.map(slot => {
@@ -1565,7 +1581,7 @@ export default function App() {
     const current = arranged.current, ids = slotsRef.current.map(slot => slot.id);
     return Boolean(current && ids.length === current.slotIds.length && ids.every(id => current.slotIds.includes(id)));
   };
-  /** Keeps the arranged screen as the reader rearranged it: the next study it matches opens so. */
+  /** Keeps the arranged screen as the reader rearranged it: the next time it is laid out, it opens so. */
   const keepArrangement = (slotId: string) => {
     const current = arranged.current;
     const variant = current && stillArranged() ? deriveKept(current.plan, shownPanes(), layoutRef.current) : null;
@@ -1581,27 +1597,27 @@ export default function App() {
       keepAction: 'keep', onKeep: () => { setPaneToast(null); keepArrangement(slotId); } });
   };
   /** Lays a study out as `plan` says: its panes, links and fusion, with a note in the first pane naming it and Undo. Undo
-   * puts back what was on screen with `first` in the active pane (what VEAcom shows without arrangements), and offers to
-   * keep that instead. */
-  const applyArrangement = (plan: Plan, first: Series, session?: readonly Series[]) => {
+   * puts back what was on screen. For a study that opened so, it puts `first` in the active pane (what VEAcom shows
+   * without arrangements) and offers to keep that instead; a screen the reader asked for is simply taken back. */
+  const applyArrangement = (plan: Plan, first?: Series, session?: readonly Series[]) => {
     const before = { slots: slotsRef.current, layout: layoutRef.current, activeId: activeIdRef.current, hidden: hiddenSlots.current, maximized: maximizedRef.current,
-      linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current,
-      alignments: alignmentsRef.current };
+      alignments: alignmentsRef.current, mpr: beforeMpr.current, isMpr, arranged: arranged.current,
+      linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current };
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
     const separateScales = plan.arrangement.scale === 'shared' && !sharesSuvScale(plan);
     let panes: Slot[] = Array.from({ length: rows * columns }, (_, index) => {
-      const pane = plan.panes[index], id = current[index]?.id ?? crypto.randomUUID();
+      const pane = plan.panes.at(index), id = current[index]?.id ?? crypto.randomUUID();
       if (!pane) return { id, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } };
       const spec = separateScales && !plan.arrangement.kept ? { ...pane.spec, display: { ...pane.spec.display, window: undefined } } : pane.spec;
       return { id, seriesId: pane.series.id, view: paneView(pane.series, spec, defaultView(pane.series)), unfused: spec.show !== 'fused' };
     });
     // The panes in one frame of reference start where the first one opens, so they page together from there.
-    const lead = plan.panes[0];
+    const lead = plan.panes.at(0);
     if (lead) {
       const at = getPlaneFrame(lead.series, panes[0].view).center;
       panes = panes.map((slot, index) => {
-        const pane = plan.panes[index];
+        const pane = plan.panes.at(index);
         return index && pane && !pane.spec.view && shareFrame(lead.series, pane.series) && !isProjection(pane.series, slot.view) ? { ...slot, view: { ...slot.view, slice: sliceAtWorld(pane.series, slot.view, at) } } : slot;
       });
     }
@@ -1612,10 +1628,12 @@ export default function App() {
     if (linked !== settingsRef.current.linked) setSettings(state => ({ ...state, linked }));
     const fusedAt = plan.panes.findIndex(pane => pane.spec.show === 'fused'), over = fusedAt >= 0 ? plan.roles[plan.panes[fusedAt].spec.over ?? ''] : undefined;
     if (over) { setShowFusion(true); fusePet(over, plan.panes[fusedAt].series, panes[fusedAt].id, true); }
+    else stopFusion();
     arranged.current = { plan, slotIds: panes.map(slot => slot.id) };
     const name = arrangementName(plan), notice = plan.arrangement.notice;
     const undo = () => {
-      arranged.current = null; fusionRequest.current++;
+      arranged.current = first ? null : before.arranged; fusionRequest.current++;
+      beforeMpr.current = before.mpr; setIsMpr(before.isMpr);
       hiddenSlots.current = before.hidden; setMaximized(before.maximized);
       setSlots(before.slots); setLayout(before.layout); activateSlot(before.activeId);
       setSettings(state => state.linked === before.linked ? state : { ...state, linked: before.linked });
@@ -1625,7 +1643,12 @@ export default function App() {
       for (const id of new Set(before.slots.map(slot => slot.seriesId))) {
         const item = seriesRef.current.find(value => value.id === id); loadPaneImage(item);
       }
-      assignSeries(before.activeId, first);
+      if (!first) {
+        const shown = before.slots.find(slot => slot.id === before.activeId)?.seriesId;
+        if (shown) setPaneToast({ slotId: before.activeId, seriesId: shown, text: t('arrangement.undone', { name }) });
+        return;
+      }
+      if (before.slots.find(slot => slot.id === before.activeId)?.seriesId !== first.id) assignSeries(before.activeId, first);
       setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.undone', { name }), sticky: true, keepAction: 'keep-plain', onKeep: () => {
         saveKept({ ...keptRef.current, [plan.arrangement.id]: { off: true } });
         setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.keptPlain', { name }) });
@@ -1680,7 +1703,7 @@ export default function App() {
   const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study) => {
     arranged.current = null;
     // The session's other studies are where a prior study's role is found (the PET follow-up screen).
-    const plan = match(KEPT_ARRANGEMENTS(keptRef.current), 'open', { series: study, session });
+    const plan = matchOnOpen(keptRef.current, { series: study, session });
     // Without an arrangement, a series already shown (opened while the study was still read) stays as it is.
     if (plan) applyArrangement(plan, first, session); else if (!keepShown) assignSeries(activeIdRef.current, first);
   };
@@ -1818,7 +1841,7 @@ export default function App() {
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
     if ((mode === 'video' || mode === 'images') && activeVolume?.sourceFrameIndex !== undefined) { say('notice.videoAfterLoad', 'info'); return; }
-    if ((mode === 'video' || mode === 'images') && activeSlot && activeVolume) {
+    if ((mode === 'video' || mode === 'images') && activeVolume) {
       const viewport = gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
       if (!viewport) return;
       const id = activeSlot.id;
@@ -1894,9 +1917,11 @@ export default function App() {
     if (!activeVolume || framePending || activeVolume.series.components === 3) return;
     const request = ++windowRequest.current, { view, id } = activeSlot;
     const current = () => mounted.current && request === windowRequest.current && slotsRef.current.find(slot => slot.id === id)?.view === view
-      && displayVolumesRef.current.get(activeVolume.series.id)?.series.sourceRevision === activeVolume.series.sourceRevision;
+      && displayVolumesRef.current.get(activeVolume.series.id)?.data === activeVolume.data;
     try {
-      const range = activeVolume.series.sourceRevision ? await measureWindow(activeVolume.series, view, automatic)
+      const reconstruction = !usesSourceFrames(activeVolume.series, view) && !isProjection(activeVolume.series, view) && !view.slab;
+      const range = reconstruction ? await reconstructedWindow(activeVolume, view, automatic, current)
+        : activeVolume.series.sourceRevision ? await measureWindow(activeVolume.series, view, automatic)
         : (automatic ? autoWindow : fullRangeWindow)(activeVolume, usesSourceFrames(activeVolume.series, view) ? view.slice : undefined);
       if (!range || !current()) return;
       if (automatic) autoWindows.current.set(id, `${Math.round(range.windowWidth)}/${Math.round(range.windowCenter)}`);
@@ -1959,7 +1984,7 @@ export default function App() {
     if (plainKey) {
       // VEAcom 1.x's window keys: 0 the series' own window, 1 the slice's full range, 2-9 the CT presets,
       // Shift+A the automatic window, I invert.
-      if (activeSlot && activeVolume && activeVolume.series.components !== 3) {
+      if (activeVolume && activeVolume.series.components !== 3) {
         if (event.shiftKey && event.key.toLowerCase() === 'a') { event.preventDefault(); key('preset-auto'); applyAutoWindow(); return; }
         if (!event.shiftKey && /^[0-9]$/.test(event.key)) {
           event.preventDefault();
@@ -1971,22 +1996,23 @@ export default function App() {
         }
         if (!event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); key('invert'); updateView(activeSlot.id, { inverted: !activeSlot.view.inverted }); return; }
       }
-      const tools: Record<string, Tool> = { s: 'scroll', w: 'window', p: 'pan', z: 'zoom', l: 'length', a: 'angle', e: 'ellipse', r: 'rectangle', c: 'crosshair', t: 'text', v: 'sphere' };
-      if (tools[event.key.toLowerCase()]) {
-        const chosen = tools[event.key.toLowerCase()]; key(`tool-${chosen}`);
+      const tools: Partial<Record<string, Tool>> = { s: 'scroll', w: 'window', p: 'pan', z: 'zoom', l: 'length', a: 'angle', e: 'ellipse', r: 'rectangle', c: 'crosshair', t: 'text', v: 'sphere' };
+      const chosen = tools[event.key.toLowerCase()];
+      if (chosen) {
+        key(`tool-${chosen}`);
         if (MEASURE_TOOLS.includes(chosen)) toggleMeasure(chosen); else setTool(chosen);
         return;
       }
       if (event.key === 'm') { key('tool-mpr'); mpr(); return; }
       if (event.key === '?') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
-      if (activeSlot && activeVolume && ['+', '=', '-', '_'].includes(event.key)) {
+      if (activeVolume && ['+', '=', '-', '_'].includes(event.key)) {
         const view = activeSlot.view, zoom = Math.max(0.1, Math.min(30, view.zoom * (event.key === '-' || event.key === '_' ? 1 / 1.25 : 1.25))), scale = zoom / view.zoom;
         key('key-zoom', true); updateView(activeSlot.id, { zoom, pan: [view.pan[0] * scale, view.pan[1] * scale] }); return;
       }
     }
     // Slice keys belong to the image: panels, lists and the toolbar keep their own arrow keys and scrolling.
     if (target.closest('.inspector, .series-browser, .assessment-overlay, [role="toolbar"], [role="tablist"], [role="dialog"], .popover-menu')) return;
-    if (activeSlot && activeVolume && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
+    if (activeVolume && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
       key('key-slice', true);
       event.preventDefault(); const direction = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (pagesBackwards(activeVolume.series, activeSlot.view) ? -1 : 1);
       const stride = event.key.startsWith('Page') ? 10 : 1;
@@ -1999,15 +2025,15 @@ export default function App() {
   }, []);
 
   const testState = useEffectEvent(() => ({
-    activeSeriesId: activeSlot?.seriesId ?? null, dimensions: activeVolume?.series.dimensions ?? null,
+    activeSeriesId: activeSlot.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
     fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
-    sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume && activeSlot ? renderedView(activeVolume, activeSlot.view) : null,
+    sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
     sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
     series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
       ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
       // For the gated SPECT check: each gate's phase and where its slices lie.
       ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
-    shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot?.view ?? null,
+    shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot.view,
     // For the arrangement checks: the panes on screen and what each one shows.
     // For the registration checks: the frames aligned, and whether the engine is still finding one.
     aligning, alignments: alignments.map(item => ({ fixedSeriesId: item.fixedSeriesId, movingSeriesId: item.movingSeriesId, matrix: [...item.matrix], adjusted: adjusted(item),
@@ -2042,14 +2068,14 @@ export default function App() {
       return { slot, volume, shown, plane, index: slot.seriesId ? series.findIndex(item => item.id === slot.seriesId) + 1 : 0 };
     });
     const active = panes.find(pane => pane.slot.id === activeId) ?? panes[0];
-    const count = active?.volume ? sliceCount(active.volume.series, active.shown) : 0;
+    const count = active.volume ? sliceCount(active.volume.series, active.shown) : 0;
     const join = (values: unknown[]) => values.map(value => String(value ?? '')).join('|');
     return {
       surface, layout: isMpr ? 'mpr' : `${layout[0]}x${layout[1]}`, tool, modality: activeSeries?.modality ?? 'none',
-      plane: active?.plane ?? 'none', window: active ? windowClass(active.volume, active.slot.view, autoWindows.current, active.slot.id) : 'none',
-      wl: active?.volume && active.volume.series.components !== 3 ? `${Math.round(active.shown.windowWidth)}/${Math.round(active.shown.windowCenter)}` : undefined,
-      zoom: active?.volume ? active.shown.zoom : undefined, seriesIndex: active?.index ?? 0,
-      slicePct: !active?.volume ? -1 : count > 1 ? Math.round(Math.min(1, Math.max(0, active.shown.slice / (count - 1))) * 100) : 0,
+      plane: active.plane, window: windowClass(active.volume, active.slot.view, autoWindows.current, active.slot.id),
+      wl: active.volume && active.volume.series.components !== 3 ? `${Math.round(active.shown.windowWidth)}/${Math.round(active.shown.windowCenter)}` : undefined,
+      zoom: active.volume ? active.shown.zoom : undefined, seriesIndex: active.index,
+      slicePct: !active.volume ? -1 : count > 1 ? Math.round(Math.min(1, Math.max(0, active.shown.slice / (count - 1))) * 100) : 0,
       facets: {
         // A PET fused over the images is a series on screen too.
         series: `${join(panes.map(pane => pane.index))}${fusion ? `+${series.findIndex(item => item.id === fusion.volume.series.id) + 1}` : ''}`, plane: join(panes.map(pane => pane.plane)),
@@ -2079,7 +2105,7 @@ export default function App() {
     void bridge?.usageStatus?.().then(status => { if (mounted.current) { setUsageConsent(status.consent); usage.setSharing(status.consent === 'granted'); } })
       .catch(() => { /* Nothing is shared without an answer. */ });
     const removeListeners = installUsageListeners(document);
-    const frame = (event: Event) => usage.frameShown((event as CustomEvent<{ seriesId?: string }>).detail?.seriesId);
+    const frame = (event: Event) => usage.frameShown((event as CustomEvent<{ seriesId?: string }>).detail.seriesId);
     const unload = () => { usage.closeStudy('quit'); usage.flush(true); };
     window.addEventListener('veacom:frame', frame);
     window.addEventListener('pagehide', unload);
@@ -2197,7 +2223,7 @@ export default function App() {
     const window = activeVolume ? windowFor(activeVolume.series, { unit: 'SUV', from: 0, to }) : null;
     if (window) { updateView(activeSlot.id, { ...window, windowMode: 'manual' }); offerKeep.current(activeSlot.id); }
   };
-  const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : (activeVolume && suvWindowText(activeVolume.series, activeDisplayView)) || t('toolbar.customWindow'))
+  const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : suvWindowText(activeVolume.series, activeDisplayView) || t('toolbar.customWindow'))
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
   const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
@@ -2207,6 +2233,12 @@ export default function App() {
   // An MR fuses with another MR beside it, or with a PET or SPECT of the same patient acquired apart, aligned first.
   const mrApart = Boolean(mrActive && activeSeries && overlayChoices.some(item => !shareFrame(item, activeSeries)));
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length && !mrApart : !petSeries.length);
+  const fusionWhy = mrActive ? (mrBeside.length || mrApart ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
+  // The nuclear medicine screen of the active pane's study (PET follow-up, PET/CT, whole body or SPECT/CT, as kept),
+  // offered beside the fusion button. Only the prior role can use another study in the session.
+  const activeStudy = activeSeries ? activeStudyContext(activeSeries, series) : null;
+  const nmScreen = activeStudy ? match(withKept(kept, NUCLEAR_MEDICINE_SCREENS), 'screen', activeStudy) : null;
+  const openNmScreen = () => { if (nmScreen) applyArrangement(nmScreen); };
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
@@ -2225,13 +2257,16 @@ export default function App() {
     { id: 'open', group: 'file', node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<FolderOpen size={18} />} label={t('toolbar.open')} shortcut={`${mod}+O`} testId="tool-open" popup="menu" indicator expanded={menu === 'import'} onClick={() => toggleMenu('import')} />
       {menu === 'import' && <Menu label={t('toolbar.open')} onClose={closeMenu}>
-        <MenuItem action="import-dialog" icon={<FolderOpen size={16} />} shortcut={combo(mod, 'O')} onClick={() => void openImport()}>{t('toolbar.openWindow')}</MenuItem>
-        <MenuDivider />
-        <MenuItem action="toolbar-open-folder" icon={<FolderOpen size={16} />} onClick={() => void open('folder')}>{t('toolbar.openFolder')}</MenuItem>
+        {bridgeCan('importWindow') && <>
+          <MenuItem action="import-dialog" icon={<FolderOpen size={16} />} shortcut={combo(mod, 'O')} onClick={() => void openImport()}>{t('toolbar.openWindow')}</MenuItem>
+          <MenuDivider />
+        </>}
+        {/* Without the import window (the browser), the shortcut opens a folder. */}
+        <MenuItem action="toolbar-open-folder" icon={<FolderOpen size={16} />} shortcut={bridgeCan('importWindow') ? undefined : combo(mod, 'O')} onClick={() => void open('folder')}>{t('toolbar.openFolder')}</MenuItem>
         <MenuItem action="toolbar-open-files" icon={<Files size={16} />} onClick={() => void open('files')}>{t('toolbar.openFiles')}</MenuItem>
         <MenuItem action="toolbar-open-archive" icon={<FileArchive size={16} />} onClick={() => void open('archive')}>{t('toolbar.openArchive')}</MenuItem>
       </Menu>}</div> },
-    { id: 'cd', group: 'file', node: <ToolButton icon={<Glyph name="cd" />} label={t('toolbar.openDisc')} testId="tool-open-disc" onClick={() => void openImport('disc')} /> },
+    ...(bridgeCan('discImport') ? [{ id: 'cd', group: 'file', node: <ToolButton icon={<Glyph name="cd" />} label={t('toolbar.openDisc')} testId="tool-open-disc" onClick={() => void openImport('disc')} /> } satisfies ToolbarItem] : []),
     { id: 'export', group: 'file', node: <ToolButton icon={<Upload size={18} />} label={t('toolbar.export')} shortcut={`${mod}+E`} testId="tool-export" disabled={!activeSeries} onClick={() => openExport('dicom')} /> },
     // In VEAcom Next's order: left, right, the wheel's scrolling, then the middle button's press.
     ...(['left', 'right', 'wheel', 'middle'] as const).map((button): ToolbarItem => {
@@ -2260,6 +2295,12 @@ export default function App() {
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
         <LayoutPicker layout={layout} label={t('toolbar.layoutPreview')} choiceLabel={(rows, columns) => t('toolbar.layoutChoice', { rows, columns })} onChoose={chooseLayout} />
+        {activeStudy && PET_LAYOUTS.map(([rule, action, key]) => {
+          const plan = match([rule], rule.when, activeStudy);
+          if (!plan) return null;
+          return <button className="secondary-button compact" type="button" data-action={action} key={action}
+            onClick={() => applyArrangement(plan)}>{t(key)}</button>;
+        })}
       </Popover>}</div> },
     { id: 'measure', group: 'measure', node: <div className="menu-anchor" data-menu><div className="split">
         <ToolButton icon={measureIcon(lastMeasure, 18, true)} label={t('toolbar.measurement', { tool: toolLabel(lastMeasure) })} shortcut={singleKey(TOOL_KEYS[lastMeasure])} testId="tool-measure" disabled={noStudy} active={MEASURE_TOOLS.includes(tool)} onClick={() => toggleMeasure(MEASURE_TOOLS.includes(tool) ? tool : lastMeasure)} />
@@ -2287,7 +2328,12 @@ export default function App() {
         <MenuDivider />
         <MenuItem action="toolbar-window-palette-orientation" icon={<SlidersHorizontal size={16} />} onClick={() => act(() => openPanelSection('window'))}>{t('toolbar.windowPaletteOrientation')}</MenuItem>
       </Menu>}</div> },
-    ...(petSeries.length || mrFusable ? [    { id: 'fusion', group: 'window', priority: 3, node: <ToolButton icon={<Glyph name="fusion" />} label={t(mrActive || !petSeries.some(item => item.modality === 'PT') ? 'toolbar.fusionPlain' : 'toolbar.fusion')} testId="tool-fusion" disabled={fusionDisabled} why={mrActive && !mrBeside.length && !mrApart ? t('fusion.whyMrPane') : undefined} active={showFusion} onClick={() => showFusion ? stopFusion() : startFusion()} /> }] : []),
+    ...(petSeries.length || mrFusable || nmScreen ? [    { id: 'fusion', group: 'window', priority: 3, node: <div className="menu-anchor" data-menu><div className="split">
+      <ToolButton icon={<Glyph name="fusion" />} label={t(mrActive || !petSeries.some(item => item.modality === 'PT') ? 'toolbar.fusionPlain' : 'toolbar.fusion')} testId="tool-fusion" disabled={fusionDisabled} why={fusionWhy} active={showFusion} onClick={() => showFusion ? stopFusion() : startFusion()} />
+      {nmScreen && <MenuChevron label={t('toolbar.fusionMenu')} expanded={menu === 'fusion'} testId="tool-fusion-menu" onClick={() => toggleMenu('fusion')} />}
+    </div>{menu === 'fusion' && nmScreen && <Menu label={t('toolbar.fusionMenu')} onClose={closeMenu}>
+      <MenuItem action="nm-screen" meta={arrangementName(nmScreen)} onClick={() => act(openNmScreen)}>{t('toolbar.nmScreen')}</MenuItem>
+    </Menu>}</div> }] : []),
     { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu><div className="split">
       <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('help.mpr')}`} hint={isMpr ? t('toolbar.restorePrevious') : undefined} shortcut={singleKey('M')} testId="tool-mpr" active={isMpr} disabled={!canReconstruct && !isMpr} why={mprWhy} onClick={mpr} />
       <MenuChevron label={t('toolbar.mprPlanes')} expanded={menu === 'mpr'} testId="tool-mpr-menu" disabled={noImage} onClick={() => toggleMenu('mpr')} />
@@ -2327,7 +2373,9 @@ export default function App() {
       <ToolButton icon={<ZoomIn size={18} />} label={t('tool.zoom')} shortcut={singleKey('Z')} testId="tool-quick-zoom" disabled={noStudy} active={tool === 'zoom'} onClick={() => setTool('zoom')} />
       <ToolButton icon={<Crosshair size={18} />} label={t('tool.crosshair')} shortcut={singleKey('C')} testId="tool-crosshair" disabled={noStudy} active={tool === 'crosshair'} onClick={() => setTool('crosshair')} />
     </div> },
-    { id: 'reset', group: 'tools', priority: 8, node: <ToolButton icon={<RotateCcw size={18} />} label={t('help.resetView')} testId="tool-reset-view" disabled={noImage} onClick={resetView} /> },
+    // The reset beside the tools brings the mouse buttons back to their defaults; the view resets with a double click or
+    // the side panel's button.
+    { id: 'reset', group: 'tools', priority: 8, node: <ToolButton icon={<RotateCcw size={18} />} label={t('mouse.reset')} testId="mouse-reset" onClick={resetMouse} /> },
     { id: 'panel', group: 'app', node: <ToolButton icon={inspectorShown ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />} label={t('toolbar.inspector')} testId="tool-inspector" active={inspectorShown}
       onClick={() => { if (inspectorShown) setPanel(null); else { if (showAssessment) setAssessmentBehind(true); setPanel(settings.panel ?? 'display'); } }} /> },
     { id: 'help', group: 'app', node: <ToolButton icon={<CircleHelp size={18} />} label={t('toolbar.shortcuts')} shortcut={singleKey('?')} testId="tool-help" onClick={() => setShowHelp(true)} /> },
@@ -2344,7 +2392,7 @@ export default function App() {
           <Glyph name={TOOL_GLYPHS[item]} size={22} /><span>{t(`quick.short.${item}` as 'quick.short.window')}</span></button>)}
       </div>
       <MenuDivider /><MenuHeading>{t('quick.measure')}</MenuHeading>
-      {MEASURE_TOOLS.map(item => <MenuItem action="menu-option" key={item} kind="radio" checked={tool === item} icon={<Glyph name={TOOL_GLYPHS[item]} size={18} />} shortcut={TOOL_KEYS[item] ? singleKey(TOOL_KEYS[item]!) : undefined} onClick={() => quickAct(() => setTool(item))}>{toolLabel(item)}</MenuItem>)}
+      {MEASURE_TOOLS.map(item => <MenuItem action="menu-option" key={item} kind="radio" checked={tool === item} icon={<Glyph name={TOOL_GLYPHS[item]} size={18} />} shortcut={TOOL_KEYS[item] ? singleKey(TOOL_KEYS[item]) : undefined} onClick={() => quickAct(() => setTool(item))}>{toolLabel(item)}</MenuItem>)}
       <MenuDivider /><MenuHeading>{t('quick.colour')}</MenuHeading>
       <div className="quick-colours" role="group" aria-label={t('quick.colour')}>
         {(['gray', 'hot', 'ge', 'rainbow'] as const).map(palette => <button key={palette} type="button" role="menuitemradio" tabIndex={-1} aria-checked={(activeSlot.view.palette ?? 'gray') === palette} className="quick-swatch" data-action="menu-option"
@@ -2374,7 +2422,9 @@ export default function App() {
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
         {usageConsent === null && <div className="notice usage-consent" role="region" aria-label={t('usage.title')} data-testid="usage-consent"><span>{t('usage.question')}</span><span className="usage-consent-actions"><button type="button" className="secondary-button compact" data-testid="usage-consent-share" onClick={() => void chooseUsage('granted')}>{t('usage.share')}</button><button type="button" className="secondary-button compact" data-testid="usage-consent-decline" onClick={() => void chooseUsage('denied')}>{t('usage.decline')}</button></span></div>}
-        {progress && <div className="operation-progress"><LoaderCircle size={12} className="spin" /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={() => { const shown = progress.id ?? null; setCancelledId(shown); void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); }); }}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
+        {/* Not while a series loads: a strip above the image would push the image down and back up for every series
+            opened. That progress, and its Cancel, are in the status bar instead. */}
+        {progress && progress.stage !== 'decode' && <div className="operation-progress"><LoaderCircle size={12} className="spin" /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
         {/* From main (#7): no usable graphics driver, or WebGL drawn in software. */}
         {graphicsNoticeOpen && graphicsError != null && <div className="notice error" role="alert" data-testid="graphics-unavailable-notice"><span>{errorText(graphicsError)}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
         {graphicsNoticeOpen && graphics?.software && <div className="notice warning" role="status" data-testid="software-rendering-notice"><span>{t('gpu.softwareNotice')} <span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
@@ -2420,7 +2470,7 @@ export default function App() {
       </main>
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
-      {checklistShown && activeSeries && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
+      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
         onNote={() => {
@@ -2478,7 +2528,6 @@ export default function App() {
             const neighbour = activeAnnotations[index + 1]?.id ?? activeAnnotations[index - 1]?.id;
             const sphere = sphereOf(annotation);
             return <li className={`annotation-row${annotation.type === 'sphere' ? ' has-details' : ''}`} key={annotation.id} data-annotation-row={annotation.id}><button data-action="measurement-go" type="button" className="annotation-main" disabled={unavailable} onClick={event => {
-              if (!activeSlot) return;
               // A sphere: every linked pane goes to its centre, each in its own plane.
               if (sphere) {
                 if (activeVolume && !isProjection(activeVolume.series, activeSlot.view)) updateView(activeSlot.id, { slice: sliceAtWorld(activeVolume.series, activeSlot.view, sphere.center) });
@@ -2566,14 +2615,14 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress?.stage === 'decode' && <span className="status-export"><progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
         {playing && <CineSpeed fps={cineFps} max={cineMax} onChange={fps => setSettings(current => ({ ...current, cineFps: fps }))} />}
       </div>
-      {/* Feedback to the team: always at hand, never over the images. */}
-      <button type="button" className="status-button status-feedback" data-testid="feedback-open" data-usage-ignore aria-label={t('feedback.open')} data-tooltip={t('feedback.open')} onClick={() => setShowFeedback(true)}><MessageSquare size={13} aria-hidden="true" /><span>{t('feedback.open')}</span></button>
+      {/* Feedback to the team: always at hand, never over the images (where the bridge can send it). */}
+      {bridgeCan('feedback') && <button type="button" className="status-button status-feedback" data-testid="feedback-open" data-usage-ignore aria-label={t('feedback.open')} data-tooltip={t('feedback.open')} onClick={() => setShowFeedback(true)}><MessageSquare size={13} aria-hidden="true" /><span>{t('feedback.open')}</span></button>}
       {/* Language is set rarely, so it lives in the status bar rather than among the imaging tools. */}
       <div className="menu-anchor status-language" data-menu>
         <button type="button" className="status-button" data-testid="tool-language" aria-label={`${t('language.menu')} · ${locale.toUpperCase()}`} data-tooltip={t('language.menu')} aria-haspopup="menu" aria-expanded={menu === 'language'} onClick={() => toggleMenu('language')}><Languages size={13} aria-hidden="true" /><span className="language-code">{locale.toUpperCase()}</span></button>
@@ -2591,7 +2640,7 @@ export default function App() {
         action: reveal && window.veacom?.revealExport ? { label: 'export.openFolder', run: () => void window.veacom?.revealExport?.(reveal).catch(() => {}) } : undefined })} /></Suspense>}
     {showUpdates && <Suspense fallback={null}><UpdateDialog onClose={() => setShowUpdates(false)} /></Suspense>}
     {showFeedback && <Suspense fallback={null}><FeedbackDialog onClose={() => setShowFeedback(false)} onSent={() => say('feedback.sent', 'info', undefined, true)} /></Suspense>}
-    {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={() => { setShowHelp(false); setShowUpdates(true); }} /></Suspense>}
+    {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={bridgeCan('updates') ? () => { setShowHelp(false); setShowUpdates(true); } : undefined} /></Suspense>}
     {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={activeCrosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
       setShow3d(false);
       if (pointFrom3d.current && crosshairRef.current === pointFrom3d.current) setCrosshair(null);

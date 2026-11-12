@@ -10,8 +10,8 @@ const pixelHeaders = ['Content-Type', 'Content-Length', 'Cache-Control', 'X-Pixe
 class ImagingBroker {
   // The engine is reached only through engine.connection().request (its pipes, engine-pipe.cjs), which answers with a
   // Response whose body streams as the engine sends it.
-  constructor({ engine, realpath = fs.realpath, now = Date.now, devOrigin, beforePixel, afterImport }) {
-    Object.assign(this, { engine, realpath, now, devOrigin, beforePixel, afterImport });
+  constructor({ engine, realpath = fs.realpath, now = Date.now, devOrigin, beforePixel, afterImport, preparePictures }) {
+    Object.assign(this, { engine, realpath, now, devOrigin, beforePixel, afterImport, preparePictures });
     this.imports = new Map(); this.activeImports = new Map(); this.pixels = new Map(); this.series = new Map();
     this.epoch = new AbortController();
     this.generation = engine.state().generation;
@@ -30,6 +30,7 @@ class ImagingBroker {
     const selected = [...new Set(await Promise.all(paths.map(value => this.realpath(value))))];
     this.expire(this.imports);
     if (this.imports.size + selected.length > 4096) throw new Error(t('broker.tooManySelections'));
+    this.preparePictures?.(selected);
     return selected.map(value => {
       const capability = `import:${randomUUID()}`;
       this.imports.set(capability, { path: value, expires: this.now() + 10 * 60_000 });

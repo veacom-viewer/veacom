@@ -79,11 +79,13 @@ fn source_bytes(object: &DefaultDicomObject, tag: Tag) -> Result<Vec<u8>> {
 
 fn words(bytes: &[u8], le: bool) -> Result<Vec<u16>> {
     ensure!(
-        bytes.len() % 2 == 0,
+        bytes.len().is_multiple_of(2),
         "Palette word data has an odd byte count"
     );
     Ok(bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|v| {
             if le {
                 u16::from_le_bytes([v[0], v[1]])

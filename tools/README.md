@@ -63,6 +63,19 @@ keeps drawing, and `capturePage()` still returns the current frame. The checks' 
 needs neither. A new desktop check calls `ignoreOutsideInput(desktop)` straight after `firstWindow()`. On Windows the
 windows still take real input, as when the Windows checks last passed.
 
+## When the app does not start or does not quit
+
+Every tool here that opens the desktop app closes it with `closeDesktop(desktop)` (`tools/lib/close-desktop.cjs`), not
+Playwright's `desktop.close()` alone, which waits for the app to quit with no time limit. An app that has not quit after
+20 seconds, longer than its own shutdown, is killed with its helpers and the imaging engine, and the check fails with
+the error that explains it, such as `firstWindow()` timing out. A new desktop check does the same.
+
+On macOS, a few seconds after an app crashes, the crash check's main-process crash included, the system records the
+crash. The app's next start then asks "it unexpectedly quit while reopening windows. Do you want to try to reopen its
+windows again?" before the app is ready, and waits for an answer: no engine and no window. VEAcom ignores the window
+state macOS saves (`electron/main.cjs`), so its starts do not wait on that alert. To see where a stalled start sits,
+`sample <pid> 1` prints the stacks of Electron's main process.
+
 ## Drawing without a graphics driver
 
 On a PC without a usable graphics driver (Microsoft's basic display driver, some remote sessions, drivers Chromium blocklists) Chromium still provides WebGL, drawn in software: on Windows through Direct3D WARP, whose renderer string names the "Microsoft Basic Render Driver". The viewer then shows a notice that drawing is slow and a "Software drawing" marker in the status bar.
@@ -98,13 +111,68 @@ Once it is back, those two tasks run again and fail until their budgets are reco
 `check-budget-coverage.cjs` then fails if any budget went unmeasured. Set `VEACOM_RECORD_BUDGETS=1` to
 write the counts of a run as the new budgets. On macOS and Linux the checks' windows ignore the computer's own mouse and keyboard (see "Using the computer while the desktop checks run"); on Windows, using the computer while they run is counted and fails the budget.
 
+## Opening speed
+
+`check-open-speed.cjs` opens a study with the engine alone (no window) and times three steps: listing (the import),
+the first frame and the full volume. Each open starts a fresh engine. Without `--study` it writes the synthetic
+1,000-slice CT (`make-smoke-study.mjs --pipe-volume`, about 501 MiB) into the output folder and deletes it afterwards.
+
+```sh
+node tools/check-open-speed.cjs --output=/tmp/open-speed
+node tools/check-open-speed.cjs --output=/tmp/open-speed --base=/path/to/other/veacom-core
+```
+
+**Work.** On Linux and macOS, `lib/io-count.c` is loaded into the engine and counts the regular files it opens and the
+bytes it reads under the study folder, per step. These counts are the same on every machine and every run, so
+`open-budgets.json` holds them exactly, like the click budgets: more work fails, less passes and asks for the budget to
+come down, and `VEACOM_RECORD_BUDGETS=1` records them. The summary also gives the bytes read as a multiple of the
+study's size (on 8 Nov 2026, listing the CT opened every file 3 times and read the study twice).
+`tools/verify.sh` runs this part.
+
+**Time.** With `--base`, the two engines open the study in alternating random order: 20 rounds with the file cache
+kept, then 10 with it flushed before each open (Linux and macOS through `sudo -n`, Windows by detaching the virtual
+disk named with `--vhdx` that holds the study). A step counts as slower only when the 95% interval of the change lies
+above 3% and the medians differ by at least 15 ms. Listing, warm full-volume decode and the whole open are gated.
+On Linux and macOS, a second engine lists the same study, then the harness flushes the file cache immediately before
+requesting its volume. This gates cold-volume performance with the same cache state for both builds. The report also
+shows the ordinary volume phase, whose time depends on the data already read while listing. `--rounds` alone times one engine.
+
+Only engines timed in the same run can be compared. On GitHub's runners (8 Nov 2026, the CT above, two copies of one
+engine):
+
+| runner | smallest change one run detects (20 rounds) | same study on three runners |
+|---|---|---|
+| Linux, `ubuntu-24.04` | about 1% | 27–56% apart: each job gets one of several CPUs |
+| Windows, `windows-2022` | about 2% for the whole open, 7–10% for a warm listing | 35–46% apart |
+| macOS, `macos-15` | 14–30% | up to 80% apart |
+
+The `Opening speed` workflow compares each pull request that touches the engine with its base on Linux (and on Windows
+with the `windows` label), and main with the first public beta (`v0.1.0-beta.2`) every night on Linux and Windows,
+so main's speed is followed as a ratio to that fixed build. These runners have no GPU and Windows Defender's real-time
+scanning is off on them, and their disks are fast: what a hospital PC feels needs a PC like it. The app's own steps
+(start-up, drawing, texture upload) are not measured here yet.
+
+## Beta performance comparison
+
+`Beta performance comparison` builds the beta 2 tag and the candidate in separate directories on the same GitHub Linux or macOS runner. It runs nightly on main, by hand, and on a pull request labelled `performance` (when the label is added and on each push while it stays), so ordinary pull requests do not wait its eleven minutes. The engine check uses ten warm and five cache-flushed pairs. The desktop check drops one warm-up pair, then alternates launch order for seven pairs. Every desktop trial has a fresh Electron process and profile. Reports include the raw samples and a paired bootstrap 95% interval for the median change.
+
+With both engines and web apps built and Electron installed, run:
+
+```sh
+BASE_APP=/path/to/beta2 HEAD_APP=/path/to/candidate node tools/check-beta-performance.cjs /tmp/beta-desktop 7
+```
+
+The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
+
+The PNG is measured twice, once as a direct selection and once through **Open files**. The latter substitutes a native picker response after 750 ms in both builds and times from confirmation. A cancelled picker or a DICOM selection immediately closes its unused decoder.
+
 ## Arrangements
 
 `check-arrangements.cjs` opens the synthetic PET/CT from `fixtures/make-petct-study.mjs`. It has a CT, an
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens as CT · PET · fused · MIP with no click. A note names the screen, and no action is recorded.
+- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
 - A click on the MIP sends the linked panes to a lesion.
 - A pane moved and kept changes how the next PET/CT opens.
 - Undo restores the screen from before, and can be kept too.
@@ -116,6 +184,41 @@ CI's desktop job, the Windows job and `tools/verify.sh` run it.
 ```sh
 node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
+```
+
+## PET validation against the vendor workstation
+
+`pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET
+numbers with the scanner vendor's workstation on real, anonymised studies. Given a folder of studies and a JSON file of
+sphere centres and radii per study, it:
+
+- opens each study in the desktop app with a fresh profile, as `check-pet-voi.cjs` does, and finds its PET;
+- draws each sphere on the PET's axial slices, one at a time, where the file says, and checks it against where VEAcom
+  kept it;
+- gives each its role: liver reference (3 cm across), blood pool reference, or lesion at 41% of its SUVmax for MTV;
+- writes what VEAcom shows in SUVbw and, with height and sex, SUL (`readings.csv`), and the SUV factors with what they
+  come from (`factors.csv`);
+- given the vendor's readings (`--vendor`), writes them side by side (`comparison.csv`). It flags SUVmax beyond 1%,
+  SUVpeak beyond 5%, and any difference in the SUV factor or its parameters, and notes the likely cause;
+- records the commit, the build's fingerprints and the inputs in `run.json`.
+
+Real studies, both JSON files and the output stay outside the repository. The tool checks symlink targets, including
+the parent of a new output directory. Its window ignores the computer's own input on macOS and Linux. It exits
+unsuccessfully when a value is beyond its limit or missing. `make-pet-validation-inputs.mjs` writes both JSON files
+for the synthetic follow-up. CI and `tools/verify.sh` compare all expected readings at display precision, including
+reference means, MTV and TLG. They also exercise raw Bq/ml, stored lean-body-mass SUV and injection times using PET
+series derived from the same fixture. The desktop kit has not run on Windows.
+
+```sh
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/fixtures/make-pet-validation-inputs.mjs /tmp/pet-followup
+node tools/pet-validation.cjs /tmp/pet-followup /tmp/pet-followup/pet-validation-spheres.json test-results/pet-validation --vendor /tmp/pet-followup/pet-validation-expected.json
+```
+
+On real studies, with `--screenshots` for a picture of each sphere (patient details hidden):
+
+```sh
+node tools/pet-validation.cjs ~/pet-validation/studies ~/pet-validation/spheres.json ~/pet-validation/results --vendor ~/pet-validation/vendor.json
 ```
 
 ## PET quantification
@@ -135,7 +238,7 @@ The check covers [PET quantification](../docs/pet-quantification.md):
 - At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
 - The references are kept by digest, with no UID, and the actions are recorded by id.
 - In a new session on the same computer the references and the lesion table come back.
-- Opened after its prior, the study lays out as the PET follow-up screen and aligns the prior by the two CTs, within
+- Choosing the PET follow-up layout after opening both studies shows them together and aligns the prior by the two CTs, within
   1 mm and 0.5°. The note says so, the two studies page together through the alignment, and a nudge in the display
   panel moves the prior 1 mm and back. The lesion table gives each value's change against the prior lesion selected by
   the reader.
@@ -178,10 +281,11 @@ gated SPECT is numbered before the summed one. The second is a whole-body scan: 
 anterior and posterior views, named by their detectors' View Code Sequence.
 `check-gamma-camera.cjs` covers them:
 
-- The SPECT/CT opens as CT · SPECT · fused · MIP with no click. The SPECT is placed from its detector geometry, fused on
+- SPECT/CT opens with the first image. Requesting its nuclear medicine screen shows CT, SPECT, fusion and MIP. The SPECT is placed from its detector geometry, fused on
   its own scale, and nothing on it is called SUV.
 - A click on the SPECT MIP sends the linked panes to the vertebral lesion.
-- The whole body opens with ANT and POST side by side. Each pane names its frame's view and detector, both share one
+- The whole body, opened second with the series list scrolled to its end, leads the list, and the list comes to its top.
+- The requested whole-body screen shows ANT and POST side by side. Each pane names its frame's view and detector, both share one
   window, and each pages on its own. Undo puts the linking back.
 - The projections name their detector.
 - The gated SPECT opens as 8 placed series in gate order, each named "Gate n/8 · … s acquired" with its own Time Slot

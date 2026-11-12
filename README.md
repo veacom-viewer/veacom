@@ -7,16 +7,16 @@ VEAcom is a standalone DICOM viewer with an Electron and React interface and a R
 On an Apple Silicon Mac, run this in Terminal. Drag VEAcom Electron to Applications when the disk image opens.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/veacom-viewer/veacom/v0.1.0-beta.2/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/veacom-viewer/veacom/v0.1.0-beta.3/scripts/install.sh | bash
 ```
 
 On Windows x64, run this in PowerShell and follow the installer.
 
 ```powershell
-irm https://raw.githubusercontent.com/veacom-viewer/veacom/v0.1.0-beta.2/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/veacom-viewer/veacom/v0.1.0-beta.3/scripts/install.ps1 | iex
 ```
 
-The scripts download the most recently published release, including betas, and verify its SHA-256 checksum before opening the installer. Public beta `0.1.0-beta.2` is unsigned and the Mac build is unnotarized. You can also download the installers and checksums from [GitHub Releases](https://github.com/veacom-viewer/veacom/releases).
+The scripts download the most recently published release, including betas, and verify its SHA-256 checksum before opening the installer. Public beta `0.1.0-beta.3` is unsigned and the Mac build is unnotarized. You can also download the installers and checksums from [GitHub Releases](https://github.com/veacom-viewer/veacom/releases).
 
 ## Layout
 
@@ -79,7 +79,7 @@ node tools/check-gpu-startup.cjs /path/to/studies/ct-small test-results/gpu-star
 
 Run desktop checks in sequence, with one VEAcom Electron instance at a time. See `tools/README.md` for GPU and platform-specific checks.
 
-For the full local checks, run `tools/verify.sh /path/to/studies/ct-small /path/to/evidence`. It verifies the input against the synthetic fixture fingerprint before launching the viewer, then checks the exported PNG against the committed reference. See [CONTRIBUTING.md](CONTRIBUTING.md) for the review process and fixture policy. Linux CI runs on pull requests and pushes to `main`; the macOS smoke job is manual for release candidates.
+For the full local checks, run `tools/verify.sh /path/to/studies/ct-small /path/to/evidence`. It verifies the input against the synthetic fixture fingerprint before launching the viewer, then checks the exported PNG against the committed reference. See [CONTRIBUTING.md](CONTRIBUTING.md) for the review process and fixture policy. CI runs on Linux and macOS for pull requests and pushes to `main`.
 
 The development checks use synthetic studies. Independent engine verification remains a separate migration task.
 

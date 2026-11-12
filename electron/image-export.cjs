@@ -45,7 +45,14 @@ function registerImageExport({ handle, dialog, getWindow, t, exportFolder, recor
     if (typeof name !== 'string' || !NAME.test(name)) throw new Error('Invalid picture name.');
     if (!(data instanceof ArrayBuffer || ArrayBuffer.isView(data)) || data.byteLength > MAX_PICTURE_BYTES) throw new Error('Invalid picture.');
     job.written.add(name);
-    await fs.writeFile(path.join(job.directory, name), Buffer.from(data instanceof ArrayBuffer ? data : data.buffer));
+    try {
+      // A typed array may be a window on a larger buffer: write only its own bytes.
+      const bytes = data instanceof ArrayBuffer ? Buffer.from(data) : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+      await fs.writeFile(path.join(job.directory, name), bytes);
+    } catch (error) {
+      // A cancel can remove the folder under this write; the export's own error follows.
+      if (jobs.get(id) === job) throw error;
+    }
     // Cancelled while this picture was being written: it goes too.
     if (jobs.get(id) !== job) { await discard(job); throw new Error('Unknown picture export.'); }
   });

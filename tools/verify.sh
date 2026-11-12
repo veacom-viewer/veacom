@@ -24,10 +24,15 @@ run() {
 run repository node tools/check-repository.mjs
 run fixture node tools/check-golden-study.mjs "$study"
 run react-memo node tools/check-react-memo.mjs
+run lint node tools/pinned-tool.mjs oxlint --type-aware
+run workflows node tools/pinned-tool.mjs actionlint
 series="$study/S01"
 run runtime pnpm run setup:runtime
 run core-build pnpm run build:core
 run core-tests cargo test --release --locked --manifest-path native/Cargo.toml
+run core-clippy cargo clippy --release --locked --all-targets --manifest-path native/Cargo.toml -- -D warnings
+run rust-format cargo fmt --all --check
+run open-work node tools/check-open-speed.cjs --output="$out/open-work"
 run unit pnpm test
 run web-build pnpm run build:web
 run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
@@ -45,6 +50,9 @@ run interface node tools/check-interface.cjs "$series" "$out/interface"
 run pet-followup-fixture node tools/fixtures/make-pet-followup.mjs "$out/pet-followup"
 run registration node tools/check-registration.cjs "$out/pet-followup" "$out/registration.json"
 run pet-voi node tools/check-pet-voi.cjs "$out/pet-followup" "$out/pet-voi"
+run pet-validation-inputs node tools/fixtures/make-pet-validation-inputs.mjs "$out/pet-followup"
+run pet-validation node tools/pet-validation.cjs "$out/pet-followup" "$out/pet-followup/pet-validation-spheres.json" "$out/pet-validation" --vendor "$out/pet-followup/pet-validation-expected.json"
+run pet-validation-cases node tools/check-pet-validation-cases.mjs "$out/pet-followup" "$out/pet-validation-cases"
 run petct-fixture node tools/fixtures/make-petct-study.mjs "$out/petct-study"
 run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arrangements"
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"

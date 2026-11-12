@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_candidate:
-        description: Run the paid-in-minutes macOS smoke job for this release candidate
+        description: Also run the macOS smoke job on this manual run (pull requests and pushes to main always run it)
         type: boolean
         required: true
         default: false
@@ -19,9 +19,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  web:
+  # Static checks, about a minute: repository policy, workflows, lint, types. Every finding fails.
+  lint:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,14 +35,109 @@ jobs:
       - run: node tools/check-repository.mjs
       - run: pwsh -NoProfile -File tools/check-powershell.ps1
       - run: bash tools/windows-vm/check-vm-sh.sh
+      # actionlint also runs shellcheck, which the runner has, on each workflow's scripts.
+      - name: Workflows (actionlint)
+        run: node tools/pinned-tool.mjs actionlint
+      # After the install: the type-aware rules read tsconfig.json, whose types come from node_modules.
       - run: pnpm install --frozen-lockfile
+      # --type-aware adds the rules that need types (tsgolint reads tsconfig.json): floating promises, needless
+      # assertions, switches that miss a case.
+      - name: JavaScript and TypeScript (oxlint, .oxlintrc.json)
+        run: node tools/pinned-tool.mjs oxlint --type-aware --format=github
+      - name: Types (tsconfig.json, unused names included)
+        run: pnpm exec tsc --noEmit
       - name: Check for manual React memoization
         run: node tools/check-react-memo.mjs
+
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
       - run: pnpm run setup:runtime
       - run: pnpm exec playwright install --with-deps chromium
-      - run: pnpm exec tsc --noEmit
-      - run: pnpm test
+      # `pnpm test` with Node's coverage: less of src/ and electron/ run by the tests than the floors in package.json
+      # fails, a file no test loads counting as uncovered.
+      - name: Unit tests, with a floor under their coverage
+        run: pnpm run test:coverage
       - run: pnpm run build:web
+
+  # The browser build (web/README.md): both WebAssembly engines, the page type-checked and built against them, and the
+  # site's files opened in Chromium through the site's own Worker, with and without cross-origin isolation.
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: |
+            pnpm-lock.yaml
+            web/site/pnpm-lock.yaml
+      - name: Rust toolchains for WebAssembly (web/build.ps1 pins both)
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal --component clippy --target wasm32-unknown-unknown
+          rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src --target wasm32-unknown-unknown
+          # Cargo decides whether the standard library it builds (-Z build-std) is current from its source files' times,
+          # and a fresh install dates them now. Dated to the nightly's own day, the cached build below stays current.
+          find "$(rustc +nightly-2026-11-01 --print sysroot)/lib/rustlib/src" -exec touch -h -d '2026-11-01 00:00:00 UTC' {} +
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          # The one-thread engine build, and wasm-bindgen in ~/.cargo/bin (cached by default).
+          workspaces: . -> web/engine/target
+      # The threaded build compiles the standard library itself (-Z build-std), which rust-cache's cleanup does not
+      # know and deletes, so every run rebuilt std and every crate after it. A plain cache keeps the whole folder.
+      - name: Threaded engine build cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: web/engine/target-threads
+          key: wasm-threads-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'web/build.ps1', 'web/engine/Cargo.toml', 'native/Cargo.toml') }}
+          restore-keys: wasm-threads-${{ runner.os }}-
+      - run: cargo +1.99.1 install wasm-bindgen-cli --version 0.2.130 --locked
+      # Clippy for the engine as the page runs it, on wasm32: one-thread and threaded builds (workspace lints in
+      # Cargo.toml). The native build is linted in the engine job.
+      - name: Clippy for the WebAssembly engine
+        env:
+          CARGO_TARGET_DIR: web/engine/target
+        run: |
+          cargo +1.99.1 clippy --locked --release --lib -p veacom-web-engine --target wasm32-unknown-unknown -- -D warnings
+          cargo +1.99.1 clippy --locked --release --lib -p veacom-web-engine --target wasm32-unknown-unknown --features threads -- -D warnings
+      - run: pwsh -NoProfile -File web/build.ps1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run build:browser
+      - run: node web/site/prepare.mjs
+      - run: node web/tools/browser-check.mjs
+      # wrangler, from web/site's own lockfile, reads wrangler.jsonc and bundles worker.js as a deploy would, and stops
+      # before publishing: a change that would break the deploy job on main fails here first.
+      - name: Site configuration (wrangler deploy --dry-run)
+        env:
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          pnpm --dir web/site install --frozen-lockfile
+          pnpm --dir web/site exec wrangler deploy --dry-run
+      # The files the checks above opened are the files the deploy job publishes.
+      - name: Keep the site for the deploy job
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: viewer-site-${{ github.run_id }}
+          path: web/site/public
+          if-no-files-found: error
+          retention-days: 7
 
   engine:
     runs-on: ubuntu-24.04
@@ -49,6 +145,12 @@ jobs:
     defaults:
       run:
         working-directory: native
+    env:
+      # Tests need an optimised engine, not the shipped one's link-time optimisation: without thin LTO and with 16
+      # codegen units the engine compiles in about a third of the time. Releases, the Windows job and the opening-speed
+      # timings build the release profile as Cargo.toml sets it.
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -56,18 +158,16 @@ jobs:
       - run: rustup show active-toolchain && rustup component add rustfmt clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: native
+          workspaces: . -> native/target
       - run: cargo test --release --locked
-      # Required now, unlike the rest of Clippy: long-lived threads start only in the pipe and ZIP encoder pools. Catalog and frame
-      # work takes its turn in Queue::turn (native/clippy.toml).
-      - name: Engine work goes through its queues
-        run: cargo clippy --release --locked -- -A warnings -D clippy::disallowed_methods
-      - name: Formatting (advisory until the imported baseline is clean)
-        continue-on-error: true
-        run: cargo fmt --check
-      - name: Clippy (advisory until the imported baseline is clean)
-        continue-on-error: true
-        run: cargo clippy --release --locked -- -D warnings
+      # Every warning fails: Clippy's defaults, the workspace lints in Cargo.toml (no printing to stdout, which carries
+      # the engine's replies; no dbg!/todo!; a reason on every #[allow]) and native/clippy.toml's rule that long-lived
+      # threads start only in the pipe and ZIP encoder pools.
+      - name: Clippy, warnings as errors
+        run: cargo clippy --release --locked --all-targets -- -D warnings
+      # Both crates, the WebAssembly engine's too.
+      - name: Formatting
+        run: cargo fmt --all --check
 
   secrets:
     runs-on: ubuntu-24.04
@@ -86,15 +186,36 @@ jobs:
           tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
           "$RUNNER_TEMP/gitleaks" git --redact --no-banner
 
+  # A pull request that adds or upgrades a dependency with a known vulnerability of moderate severity or worse fails,
+  # from GitHub's dependency graph of the lockfiles. New names still need their line in tools/dependency-names.txt.
+  dependencies:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+
   # The desktop checks on every pull request, so a change that breaks them fails here rather than after it merges.
   # The runner has no GPU: the app draws in software on Mesa llvmpipe, as on a PC without a usable driver, and must
   # say so. Checks that need a real GPU, Windows input or the fingerprinted ct-small study run elsewhere
-  # (tools/windows-vm/README.md).
-  desktop:
+  # (tools/windows-vm/README.md). The checks are split three ways, each shard on its own runner with its own build, so
+  # they take a third of the time they took one after another: app (the viewer and its boundaries), pet (PET
+  # quantification) and screens (reading screens and the renderer).
+  desktop-shards:
+    name: desktop (${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [app, pet, screens]
     env:
       VEACOM_SOFTWARE_GL: llvmpipe # electron/main.cjs: lets a development run use llvmpipe for WebGL
+      # An optimised engine without the release build's link-time optimisation (see the engine job).
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,7 +227,10 @@ jobs:
           cache: pnpm
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: native
+          workspaces: . -> native/target
+          # One cache for the three shards, which build the same engine; one of them saves it.
+          shared-key: desktop
+          save-if: ${{ matrix.shard == 'app' }}
       - name: Desktop libraries and a virtual display
         run: |
           sudo apt-get update
@@ -128,14 +252,19 @@ jobs:
           pnpm run setup:runtime
           pnpm run build:core
           pnpm run build:web
+
+      # app: the viewer, its engine and its boundaries.
       - name: Engine pipes, 500 MiB transfer and export rollback
+        if: ${{ !cancelled() && matrix.shard == 'app' && steps.build.outcome == 'success' }}
         run: node tools/check-engine-pipe.cjs
       - name: Crash reports with usage off
+        if: ${{ !cancelled() && matrix.shard == 'app' && steps.build.outcome == 'success' }}
         run: |
           ulimit -c 0
           node tools/check-crash-reporting.cjs "$EVIDENCE/crash-reports.json"
       - name: Synthetic study
         id: study
+        if: ${{ !cancelled() && matrix.shard == 'app' && steps.build.outcome == 'success' }}
         run: node tools/fixtures/make-smoke-study.mjs "$STUDY"
       - name: Desktop smoke, software drawing
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
@@ -148,27 +277,6 @@ jobs:
       - name: Interface
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-interface.cjs "$STUDY/S01" "$EVIDENCE/interface"
-      - name: PET quantification on a synthetic follow-up
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-followup"
-          node tools/check-registration.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/registration.json"
-          node tools/check-pet-voi.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/pet-voi"
-      - name: Arrangements on a synthetic PET/CT
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-study"
-          node tools/check-arrangements.cjs "$RUNNER_TEMP/petct-study" "$EVIDENCE/arrangements"
-      - name: PET reading kit on a synthetic PET/CT
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-reading"
-          node tools/check-pet-reading.cjs "$RUNNER_TEMP/petct-reading" "$EVIDENCE/pet-reading"
-      - name: Gamma camera studies, synthetic SPECT/CT and whole body
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
-          node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
       - name: File drop
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-file-drop.cjs --study "$STUDY/S01" --output "$EVIDENCE/file-drop"
@@ -181,36 +289,94 @@ jobs:
       - name: GPU startup without a GPU
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-gpu-startup.cjs "$STUDY/S01" "$EVIDENCE/gpu-startup.json"
+      - name: Video encoder
+        if: ${{ !cancelled() && matrix.shard == 'app' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder"
+          node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder-no-gpu" --no-gpu
+
+      # pet: PET quantification on synthetic studies with known values.
+      - name: PET quantification on a synthetic follow-up
+        if: ${{ !cancelled() && matrix.shard == 'pet' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-followup"
+          node tools/check-registration.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/registration.json"
+          node tools/check-pet-voi.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/pet-voi"
+      - name: Check PET readings against the known synthetic values
+        if: ${{ !cancelled() && matrix.shard == 'pet' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-validation-followup"
+          node tools/fixtures/make-pet-validation-inputs.mjs "$RUNNER_TEMP/pet-validation-followup"
+          node tools/pet-validation.cjs "$RUNNER_TEMP/pet-validation-followup" "$RUNNER_TEMP/pet-validation-followup/pet-validation-spheres.json" "$EVIDENCE/pet-validation" --vendor "$RUNNER_TEMP/pet-validation-followup/pet-validation-expected.json"
+          node tools/check-pet-validation-cases.mjs "$RUNNER_TEMP/pet-validation-followup" "$EVIDENCE/pet-validation-cases"
+
+      # screens: reading screens and the renderer.
+      - name: PET reading kit on a synthetic PET/CT
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-reading"
+          node tools/check-pet-reading.cjs "$RUNNER_TEMP/petct-reading" "$EVIDENCE/pet-reading"
+      - name: Arrangements on a synthetic PET/CT
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-petct-study.mjs "$RUNNER_TEMP/petct-study"
+          node tools/check-arrangements.cjs "$RUNNER_TEMP/petct-study" "$EVIDENCE/arrangements"
+      - name: Gamma camera studies, synthetic SPECT/CT and whole body
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
+          node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
       - name: Renderer pixel suite on llvmpipe
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: node tools/check-padding-gpu.mjs "$EVIDENCE/padding" llvmpipe
       # The viewport's interaction checks: gestures, measurements against what the screen shows, panel state. They ran
       # only by hand before, and went stale unnoticed.
       - name: Viewport interaction checks on llvmpipe
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         timeout-minutes: 20
         env:
           VEACOM_HARNESS_ELECTRON: '1'
           VEACOM_SKIP_GPU_CHECKS: '1' # the pixel suite above covers them on llvmpipe
         run: node tools/check-harness.mjs
-      - name: Video encoder
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        run: |
-          node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder"
-          node tools/check-video-encoder.cjs "$EVIDENCE/video-encoder-no-gpu" --no-gpu
+
       - name: Keep the evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: desktop-${{ github.run_id }}
+          name: desktop-${{ matrix.shard }}-${{ github.run_id }}
           path: ${{ runner.temp }}/desktop-evidence
           if-no-files-found: warn
           retention-days: 7
 
+  # The check branch protection waits for under the name desktop: it passes when all three shards passed.
+  desktop:
+    if: always()
+    needs: desktop-shards
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every desktop shard passed
+        env:
+          RESULT: ${{ needs.desktop-shards.result }}
+        run: |
+          if [ "$RESULT" != success ]; then echo "The desktop shards ended as: $RESULT"; exit 1; fi
+          echo 'Every desktop shard passed.'
+
+  # The packaged app on Apple Silicon, on every pull request and push to main like the desktop job: DICOM export, linked
+  # paging and MPR in the packaged viewer, then desktop smoke and the video encoder. WebGL on this virtual Mac draws
+  # through ANGLE on Metal on Apple's paravirtual GPU ("Apple Paravirtual device"), which hands the drawing to the host
+  # Mac's GPU, so desktop smoke expects hardware drawing. GitHub runs at most five macOS jobs at once across the
+  # organisation, and more wait in the queue. Keep timing checks off this runner: identical runs vary by 14-30%
+  # (tools/README.md, "Opening speed"). A manual run includes the job only with release_candidate ticked.
   macos-smoke:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_candidate
+    if: github.event_name != 'workflow_dispatch' || inputs.release_candidate
     runs-on: macos-15
     timeout-minutes: 35
+    env:
+      # An optimised engine without the release build's link-time optimisation (see the engine job). Release builds
+      # package the release profile as Cargo.toml sets it.
+      CARGO_PROFILE_RELEASE_LTO: 'false'
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: '16'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -222,7 +388,7 @@ jobs:
           cache: pnpm
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          workspaces: native
+          workspaces: . -> native/target
       - run: pnpm install --frozen-lockfile
       - run: pnpm run setup:runtime && pnpm run build:core && pnpm run build:web
       - name: Package and test DICOM export, linked paging and MPR
@@ -231,7 +397,7 @@ jobs:
         run: |
           pnpm --dir packaging install --frozen-lockfile
           pnpm exec playwright install ffmpeg
-          node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac --dir --publish never -c.forceCodeSigning=false
+          node packaging/node_modules/electron-builder/cli.js --config packaging/electron-builder.smoke.cjs --mac --dir --publish never -c.forceCodeSigning=false
           apps=(release-electron/mac*/"VEAcom Electron.app/Contents/MacOS/VEAcom Electron")
           test "${#apps[@]}" = 1 && test -f "${apps[0]}"
           node tools/check-packaged-parity.cjs "${apps[0]}" "$RUNNER_TEMP/viewer-parity"
@@ -247,11 +413,105 @@ jobs:
       - run: node tools/desktop-smoke.cjs "$RUNNER_TEMP/veacom-smoke-study/S01" "$RUNNER_TEMP/desktop-smoke"
       - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder"
       - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder" --no-gpu
-      - name: Retain synthetic smoke evidence on failure
-        if: failure()
+      - name: Retain synthetic smoke and video evidence
+        if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-smoke-${{ github.run_id }}
-          path: ${{ runner.temp }}/desktop-smoke
+          path: |
+            ${{ runner.temp }}/desktop-smoke
+            ${{ runner.temp }}/video-encoder
           if-no-files-found: ignore
           retention-days: 7
+
+  # The one check a merge waits for (CONTRIBUTING.md, "Review and merge"): it passes only when every Linux job above
+  # passed, so a new or split job is covered by adding it to `needs`. The dependency review runs on pull requests only.
+  # macOS smoke stays outside it: GitHub runs five macOS jobs at a time across the organisation, so it can queue.
+  passed:
+    name: Verify passed
+    if: always()
+    needs: [lint, web, browser, engine, secrets, dependencies, desktop]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          failed=$(jq -r 'to_entries[] | select(.value.result != "success")
+            | select(.key != "dependencies" or .value.result != "skipped") | "\(.key): \(.value.result)"' <<< "$NEEDS")
+          if [ -n "$failed" ]; then printf 'Not passed:\n%s\n' "$failed"; exit 1; fi
+          echo 'Every job passed.'
+
+  # Publishes viewer.veacom.app (web/README.md) from main once every check above passed: the files the browser job
+  # built and checked, with wrangler from web/site's lockfile. The Cloudflare token is a secret of the viewer-site
+  # environment, which only main may use (Settings > Environments). A newer push to main cancels this run, and its own
+  # run publishes after its checks.
+  deploy:
+    name: Publish viewer.veacom.app
+    # Dependency review is skipped on main. Check the verification gate explicitly so that skip does not suppress deployment.
+    if: ${{ !cancelled() && needs.passed.result == 'success' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+    needs: passed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: viewer-site
+      url: https://viewer.veacom.app/
+    concurrency:
+      group: publish-viewer-site
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          cache-dependency-path: web/site/pnpm-lock.yaml
+      - run: pnpm --dir web/site install --frozen-lockfile
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: viewer-site-${{ github.run_id }}
+          path: web/site/public
+      # A manual run and a push run do not cancel each other, so the one that finished last would publish, even an older
+      # commit. Only main's current commit is published; a newer commit's run publishes after this one.
+      - name: Is this main's current commit?
+        id: main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          head=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)
+          if [ "$head" = "$GITHUB_SHA" ]; then
+            echo current=true >> "$GITHUB_OUTPUT"
+          else
+            echo "main is at $head now, so its own run publishes; not publishing $GITHUB_SHA."
+            echo current=false >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish
+        if: steps.main.outputs.current == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          WRANGLER_SEND_METRICS: 'false'
+        run: pnpm --dir web/site exec wrangler deploy --message "main ${GITHUB_SHA}"
+      # The new version is live within seconds: the home page must name this build's entry script and come with the
+      # headers the threads and the content policy depend on.
+      - name: The site serves this build with its headers
+        if: steps.main.outputs.current == 'true'
+        run: |
+          set -euo pipefail
+          entry=$(grep -o 'src="\./assets/[^"]*\.js"' web/site/public/index.html | head -n 1)
+          test -n "$entry"
+          for attempt in $(seq 1 12); do
+            curl --fail --silent --show-error --dump-header "$RUNNER_TEMP/headers" --output "$RUNNER_TEMP/page.html" https://viewer.veacom.app/
+            if grep -qF "$entry" "$RUNNER_TEMP/page.html"; then break; fi
+            if [ "$attempt" = 12 ]; then echo "viewer.veacom.app still serves a build other than $entry"; exit 1; fi
+            sleep 5
+          done
+          for header in 'cross-origin-opener-policy: same-origin' 'cross-origin-embedder-policy: require-corp' \
+            "content-security-policy: .*require-trusted-types-for 'script'"; do
+            grep -qiE "^$header" "$RUNNER_TEMP/headers" || { echo "viewer.veacom.app answers without $header"; exit 1; }
+          done
+          echo "viewer.veacom.app serves $entry with its headers."

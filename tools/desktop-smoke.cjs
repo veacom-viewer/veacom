@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const os = require('node:os');
 const { ClickBudget } = require('./click-budget.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
 // hardware (default): a graphics driver must draw. software: the PC has no usable driver, so drawing must
 // run in software and the app must say so.
@@ -19,7 +20,8 @@ async function main() {
   const started = performance.now();
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-smoke-'));
   const packaged = process.env.VEACOM_SMOKE_EXECUTABLE;
-  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study], env: { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_ENVIRONMENT: 'lab' }, timeout: 90_000 });
+  const restoreArgs = process.platform === 'darwin' ? ['-ApplePersistenceIgnoreState', 'YES'] : [];
+  const desktop = await electron.launch({ ...(packaged ? { executablePath: packaged } : {}), args: [...(packaged ? [] : [path.resolve(__dirname, '..')]), '--study', study, ...restoreArgs], env: { ...process.env, VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_USER_DATA: userData, VEACOM_TELEMETRY_ENVIRONMENT: 'lab' }, timeout: 90_000 });
   let page;
   const screenshot = async name => {
     await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
@@ -83,9 +85,23 @@ async function main() {
     check('Annotation undo and redo');
     await screenshot('after-measurement.png');
 
+    // A pane draws its overlay in a box of the pane's own size, which is one unit until the pane is measured. Shown then,
+    // the handles on the plane lines cover the pane in their colours: note every frame that shows such an overlay.
+    await page.evaluate(() => {
+      const early = window.__earlyOverlays = [];
+      const watch = () => {
+        for (const overlay of document.querySelectorAll('[data-testid="annotation-overlay"]')) {
+          if (overlay.getAttribute('viewBox') === '0 0 1 1' && getComputedStyle(overlay).visibility !== 'hidden') early.push(overlay.dataset.plane);
+        }
+        if (window.__earlyOverlays === early) requestAnimationFrame(watch);
+      };
+      requestAnimationFrame(watch);
+    });
     await budget.task('mpr', () => page.getByTestId('tool-mpr').click(), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
     const planes = await page.locator('canvas[data-renderer]').evaluateAll(nodes => nodes.map(node => node.dataset.plane).sort());
     assert.deepEqual(planes, ['axial', 'coronal', 'sagittal']);
+    const early = await page.evaluate(() => { const seen = window.__earlyOverlays; delete window.__earlyOverlays; return seen; });
+    assert.deepEqual(early, [], 'A pane showed its overlay before the pane was measured.');
     check('Three-plane MPR');
     await screenshot('after-mpr.png');
 
@@ -174,6 +190,6 @@ async function main() {
     if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});
     await fs.writeFile(path.join(output, 'desktop-smoke.json'), JSON.stringify({ passed: false, expectedRenderer, error: error.stack, checks, errors, study }, null, 2));
     throw error;
-  } finally { await desktop.close(); await fs.rm(userData, { recursive: true, force: true }); }
+  } finally { await closeDesktop(desktop); await fs.rm(userData, { recursive: true, force: true }); }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });

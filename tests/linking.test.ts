@@ -8,7 +8,7 @@ const series = (overrides: Partial<Series> = {}): Series => ({
   seriesNumber: 1, dimensions: [8, 8, 10], spacing: [1, 1, 2], origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1],
   windowCenter: 40, windowWidth: 400, valueUnit: 'HU', suvFactor: null, canReconstruct: true, spacingKnown: true, orientationKnown: true,
   warnings: [], photometricInterpretation: 'MONOCHROME2', ...overrides,
-} as Series);
+});
 const view = (slice: number, plane: ViewState['plane'] = 'axial'): ViewState => ({ plane, slice, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false });
 const pane = (s: Series, slice: number, plane: ViewState['plane'] = 'axial'): Pane => ({ series: s, view: view(slice, plane) });
 

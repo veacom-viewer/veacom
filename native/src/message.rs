@@ -45,7 +45,10 @@ impl Note {
         while let Some(start) = rest.find('{') {
             text.push_str(&rest[..start]);
             let after = &rest[start + 1..];
-            match after.find('}').and_then(|end| params.get(&after[..end]).map(|value| (end, value))) {
+            match after
+                .find('}')
+                .and_then(|end| params.get(&after[..end]).map(|value| (end, value)))
+            {
                 Some((end, value)) => {
                     text.push_str(&value.text());
                     rest = &after[end + 1..];
@@ -75,7 +78,11 @@ impl Param {
         match self {
             Self::Text(text) => text.clone(),
             Self::Note(note) => note.text.clone(),
-            Self::Notes(notes) => notes.iter().map(|note| note.text.as_str()).collect::<Vec<_>>().join("; "),
+            Self::Notes(notes) => notes
+                .iter()
+                .map(|note| note.text.as_str())
+                .collect::<Vec<_>>()
+                .join("; "),
         }
     }
 }
@@ -103,7 +110,11 @@ impl From<Vec<Note>> for Param {
 
 impl From<String> for Note {
     fn from(text: String) -> Self {
-        Self { code: "", params: BTreeMap::new(), text }
+        Self {
+            code: "",
+            params: BTreeMap::new(),
+            text,
+        }
     }
 }
 impl From<&str> for Note {
@@ -131,7 +142,10 @@ impl std::error::Error for Coded {}
 /// The error's message when the whole error is a coded one. A coded cause under English
 /// context is not: translating it would drop the context.
 pub fn coded(error: &anyhow::Error) -> Option<&Note> {
-    error.downcast_ref::<Coded>().map(|coded| &coded.0).filter(|note| note.text == format!("{error:#}"))
+    error
+        .downcast_ref::<Coded>()
+        .map(|coded| &coded.0)
+        .filter(|note| note.text == format!("{error:#}"))
 }
 
 /// Warnings of a series, an import or an export. They serialize as `warnings`, the English
@@ -158,13 +172,21 @@ impl From<Vec<Note>> for Notes {
 impl Serialize for Notes {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("warnings", &self.0.iter().map(|note| note.text.as_str()).collect::<Vec<_>>())?;
+        map.serialize_entry(
+            "warnings",
+            &self
+                .0
+                .iter()
+                .map(|note| note.text.as_str())
+                .collect::<Vec<_>>(),
+        )?;
         map.serialize_entry("warningNotes", &self.0)?;
         map.end()
     }
 }
 
 /// `note!("code", "English text with {name}", name = value, …)`
+#[macro_export]
 macro_rules! note {
     ($code:literal, $template:literal $(, $name:ident = $value:expr)* $(,)?) => {
         $crate::message::Note::new(
@@ -176,9 +198,10 @@ macro_rules! note {
 }
 
 /// A coded error, for `bail!`, `ensure!` and `Err(…)`: takes the same arguments as `note!`.
+#[macro_export]
 macro_rules! coded {
     ($($arguments:tt)*) => {
-        $crate::message::Coded(note!($($arguments)*))
+        $crate::message::Coded($crate::note!($($arguments)*))
     };
 }
 
@@ -198,31 +221,65 @@ mod tests {
     #[test]
     fn renders_english_text_from_the_template_and_nested_messages() {
         let reason = note!("file.notDicom", "Missing DICOM file meta marker");
-        let warning = note!("import.fileUnreadable", "{file}: {reason}", file = "a.txt", reason = reason.clone());
+        let warning = note!(
+            "import.fileUnreadable",
+            "{file}: {reason}",
+            file = "a.txt",
+            reason = reason.clone()
+        );
         assert_eq!(warning.text, "a.txt: Missing DICOM file meta marker");
-        let all = note!("import.noImages", "No supported images were found. {details}", details = vec![warning.clone(), "b.bin: short".into()]);
-        assert_eq!(all.text, "No supported images were found. a.txt: Missing DICOM file meta marker; b.bin: short");
-        assert_eq!(note!("x.y", "Keep {unknown} braces {").text, "Keep {unknown} braces {");
+        let all = note!(
+            "import.noImages",
+            "No supported images were found. {details}",
+            details = vec![warning.clone(), "b.bin: short".into()]
+        );
+        assert_eq!(
+            all.text,
+            "No supported images were found. a.txt: Missing DICOM file meta marker; b.bin: short"
+        );
+        assert_eq!(
+            note!("x.y", "Keep {unknown} braces {").text,
+            "Keep {unknown} braces {"
+        );
     }
 
     #[test]
     fn serializes_texts_for_old_clients_and_codes_for_translation() {
-        let notes: Notes = vec![note!("geometry.irregular", "Irregular {what}", what = "slices"), "Plain".into()].into();
-        let json = serde_json::to_value(Holder { series_number: 3, warnings: notes }).unwrap();
-        assert_eq!(json, serde_json::json!({
-            "seriesNumber": 3,
-            "warnings": ["Irregular slices", "Plain"],
-            "warningNotes": [{"code": "geometry.irregular", "params": {"what": "slices"}, "text": "Irregular slices"}, {"text": "Plain"}],
-        }));
+        let notes: Notes = vec![
+            note!("geometry.irregular", "Irregular {what}", what = "slices"),
+            "Plain".into(),
+        ]
+        .into();
+        let json = serde_json::to_value(Holder {
+            series_number: 3,
+            warnings: notes,
+        })
+        .unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "seriesNumber": 3,
+                "warnings": ["Irregular slices", "Plain"],
+                "warningNotes": [{"code": "geometry.irregular", "params": {"what": "slices"}, "text": "Irregular slices"}, {"text": "Plain"}],
+            })
+        );
     }
 
     #[test]
     fn finds_a_coded_error_only_when_it_is_the_whole_message() {
         let error = anyhow::Error::new(coded!("job.cancelled", "Operation cancelled"));
         assert_eq!(coded(&error).map(|note| note.code), Some("job.cancelled"));
-        let wrapped = Err::<(), _>(anyhow::Error::new(coded!("job.cancelled", "Operation cancelled"))).context("Cannot import").unwrap_err();
+        let wrapped = Err::<(), _>(anyhow::Error::new(coded!(
+            "job.cancelled",
+            "Operation cancelled"
+        )))
+        .context("Cannot import")
+        .unwrap_err();
         assert!(coded(&wrapped).is_none());
         assert_eq!(Param::error(&wrapped), Param::Text("Cannot import".into()));
-        assert_eq!(Param::error(&error), Param::Note(Box::new(note!("job.cancelled", "Operation cancelled"))));
+        assert_eq!(
+            Param::error(&error),
+            Param::Note(Box::new(note!("job.cancelled", "Operation cancelled")))
+        );
     }
 }

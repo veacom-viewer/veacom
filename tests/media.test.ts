@@ -185,8 +185,8 @@ describe('encoder settings', () => {
   it('asks for an H.264 level that fits the size, rate and bit rate', () => {
     const codec = (width: number, height: number, fps: number) => videoEncoderConfigs(width, height, fps)[0].codec;
     assert.equal(codec(16, 16, 1), 'avc1.64001f');
-    assert.equal(codec(1024, 768, 15), 'avc1.640020');
-    assert.equal(codec(1920, 1080, 15), 'avc1.640029');
+    assert.equal(codec(1024, 768, 15), 'avc1.64001f');
+    assert.equal(codec(1920, 1080, 15), 'avc1.640028');
     assert.equal(codec(4096, 2304, 15), 'avc1.640033');
     assert.equal(codec(8192, 4320, 15), 'avc1.64003c');
   });
@@ -195,7 +195,7 @@ describe('encoder settings', () => {
     const configs = videoEncoderConfigs(640, 480, 15);
     assert.deepEqual(configs.map(config => `${config.codec.slice(5, 9)} ${config.hardwareAcceleration}`), [
       '6400 prefer-software', '4d40 prefer-software', '42e0 prefer-software', '6400 no-preference', '4d40 no-preference', '42e0 no-preference']);
-    assert.equal(configs[0].bitrate, Math.round(640 * 480 * 15 * 1.2));
+    assert.equal(configs[0].bitrate, Math.round(640 * 480 * 15 * 0.30));
     assert.equal(videoEncoderConfigs(16, 16, 1)[0].bitrate, 1e6);
     assert.equal(configs[0].avc?.format, 'avc');
   });
@@ -252,14 +252,14 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       </svg></div>`);
     const result = await page.evaluate(async javascript => {
       const url = URL.createObjectURL(new Blob([javascript], { type: 'text/javascript' }));
-      const { exportViewportVideo, captureViewportPng } = await new Function('url', 'return import(url)')(url);
+      const { exportViewportVideo, captureViewportPng } = await import(url);
       URL.revokeObjectURL(url);
       const viewport = document.getElementById('viewport')!;
       const canvas = viewport.querySelector('canvas')!;
       const overlay = viewport.querySelector('svg')!;
       const colors = ['#ff0000', '#00ff00', '#0000ff'];
       let current = 2, cancelled = false, fail = false;
-      const captured: number[][] = [], progress: number[] = [];
+      const progress: number[] = [];
       const setSlice = (slice: number) => {
         current = slice;
         canvas.dataset.slice = String(slice);
@@ -364,7 +364,14 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
       const output = document.createElement('canvas'); output.width = bitmap.width; output.height = bitmap.height;
       const context = output.getContext('2d')!; context.drawImage(bitmap, 0, 0); bitmap.close();
       const resizedPixels = [...context.getImageData(8, 32, 1, 1).data, ...context.getImageData(35, 5, 1, 1).data];
-      return { destination, restoredAfterSuccess, restoredAfterError, failure, cancelled, captured: firstFrames, firstMeta, firstWritten,
+      // A notice appearing during the export shrinks the pane: the video keeps its first frame's size.
+      frames.length = 0;
+      await exportViewportVideo({ ...options, setSlice: (slice: number) => {
+        viewport.style.height = slice === 1 ? '48px' : '64px';
+        setSlice(slice);
+      } });
+      const videoSizes = frames.map(frame => [frame.width, frame.height]);
+      return { destination, restoredAfterSuccess, restoredAfterError, failure, cancelled, captured: firstFrames, firstMeta, firstWritten, videoSizes,
         configured: firstConfigured && { width: firstConfigured.width, height: firstConfigured.height, description: [...new Uint8Array(firstConfigured.description)] },
         progress: progress.slice(0, 4), rangeFrames, dropFailure, cancelledAfterDrop, configFailure, cancelledAfterConfig, fellBack, fallbackStarts, noEncoder, noEncoderTried, cancelledAfterNoEncoder, odd, resizedDimensions: [output.width, output.height], resizedPixels };
     }, javascript);
@@ -399,6 +406,7 @@ it('captures presented slice pixels and SVG overlays, restores the slice and can
     assert.equal(result.cancelled, true);
     assert.deepEqual(result.rangeFrames, [[173, 42, 26, 235]]);
     assert.deepEqual(result.resizedDimensions, [128, 64]);
+    assert.deepEqual(result.videoSizes, [[64, 64], [64, 64], [64, 64]]);
     assert.deepEqual(result.resizedPixels, [0, 0, 0, 255, 255, 0, 0, 255]);
   } finally { await browser.close(); }
 });

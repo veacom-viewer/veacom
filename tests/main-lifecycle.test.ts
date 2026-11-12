@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, before, describe, it } from 'node:test';
+import { afterEach, describe, it } from 'node:test';
 import { createRequire } from 'node:module';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
@@ -30,13 +30,14 @@ async function waitFor(condition: () => boolean, what: string, milliseconds = 10
   }
 }
 
-async function start({ primary = true } = {}) {
+// `platform` is what main.cjs reads as process.platform while it loads, so either side of its platform checks runs on any OS.
+async function start({ primary = true, platform = process.platform } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'veacom-main-test-'));
   const desktop = path.join(root, 'desktop'), elsewhere = path.join(root, 'elsewhere');
   fs.mkdirSync(desktop); fs.mkdirSync(elsewhere);
   const paths: Record<string, string> = { userData: path.join(root, 'user-data'), desktop, temp: os.tmpdir() };
   const page = { holdsUnload: false, answer: 1, onPrompt: () => {} };
-  const state = { exited: false, prompts: 0, focused: 0, revealed: [] as string[] };
+  const state = { exited: false, prompts: 0, focused: 0, revealed: [] as string[], startup: [] as unknown[] };
   class WebContents extends EventEmitter {
     mainFrame = { url: 'veacom://app/index.html' };
     session = { setPermissionRequestHandler() {} };
@@ -57,7 +58,7 @@ async function start({ primary = true } = {}) {
   }
   const app = Object.assign(new EventEmitter(), {
     isPackaged: false,
-    whenReady: () => Promise.resolve(),
+    whenReady: () => { state.startup.push('whenReady'); return Promise.resolve(); },
     setName() {}, getVersion: () => '0.1.0-test', getAppMetrics: () => [], getGPUFeatureStatus: () => ({}),
     setPath(name: string, value: string) { paths[name] = value; },
     getPath: (name: string) => paths[name] ?? os.tmpdir(),
@@ -73,19 +74,20 @@ async function start({ primary = true } = {}) {
         window.closed = true;
       }
       const willQuit = preventable(); app.emit('will-quit', willQuit);
-      if (!willQuit.defaultPrevented) state.exited = true;
+      if (!willQuit.defaultPrevented) { state.exited = true; app.emit('quit'); }
     },
   });
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
+  const ipcMain = Object.assign(new EventEmitter(), { handle: (channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn), removeHandler() {} });
   const electron = {
-    app, BrowserWindow,
-    ipcMain: { handle: (channel: string, fn: (...args: unknown[]) => unknown) => handlers.set(channel, fn), on() {}, removeListener() {}, removeHandler() {} },
+    app, BrowserWindow, ipcMain,
     dialog: {
       showMessageBoxSync: () => { state.prompts++; page.onPrompt(); return page.answer; },
       showOpenDialog: async () => ({ canceled: false, filePaths: [elsewhere] }),
       showSaveDialog: async () => ({ canceled: true }), showMessageBox: async () => ({ response: 0 }), showErrorBox() {},
     },
     clipboard: { writeText() {} }, nativeTheme: {}, net: { fetch: (...args: Parameters<typeof fetch>) => fetch(...args) },
+    systemPreferences: { registerDefaults: (defaults: object) => { state.startup.push(defaults); } },
     protocol: { registerSchemesAsPrivileged() {}, handle() {} },
     shell: { openPath: async (target: string) => { state.revealed.push(target); return ''; }, showItemInFolder: (target: string) => { state.revealed.push(target); }, openExternal: async () => {} },
     safeStorage: { isEncryptionAvailable: () => false },
@@ -106,11 +108,13 @@ async function start({ primary = true } = {}) {
   for (const key of Object.keys(require.cache)) if (key.startsWith(electronFolder + path.sep)) delete require.cache[key];
   process.env.VEACOM_USER_DATA = paths.userData;
   process.env.VEACOM_LOCALE = 'en';
-  require(mainFile);
+  const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+  Object.defineProperty(process, 'platform', { ...realPlatform, value: platform });
+  try { require(mainFile); } finally { Object.defineProperty(process, 'platform', realPlatform); }
   const window = () => BrowserWindow.all[0];
   const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!({ senderFrame: window().webContents.mainFrame }, ...args);
   const invoke = async (channel: string, ...args: unknown[]) => call(channel, ...args);
-  const harness = { app, page, state, desktop, elsewhere, handlers, window, call, invoke,
+  const harness = { app, ipcMain, page, state, desktop, elsewhere, handlers, window, call, invoke,
     temporary: () => fs.readdirSync(desktop).filter(name => name.startsWith('.veacom-video-')) };
   cleanups.push(async () => {
     if (!state.exited) {
@@ -139,6 +143,67 @@ afterEach(async () => {
 });
 
 describe('desktop app lifecycle', () => {
+  it('on macOS ignores the saved window state before it waits to be ready, so a recorded crash cannot hold its start', async () => {
+    const app = await start({ platform: 'darwin' });
+    // AppKit's "reopen its windows again?" alert comes before Electron's ready, so the default must be in place by then.
+    assert.deepEqual(app.state.startup.slice(0, 2), [{ ApplePersistenceIgnoreState: true }, 'whenReady']);
+  });
+
+  it('registers no macOS default on Windows and Linux, where Electron has none to register', async () => {
+    for (const platform of ['win32', 'linux'] as const) {
+      const app = await start({ platform });
+      assert.deepEqual(app.state.startup.filter(step => step !== 'whenReady'), [], platform);
+    }
+  });
+
+  it('reports only trusted renderer fault codes and coalesces repeated notifications', async test => {
+    const sent: Array<{process: string; reason: string; exception?: string}> = [];
+    test.mock.method(globalThis, 'fetch', async (_url: string, init: RequestInit) => {
+      sent.push(JSON.parse(String(init.body)));
+      return new Response(null, { status: 204 });
+    });
+    const original = process.env.VEACOM_CRASH_ENDPOINT;
+    process.env.VEACOM_CRASH_ENDPOINT = 'http://127.0.0.1:7711/v1/crashes';
+    try {
+      const harness = await start();
+      let now = 0;
+      test.mock.method(performance, 'now', () => now);
+      const senderFrame = harness.window().webContents.mainFrame;
+      const fault = (frame: typeof senderFrame, value: unknown, reason = 'render-failed') => harness.ipcMain.emit('fault:renderer', { senderFrame: frame }, reason, value);
+      fault({ ...senderFrame }, 'reference');
+      fault(senderFrame, 'SYNTHETIC_PRIVATE_PATH');
+      fault(senderFrame, { message: 'SYNTHETIC_PRIVATE_PATH' });
+      fault(senderFrame, 'type', 'SYNTHETIC_PRIVATE_PATH');
+      fault(senderFrame, 'type', 'unresponsive');
+      fault(senderFrame, 'range');
+      fault(senderFrame, 'range');
+      fault(senderFrame, 'type');
+      fault(senderFrame, 'type', 'uncaught-exception');
+      fault(senderFrame, 'unknown', 'unhandled-rejection');
+      harness.window().emit('unresponsive');
+      harness.window().emit('unresponsive');
+      harness.window().emit('responsive');
+      harness.window().emit('unresponsive');
+      await waitFor(() => sent.length >= 5, 'the renderer reports');
+      assert.deepEqual(sent.map(r => [r.process, r.reason, r.exception]), [
+        ['renderer', 'render-failed', 'range'], ['renderer', 'render-failed', 'type'], ['renderer', 'uncaught-exception', 'type'],
+        ['renderer', 'unhandled-rejection', 'unknown'], ['renderer', 'unresponsive', undefined]
+      ]);
+      now = 60_000;
+      fault(senderFrame, 'type');
+      harness.window().emit('unresponsive');
+      await waitFor(() => sent.length === 6, 'the next render failure');
+      harness.window().emit('responsive');
+      harness.window().emit('unresponsive');
+      await waitFor(() => sent.length === 7, 'a new hang after recovery');
+      assert.deepEqual(sent.slice(5).map(r => r.reason), ['render-failed', 'unresponsive']);
+      assert.ok(!JSON.stringify(sent).includes('SYNTHETIC_PRIVATE_PATH'));
+    } finally {
+      if (original === undefined) delete process.env.VEACOM_CRASH_ENDPOINT;
+      else process.env.VEACOM_CRASH_ENDPOINT = original;
+    }
+  });
+
   it('asks before stopping anything when Cmd+Q meets a running export, and "Wait" leaves everything working', async () => {
     const app = await start();
     const job = await runningVideo(app);

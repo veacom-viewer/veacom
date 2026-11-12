@@ -437,10 +437,10 @@ pub fn measure_with_plane(
     plane: Option<&Plane>,
 ) -> Result<Value> {
     let kind = if kind == "rect" { "rectangle" } else { kind };
-    if let Some(plane) = plane {
-        if matches!(kind, "rectangle" | "ellipse" | "polygon") {
-            return plane_roi(source, pixels, points, kind, plane);
-        }
+    if let Some(plane) = plane
+        && matches!(kind, "rectangle" | "ellipse" | "polygon")
+    {
+        return plane_roi(source, pixels, points, kind, plane);
     }
     measure(source, pixels, points, kind)
 }
@@ -543,9 +543,14 @@ fn roi(
                 index[fixed] = slice.round() as usize;
                 index[axes[0]] = u;
                 index[axes[1]] = v;
-                let value=pixels.value(offset(index, dimensions));
-                if value.is_nan() && source.frames.get(index[2]).is_some_and(|frame|frame.metadata.padding_is_nan) {
-                    excluded_padding+=1;
+                let value = pixels.value(offset(index, dimensions));
+                if value.is_nan()
+                    && source
+                        .frames
+                        .get(index[2])
+                        .is_some_and(|frame| frame.metadata.padding_is_nan)
+                {
+                    excluded_padding += 1;
                 } else {
                     statistics.push(value)?;
                 }

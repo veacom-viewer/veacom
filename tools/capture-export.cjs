@@ -8,6 +8,7 @@ const reference = require('../tests/golden/ct-small.json');
 const { decodePng } = require('./lib/png.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 
 async function main() {
   const [input, output, app = path.resolve(__dirname, '..')] = process.argv.slice(2);
@@ -69,7 +70,7 @@ async function main() {
     assert(tones.size > 16 && tones.has(0) && tones.has(255), `Expected a rendered CT at W400/L40; got ${tones.size} tones (${Math.min(...tones)}–${Math.max(...tones)})`);
     console.log(`PASS current-image PNG export: ${png.width}x${png.height}, ${tones.size} tones`);
   } finally {
-    if (desktop) await desktop.close();
+    await closeDesktop(desktop);
     await fs.rm(temporary, { recursive: true, force: true });
   }
 }

@@ -9,6 +9,8 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
+const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -35,6 +37,7 @@ async function main() {
     await page.waitForTimeout(600);
     const shot = name => page.screenshot({ path: path.join(output, `${name}.png`) });
     const cells = page.locator('[data-testid="viewport-cell"]');
+    await choosePetLayout(page);
     const s = await page.evaluate(() => window.__VEACOM_TEST__.state());
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, null, 'mip'], 'The PET/CT screen: CT · PET · fused · MIP.');
 
@@ -117,7 +120,7 @@ async function main() {
       const cell = document.querySelectorAll('[data-testid="viewport-cell"]')[1];
       const slice = cell.querySelector('canvas').dataset.slice;
       const reading = cell.querySelector('[data-testid="pointer-readout"] text')?.textContent;
-      return /^PET /.test(reading ?? '') && (returned ? slice === originalSlice && reading === before : slice !== originalSlice && reading !== before);
+      return (reading ?? '').startsWith('PET ') && (returned ? slice === originalSlice && reading === before : slice !== originalSlice && reading !== before);
     }, { originalSlice, before, returned });
     await page4(100);
     await waitForReading(false);
@@ -179,7 +182,7 @@ async function main() {
     await fs.writeFile(path.join(output, 'pet-reading-checks.json'), JSON.stringify({ checks, errors, failure: String(error.stack || error) }, null, 2));
     throw error;
   } finally {
-    await desktop.close().catch(() => {});
+    await closeDesktop(desktop);
     await fs.rm(userData, { recursive: true, force: true }).catch(() => {});
   }
 }

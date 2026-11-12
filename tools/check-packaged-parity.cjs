@@ -6,6 +6,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { _electron: electron } = require('playwright');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
+const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { decodePng } = require('./lib/png.cjs');
 
 const state = page => page.evaluate(() => window.__VEACOM_TEST__.state());
@@ -43,7 +44,7 @@ async function withStudy(executablePath, study, destination, run) {
     }
     throw error;
   } finally {
-    try { if (app) await app.close(); } finally { await fs.rm(profile, { recursive: true, force: true }); }
+    try { await closeDesktop(app); } finally { await fs.rm(profile, { recursive: true, force: true }); }
   }
 }
 

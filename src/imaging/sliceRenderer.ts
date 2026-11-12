@@ -239,7 +239,6 @@ class SharedSliceRenderer {
     let fs: WebGLShader;
     try { fs = compile(gl.FRAGMENT_SHADER, fragment(main, dimension, pet, projection)); } catch (error) { gl.deleteShader(vs); throw error; }
     const program = gl.createProgram();
-    if (!program) { gl.deleteShader(vs); gl.deleteShader(fs); throw new Error('Could not create GPU program'); }
     gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);
     const compiled: Program = { key, program, shaders: [vs, fs], uniforms: new Map() };
     this.programs.set(key, compiled);
@@ -317,7 +316,7 @@ class SharedSliceRenderer {
   private voiTexture(lut: VoiLut | null): WebGLTexture {
     const cached = this.voiTextures.get(lut);
     if (cached) { this.voiTextures.delete(lut); this.voiTextures.set(lut, cached); return cached; }
-    const gl = this.gl, texture = gl.createTexture(); if (!texture) throw new Error('GPU VOI LUT texture allocation failed');
+    const gl = this.gl, texture = gl.createTexture();
     const count = Math.max(1, lut?.data.length ?? 1), width = Math.min(count, VOI_ROW), height = Math.ceil(count / VOI_ROW);
     const data = new Uint16Array(width * height); if (lut) data.set(lut.data);
     gl.activeTexture(gl.TEXTURE0 + VOI_UNIT); gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -335,7 +334,7 @@ class SharedSliceRenderer {
   }
   private blankPadding(): WebGLTexture {
     if (this.emptyPadding) return this.emptyPadding;
-    const gl = this.gl, texture = gl.createTexture(); if (!texture) throw new Error(t('gpu.paddingTextureFailed'));
+    const gl = this.gl, texture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, texture); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 1, 1, 0, gl.RGBA, gl.FLOAT, new Float32Array(4));
     this.emptyPadding = texture; return texture;
@@ -390,7 +389,7 @@ class SharedSliceRenderer {
         const copy = new Float32Array(sourceData.length);
         for (let frame = 0; frame < (sourceFrame === undefined ? series.dimensions[2] : 1); frame++) {
           const range = series.frameMetadata?.[sourceFrame ?? frame]?.paddingRange ?? series.paddingRange;
-          if (range && (range.length !== 2 || !range.every(Number.isFinite))) throw new Error('Invalid pixel padding range.');
+          if (range && !range.every(Number.isFinite)) throw new Error('Invalid pixel padding range.');
           const low = range ? Math.min(...range) : NaN, high = range ? Math.max(...range) : NaN;
           for (let i = frame * frameLength; i < (frame + 1) * frameLength; i++) {
             const value = sourceData[i];
@@ -402,7 +401,7 @@ class SharedSliceRenderer {
         }
         displayData = copy;
       }
-      const texture = gl.createTexture(); if (!texture) throw new Error(t('gpu.textureFailed'));
+      const texture = gl.createTexture();
       gl.bindTexture(target, texture); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
       gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -423,12 +422,12 @@ class SharedSliceRenderer {
         const data = new Float32Array(d * 4);
         for (let i = 0; i < ranges.length; i++) {
           const range = ranges[i]; if (!range) continue;
-          if (range.length !== 2 || !range.every(Number.isFinite)) { gl.deleteTexture(texture); throw new Error('Invalid pixel padding range.'); }
+          if (!range.every(Number.isFinite)) { gl.deleteTexture(texture); throw new Error('Invalid pixel padding range.'); }
           const low = kind === 'float32' ? Math.min(...range) : Math.ceil(Math.min(...range));
           const high = kind === 'float32' ? Math.max(...range) : Math.floor(Math.max(...range));
           if (low <= high) data.set([1, low, high, 0], i * 4);
         }
-        padding = gl.createTexture(); if (!padding) { gl.deleteTexture(texture); throw new Error(t('gpu.paddingTextureFailed')); }
+        padding = gl.createTexture();
         gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
