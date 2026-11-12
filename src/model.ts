@@ -334,6 +334,8 @@ export interface DesktopBridge {
   exportFolder?: () => Promise<string>;
   /** Text onto the system clipboard. */
   copyText?: (text: string) => Promise<void>;
+  /** A picture onto the system clipboard: its opaque RGBA pixels, rows from the top. */
+  copyImage?: (picture: { width: number; height: number; pixels: ArrayBuffer }) => Promise<void>;
   chooseExportFolder?: () => Promise<string | null>;
   revealExport?: (target: string) => Promise<void>;
   beginVideo: (suggestedName: string, fps: number) => Promise<{ id: string } | null>;

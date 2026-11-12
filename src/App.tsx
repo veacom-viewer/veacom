@@ -25,7 +25,8 @@ import { isSoftwareWebglStatus } from './imaging/rendererInfo';
 import { patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
 import { SourceFrameCache } from './sourceFrames';
 import { useEngineRecovery } from './useEngineRecovery';
-import { captureViewportPng } from './export-video';
+import { captureViewportCanvas, captureViewportPng } from './export-video';
+import { copyCanvas } from './ui/clipboard';
 import type { ExportDialogProps } from './components/ExportDialog';
 import { trimInactiveVolumes } from './domain/volumeCache';
 import { createVolumeDecorator } from './domain/decoratedVolumes';
@@ -1836,6 +1837,22 @@ export default function App() {
     usage.milestone('export-image-done', path ? 'ok' : 'cancel');
     if (path) say('notice.imageExported', 'info', undefined, true);
   };
+  /** ⌘C / Ctrl+C: the active pane, or with Shift the whole layout, onto the clipboard as a picture of what is drawn.
+   * Its corners read as they do with patient details hidden, so a paste elsewhere carries no name or number. */
+  const copyImage = async (all: boolean) => {
+    const element = all ? gridRef.current : gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
+    if (!element) return;
+    const picture = captureViewportCanvas(element, { hidePatientData: true });
+    const [capture, copy] = await Promise.allSettled([picture, copyCanvas(picture)]);
+    if (capture.status === 'rejected' || copy.status === 'rejected') {
+      usage.milestone('copy-image-done', 'error');
+      if (capture.status === 'rejected') setNotice({ message: errorText(capture.reason), kind: 'error' });
+      else say('notice.imageNotCopied', 'error');
+      return;
+    }
+    usage.milestone('copy-image-done', 'ok');
+    say(all ? 'notice.layoutCopied' : 'notice.imageCopied', 'info', undefined, true);
+  };
   const openExport = (mode: ExportDialogProps['mode']) => {
     setMenu(null);
     // An export going on in the background: its window comes back instead of a new one.
@@ -1968,6 +1985,11 @@ export default function App() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); key('open-folder'); void openImport(); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e') { event.preventDefault(); if (activeSeries) { if (event.shiftKey) { key('export-media'); openExport('media'); } else { key('tool-export'); openExport('dicom'); } } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); key(event.shiftKey ? 'redo' : 'undo'); undo(event.shiftKey); return; }
+    // ⌘C / Ctrl+C copies the picture, with Shift the whole layout. Text the reader selected is copied as text, as anywhere.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'c') {
+      if (!activeSeries || window.getSelection()?.toString()) return;
+      event.preventDefault(); key(event.shiftKey ? 'copy-layout' : 'copy-image'); void copyImage(event.shiftKey); return;
+    }
     // Letters, 0, m, ? and + / − only without ⌘, Ctrl or Alt (Alt + letter types characters and opens menus).
     if (event.key === 'F1') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
     // Space opens the quick menu over the images; on a button, a link or a menu it presses that, as it should.
