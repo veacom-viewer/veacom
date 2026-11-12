@@ -86,7 +86,11 @@ describe('the counterpart of a series in another study', () => {
     const part = (name: string) => series({ bodyPartExamined: name });
     assert.equal(counterpart(part('HIP'), earlier(part('HIPPOCAMPUS'))), null);
     assert.equal(counterpart(part('ARM'), earlier(part('FOREARM'))), null);
+    assert.equal(counterpart(part('KNEE LEFT'), earlier(part('KNEE RIGHT'))), null);
+    assert.equal(counterpart(part('RT KNEE'), earlier(part('KNEE L'))), null);
+    assert.ok(counterpart(part('KNEE LEFT'), earlier(part('LT KNEE'))));
     assert.ok(counterpart(part('KNEE LEFT'), earlier(part('KNEE'))));
+    assert.ok(counterpart(part('KNEE LEFT'), earlier(part('BILATERAL KNEE'))));
     assert.equal(counterpart(part('KNEE LEFT'), earlier(part('ANKLE LEFT'))), null);
     assert.ok(counterpart(part('ABDOMEN_PELVIS'), earlier(part('ABDOMENPELVIS'))));
     assert.ok(counterpart(part('LUMBAR SPINE'), earlier(part('LSPINE'))));

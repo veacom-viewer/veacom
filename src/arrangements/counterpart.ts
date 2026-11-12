@@ -40,10 +40,21 @@ function spineLevels({ letters, words }: Part): string {
   if (short) return short[1] || named || 'CTLS';
   return named || (words.includes('SPINE') ? 'CTLS' : '');
 }
+/** A lone L in L SPINE names the lumbar level. Elsewhere L and R may label a paired body part. */
+function side(part: Part): 'left' | 'right' | null {
+  const words = part.words;
+  if (words.some(word => ['BOTH', 'BIL', 'BILATERAL'].includes(word))) return null;
+  const left = words.some(word => word === 'LEFT' || word === 'LT' || (word === 'L' && !spineLevels(part)));
+  const right = words.some(word => word === 'RIGHT' || word === 'RT' || word === 'R');
+  return left === right ? null : left ? 'left' : 'right';
+}
+
 /** Two names of one part: the same letters (L-SPINE, LSPINE), a region of the head and trunk in common, a level of the
  * spine in common, or a whole word in common that is not a side (KNEE LEFT, KNEE). A name that merely begins or ends
  * with another is not that part: HIP is not HIPPOCAMPUS, nor ARM FOREARM. */
 function alike(x: Part, y: Part): boolean {
+  const xSide = side(x), ySide = side(y);
+  if (xSide && ySide && xSide !== ySide) return false;
   if (x.letters === y.letters || REGIONS.some(([pattern]) => pattern.test(x.letters) && pattern.test(y.letters))) return true;
   const mine = spineLevels(x), theirs = spineLevels(y);
   if (mine && theirs) return [...mine].some(level => theirs.includes(level));
