@@ -414,6 +414,7 @@ npm p-cancelable
 npm p-limit
 npm path-is-absolute
 npm path-key
+npm path-scurry
 npm path-to-regexp
 npm pathe
 npm pe-library
