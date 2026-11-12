@@ -13,18 +13,19 @@ class ImagingBroker {
   constructor({ engine, realpath = fs.realpath, now = Date.now, devOrigin, beforePixel, afterImport, preparePictures }) {
     Object.assign(this, { engine, realpath, now, devOrigin, beforePixel, afterImport, preparePictures });
     this.imports = new Map(); this.activeImports = new Map(); this.pixels = new Map(); this.series = new Map();
+    this.prefetched = new Map();
     this.epoch = new AbortController();
     this.generation = engine.state().generation;
     this.stateChanged = state => {
       if (state.status !== 'ready' || state.generation !== this.generation) {
         this.epoch.abort(new Error(t('broker.restarted')));
-        this.epoch = new AbortController(); this.activeImports.clear(); this.pixels.clear(); this.series.clear(); this.prefetched = null;
+        this.epoch = new AbortController(); this.activeImports.clear(); this.pixels.clear(); this.series.clear(); this.prefetched.clear();
       }
       this.generation = state.generation;
     };
     engine.on('state', this.stateChanged);
   }
-  dispose() { this.epoch.abort(); this.imports.clear(); this.activeImports.clear(); this.pixels.clear(); this.series.clear(); this.prefetched = null; this.engine.off('state', this.stateChanged); }
+  dispose() { this.epoch.abort(); this.imports.clear(); this.activeImports.clear(); this.pixels.clear(); this.series.clear(); this.prefetched.clear(); this.engine.off('state', this.stateChanged); }
   async authorizeImportPaths(paths) {
     if (!Array.isArray(paths) || !paths.length || paths.length > 4096 || paths.some(value => typeof value !== 'string' || !path.isAbsolute(value))) throw new Error('Invalid selected files.');
     const selected = [...new Set(await Promise.all(paths.map(value => this.realpath(value))))];
@@ -66,7 +67,7 @@ class ImagingBroker {
   // same capabilities then receives this result instead of importing again.
   prefetchImport(capabilities) {
     const pending = this.importSelected(capabilities);
-    this.prefetched = { key: importKey(capabilities), pending };
+    this.prefetched.set(importKey(capabilities), pending);
     pending.then(result => {
       // The series the viewer opens first: a segmentation is drawn over another series and is not opened itself.
       const first = result.series.find(series => !series.segmentation && series.dimensions[2] > 0);
@@ -74,8 +75,9 @@ class ImagingBroker {
     }, () => {});
   }
   async importSelected(capabilities) {
-    if (this.prefetched && Array.isArray(capabilities) && importKey(capabilities) === this.prefetched.key) {
-      const { pending } = this.prefetched; this.prefetched = null; return pending;
+    if (Array.isArray(capabilities)) {
+      const key = importKey(capabilities), pending = this.prefetched.get(key);
+      if (pending) { this.prefetched.delete(key); return pending; }
     }
     if (!Array.isArray(capabilities) || !capabilities.length || capabilities.length > 4096 || capabilities.some(value => typeof value !== 'string')) throw new Error('Choose files through Open study or drop local files.');
     this.expire(this.imports);

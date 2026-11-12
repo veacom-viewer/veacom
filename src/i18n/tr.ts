@@ -141,6 +141,7 @@ export const tr: Record<keyof typeof en, string> = {
   'viewport.alignedAutomatic': 'Otomatik çakıştırıldı',
   'viewport.alignedAdjusted': 'Çakıştırıldı, elle düzeltildi',
   'viewport.fusionSeries': 'PET: {name}',
+  'viewport.fusionPet': 'PET',
   'viewport.fusionWith': 'Füzyon: {name}',
   'viewport.fusionOwnValues': 'Kendi değerleriyle · opaklık {opacity}',
   'viewport.fusionScale': 'SUV 0–{upper} · opaklık {opacity}',

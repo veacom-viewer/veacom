@@ -138,6 +138,7 @@ export const en = {
   'viewport.alignedAutomatic': 'Aligned automatically',
   'viewport.alignedAdjusted': 'Aligned, adjusted by hand',
   'viewport.fusionSeries': 'PET: {name}',
+  'viewport.fusionPet': 'PET',
   'viewport.fusionWith': 'Fusion: {name}',
   'viewport.fusionOwnValues': 'On its own values · opacity {opacity}',
   'viewport.fusionScale': 'SUV 0–{upper} · opacity {opacity}',

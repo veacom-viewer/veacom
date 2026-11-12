@@ -782,7 +782,21 @@ async function main() {
     await page.keyboard.press('ControlOrMeta+z');
     await page.waitForFunction(before => document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])').length === before, drawnBeforeCopy);
     await page.keyboard.press('w');
-    check('Ctrl+C copies the picture without patient details; Shift copies the layout; a text field keeps its own copy', { pane: [withDetails.width, withDetails.height], layout: [wholeLayout.width, wholeLayout.height], colours });
+    // Text selected elsewhere and left there does not take Ctrl+C from the image: on a pane it copies the picture.
+    await noNotice();
+    const copiesBeforeSelection = await copies();
+    const leftSelected = await page.evaluate(() => { getSelection().selectAllChildren(document.querySelector('.series-browser')); return getSelection().toString().trim().length; });
+    assert(leftSelected > 0, 'Text is selected in the series list.');
+    await imagePane.focus();
+    await page.keyboard.press('ControlOrMeta+c');
+    for (let tries = 0; await copies() === copiesBeforeSelection; tries++) {
+      if (tries === 100) throw new Error('Ctrl+C on the image copied the text selected in the series list, not the picture.');
+      await page.waitForTimeout(50);
+    }
+    await page.locator('[data-testid="notice"][data-code="notice.imageCopied"]').waitFor();
+    await noNotice();
+    await page.evaluate(() => getSelection().removeAllRanges());
+    check('Ctrl+C copies the picture without patient details; Shift copies the layout; a text field keeps its own copy, and text selected elsewhere does not', { pane: [withDetails.width, withDetails.height], layout: [wholeLayout.width, wholeLayout.height], colours });
 
     // Narrow and zoomed windows keep every control reachable, and dialogs stay out of the window's drag strip:
     // Electron decides dragging by rectangle, so a dialog control inside the strip would move the window.
