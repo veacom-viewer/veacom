@@ -168,7 +168,7 @@ export function createWebBridge(): DesktopBridge {
   let shared: { cancel: Int32Array; progress: Uint32Array } | null = null;
   // The DICOM export under way, for its Cancel.
   let exporting: { id: number; cancelled: boolean } | null = null;
-  // The threads build's helper Workers, started here for the engine Worker (see startHelpers).
+  // The threads build's helper Workers and picture decoder, started here for the engine Worker (see startHelpers).
   let helpers: Worker[] = [];
 
   const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
@@ -287,14 +287,14 @@ export function createWebBridge(): DesktopBridge {
     }, () => {});
   }
 
-  /** Starts the threads build's helper Workers for the engine Worker `engine`, on its module and memory, and tells it on
-   * `port` whether they all started. They are started here rather than in the engine Worker so that one that stops (a
-   * panic aborts the threads build) reaches the page, which then replaces the engine: an engine run waiting for that
-   * helper would otherwise wait for ever, and its Worker could hear nothing. Each helper gets one of `files`, its
-   * channel to the engine Worker for the page's files. */
+  /** Starts the threads build's helper Workers and its picture decoder (picture.worker.ts) for the engine Worker
+   * `engine`, on its module and memory, and tells it on `port` whether they all started. They are started here rather
+   * than in the engine Worker so that one that stops (a panic aborts the threads build) reaches the page, which then
+   * replaces the engine: an engine run waiting for that Worker would otherwise wait for ever, and its Worker could hear
+   * nothing. */
   function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort; files: MessagePort[] }): void {
     const started: Worker[] = [];
-    let waiting = request.count, settled = false;
+    let waiting = request.count + 1, settled = false;
     const settle = (error?: string) => {
       if (settled) return;
       settled = true;
@@ -306,8 +306,7 @@ export function createWebBridge(): DesktopBridge {
     };
     const stopped = (error: string) => { if (!settled) settle(error); else if (engine === worker) crashed(); };
     const timer = setTimeout(() => settle('the threads did not start in time'), HELPER_START_MS);
-    for (let index = 0; index < request.count; index++) {
-      const helper = new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' });
+    const watch = (helper: Worker, files?: MessagePort) => {
       started.push(helper); helpers.push(helper);
       helper.onmessage = ({ data }) => {
         if (data?.type === 'ready') { if (--waiting === 0) settle(); return; }
@@ -317,9 +316,10 @@ export function createWebBridge(): DesktopBridge {
         }
       };
       helper.onerror = () => stopped('a thread could not start');
-      const files = request.files[index];
-      helper.postMessage({ module: request.module, memory: request.memory, files }, [files]);
-    }
+      helper.postMessage({ module: request.module, memory: request.memory, files }, files ? [files] : []);
+    };
+    for (let index = 0; index < request.count; index++) watch(new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' }), request.files[index]);
+    watch(new Worker(new URL('./picture.worker.ts', import.meta.url), { type: 'module' }));
   }
 
   function call<T>(request: Request, { busy = false, signal, onQueued }: CallOptions = {}): Promise<T> {
@@ -474,14 +474,19 @@ export function createWebBridge(): DesktopBridge {
       const drop = dropped;
       dropped = null;
       const same = drop && drop.files.length === files.length && drop.files.every((file, i) => file === files[i]);
-      return remember(same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]));
+      const selected = same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]);
+      // Steps of opening a study, on the page's timeline for tools/browser-bench (performance marks cost next to nothing).
+      performance.mark('veacom:files-listed');
+      return remember(selected);
     },
     async importSelected(capabilities) {
       const chosen = capabilities.map(token => selections.get(token));
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
       for (const token of capabilities) selections.delete(token);
       const files = chosen.flatMap(selection => selection!.files), roots = chosen.flatMap(selection => selection!.roots);
+      performance.mark('veacom:import-start');
       const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
+      performance.mark('veacom:import-done');
       return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
     },
     // The engine answers one request at a time, so it cannot publish series while an import runs: every series
@@ -519,9 +524,11 @@ export function createWebBridge(): DesktopBridge {
     async fetchPixels({ seriesId, generation: requestGeneration, revision, index }, signal) {
       requireGeneration(requestGeneration);
       if (known.get(seriesId) !== generation) throw new Error(t('engine.seriesNotOpen'));
+      performance.mark(index === undefined ? 'veacom:volume-start' : 'veacom:frame-start');
       const pixels = await (index === undefined
         ? call<EnginePixels>({ op: 'volume', seriesId, revision }, { busy: true, signal })
         : call<EnginePixels>({ op: 'frame', seriesId, index, revision }, { signal }));
+      performance.mark(index === undefined ? 'veacom:volume-done' : 'veacom:frame-done');
       const headers = new Headers({
         'Content-Type': 'application/octet-stream', 'Content-Length': String(pixels.bytes.byteLength),
         'X-Pixel-Type': pixels.pixelType, 'X-Components': String(pixels.components),

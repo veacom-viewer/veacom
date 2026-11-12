@@ -5,8 +5,9 @@
 // Where the page is cross-origin isolated, the threads build is used: a series is decoded on this Worker's thread and
 // on a few helper Workers that share the module's memory (engine.helper.ts, web/engine/src/helpers.rs). To leave the
 // computer room, the engine works on at most half its cores and never more than 4; the helpers sleep when there is
-// nothing to do. Each helper is sent an import's files once they are listed (`shareFiles`), so that every thread reads
-// the files of the frames it decodes. Elsewhere, or if the helpers cannot start, the single-thread build runs.
+// nothing to do. Each helper reads the files it was sent. A separate Worker decodes PNG, JPEG and BMP on the same
+// shared memory, including when there are no helpers. Without isolation or if startup fails, the single-thread build
+// runs and refuses pictures.
 
 import { readHeads } from '../../web/file-heads.js';
 import type { HelperFiles } from './engine.helper';
@@ -26,7 +27,8 @@ const waiting = new Map<number, { left: number; done: () => void }>();
 // the engine. Until then a series is decoded from files held in memory, as without the helpers' files.
 const SHARE_TIMEOUT_MS = 5000;
 
-/** Asks the page to start `count` helper Workers on the threads build's module and memory, and waits for its answer.
+/** Asks the page to start `count` helper Workers and the picture decoder on the threads build's module and memory, and
+ * waits for its answer.
  * The page starts them, not this Worker: the threads build aborts on a panic, and a helper that stops so must reach the
  * page, which then replaces the engine. Sent here, its error would wait for this Worker, which may be the very thread
  * waiting for that helper. The page gives up after 15 s; then the single-thread build is used. Each helper also gets
@@ -69,7 +71,7 @@ async function shareFiles(threaded: ThreadedEngine, ids: number[], files: File[]
 }
 
 async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; threads: number; memory: WebAssembly.Memory }> {
-  if (self.crossOriginIsolated && THREADS > 1) {
+  if (self.crossOriginIsolated) {
     try {
       const threaded: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
       const exports = await threaded.default();

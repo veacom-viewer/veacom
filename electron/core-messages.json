@@ -53,6 +53,8 @@
     "import.noImages": "Desteklenen görüntü bulunamadı. {details}",
     "import.fileUnreadable": "{file} okunamadı: {reason}",
     "import.moreUnreadable": "{count} dosya daha desteklenen bir DICOM görüntüsü olarak okunamadı.",
+    "import.unreadableAlike": "{count} dosya okunamadı: {reason}",
+    "import.unreadableMany": "{count} dosya desteklenen bir görüntü olarak okunamadı.",
 
     "file.notDicom": "DICOM dosyası değil (DICOM başlığı yok)",
     "file.tooLarge": "dosya okunabilecek en büyük boyutu aşıyor",
@@ -66,7 +68,7 @@
     "zip.entryTooLarge": "ZIP içindeki bir dosya, dosya başına sınırı aşıyor.",
     "zip.tooLarge": "ZIP açıldığında içe aktarma sınırını aşıyor.",
     "rar.unsupported": "RAR arşivleri açılamaz. Arşivi çıkarıp klasörü açın.",
-    "pictures.browser": "PNG, JPEG ve BMP resimleri tarayıcıda henüz açılmıyor.",
+    "pictures.browser": "PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.",
 
     "decode.cannotRead": "{path} okunamadı: {reason}",
     "decode.noMemory": "Hacmi açmaya yetecek bellek yok.",
