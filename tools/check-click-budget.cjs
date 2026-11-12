@@ -152,6 +152,26 @@ async function main() {
       { until: () => page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.dataset.locale === 'en') });
     await page.getByTestId('tool-language').click(); await page.getByTestId('language-tr').click();
 
+    // Answering the whole sinus checklist (a CT's assessment button opens it) with each row's second answer (No, Keros
+    // type 2, presellar): by mouse, a click per side; by keys, ↓ from its heading to the first row, then Alt+Shift with a
+    // digit per row (the same answer on both sides, then the next row). The CT's descriptions name no checklist: sinus is chosen.
+    const checklist = page.getByTestId('preop-checklist');
+    await page.getByTestId('tool-assessment').click(); await checklist.waitFor();
+    const sinus = checklist.locator('[data-action="checklist-kind"]').first();
+    if (await sinus.count() && await sinus.getAttribute('aria-checked') !== 'true') await sinus.click();
+    const sides = checklist.locator('.preop-choice'), sideCount = await sides.count(), rowCount = await checklist.locator('[data-item]').count();
+    const allAnswered = () => page.waitForFunction(count => document.querySelectorAll('[data-testid="preop-checklist"] .preop-choice [aria-checked="true"]').length === count, sideCount);
+    await budget.task('checklist-answer-mouse', async () => {
+      for (let index = 0; index < sideCount; index++) await sides.nth(index).locator('[data-action="checklist-answer"]').nth(1).click();
+    }, { until: allAnswered });
+    await checklist.locator('[data-action="checklist-clear"]').click();
+    await checklist.locator('h2').focus();
+    await budget.task('checklist-answer-keys', async () => {
+      await page.keyboard.press('ArrowDown');
+      for (let row = 0; row < rowCount; row++) await page.keyboard.press('Alt+Shift+Digit2');
+    }, { until: allAnswered });
+    await checklist.locator('[data-action="checklist-close"]').click(); await checklist.waitFor({ state: 'detached' });
+
     // The golden study has one series: a generated synthetic MR comes in through the real menu (the native
     // dialog answers with its folder), which also measures opening a study, choosing a series and the assessment,
     // which is for MR (a CT's assessment button opens the pre-op checklist: desktop-smoke.cjs). Not in a lab

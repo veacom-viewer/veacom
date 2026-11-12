@@ -26,6 +26,12 @@ function groups(t: Translator): { title: MessageKey; rows: Row[] }[] {
       [t('help.panKeys'), [[shift, t('help.arrowKeys')]]], [t('help.zoomPan'), [[t('help.zoomPanKeys')]]],
       [t('help.resetView'), [[t('help.doubleClickKey')]]], [t('help.mpr'), [['M']]], [t('help.fusionDrag'), [[mod, t('help.dragKey')]]], [t('help.quickMenu'), [[t('help.spaceKey')]]],
     ] },
+    // Inside the pre-operative checklist only (src/components/PreopChecklist.tsx): the image never gets these.
+    { title: 'help.group.checklist', rows: [
+      [t('help.checklistRows'), [['↑'], ['↓']]], [t('help.checklistSides'), [['←'], ['→']]],
+      [t('help.checklistAnswer'), [[alt, '1'], ['…'], [alt, '5']]], [t('help.checklistBoth'), [[alt, shift, '1'], ['…'], [alt, shift, '5']]],
+      [t('help.checklistUndo'), [[mod, 'Z']]],
+    ] },
     { title: 'help.group.window', rows: [
       [t('toolbar.dicomWindow'), [['0']]], [t('preset.fullRange'), [['1']]], [t('help.presetKeys'), [['2'], ['…'], ['9']]],
       [t('toolbar.autoWindow'), [[shift, 'A']]], [t('inspector.invert'), [['I']]],
@@ -57,7 +63,7 @@ export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; o
     };
   }, []);
 
-  const all = groups(t), columns = [all.slice(0, 3), all.slice(3)];
+  const all = groups(t), columns = [all.slice(0, 4), all.slice(4)];
   return <dialog ref={dialog} className="dialog shortcuts-dialog" aria-labelledby="help-title"
     onCancel={event => { event.preventDefault(); onClose(); }}
     onKeyDown={event => event.stopPropagation()}

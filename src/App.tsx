@@ -1929,9 +1929,11 @@ export default function App() {
     setShow3d(true);
   };
   /** Sets or removes a series' calibration. Its caliper records measure again at the new scale, as its drawings' labels
-   * do: the checklist, its answers, the report and the theatre card follow the scale on screen. */
+   * do: the checklist, its answers, the report and the theatre card follow the scale on screen. Removing it takes down
+   * the notice that says the series is calibrated. */
   const setCalibration = (seriesId: string, factor: number | undefined) => {
     setCalibrationScales(current => { const next = { ...current }; if (factor === undefined) delete next[seriesId]; else next[seriesId] = factor; return next; });
+    if (factor === undefined) setNotice(current => current?.key === 'notice.calibrated' ? null : current);
     const series = displayVolumesRef.current.get(seriesId)?.series;
     if (series) recordCalipers(seriesId, annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, undefined, { ...series, measurementScale: factor });
   };

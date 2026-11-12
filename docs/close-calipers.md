@@ -69,11 +69,25 @@ also have a caliper button; a side holds one note, whichever came last. A calipe
 millimetres), the plane they were read on, its reading and the answer it gave. Moving a point of its drawing measures
 again, and so does a change of the series' calibration; the answer follows until the reader picks another one. Deleting
 the drawing leaves the record, and a calibration still measures it again from its points. "Copy for the report" gives
-each side its answer, measurement and slice.
+each side its answer, measurement and slice. It leaves out a row with nothing answered or measured on any side (a slice
+noted alone included), so the checklist says how many rows that is at the end of its help line, above Copy, and
+pressing the count goes to the first of them. A row answered on one side is copied, with "–" for the other.
 
 Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.
 Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never
-overwrites newer work. The caliper drawings stay on the image either way.
+overwrites newer work. The caliper drawings stay on the image either way. ⌘Z (Ctrl+Z) while focus is in the checklist
+does the same, instead of undoing the last measurement on the image. Undo brings the caliper records back, so their
+drawings feed them again, and a drawing moved while its record was gone measures again.
+
+The checklist answers from the keyboard too, while focus is in it and no caliper waits for its points: ↑ and ↓ move
+between rows, ← and → between the Right and Left columns as shown, and Alt (⌥ on a Mac) with a digit gives the row's
+answer at that place (1 Yes, 2 No, 3 ?; Keros 1 to 3; pneumatisation 1 to 5), then moves on to the left side or the
+next row. Alt+Shift with a digit gives both sides the same answer and goes to the next row. Answers are digits by place
+so they mean the same in English and Turkish (Y would be yes in one and "Yok", no, in the other), and they take Alt
+because a plain digit is a window preset on the image (the owner's choice, 10 November 2026): no key has two meanings.
+AltGr, which Windows reports as Ctrl+Alt, answers nothing, and neither do the keypad's digits, which with Alt type
+characters by their codes on Windows. Being chords, the answers stay on when single-key shortcuts are turned off. Each
+answer's tooltip shows its keys, and Help lists them.
 
 ## The theatre card
 

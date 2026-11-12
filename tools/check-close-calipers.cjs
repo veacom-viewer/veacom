@@ -122,9 +122,30 @@ async function main() {
     assert.equal(await answer('keros', 'right'), '1', 'Undo brings back the first measurement and its answer.');
     check('Moving a caliper point measures again and its answer follows; undo takes both back');
 
+    // Clear drops the records, so a drawing moved meanwhile writes nothing; ⌘Z in the checklist then undoes the Clear,
+    // not the move on the image, and the record it brings back measures the moved drawing again.
+    const undoKeys = process.platform === 'darwin' ? 'Meta+z' : 'Control+z';
+    await checklist.locator('[data-action="checklist-clear"]').click();
+    assert.equal(await value('keros', 'right'), null, 'Clear removes the measurements from the checklist.');
+    await page.mouse.move(...from); await page.mouse.down(); await page.mouse.move(...to, { steps: 6 }); await page.mouse.up();
+    await page.waitForTimeout(300);
+    assert.equal(await value('keros', 'right'), null, 'A drawing whose record was cleared does not write into the checklist.');
+    await checklist.locator('[data-action="checklist-clear"]').focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(() => (document.querySelector('[data-item="keros"] [data-side="right"] .preop-seen')?.textContent ?? '').startsWith('4.2 mm'));
+    assert.equal(await answer('keros', 'right'), '2', 'The record came back measured again, and its answer follows.');
+    assert.match(await value('keros', 'left'), /^6\.0 mm/, 'The other side came back too.');
+    await pane.focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(() => (document.querySelector('[data-item="keros"] [data-side="right"] .preop-seen')?.textContent ?? '').startsWith('3.2 mm'));
+    assert.equal(await answer('keros', 'right'), '1', '⌘Z on the image undoes the move.');
+    check('⌘Z in the checklist undoes Clear, not the image; a drawing moved meanwhile measures again');
+
     // A calibration changes what the calipers measure, as it changes their labels: a 10 mm line called 20 mm doubles
-    // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again.
-    // The left side's drawing is deleted first: its record keeps its points, and the calibration measures it again too.
+    // Keros, so the right side's 3.2 mm (type 1) reads 6.4 mm (type 2) in the checklist; removing it reads 3.2 mm again,
+    // and takes down the notice that says the series is calibrated. The left side's drawing is deleted first: its record
+    // keeps its points, and the calibration measures it again too.
+    const calibratedNotice = page.locator('[data-testid="notice"][data-code="notice.calibrated"]');
     const settledValue = (which, start) => page.waitForFunction(([which, start]) => (document.querySelector(`[data-item="keros"] [data-side="${which}"] .preop-seen`)?.textContent ?? '').startsWith(start), [which, start]);
     await side('keros', 'left').locator('[data-action="checklist-go"]').click();
     await pane.locator('[data-annotation-id][data-selected]').waitFor();
@@ -138,17 +159,21 @@ async function main() {
     await page.getByTestId('tool-measure-menu').click();
     await page.locator('[data-action="toolbar-units-calibration"]').click();
     await page.locator('[data-action="calibration-length"]').fill('20');
+    // Cleared before the calibration, the records come back with ⌘Z in the checklist at the calibrated scale.
     await checklist.locator('[data-action="checklist-clear"]').click();
     await page.locator('[data-action="calibrate"]').click();
     assert.equal(await value('keros', 'right'), null);
-    await checklist.locator('[data-action="checklist-undo"]').click();
+    await checklist.locator('[data-action="checklist-clear"]').focus();
+    await page.keyboard.press(undoKeys);
     await settledValue('right', '6.4 mm');
     assert.equal(await answer('keros', 'right'), '2', 'The answer follows the calibrated depth.');
     await settledValue('left', '12.0 mm');
+    assert.equal(await calibratedNotice.count(), 1, 'Calibrating says so.');
     await page.locator('[data-action="calibration-remove"]').click();
     await settledValue('right', '3.2 mm');
     assert.equal(await answer('keros', 'right'), '1');
     await settledValue('left', '6.0 mm');
+    assert.equal(await calibratedNotice.count(), 0, 'Removing the calibration takes down the notice that says the series is calibrated.');
     await page.getByTestId('tool-inspector').click();
     await page.locator('.inspector').waitFor({ state: 'hidden' });
     await pane.focus();
@@ -156,7 +181,7 @@ async function main() {
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
     await page.keyboard.press(process.platform === 'darwin' ? 'Meta+z' : 'Control+z');
     await page.waitForFunction(() => [...document.querySelectorAll('.viewport-cell.is-active [data-annotation-id] .annotation-label')].some(label => label.textContent.includes('Keros left 6.0 mm')));
-    check('A calibration changes the caliper values and answers in the checklist, a deleted drawing\'s record too, and removing it changes them back');
+    check('A calibration changes the caliper values and answers in the checklist, a deleted drawing\'s record and a cleared record brought back too, and removing it changes them back');
 
     // The anterior ethmoidal artery: in the right roof (type 1: no answer, a dehiscence is the reader's call) and 3 mm
     // below the left one, whose roof point was clicked in the air and moved onto the bone.
@@ -265,6 +290,19 @@ async function main() {
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
     check('Copy for the report gives every caliper value with its side and slice', { report });
 
+    // The rows Copy leaves out are counted beside it, and the count goes to the first of them.
+    const unmarkedButton = checklist.locator('[data-action="checklist-unmarked"]');
+    const rowCount = await checklist.locator('[data-item]').count(), copiedRows = report.split('\n').length - 1;
+    assert.equal(await unmarkedButton.textContent(), `${rowCount - copiedRows} unmarked`, 'The count is the rows the report leaves out.');
+    await unmarkedButton.click();
+    assert.equal(await page.evaluate(() => { const cell = document.activeElement?.closest('[data-side]'); return cell && `${cell.closest('[data-item]').dataset.item}:${cell.dataset.side}`; }),
+      'lamina:right', 'It goes to the first row left out.');
+    await unmarkedButton.hover();
+    await page.waitForTimeout(600);
+    await page.screenshot({ path: path.join(output, '5-unmarked-en.png') });
+    await page.mouse.move(5, 5);
+    check('Beside Copy, the rows it leaves out are counted, and the count goes to the first', { unmarked: rowCount - copiedRows });
+
     // The theatre card: the main process's print dialog is replaced by a PDF of the page as it would print, kept here.
     await desktop.evaluate(({ BrowserWindow }) => {
       const contents = BrowserWindow.getAllWindows()[0].webContents;
@@ -305,6 +343,7 @@ async function main() {
     const turkish = await copied('Kopyalandı');
     assert.match(turkish, /Kribriform plate \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; Gera 70\.0°, sınıf II; kesit \d+\/\d+\)/);
     assert.match(turkish, /sağ–sol fark 2\.8 mm/);
+    assert.equal(await unmarkedButton.textContent(), `${rowCount - copiedRows} işaretsiz`);
     const turkishCard = await printCard('4-theatre-card-tr', 2);
     assert(turkishCard.includes('Ameliyathane kartı · PNS BT · ameliyat öncesi') && turkishCard.includes('taraftan'), turkishCard);
     await page.screenshot({ path: path.join(output, '1-keros-tr.png') });
