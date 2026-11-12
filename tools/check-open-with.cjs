@@ -54,11 +54,14 @@ async function main() {
     const env = { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' };
     delete env.VEACOM_DEV_URL;
     delete env.VEACOM_DEVTOOLS;
-    desktop = await electron.launch({ ...(options.app ? { executablePath: executable } : {}), args: [...appArguments, '--study', study], env, timeout: 90_000 });
-    desktop.process().stderr?.on('data', data => logs.push(data.toString()));
-    page = await desktop.firstWindow();
-    await ignoreOutsideInput(desktop);
-    page.on('pageerror', error => errors.push(error.message));
+    const launch = async studyPath => {
+      desktop = await electron.launch({ ...(options.app ? { executablePath: executable } : {}), args: [...appArguments, '--study', studyPath], env, timeout: 90_000 });
+      desktop.process().stderr?.on('data', data => logs.push(data.toString()));
+      page = await desktop.firstWindow();
+      await ignoreOutsideInput(desktop);
+      page.on('pageerror', error => errors.push(error.message));
+    };
+    await launch(study);
     const seriesIds = () => page.evaluate(() => window.__VEACOM_TEST__.state().series.map(item => item.id));
     const settled = () => page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length > 0 && window.__VEACOM_TEST__.state().pendingLoads === 0
       && document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true', undefined, { timeout: 120_000 });
@@ -97,8 +100,15 @@ async function main() {
     checks.push({ name: 'later-launch-with-a-missing-path', passed: true, said });
     console.log('PASS A later launch with a missing path is reported and changes nothing');
 
-    assert.deepEqual(errors, [], 'Renderer emitted an uncaught error.');
     await page.screenshot({ path: path.join(output, 'opened.png') });
+    assert(await closeDesktop(desktop), 'The first viewer quit cleanly.');
+    await launch(path.join(profile, 'missing-at-startup'));
+    await page.locator('[data-testid="notice"][data-kind="error"]').filter({ hasText: 'missing-at-startup' }).waitFor();
+    await page.locator('[data-testid="veacom-app"][data-ready="true"]').waitFor();
+    assert.equal(await page.locator('[data-action="reconnect"]').count(), 0);
+    checks.push({ name: 'missing-startup-path-leaves-viewer-ready', passed: true });
+    console.log('PASS A missing startup path shows a file error and leaves the viewer ready');
+    assert.deepEqual(errors, [], 'Renderer emitted an uncaught error.');
   } catch (error) {
     failure = error;
     if (page) await page.screenshot({ path: path.join(output, 'failure.png') }).catch(() => {});

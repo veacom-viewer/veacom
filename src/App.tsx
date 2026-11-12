@@ -1062,21 +1062,23 @@ export default function App() {
   const restoreCatalog = async () => {
     // A launch-time study may already be importing in the main process; it opens through importStudies,
     // so the catalog must not open its first series as well.
-    const startupPaths = await window.veacom?.takeStartupPaths();
+    let startupPaths: string[][] = [];
+    try { startupPaths = await window.veacom?.takeStartupPaths() ?? []; }
+    catch (error) { if (mounted.current) setNotice({ message: errorText(error), kind: 'error' }); }
     const result = await listSeries(); if (!mounted.current) return;
     setSeries(current => {
       const merged = new Map(current.map(item => [item.id, item]));
       for (const item of result.series) merged.set(item.id, item);
       return [...merged.values()];
     });
-    if (!startupPaths?.length && result.series[0] && !slotsRef.current.some(slot => slot.seriesId)) {
+    if (!startupPaths.length && result.series[0] && !slotsRef.current.some(slot => slot.seriesId)) {
       // Series the engine already holds (the window reloaded) open as a study of their own.
       const images = result.series.filter(item => !item.segmentation);
       usage.beginStudy('catalog');
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0), result: 'ok' }, result.series.map(item => item.id));
       assignSeries(activeIdRef.current, result.series[0]);
     }
-    for (const paths of startupPaths ?? []) await importStudies(paths, 'startup');
+    for (const paths of startupPaths) await importStudies(paths, 'startup');
   };
   // A study a later launch named while VEAcom runs (Explorer's "Open with VEAcom"): main queues it and says so, and
   // it opens as a study named at the start does.
