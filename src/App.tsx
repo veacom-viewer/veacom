@@ -1076,14 +1076,14 @@ export default function App() {
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0), result: 'ok' }, result.series.map(item => item.id));
       assignSeries(activeIdRef.current, result.series[0]);
     }
-    if (startupPaths?.length) await importStudies(startupPaths, 'startup');
+    for (const paths of startupPaths ?? []) await importStudies(paths, 'startup');
   };
   // A study a later launch named while VEAcom runs (Explorer's "Open with VEAcom"): main queues it and says so, and
   // it opens as a study named at the start does.
   const openLaunched = useEffectEvent(async () => {
     try {
-      const paths = await window.veacom?.takeStartupPaths();
-      if (paths?.length) await importStudies(paths, 'startup');
+      const launches = await window.veacom?.takeStartupPaths();
+      for (const paths of launches ?? []) await importStudies(paths, 'startup');
     } catch (error) { if (mounted.current) setNotice({ message: errorText(error), kind: 'error' }); }
   });
   useEffect(() => window.veacom?.onOpened?.(() => { void openLaunched(); }), []);

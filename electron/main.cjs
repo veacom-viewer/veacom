@@ -227,7 +227,7 @@ app.whenReady().then(async () => {
   handle('files:drop-capabilities', paths => imaging.authorizeImportPaths(paths));
   handle('files:startup', async () => {
     const results = await Promise.allSettled(opened.splice(0));
-    const capabilities = results.flatMap(result => result.status === 'fulfilled' ? result.value : []);
+    const capabilities = results.flatMap(result => result.status === 'fulfilled' ? [result.value] : []);
     const failed = results.find(result => result.status === 'rejected');
     // A launch whose path cannot be opened says so, unless another launch's study opens in its place.
     if (failed && !capabilities.length) throw failed.reason;
