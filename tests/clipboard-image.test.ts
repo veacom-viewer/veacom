@@ -57,7 +57,6 @@ describe('copying a picture in the browser', () => {
   afterEach(restoreGlobals);
 
   it('starts the write during the gesture and supplies the PNG after capture', async () => {
-    const capture = Promise.withResolvers<HTMLCanvasElement>();
     const png = new Blob(['synthetic'], { type: 'image/png' });
     class Item {
       readonly data: Record<string, Promise<Blob>>;
@@ -70,12 +69,11 @@ describe('copying a picture in the browser', () => {
       writing = true;
       assert.equal(await item.data['image/png'], png);
     } } });
-    const copied = copyCanvas(capture.promise);
-    assert.equal(writing, true);
-    capture.resolve({ toBlob(done: BlobCallback, type: string) {
+    const copied = copyCanvas(Promise.resolve({ toBlob(done: BlobCallback, type: string) {
       assert.equal(type, 'image/png');
       done(png);
-    } } as HTMLCanvasElement);
+    } } as HTMLCanvasElement));
+    assert.equal(writing, true);
     await copied;
   });
 });
