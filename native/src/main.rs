@@ -1609,11 +1609,12 @@ mod protocol_tests {
             (head, body)
         }
         fn json(&mut self, request: Value) -> (u64, Value) {
+            let op = request["op"].clone();
             let (head, body) = self.call(request);
-            (
-                head["status"].as_u64().unwrap(),
-                serde_json::from_slice(&body).unwrap(),
-            )
+            let value = serde_json::from_slice(&body).unwrap_or_else(|error| {
+                panic!("{op} answered {head} with a body that is not JSON: {error}")
+            });
+            (head["status"].as_u64().unwrap(), value)
         }
     }
 
@@ -1821,14 +1822,24 @@ mod protocol_tests {
         assert_eq!(pixels, 11u16.to_le_bytes().repeat(4));
         assert_eq!(engine.json(tags.clone()).0, 200);
 
+        // A copy keeps the copied file's modification time, and files written within one tick of the clock that stamps
+        // them share theirs: the replacement can then match the source in size and modification time. How often that
+        // happens depends on the computer's clock, so every change here puts the source's time back.
+        let imported = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let keep_time = || {
+            let file = std::fs::File::options().write(true).open(&path).unwrap();
+            file.set_modified(imported).unwrap();
+        };
         let replacement = super::job_tests::slice(temp.path(), "replacement.dcm", 22);
         std::fs::copy(replacement, &path).unwrap();
+        keep_time();
         for preserve_uid in [false, true] {
             if preserve_uid {
                 let mut other = dicom_object::open_file(&path).unwrap();
                 other.put_str(Tag(0x0008, 0x0018), VR::UI, "2.25.11");
                 other.meta_mut().media_storage_sop_instance_uid = "2.25.11".into();
                 other.write_to_file(&path).unwrap();
+                keep_time();
             }
             for call in [
                 frame.clone(),

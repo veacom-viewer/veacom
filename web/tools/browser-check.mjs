@@ -1,7 +1,8 @@
 // Opens the browser build as viewer.veacom.app serves it, and again as a host without its cross-origin isolation
 // headers would, in Chromium. Each time the engine must start (the threads build where the page is isolated and the
 // computer has the cores, the single-thread build elsewhere), open a small synthetic CT and hand over a slice and the
-// whole series, with no error on the page.
+// whole series, with no error on the page. A PNG, a JPEG and a BMP made in the page must open as one series where the
+// page is isolated (its picture decoder needs the threads build), and be refused in one sentence elsewhere.
 //
 // The site's files (web/site/public, from prepare.mjs) go through the site's own Worker (web/site/worker.js), so the
 // page gets the headers and content policy it gets in production; the study is served beside them.
@@ -83,6 +84,44 @@ async function openStudy() {
   };
 }
 
+/** In the page: makes a PNG, a JPEG and a BMP of one size and colour, opens them together, and asks for each frame's
+ * samples. Returns their length, type and components, or the error. */
+async function openPictures() {
+  const [width, height, colour] = [32, 24, [200, 100, 50]];
+  const canvas = new OffscreenCanvas(width, height), context = canvas.getContext('2d');
+  context.fillStyle = `rgb(${colour.join(',')})`;
+  context.fillRect(0, 0, width, height);
+  const encoded = async type => new Uint8Array(await (await canvas.convertToBlob({ type, quality: 1 })).arrayBuffer());
+  // 24-bit BMP: rows bottom up, blue green red, each padded to four bytes.
+  const row = Math.ceil(width * 3 / 4) * 4, bmp = new Uint8Array(54 + row * height), view = new DataView(bmp.buffer);
+  bmp.set([0x42, 0x4d]);
+  view.setUint32(2, bmp.length, true); view.setUint32(10, 54, true); view.setUint32(14, 40, true);
+  view.setInt32(18, width, true); view.setInt32(22, height, true); view.setUint16(26, 1, true); view.setUint16(28, 24, true);
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) bmp.set([colour[2], colour[1], colour[0]], 54 + y * row + x * 3);
+  const files = [new File([await encoded('image/png')], '1.png'), new File([await encoded('image/jpeg')], '2.jpg'), new File([bmp], '3.bmp')];
+  const bridge = window.veacom;
+  try {
+    const imported = await bridge.importSelected(await bridge.importFiles(files));
+    const [series] = imported.series;
+    const { generation } = await bridge.getCoreState();
+    const frames = [], checked = new Set();
+    window.checkPictureFrame = ({ index, bytes }) => {
+      // Files are numbered PNG, JPEG, BMP. Only JPEG may round the samples during encoding.
+      const tolerance = index === 1 ? 3 : 0;
+      if (bytes.length === width * height * 3 && bytes.every((value, at) => Math.abs(value - colour[at % 3]) <= tolerance)) checked.add(index);
+    };
+    for (let index = 0; index < series.dimensions[2]; index++) {
+      const { headers } = await bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision, index });
+      frames.push(`${headers.get('Content-Length')} ${headers.get('X-Pixel-Type')} ${headers.get('X-Components')}`);
+    }
+    return { series: imported.series.length, dimensions: series.dimensions, frames, rgbFrames: [...checked] };
+  } catch (error) {
+    return { error: String(error?.message ?? error) };
+  } finally {
+    delete window.checkPictureFrame;
+  }
+}
+
 async function importPickedFiles(page, files, kind = 'files') {
   const selection = page.waitForEvent('filechooser').then(picker => picker.setFiles(files));
   const [frames] = await Promise.all([page.evaluate(async kind => {
@@ -152,6 +191,17 @@ try {
   for (const isolated of [true, false]) {
     const server = await serve(isolated);
     const page = await browser.newPage();
+    await page.addInitScript(() => {
+      // The bridge hands the transferred buffer to the viewer outside the Response body. Read it at the Worker boundary.
+      window.Worker = class extends Worker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            if (data.ok && data.value?.bytes && data.value.components === 3) window.checkPictureFrame?.(data.value);
+          });
+        }
+      };
+    });
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -179,6 +229,15 @@ try {
       await page.evaluate(checkQueuedImports);
       await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
       await checkArchiveLimit(page);
+      const pictures = await page.evaluate(openPictures);
+      if (isolated) {
+        check(pictures.series === 1 && pictures.dimensions?.join('x') === '32x24x3', `pictures: ${JSON.stringify(pictures)}`);
+        check(pictures.rgbFrames?.join(',') === '0,1,2', `incorrect decoded RGB: ${JSON.stringify(pictures)}`);
+        check(pictures.frames?.every(frame => frame === `${32 * 24 * 3} uint8 3`), `picture samples: ${JSON.stringify(pictures.frames)}`);
+      } else {
+        check(pictures.error === 'Desteklenen görüntü bulunamadı. 3 dosya okunamadı: PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.',
+          `pictures without isolation: ${JSON.stringify(pictures)}`);
+      }
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
     } catch (error) {
