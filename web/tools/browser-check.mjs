@@ -146,6 +146,39 @@ async function checkQueuedImports() {
   if (!cancelled.requested || !await queued) throw new Error('The queued import did not cancel');
 }
 
+/** A threaded engine whose helpers start but never get the file batch must still decode all the loose slices. */
+async function checkUnacknowledgedFiles(page) {
+  const folder = path.join(scratch, 'many-small');
+  execFileSync(process.execPath, [makeStudy, folder, '--many-small']);
+  const seriesDir = path.join(folder, 'S01');
+  const paths = readdirSync(seriesDir).map(name => path.join(seriesDir, name));
+
+  await page.addInitScript(() => {
+    window.withheldFiles = 0;
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message, ...args) {
+      if (!(message.files instanceof MessagePort)) return send.call(this, message, ...args);
+      message.files.onmessage = ({ data }) => {
+        if (data.files) window.withheldFiles = Math.max(window.withheldFiles, data.files.length);
+      };
+      const { port1, port2 } = new MessageChannel();
+      port1.close();
+      return send.call(this, { ...message, files: port2 }, [port2]);
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => Number(document.documentElement.dataset.engineThreads) > 1);
+  const picker = page.waitForEvent('filechooser').then(chooser => chooser.setFiles(paths));
+  const [result] = await Promise.all([page.evaluate(async () => {
+    const bridge = window.veacom;
+    const { series: [series] } = await bridge.importSelected(await bridge.openPaths('files'));
+    const { generation } = await bridge.getCoreState();
+    const volume = await bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision });
+    return { withheld: window.withheldFiles, dimensions: series.dimensions, bytes: Number(volume.headers.get('Content-Length')) };
+  }), picker]);
+  assert.deepEqual(result, { withheld: 1024, dimensions: [16, 16, 1024], bytes: 16 * 16 * 1024 * 2 });
+}
+
 const browser = await chromium.launch();
 const failures = [];
 try {
@@ -179,6 +212,7 @@ try {
       await page.evaluate(checkQueuedImports);
       await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
       await checkArchiveLimit(page);
+      if (isolated) await checkUnacknowledgedFiles(page);
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
     } catch (error) {

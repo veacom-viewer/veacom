@@ -77,10 +77,17 @@ struct BlobSource {
     on_helpers: std::sync::atomic::AtomicBool,
 }
 
-/// Every listed file's source by its path as the file system keeps it, for `hold` and `retain` (shared by all threads).
-static SOURCES: Mutex<BTreeMap<PathBuf, Arc<BlobSource>>> = Mutex::new(BTreeMap::new());
+struct Sources {
+    by_path: BTreeMap<PathBuf, Arc<BlobSource>>,
+    by_id: BTreeMap<u32, Arc<BlobSource>>,
+}
 
-fn sources() -> std::sync::MutexGuard<'static, BTreeMap<PathBuf, Arc<BlobSource>>> {
+static SOURCES: Mutex<Sources> = Mutex::new(Sources {
+    by_path: BTreeMap::new(),
+    by_id: BTreeMap::new(),
+});
+
+fn sources() -> std::sync::MutexGuard<'static, Sources> {
     SOURCES
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -106,7 +113,10 @@ pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
     memory_fs::add(path, source.clone());
     // Under the path the engine's series name it by (`.` and `..` resolved), so `retain` and `hold` find it.
     let key = memory_fs::canonicalize(Path::new(path)).unwrap_or_else(|_| PathBuf::from(path));
-    if let Some(replaced) = sources().insert(key, source) {
+    let mut sources = sources();
+    sources.by_id.insert(id, source.clone());
+    if let Some(replaced) = sources.by_path.insert(key, source) {
+        sources.by_id.remove(&replaced.id);
         forget(&HashSet::from([replaced.id]));
     }
     id
@@ -136,8 +146,8 @@ pub fn forget_here(ids: &[u32]) {
     allow(dead_code, reason = "only the threaded build calls it")
 )]
 pub fn mark_on_helpers(ids: &[u32]) {
-    let ids: HashSet<u32> = ids.iter().copied().collect();
-    for source in sources().values().filter(|source| ids.contains(&source.id)) {
+    let sources = sources();
+    for source in ids.iter().filter_map(|id| sources.by_id.get(id)) {
         source.on_helpers.store(true, Ordering::Release);
     }
 }
@@ -152,6 +162,7 @@ pub fn on_helpers(paths: &[&Path]) -> bool {
     let sources = sources();
     paths.iter().all(|path| {
         sources
+            .by_path
             .get(*path)
             .is_none_or(|source| source.on_helpers.load(Ordering::Acquire))
     })
@@ -159,7 +170,7 @@ pub fn on_helpers(paths: &[&Path]) -> bool {
 
 /// The numbers of the files listed now.
 pub fn listed() -> Vec<u32> {
-    sources().values().map(|source| source.id).collect()
+    sources().by_id.keys().copied().collect()
 }
 
 /// The page files at these paths that are not held whole yet, by number, for the Worker to read itself, several at a
@@ -171,8 +182,10 @@ pub fn listed() -> Vec<u32> {
 )]
 pub fn unheld(paths: &[&Path], limit: u64) -> Vec<u32> {
     let sources = sources();
-    let wanted: Vec<&Arc<BlobSource>> =
-        paths.iter().filter_map(|path| sources.get(*path)).collect();
+    let wanted: Vec<&Arc<BlobSource>> = paths
+        .iter()
+        .filter_map(|path| sources.by_path.get(*path))
+        .collect();
     if wanted.iter().map(|source| source.length).sum::<u64>() > limit {
         return Vec::new();
     }
@@ -196,7 +209,7 @@ pub fn unheld(paths: &[&Path], limit: u64) -> Vec<u32> {
     allow(dead_code, reason = "only the threaded build calls it")
 )]
 pub fn hold_read(id: u32, bytes: Vec<u8>) -> bool {
-    let Some(source) = sources().values().find(|source| source.id == id).cloned() else {
+    let Some(source) = sources().by_id.get(&id).cloned() else {
         return false;
     };
     if bytes.len() as u64 != source.length {
@@ -212,7 +225,7 @@ pub fn hold_read(id: u32, bytes: Vec<u8>) -> bool {
 /// Forgets the first pieces the page read ahead: the import that parsed its headers from them has ended, and later
 /// reads go through the pieces kept below. Each file's head would otherwise stay for as long as its series is open.
 pub fn drop_heads() {
-    for source in sources().values() {
+    for source in sources().by_id.values() {
         *source
             .head
             .lock()
@@ -226,12 +239,14 @@ pub fn retain(keep: &HashSet<PathBuf>) {
     let gone: Vec<(PathBuf, u32)> = {
         let mut sources = sources();
         let gone: Vec<_> = sources
+            .by_path
             .iter()
             .filter(|(path, _)| !keep.contains(*path))
             .map(|(path, source)| (path.clone(), source.id))
             .collect();
-        for (path, _) in &gone {
-            sources.remove(path);
+        for (path, id) in &gone {
+            sources.by_path.remove(path);
+            sources.by_id.remove(id);
         }
         gone
     };
@@ -253,7 +268,11 @@ fn forget(ids: &HashSet<u32>) {
 /// Forgets every file, piece and count.
 pub fn clear() {
     memory_fs::clear();
-    sources().clear();
+    {
+        let mut sources = sources();
+        sources.by_path.clear();
+        sources.by_id.clear();
+    }
     BLOBS.with_borrow_mut(HashMap::clear);
     PIECES.with_borrow_mut(VecDeque::clear);
     STATS.with_borrow_mut(|stats| *stats = Stats::default());
@@ -271,7 +290,7 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
         let sources = sources();
         paths
             .iter()
-            .filter_map(|path| sources.get(*path).cloned())
+            .filter_map(|path| sources.by_path.get(*path).cloned())
             .collect()
     };
     if wanted.iter().map(|source| source.length).sum::<u64>() > limit {
@@ -312,7 +331,7 @@ pub fn hold(paths: &[&Path], limit: u64) -> io::Result<bool> {
     allow(dead_code, reason = "only the threaded build calls it")
 )]
 pub fn release() {
-    for source in sources().values() {
+    for source in sources().by_id.values() {
         *source
             .whole
             .lock()
