@@ -211,8 +211,9 @@ export function Toolbar({ label, start, end, moreLabel }: {
   };
 
   // Items that do not fit go to a second row under the first (as in VEAcom Next), opened with the arrow right after the
-  // last tool shown on the left, where the folded tools come from: at the far right, past the right-hand tools, it was
-  // easy to miss. A divider keeps it apart from that tool's own menu arrow; dividers separate the groups in each row.
+  // last tool shown on the left, where the folded tools come from, rather than past the right-hand tools at the far right,
+  // where it is easy to miss. A divider keeps it apart from that tool's own menu arrow; dividers separate the groups in
+  // each row.
   const row = (list: ToolbarItem[]) => list.map((item, index, shown) => <Fragment key={item.id}>
     {index > 0 && shown[index - 1].group !== item.group && <span className="toolbar-divider" aria-hidden="true" />}
     <div className="toolbar-item" data-toolbar-item={item.id}>{item.node}</div>
