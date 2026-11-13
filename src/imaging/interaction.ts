@@ -1,18 +1,20 @@
 interface WheelInput { deltaY: number; deltaMode: number; wheelDeltaY?: number; }
 
-/** Wheel input as slices: the whole notches of a mouse wheel, or a part of a touchpad's swipe. */
+/** Wheel input in steps: the whole notches of a mouse wheel, or a part of a touchpad's swipe. */
 export interface WheelSteps {
-  /** Slices, signed: whole for notches, a fraction for a part of a swipe. */
+  /** Signed: whole notches, or a part of a swipe in steps of 40 px (wheelSlices makes slices of them). */
   steps: number;
   /** A touchpad, or another device that scrolls by pixels: its steps follow the touchpad speed. */
   fine: boolean;
 }
 
-/** The touchpad speeds the setting offers, slowest first: multiples of a slice per 40 px of scrolling. A mouse wheel
- * ignores them. ⅓× is about the speed Windows touchpads had before (a slice per 100–120 px). */
-export const TOUCHPAD_SPEEDS: readonly number[] = [1 / 3, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8];
-export const TOUCHPAD_SPEED = { min: 1 / 3, max: 8, default: 2.5 } as const;
+/** The touchpad speeds the setting offers, slowest first, as multiples of the normal speed: a slice per 16 px of
+ * scrolling. A mouse wheel ignores them. */
+export const TOUCHPAD_SPEEDS: readonly number[] = [1 / 3, 0.5, 0.75, 1, 1.5, 2, 2.5, 3];
+export const TOUCHPAD_SPEED = { min: 1 / 3, max: 3, default: 1 } as const;
 const PIXELS_PER_STEP = 40;
+/** A touchpad's slices a step at the normal speed: a slice per 16 px. */
+const TOUCHPAD_SLICES_PER_STEP = PIXELS_PER_STEP / 16;
 
 /** The offered speed nearest to `value` by ratio; the default for anything that is not a speed. */
 export function nearestTouchpadSpeed(value: unknown): number {
@@ -26,7 +28,8 @@ export function nearestTouchpadSpeed(value: unknown): number {
 // deltaY carries the system's acceleration (a slow notch is about 4 px, a fast one many times that): deltaY can neither
 // count notches nor tell a wheel from a trackpad. The legacy wheelDeltaY can: Chromium fills it with 120 per raw,
 // unaccelerated notch and sums it when it merges events. A touchpad's events carry a part of that, so they are told
-// apart by it, and page by the pixels the system scrolled (deltaY), 40 px a step at a touchpad speed of 1. Chromium
+// apart by it, and counted by the pixels the system scrolled (deltaY), 40 px a step, which the touchpad speed turns
+// into slices (wheelSlices). Chromium
 // scales a touchpad's legacy field differently by system (3 units a pixel on macOS, 1.2 through Windows' wheel
 // messages), its pixels the same way everywhere.
 // Page zoom divides both fields by `zoom` and truncates the legacy one to a whole number (110% makes a notch 109): `zoom`
@@ -64,9 +67,10 @@ export function streamWheelSteps(event: WheelInput, zoom: number, now: number, s
   return read.fine ? read : { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true };
 }
 
-/** The slices an event moves by at a touchpad speed: notches one each, a touchpad's pixels by the speed. */
+/** The slices an event moves by at a touchpad speed: notches one each, a touchpad's pixels by the speed (a slice per
+ * 16 px at 1×). */
 export function wheelSlices(read: WheelSteps, touchpadSpeed: number): number {
   if (!read.fine) return read.steps;
   const speed = Number.isFinite(touchpadSpeed) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, touchpadSpeed)) : TOUCHPAD_SPEED.default;
-  return read.steps * speed;
+  return read.steps * TOUCHPAD_SLICES_PER_STEP * speed;
 }

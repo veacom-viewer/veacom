@@ -82,10 +82,13 @@ describe('the touchpad speed', () => {
       assert.equal(wheelSlices({ steps: 1, fine: false }, speed), 1);
       assert.equal(wheelSlices({ steps: -3, fine: false }, speed), -3);
     }
-    near(wheelSlices({ steps: 0.25, fine: true }, 3), 0.75);
-    assert.equal(wheelSlices({ steps: 1, fine: true }, 100), TOUCHPAD_SPEED.max);
-    assert.equal(wheelSlices({ steps: 1, fine: true }, 0), TOUCHPAD_SPEED.min);
-    assert.equal(wheelSlices({ steps: 1, fine: true }, Number.NaN), TOUCHPAD_SPEED.default);
+    // A touchpad pages a slice per 16 px (0.4 steps) at the normal speed, and the speed multiplies that.
+    near(wheelSlices({ steps: 0.4, fine: true }, 1), 1);
+    near(wheelSlices({ steps: 0.4, fine: true }, 0.5), 0.5);
+    near(wheelSlices({ steps: -0.4, fine: true }, 3), -3);
+    near(wheelSlices({ steps: 0.4, fine: true }, 100), TOUCHPAD_SPEED.max);
+    near(wheelSlices({ steps: 0.4, fine: true }, 0), TOUCHPAD_SPEED.min);
+    near(wheelSlices({ steps: 0.4, fine: true }, Number.NaN), TOUCHPAD_SPEED.default);
   });
   it('reads a whole-notch-sized movement within a swipe as part of the swipe, and a wheel after it as notches', () => {
     const stream: WheelStream = { fineUntil: 0 };
@@ -104,23 +107,24 @@ describe('the touchpad speed', () => {
     assert.equal(raw.reduce((sum, unit) => sum + unit, 0), 1000);
     const stream: WheelStream = { fineUntil: 0 };
     const slices = (speed: number) => raw.reduce((sum, unit, index) => sum + wheelSlices(streamWheelSteps({ deltaY: unit * 100 / 120, deltaMode: 0, wheelDeltaY: -unit }, 1, index * 8, stream), speed), 0);
-    // Before, Windows touchpads paged a slice per 100–120 px: 7–8 slices for this swipe. ⅓× is 120 px a slice.
-    near(slices(1 / 3), 1000 * 100 / 120 / 120);
-    near(slices(1), 1000 * 100 / 120 / 40);
-    near(slices(TOUCHPAD_SPEED.default), TOUCHPAD_SPEED.default * 1000 * 100 / 120 / 40);
+    // Before, Windows touchpads paged a slice per 100–120 px: 7–8 slices for this swipe. Now 1× is 16 px a slice.
+    near(slices(TOUCHPAD_SPEED.default), 1000 * 100 / 120 / 16);
+    near(slices(1 / 3), 1000 * 100 / 120 / 48);
+    near(slices(3), 1000 * 100 / 120 / 16 * 3);
   });
-  it('offers speeds from ⅓× to 8×, slowest first, 2.5× by default, and takes any other value as the nearest', () => {
+  it('offers ⅓× to 3× of the normal speed, slowest first, 1× by default, and takes any other value as the nearest', () => {
     assert.deepEqual([...TOUCHPAD_SPEEDS].sort((a, b) => a - b), [...TOUCHPAD_SPEEDS]);
     assert.equal(TOUCHPAD_SPEEDS[0], TOUCHPAD_SPEED.min);
     assert.equal(TOUCHPAD_SPEEDS.at(-1), TOUCHPAD_SPEED.max);
-    assert.equal(TOUCHPAD_SPEED.default, 2.5);
-    assert.ok(TOUCHPAD_SPEEDS.includes(TOUCHPAD_SPEED.default) && TOUCHPAD_SPEEDS.includes(0.5));
-    assert.equal(nearestTouchpadSpeed(2.5), 2.5);
+    assert.equal(TOUCHPAD_SPEED.default, 1);
+    assert.ok(TOUCHPAD_SPEEDS.includes(TOUCHPAD_SPEED.default) && TOUCHPAD_SPEEDS.includes(1 / 3) && TOUCHPAD_SPEEDS.includes(0.5));
+    assert.equal(nearestTouchpadSpeed(1), 1);
     assert.equal(nearestTouchpadSpeed(0.33), 1 / 3);
-    // By ratio: 3.5 is nearer 4 (×1.14) than 3 (×1.17).
-    assert.equal(nearestTouchpadSpeed(3.5), 4);
+    // By ratio: 1.2 is nearer 1 (×1.2) than 1.5 (×1.25).
+    assert.equal(nearestTouchpadSpeed(1.2), 1);
+    assert.equal(nearestTouchpadSpeed(2.4), 2.5);
     assert.equal(nearestTouchpadSpeed(0.01), 1 / 3);
-    assert.equal(nearestTouchpadSpeed(100), 8);
+    assert.equal(nearestTouchpadSpeed(100), 3);
     for (const value of [undefined, null, 'fast', Number.NaN, 0, -2]) assert.equal(nearestTouchpadSpeed(value), TOUCHPAD_SPEED.default);
   });
 });

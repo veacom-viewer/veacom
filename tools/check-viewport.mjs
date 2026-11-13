@@ -100,10 +100,10 @@ try {
   const notchesReceived=await notches()-notchesBefore;
   check('Wheel direction setting; a notch pages one slice at any touchpad speed',notchesReceived>=1&&(await state()).view.slice===beforeWheel+notchesReceived);
   // A touchpad's swipe pages by its pixels at the touchpad speed: 80 px through Windows' wheel messages (1.2 legacy units a
-  // pixel) are two slices at speed 1 and four at 2, the way the notch went.
+  // pixel) are five slices at the normal speed (16 px a slice) and ten at 2×, the way the notch went.
   const beforeSwipe=(await state()).view.slice;
   await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect();for(let part=0;part<4;part++){canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:20,wheelDeltaY:-24,clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true}));await new Promise(resolve=>setTimeout(resolve,8));}});await settle();
-  check('Touchpad speed setting pages a swipe',(await state()).view.slice===beforeSwipe+4);
+  check('Touchpad speed setting pages a swipe',(await state()).view.slice===beforeSwipe+10);
   await page.evaluate(()=>{window.viewportTest.setOptions({});window.viewportTest.reset();});await settle();
   const cdp=await page.context().newCDPSession(page);
   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:250,y:300,id:1},{x:350,y:300,id:2}]});
