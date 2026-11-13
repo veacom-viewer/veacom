@@ -14,8 +14,8 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
 
 | Item | Plane | Points | Value | Answer |
 | --- | --- | --- | --- | --- |
-| Cribriform plate (Keros) | coronal | the olfactory fossa's floor (cribriform plate), the ethmoid roof at the top of the lateral lamella (fovea ethmoidalis) | depth: the height between them, straight up | Keros type 1–3 |
-| Anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
+| Olfactory fossa depth (Keros) | coronal | the olfactory fossa's floor (cribriform plate), the ethmoid roof at the top of the lateral lamella (fovea ethmoidalis) | depth: the height between them, straight up | Keros type 1–3 |
+| Anterior ethmoid artery in mesentery / dehiscent | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
 | Sphenoid pneumatisation | sagittal | tuberculum sellae, top of the dorsum sellae, sinus wall furthest back | the wall's place against the two sella lines | sellar or postsellar; none in front of the tuberculum line |
 | Septal deviation / spur | coronal | maxillary crest, crista galli, most deviated point | angle at the crista galli, and the side it bows to | Yes on that side |
 

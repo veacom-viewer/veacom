@@ -51,17 +51,19 @@ export const CHECKLISTS: Record<ChecklistKind, { title: Words; groups: Checklist
     groups: [{
       title: { tr: 'CLOSE', en: 'CLOSE' },
       items: [
-        { id: 'keros', label: { tr: 'Kribriform plate (Keros)', en: 'Cribriform plate (Keros)' }, hint: { tr: 'Olfaktör fossa derinliği, asimetri', en: 'Olfactory fossa depth, asymmetry' }, sided: true,
+        // Each label names what its answer says: a finding is present (Var) or absent (Yok); Keros and the pneumatisation
+        // are answered by their type.
+        { id: 'keros', label: { tr: 'Olfaktör fossa derinliği (Keros)', en: 'Olfactory fossa depth (Keros)' }, hint: { tr: 'Lateral lamel yüksekliği; sağ–sol asimetrisi', en: 'Height of the lateral lamella; right–left asymmetry' }, sided: true,
           options: [{ value: '1', tr: '1', en: '1' }, { value: '2', tr: '2', en: '2' }, { value: '3', tr: '3', en: '3' }, { value: 'unknown', tr: '?', en: '?' }], planes: ['coronal'] },
-        { id: 'lamina', label: { tr: 'Lamina papyracea', en: 'Lamina papyracea' }, hint: { tr: 'Dehisans, erozyon', en: 'Dehiscence, erosion' }, sided: true, planes: ['coronal'] },
+        { id: 'lamina', label: { tr: 'Lamina papyracea dehisansı / erozyonu', en: 'Lamina papyracea dehiscence / erosion' }, hint: { tr: 'Orbital yağ ya da medial rektus herniasyonu', en: 'Orbital fat or medial rectus herniating' }, sided: true, planes: ['coronal'] },
         // Coronal shows the horizontal septum under the cell, sagittal how far back over the sphenoid sinus it reaches.
         { id: 'onodi', label: { tr: 'Onodi hücresi', en: 'Onodi cell' }, hint: { tr: 'Optik sinirle ilişki', en: 'Relation to the optic nerve' }, sided: true, planes: ['coronal', 'sagittal'] },
-        { id: 'sphenoid-ica', label: { tr: 'Sfenoid: ICA', en: 'Sphenoid: ICA' }, hint: { tr: 'Dehisans / protrüzyon', en: 'Dehiscence / protrusion' }, sided: true, planes: ['axial', 'coronal'] },
-        { id: 'sphenoid-optic', label: { tr: 'Sfenoid: optik sinir', en: 'Sphenoid: optic nerve' }, hint: { tr: 'Dehisans / protrüzyon', en: 'Dehiscence / protrusion' }, sided: true, planes: ['coronal', 'axial'] },
-        { id: 'sphenoid-septum', label: { tr: 'İntersinüs septum ICA\'ya', en: 'Intersinus septum to ICA' }, hint: { tr: 'Septumun karotis kanalına yapışması', en: 'Septum inserting on the carotid canal' }, sided: true, planes: ['axial', 'coronal'] },
+        { id: 'sphenoid-ica', label: { tr: 'ICA dehisansı / protrüzyonu', en: 'ICA dehiscence / protrusion' }, hint: { tr: 'Sfenoid sinüsün lateral duvarında', en: 'In the lateral wall of the sphenoid sinus' }, sided: true, planes: ['axial', 'coronal'] },
+        { id: 'sphenoid-optic', label: { tr: 'Optik sinir dehisansı / protrüzyonu', en: 'Optic nerve dehiscence / protrusion' }, hint: { tr: 'Sfenoid sinüste ya da Onodi hücresinde', en: 'Into the sphenoid sinus or an Onodi cell' }, sided: true, planes: ['coronal', 'axial'] },
+        { id: 'sphenoid-septum', label: { tr: 'İntersinüs septum karotis kanalına yapışık', en: 'Intersinus septum on the carotid canal' }, hint: { tr: 'Septumun karotis kanalında bittiği taraf', en: 'The side where the septum ends on the carotid canal' }, sided: true, planes: ['axial', 'coronal'] },
         { id: 'pneumatisation', label: { tr: 'Sfenoid pnömatizasyonu', en: 'Sphenoid pneumatisation' }, hint: { tr: 'Sella\'ya göre', en: 'Relative to the sella' }, sided: false,
           options: [{ value: 'conchal', tr: 'Konkal', en: 'Conchal' }, { value: 'presellar', tr: 'Preseller', en: 'Presellar' }, { value: 'sellar', tr: 'Seller', en: 'Sellar' }, { value: 'postsellar', tr: 'Postseller', en: 'Postsellar' }, { value: 'unknown', tr: '?', en: '?' }], planes: ['sagittal'] },
-        { id: 'ethmoid-artery', label: { tr: 'Ön etmoid arter', en: 'Anterior ethmoid artery' }, hint: { tr: 'Kafa tabanından ayrık (mezenterde), dehisans', en: 'Below the skull base (in a mesentery), dehiscent' }, sided: true, planes: ['coronal'] },
+        { id: 'ethmoid-artery', label: { tr: 'Ön etmoid arter mezenterde / dehisan', en: 'Anterior ethmoid artery in mesentery / dehiscent' }, hint: { tr: 'Kafa tabanının altında seyir ya da açık kemik kanal', en: 'Running below the skull base, or an open bony canal' }, sided: true, planes: ['coronal'] },
       ],
     }, {
       title: { tr: 'Diğer', en: 'Other' },

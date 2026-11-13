@@ -300,8 +300,8 @@ async function main() {
       return desktop.evaluate(({ clipboard }) => clipboard.readText());
     };
     const report = await copied('Copied');
-    for (const part of [/Cribriform plate \(Keros\): Right 1 \(3\.2 mm, type 1, near limit; slice \d+\/\d+\), Left 2 \(6\.0 mm, type 2; slice \d+\/\d+\); right–left difference 2\.8 mm/,
-      /Anterior ethmoid artery: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left Yes \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
+    for (const part of [/Olfactory fossa depth \(Keros\): Right 1 \(3\.2 mm, type 1, near limit; slice \d+\/\d+\), Left 2 \(6\.0 mm, type 2; slice \d+\/\d+\); right–left difference 2\.8 mm/,
+      /Anterior ethmoid artery in mesentery \/ dehiscent: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left Yes \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
       /Sphenoid pneumatisation: Sellar \(\d+\.\d mm behind tuberculum line; slice \d+\/\d+\)/,
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
     check('Copy for the report gives every caliper value with its side and slice', { report });
@@ -358,7 +358,7 @@ async function main() {
     await select('keros');
     assert.equal(await detail('keros', 'right').locator('.preop-limit').textContent(), 'sınırda');
     const turkish = await copied('Kopyalandı');
-    assert.match(turkish, /Kribriform plate \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; kesit \d+\/\d+\)/);
+    assert.match(turkish, /Olfaktör fossa derinliği \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; kesit \d+\/\d+\)/);
     assert.match(turkish, /sağ–sol fark 2\.8 mm/);
     assert.equal(await unmarkedButton.textContent(), `${rowCount - copiedRows} işaretsiz`);
     const turkishCard = await printCard('4-theatre-card-tr', 2);
@@ -417,14 +417,14 @@ async function main() {
     assert.equal(await showButton.textContent(), 'Show axial', 'On a coronal pane, the ICA offers its other plane.');
     await showButton.click();
     await shownPlane('axial');
-    assert.equal(await toast.locator('span').textContent(), 'The axial plane and bone window for Sphenoid: ICA');
+    assert.equal(await toast.locator('span').textContent(), 'The axial plane and bone window for ICA dehiscence / protrusion');
     assert.deepEqual([(await view()).windowWidth, (await view()).windowCenter], [1500, 300], 'Show sets the bone window.');
     assert.equal(await showButton.textContent(), 'Show coronal');
     const onAxial = await view();
     await showButton.click();
     await shownPlane('coronal');
     assert.equal((await view()).slice, kerosSlice, 'Back on the coronal plane at the slice it left.');
-    assert.equal(await toast.locator('span').textContent(), 'The coronal slice last viewed for Sphenoid: ICA');
+    assert.equal(await toast.locator('span').textContent(), 'The coronal slice last viewed for ICA dehiscence / protrusion');
     await page.mouse.move(5, 5);
     await page.screenshot({ path: path.join(output, '7-show-en.png') });
     await toast.locator('[data-action="checklist-show-undo"]').click();
@@ -452,13 +452,13 @@ async function main() {
     await showButton.click();
     await shownPlane('coronal');
     assert.equal((await view()).slice, kerosSlice, 'Show goes to the slice noted for the item.');
-    assert.equal(await toast.locator('span').textContent(), 'The coronal slice noted for Lamina papyracea');
+    assert.equal(await toast.locator('span').textContent(), 'The coronal slice noted for Lamina papyracea dehiscence / erosion');
     await page.evaluate(slice => window.__VEACOM_TEST__.setView({ slice }), kerosSlice + 8);
     await onSlice(kerosSlice + 8);
     assert.equal(await showButton.textContent(), 'Show coronal');
     await showButton.click();
     await onSlice(kerosSlice);
-    assert.equal(await toast.locator('span').textContent(), 'The coronal slice noted for Lamina papyracea', 'On the plane already, Show goes to the slice noted.');
+    assert.equal(await toast.locator('span').textContent(), 'The coronal slice noted for Lamina papyracea dehiscence / erosion', 'On the plane already, Show goes to the slice noted.');
     await pick('lamina', 'right', 'No');
     assert.equal(await value('lamina', 'right'), null, 'The note goes when the answer is no longer Yes.');
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ plane: 'axial', mode: 'mpr', oblique: [0, 0] }));
