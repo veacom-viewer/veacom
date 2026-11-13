@@ -862,8 +862,12 @@ export default function App() {
     publishLoadedVolumes(volumesRef.current);
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
+  // Each card's picture is its series' middle frame, at most two in flight. It does not wait for volumes to load: a
+  // frame is small next to a volume, and waiting would keep every card's placeholder until the last volume had arrived.
+  // A load starting or ending runs this again (loadingIds.size), retrying a card whose picture failed or was dropped;
+  // the frame cache shares a request already under way.
   useEffect(() => {
-    if (importing || loadingIds.size) return;
+    if (importing) return;
     const work = { stopped: false, cursor: 0 };
     const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
