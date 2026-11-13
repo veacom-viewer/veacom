@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
 import { sliceCount } from '../src/imaging/geometry';
+import { assessmentRoiLocation } from '../src/ui/assessmentRoi';
+import { translate, type Translator } from '../src/i18n';
 import { measuredSlice, numbersBackwards, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
 
 // Synthetic stacks with no frame metadata: the volume geometry alone places the slices.
@@ -124,6 +126,17 @@ describe('the slice number shown', () => {
   });
   it('counts in paging order where the numbers are not 1 to N in order', () => {
     for (const numbers of [[2, 3, 4, 5, 6], [1, 3, 2, 4, 5], [7, 7, 7, 7, 7], [1, 2, 3, 4]]) assert.deepEqual(shown(numbered(numbers)), [1, 2, 3, 4, 5], String(numbers));
+  });
+  it('labels a source ROI with the displayed slice, the distinct DICOM instance and its frame', () => {
+    const t: Translator = (key, params) => translate('en', key, params);
+    const drawn = { mode: 'source', plane: 'axial', slice: 0 } as const;
+    const irregular = numbered([10, 20, 30, 40, 50]);
+    irregular.frameMetadata![0].sourceFrameNumber = 2;
+    assert.equal(assessmentRoiLocation(irregular, drawn, 0, t), 'Image 5 · Instance Number 10 · frame 2');
+    assert.equal(assessmentRoiLocation(irregular, drawn, 0, t, { lead: false, leadAt: 0, total: 6, reverseNumbers: false }), 'Image 6 · Instance Number 10 · frame 2');
+    assert.equal(assessmentRoiLocation(numbered([1, 2, 3, 4, 5]), drawn, 0, t), 'Image 1');
+    assert.equal(assessmentRoiLocation(feetUp, drawn, 0, t), 'Image 5');
+    assert.equal(assessmentRoiLocation(feetUp, drawn, null, t), t('assessment.sourceUnavailable'));
   });
   it('counts a reconstructed plane in paging order, whatever the acquired images are numbered', () => {
     const fromTheFeet = numbered([1, 2, 3, 4, 5]);
