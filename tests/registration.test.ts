@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import { facesSame, linkedSlice, type Pane } from '../src/imaging/linking';
-import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
+import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, currentAlignment, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
 import { angleOf, applyPoint, applyVector, compose, IDENTITY, invert, isIdentity, rotation, translation } from '../src/imaging/rigid';
 import type { EngineRegistration, FusionSettings, Series, Vec3, ViewState } from '../src/model';
 
@@ -46,6 +46,19 @@ describe('aligned frames of reference', () => {
     assert.equal(transformBetween([], priorCt, currentCt), null, 'not aligned: nothing joins them');
     assert.equal(transformBetween(alignments, priorCt, currentCt), transformBetween(alignments, priorCt, currentCt), 'the same matrix object while the alignments stay');
     assert.notEqual(transformBetween([...alignments], priorCt, currentCt), transformBetween(alignments, priorCt, currentCt));
+  });
+
+  it('drops an alignment and its saved nudges after either source is invalidated', () => {
+    const versions = new Map([[currentCt.id, 2], [priorCt.id, 3]]);
+    const result = alignmentFrom(engine(), currentCt, priorCt, 2, 3)!;
+    const saved = nudged(result, translation([0, 0, 1]));
+    versions.set('another-series', 4);
+    assert.ok(currentAlignment(result, versions) && currentAlignment(saved, versions));
+    for (const id of [priorCt.id, currentCt.id]) {
+      const changed = new Map(versions).set(id, 5);
+      assert.equal(currentAlignment(result, changed), false);
+      assert.equal(currentAlignment(saved, changed), false);
+    }
   });
 
   it('keeps alignments with their patient when frame UIDs are reused', () => {

@@ -582,6 +582,12 @@ async function main() {
     await page.waitForFunction(() => /PET 10\.00 SUVbw/.test([...document.querySelectorAll('[data-testid="viewport-cell"]')[0]?.querySelectorAll('[data-testid="pointer-readout"] text') ?? []].map(node => node.textContent).join('\n')));
     await shot('5c-fused-apart');
     check('A PET over a CT acquired apart is aligned by its own CT, then read in its own voxels through the alignment');
+    await page.getByTestId(`series-${priorCt.id}`).click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().alignments.length === 0);
+    assert.doesNotMatch(await cells().nth(0).locator('[data-testid="image-overlay"]').textContent(), /Aligned automatically/);
+    assert.equal(await page.locator('[data-action="alignment-undo"]').count(), 0);
+    check('Removing the prior CT removes its registration even while its PET is still loaded');
     await closeDesktop(desktop);
 
     // The current study alone, in a new session: the change comes from what was kept for the prior.

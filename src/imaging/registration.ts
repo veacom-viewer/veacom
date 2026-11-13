@@ -13,6 +13,8 @@ export interface Alignment {
   fixed: string; moving: string;
   /** The series registered (the CTs of two visits, or a PET and the CT it was laid over), named in notices. */
   fixedSeriesId: string; movingSeriesId: string;
+  /** Volume generations captured before registration, used to reject a stale result or Undo. */
+  fixedGeneration: number; movingGeneration: number;
   /** The engine's transform, the reader's nudges after it (in the fixed frame), and the two together. */
   found: Matrix; nudge: Matrix; matrix: Matrix;
   /** Normalised mutual information (0 unrelated, 1 identical) aligned and with the two coordinates taken as one, and
@@ -28,14 +30,18 @@ export const frameOf = (series: Series): string | null =>
     ? JSON.stringify([series.patientKey, series.frameOfReferenceUid]) : null;
 
 /** The engine's answer for `moving` laid over `fixed`, as an alignment of their frames; null when they share one. */
-export function alignmentFrom(result: EngineRegistration, fixed: Series, moving: Series): Alignment | null {
+export function alignmentFrom(result: EngineRegistration, fixed: Series, moving: Series, fixedGeneration = 0, movingGeneration = 0): Alignment | null {
   const fixedFrame = frameOf(fixed), movingFrame = frameOf(moving);
   if (!fixedFrame || !movingFrame || fixedFrame === movingFrame || !samePatient(fixed, moving) || !isMatrix(result.matrix)) return null;
   const centre = indexToWorld(moving, moving.dimensions.map(n => (n - 1) / 2) as Vec3);
-  return { fixed: fixedFrame, moving: movingFrame, fixedSeriesId: fixed.id, movingSeriesId: moving.id,
+  return { fixed: fixedFrame, moving: movingFrame, fixedSeriesId: fixed.id, movingSeriesId: moving.id, fixedGeneration, movingGeneration,
     found: [...result.matrix], nudge: IDENTITY, matrix: [...result.matrix],
     similarity: result.similarity, similarityBefore: result.similarityBefore, overlap: result.overlap, centre };
 }
+
+export const currentAlignment = (alignment: Alignment, generations: ReadonlyMap<string, number>) =>
+  alignment.fixedGeneration === (generations.get(alignment.fixedSeriesId) ?? 0)
+  && alignment.movingGeneration === (generations.get(alignment.movingSeriesId) ?? 0);
 
 const samePair = (a: Pick<Alignment, 'fixed' | 'moving'>, b: Pick<Alignment, 'fixed' | 'moving'>) =>
   (a.fixed === b.fixed && a.moving === b.moving) || (a.fixed === b.moving && a.moving === b.fixed);

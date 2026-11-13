@@ -56,7 +56,7 @@ import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
 import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, placed, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
-import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, automatic, frameOf, mapPoint, movement, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment, type Alignment, type Nudge } from './imaging/registration';
+import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, automatic, currentAlignment, frameOf, mapPoint, movement, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment, type Alignment, type Nudge } from './imaging/registration';
 import { applyPoint, IDENTITY } from './imaging/rigid';
 import { AlignmentSection } from './components/AlignmentSection';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
@@ -267,7 +267,7 @@ const PANE_DRAG = 'application/x-veacom-pane';
 
 /** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
  * rearranged. A sticky one stays until the reader's next action instead of a few seconds. */
-type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
+type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean; alignment?: Alignment;
   onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'alignment'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
 
 function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, alignments, aligned,
@@ -566,7 +566,11 @@ export default function App() {
   // Handlers read the ref; changeAlignments sets both, so a handler sees an alignment it has just made.
   const [alignments, setAlignments] = useState<readonly Alignment[]>([]);
   const alignmentsRef = useRef(alignments);
-  const changeAlignments = (next: readonly Alignment[]) => { alignmentsRef.current = next; setAlignments(next); };
+  const volumeGenerations = useRef(new Map<string, number>());
+  const changeAlignments = (next: readonly Alignment[]) => {
+    const valid = next.filter(item => currentAlignment(item, volumeGenerations.current));
+    alignmentsRef.current = valid; setAlignments(valid);
+  };
   // Alignments the engine is finding: the status bar says so and follows the decoding of the volumes they need.
   const [aligning, setAligning] = useState(0);
   // The fusion asked for last: one asked for earlier, or stopped since, does not start when its PET has loaded.
@@ -592,7 +596,6 @@ export default function App() {
   const fullyLoaded = useRef(new Set<string>());
   // Series an import still under way has published (importStudies): their frames can be shown before it ends.
   const earlySeries = useRef(new Set<string>());
-  const volumeGenerations = useRef(new Map<string, number>());
   const volumeAccess = useRef(new Map<string, number>());
   const accessClock = useRef(0);
   const requestedPins = useRef(new Set<string>());
@@ -725,7 +728,7 @@ export default function App() {
   const removeAlignment = (alignment: Alignment) => {
     changeAlignments(withoutAlignment(alignmentsRef.current, alignment));
     const slot = slotsRef.current.find(item => item.id === activeIdRef.current);
-    if (slot?.seriesId) setPaneToast({ slotId: slot.id, seriesId: slot.seriesId, text: t('alignment.removed'), sticky: true, undoAction: 'alignment',
+    if (slot?.seriesId) setPaneToast({ slotId: slot.id, seriesId: slot.seriesId, text: t('alignment.removed'), alignment, sticky: true, undoAction: 'alignment',
       onUndo: () => { setPaneToast(null); changeAlignments(withAlignment(alignmentsRef.current, alignment)); } });
   };
 
@@ -851,6 +854,9 @@ export default function App() {
       next.delete(id); fullyLoaded.current.delete(id); pending.current.delete(id);
       volumeAccess.current.delete(id); requestedPins.current.delete(id);
     }
+    const aligned = alignmentsRef.current;
+    if (aligned.some(item => changed.has(item.fixedSeriesId) || changed.has(item.movingSeriesId))) changeAlignments(aligned);
+    setPaneToast(current => current?.alignment && !currentAlignment(current.alignment, volumeGenerations.current) ? null : current);
     publishVolumes(next);
     setFailedPreviews(current => ids.some(id => current.has(id)) ? new Set([...current].filter(id => !changed.has(id))) : current);
     setLoadingIds(current => { const updated = new Set(current); for (const id of ids) updated.delete(id); return updated; });
@@ -1465,12 +1471,14 @@ export default function App() {
    * Written with promise handlers: the React compiler leaves a component with a `finally` block uncompiled. */
   const align = (fixed: Series, moving: Series): Promise<Alignment> => {
     if (capturingRef.current) return Promise.reject(new Error(t('notice.waitForCapture')));
+    const fixedGeneration = volumeGenerations.current.get(fixed.id) ?? 0, movingGeneration = volumeGenerations.current.get(moving.id) ?? 0;
     setAligning(count => count + 1);
     const finished = () => { if (mounted.current) setAligning(count => Math.max(0, count - 1)); };
     return registerSeries(fixed, moving).then(result => {
       finished();
-      const found = alignmentFrom(result, fixed, moving);
+      const found = alignmentFrom(result, fixed, moving, fixedGeneration, movingGeneration);
       if (!found) throw new Error(t('notice.fusionNoFrame'));
+      if (!currentAlignment(found, volumeGenerations.current)) throw new Error(t('engine.sourceChanged'));
       return found;
     }, error => { finished(); throw error; });
   };
@@ -1493,7 +1501,7 @@ export default function App() {
         return;
       }
       fusePet(pet, base, slotId, true, request);
-      setPaneToast({ slotId, seriesId: base.id, text: t('alignment.fusionDone', { ...names, by: modalityName(moving), ...moved(found) }), sticky: true, undoAction: 'alignment',
+      setPaneToast({ slotId, seriesId: base.id, text: t('alignment.fusionDone', { ...names, by: modalityName(moving), ...moved(found) }), alignment: found, sticky: true, undoAction: 'alignment',
         onUndo: () => {
           setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found));
           if (fusionRequest.current === request) { fusionRequest.current++; setFusionId(null); }
@@ -1517,7 +1525,7 @@ export default function App() {
     let request = alignedRequest;
     if (request === undefined) request = ++fusionRequest.current;
     const stillWanted = () => mounted.current && request === fusionRequest.current
-      && (alignedRequest === undefined || slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === ct.id));
+      && (alignedRequest === undefined || (slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === ct.id) && Boolean(alignedTransform(alignmentsRef.current, ct, pet))));
     void acquireVolume(pet).then(volume => {
       if (!stillWanted()) return;
       if (sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
@@ -1712,9 +1720,9 @@ export default function App() {
       changeAlignments(next);
       pageAligned(leadId, next, slotsRef.current, seriesRef.current);
       const said = t('alignment.priorDone', { by: modalityName(pair.moving), ...moved(found) });
-      if (paneToastRef.current === toast) { setPaneToast({ ...toast, text: `${text} ${said}` }); return; }
+      if (paneToastRef.current === toast) { setPaneToast({ ...toast, alignment: found, text: `${text} ${said}` }); return; }
       const role = plan.arrangement.align?.role, shown = role ? slotsRef.current.find(slot => slot.seriesId === plan.roles[role]?.id) : undefined;
-      if (shown?.seriesId) setPaneToast({ slotId: shown.id, seriesId: shown.seriesId, text: said, sticky: true, undoAction: 'alignment',
+      if (shown?.seriesId) setPaneToast({ slotId: shown.id, seriesId: shown.seriesId, text: said, alignment: found, sticky: true, undoAction: 'alignment',
         onUndo: () => { setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found)); } });
     }).catch(error => {
       if (!mounted.current || arranged.current?.plan !== plan) return;
