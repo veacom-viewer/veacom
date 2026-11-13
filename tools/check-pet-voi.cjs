@@ -552,6 +552,25 @@ async function main() {
     // The fusion the prior's own PET/CT screen started may still be on: the strip offers the prior's PET either way.
     if (!await page.getByTestId('fusion-strip').isVisible()) await page.getByTestId('tool-fusion').click();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().fusionId);
+    // Select a different series before the asynchronous registration can report its result.
+    await page.evaluate(({ overlay, replacement }) => {
+      const select = document.querySelector('[data-testid="fusion-series"]');
+      select.value = overlay;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      window.__VEACOM_TEST__.selectSeries(replacement);
+    }, { overlay: before.id, replacement: now.id });
+    await page.waitForFunction(() => { const s = window.__VEACOM_TEST__.state(); return s.alignments.length === 1 && !s.aligning; }, undefined, { timeout: 120_000 });
+    await settled();
+    const replaced = await state();
+    assert.equal(replaced.panes[0].seriesId, now.id);
+    assert.equal(replaced.fusionId, null);
+    assert.equal(await page.locator('[data-action="alignment-undo"]').count(), 0);
+    check('Switching the series during registration keeps the alignment without fusing into the replacement pane');
+
+    await page.locator('[data-action="alignment-remove"]').click();
+    await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), nowCt.id);
+    await settled();
+    await goTo(0, lesion.center[2], nowCt);
     await page.getByTestId('fusion-series').selectOption(before.id);
     await page.waitForFunction(id => { const s = window.__VEACOM_TEST__.state(); return s.fusionId === id && s.alignments.length === 1 && !s.aligning; }, before.id, { timeout: 120_000 });
     s = await state();

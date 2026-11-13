@@ -1488,20 +1488,24 @@ export default function App() {
     void align(base, moving).then(found => {
       if (!mounted.current || request !== fusionRequest.current) return;
       changeAlignments(withAlignment(alignmentsRef.current, found));
-      fusePet(pet, base, slotId, true);
-      const loadRequest = fusionRequest.current;
+      if (!slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === base.id)) {
+        setPaneToast(current => current === running ? null : current);
+        return;
+      }
+      fusePet(pet, base, slotId, true, request);
       setPaneToast({ slotId, seriesId: base.id, text: t('alignment.fusionDone', { ...names, by: modalityName(moving), ...moved(found) }), sticky: true, undoAction: 'alignment',
         onUndo: () => {
           setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found));
-          if (fusionRequest.current === loadRequest) { fusionRequest.current++; setFusionId(null); }
+          if (fusionRequest.current === request) { fusionRequest.current++; setFusionId(null); }
         } });
     }).catch(error => {
       if (!mounted.current || request !== fusionRequest.current) return;
       setPaneToast(current => current === running ? null : current);
+      if (!slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === base.id)) return;
       setNotice({ message: t('alignment.fusionFailed', { ...names, reason: errorText(error) }), kind: 'error' });
     });
   };
-  const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false) => {
+  const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false, alignedRequest?: number): void => {
     if (!shareFrame(ct, pet) && !alignedTransform(alignmentsRef.current, ct, pet)) {
       // Acquired apart: the same patient's are aligned first; another patient's never.
       if (!samePatient(ct, pet)) { say('notice.fusionOtherPatient', 'error'); return; }
@@ -1510,9 +1514,12 @@ export default function App() {
       return;
     }
     setFusionId(null);
-    const request = ++fusionRequest.current;
+    let request = alignedRequest;
+    if (request === undefined) request = ++fusionRequest.current;
+    const stillWanted = () => mounted.current && request === fusionRequest.current
+      && (alignedRequest === undefined || slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === ct.id));
     void acquireVolume(pet).then(volume => {
-      if (request !== fusionRequest.current || !mounted.current) return;
+      if (!stillWanted()) return;
       if (sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
       setFusionId(pet.id);
       if (fusionDeviceModeRef.current && pet.modality === 'PT') applyDeviceLook(pet, slotId);
@@ -1521,7 +1528,7 @@ export default function App() {
       }
       const own = pet.modality !== 'PT' || petHasSuv(pet);
       if (!quiet || !own) say(own ? 'notice.fusionStarted' : 'notice.fusionNoSuv', 'info', { pet: seriesName(pet), ct: seriesName(ct) }, true);
-    }).catch(error => { if (mounted.current && request === fusionRequest.current) setNotice({ message: errorText(error), kind: 'error' }); });
+    }).catch(error => { if (stillWanted()) setNotice({ message: errorText(error), kind: 'error' }); });
   };
   /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET, over the CT acquired with it. */
   const fuseInActive = (pet: Series) => {
@@ -2477,7 +2484,7 @@ export default function App() {
         {/* Info notices go into a live region that is always present, so screen readers announce them reliably. */}
         <div className="notice-region" role="status">{notice && notice.kind !== 'error' && noticeBar}</div>
         {notice?.kind === 'error' && noticeBar}
-        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = overlayChoices.find(value => value.id === event.target.value); if (!item) { setFusionId(null); return; } if (activeVolume?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{overlayChoices.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
+        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = overlayChoices.find(value => value.id === event.target.value); if (!item) { fusionRequest.current++; setFusionId(null); return; } if (activeVolume?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{overlayChoices.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
         {pictureNotice && <div className="picture-notice-anchor"><div className="picture-notice" role="status" data-testid="picture-notice"><span>{pictureFormat ? t('pictures.limited', { format: pictureFormat }) : t('pictures.limitedPlain')}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-tooltip={t('notice.dismiss')} data-action="picture-notice-close" onClick={() => setPictureNoticeClosed(current => new Set(current).add(pictureNotice))}><X size={14} /></button></div></div>}
         {series.length === 0 ? <div className="welcome-space" data-testid="welcome">
           <div className="welcome-card">
