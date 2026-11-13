@@ -1192,6 +1192,7 @@ export const en = {
   'assessment.seriesNumber': 'Series {number}',
   'assessment.sourceUnavailable': 'Source frame unavailable',
   'assessment.imageNumber': 'Image {number}',
+  'assessment.instanceNumber': ' · Instance Number {number}',
   'assessment.frameNumber': ' · frame {number}',
   'assessment.useAs': 'Use {title} as',
   'assessment.unused': 'Unused',

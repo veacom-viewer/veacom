@@ -1195,6 +1195,7 @@ export const tr: Record<keyof typeof en, string> = {
   'assessment.seriesNumber': 'Seri {number}',
   'assessment.sourceUnavailable': 'Özgün kesit bulunamadı',
   'assessment.imageNumber': 'Görüntü {number}',
+  'assessment.instanceNumber': ' · DICOM görüntü no {number}',
   'assessment.frameNumber': ' · kare {number}',
   'assessment.useAs': '{title}: kullanım',
   'assessment.unused': 'Kullanılmıyor',

@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { ClipboardCopy, Info, X } from './icons';
 import type { Annotation, Volume } from '../model';
 import { annotationSourceIndex } from '../imaging/annotations';
-import { measuredSlice } from '../imaging/paging';
+import { assessmentRoiLocation } from '../ui/assessmentRoi';
 import {
   CLINICAL_CACHE_BYTES, CLINICAL_COPY_CHUNK_BYTES, FEATURES, ROLE_NAMES, assessmentSummary, candidateName, candidates, featureName, inferStudySequences, measureStudy,
   radiopaedia, rank, referenceTissue, regions, sameRoiSlice, searchRegions, sampleMethod, source, word, words,
@@ -318,7 +318,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       <p className="assessment-help">{t('assessment.roiHelp')}</p>
       {/* Only the regions used as lesion or reference: other measurements would crowd the list. */}
       {assignedRois.length ? <div className="assessment-rois">{assignedRois.map(roi => <div className="assessment-roi" key={roi.key}>
-        <div><strong>{roi.title}</strong><small>{roi.series.description || t('assessment.seriesNumber', { number: roi.series.seriesNumber })} · {roi.annotation.mode === 'source' ? roi.sourceIndex === null ? t('assessment.sourceUnavailable') : `${t('assessment.imageNumber', { number: roi.series.frameMetadata?.[roi.sourceIndex]?.instanceNumber ?? roi.sourceIndex + 1 })}${roi.series.frameMetadata?.[roi.sourceIndex]?.sourceFrameNumber ? t('assessment.frameNumber', { number: roi.series.frameMetadata[roi.sourceIndex].sourceFrameNumber! }) : ''}` : `${t(`planeLower.${roi.annotation.plane}` as const)} ${measuredSlice(roi.series, roi.annotation)}`}</small></div>
+        <div><strong>{roi.title}</strong><small>{roi.series.description || t('assessment.seriesNumber', { number: roi.series.seriesNumber })} · {assessmentRoiLocation(roi.series, roi.annotation, roi.sourceIndex, t)}</small></div>
         <select data-action="assessment-roi-use" aria-label={t('assessment.useAs', { title: roi.title })} value={Object.hasOwn(assignments, roi.key) ? assignments[roi.key].kind : ''} onChange={e => assign(roi.key, e.target.value)}>
           <option value="">{t('assessment.unused')}</option><option value="lesion">{t('assessment.lesion')}</option><option value="reference">{t('assessment.reference')}</option></select>
       </div>)}</div> : <p className="assessment-empty">{t('assessment.noRois')}</p>}
