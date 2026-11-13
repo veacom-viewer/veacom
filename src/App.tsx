@@ -1479,20 +1479,21 @@ export default function App() {
   const moved = (alignment: Alignment) => { const { shift, angle } = movement(alignment); return { shift: shift.toFixed(1), angle: angle.toFixed(1) }; };
   /** A PET or SPECT over a CT or MR acquired apart: aligned first, by the overlay's own CT where it has one, then fused;
    * the pane says so, with Undo. */
-  const alignForFusion = (pet: Series, base: Series, slotId: string, request: number) => {
+  const alignForFusion = (pet: Series, base: Series, slotId: string) => {
     const moving = findRole(FUSION.roles.ct, seriesRef.current, pet) ?? pet;
-    const names = { overlay: modalityName(pet), base: modalityName(base) };
+    const request = ++fusionRequest.current, names = { overlay: modalityName(pet), base: modalityName(base) };
     setFusionId(null);
     const running: PaneToast = { slotId, seriesId: base.id, text: t('alignment.fusionRunning', names), sticky: true };
     setPaneToast(running);
     void align(base, moving).then(found => {
       if (!mounted.current || request !== fusionRequest.current) return;
       changeAlignments(withAlignment(alignmentsRef.current, found));
-      fusePet(pet, base, slotId, true, request);
+      fusePet(pet, base, slotId, true);
+      const loadRequest = fusionRequest.current;
       setPaneToast({ slotId, seriesId: base.id, text: t('alignment.fusionDone', { ...names, by: modalityName(moving), ...moved(found) }), sticky: true, undoAction: 'alignment',
         onUndo: () => {
           setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found));
-          if (fusionRequest.current === request) { fusionRequest.current++; setFusionId(null); }
+          if (fusionRequest.current === loadRequest) { fusionRequest.current++; setFusionId(null); }
         } });
     }).catch(error => {
       if (!mounted.current || request !== fusionRequest.current) return;
@@ -1500,15 +1501,16 @@ export default function App() {
       setNotice({ message: t('alignment.fusionFailed', { ...names, reason: errorText(error) }), kind: 'error' });
     });
   };
-  const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false, request = ++fusionRequest.current): void => {
+  const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false) => {
     if (!shareFrame(ct, pet) && !alignedTransform(alignmentsRef.current, ct, pet)) {
       // Acquired apart: the same patient's are aligned first; another patient's never.
       if (!samePatient(ct, pet)) { say('notice.fusionOtherPatient', 'error'); return; }
       if (!frameOf(ct) || !frameOf(pet)) { say('notice.fusionNoFrame', 'error'); return; }
-      alignForFusion(pet, ct, slotId, request);
+      alignForFusion(pet, ct, slotId);
       return;
     }
     setFusionId(null);
+    const request = ++fusionRequest.current;
     void acquireVolume(pet).then(volume => {
       if (request !== fusionRequest.current || !mounted.current) return;
       if (sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
@@ -1680,8 +1682,8 @@ export default function App() {
   };
   /** Panes whose series lie in a frame of reference aligned to the pane `leadId`'s go to where it is in the patient, as
    * linked panes do; a whole-volume MIP keeps its turn. */
-  const pageAligned = (leadId: string, aligned: readonly Alignment[], panes = slotsRef.current) => {
-    const lead = panes.find(slot => slot.id === leadId), leadSeries = lead?.seriesId ? seriesRef.current.find(item => item.id === lead.seriesId) : undefined;
+  const pageAligned = (leadId: string, aligned: readonly Alignment[], panes?: readonly Slot[]) => {
+    const lead = (panes ?? slotsRef.current).find(slot => slot.id === leadId), leadSeries = lead?.seriesId ? seriesRef.current.find(item => item.id === lead.seriesId) : undefined;
     if (!lead || !leadSeries || isProjection(leadSeries, lead.view)) return;
     const at = getPlaneFrame(leadSeries, lead.view).center;
     setSlots(current => current.map(slot => {
