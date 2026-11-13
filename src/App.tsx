@@ -14,7 +14,7 @@ import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
 import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
-import { TOUCHPAD_SPEED } from './imaging/interaction';
+import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
@@ -202,7 +202,7 @@ function readSettings(): Settings {
       })),
       wheelAction: WHEEL_ACTIONS.includes(stored.wheelAction) ? stored.wheelAction : defaults.wheelAction,
       // The old wheelSensitivity set the mouse wheel too, against a slower touchpad: the touchpad starts again from its default.
-      touchpadSpeed: Number.isFinite(stored.touchpadSpeed) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, stored.touchpadSpeed)) : TOUCHPAD_SPEED.default,
+      touchpadSpeed: nearestTouchpadSpeed(stored.touchpadSpeed),
       reverseWheel: stored.reverseWheel === true,
       measurementUnits: stored.measurementUnits === 'px' ? 'px' : 'auto',
       suvNormalization: SUV_NORMALIZATIONS.includes(stored.suvNormalization) ? stored.suvNormalization : defaults.suvNormalization,
@@ -2256,6 +2256,8 @@ export default function App() {
     { id: 'help', group: 'app', node: <ToolButton icon={<CircleHelp size={18} />} label={t('toolbar.shortcuts')} shortcut={singleKey('?')} testId="tool-help" onClick={() => setShowHelp(true)} /> },
   ];
 
+  // In the language's own numbers: "0,33×" in Turkish, "0.33×" in English.
+  const touchpadSpeedText = `${settings.touchpadSpeed.toLocaleString(locale, { maximumFractionDigits: 2 })}×`;
   const quickAct = (fn: () => void) => { fn(); setQuick(null); };
   const quickMenu = quick && activeVolume && <div ref={quickRef} className="quick-anchor" style={{ '--pointer-x': `${quick.x}px`, '--pointer-y': `${quick.y}px` } as CSSProperties}>
     <Menu label={t('quick.title')} onClose={() => setQuick(null)} testId="quick-menu" focusItem={false}>
@@ -2466,7 +2468,8 @@ export default function App() {
             {(['left', 'middle', 'right'] as MouseButton[]).map(button => <label className="mouse-binding" key={button}><span>{t(`mouse.${button}.drag` as const)}</span><select value={settings.mouseBindings[button] ?? (button === 'left' ? 'selected' : effectiveBinding(button))} onChange={event => setSettings(current => { const bindings = { ...current.mouseBindings }; if (event.target.value === 'selected') delete bindings[button]; else bindings[button] = event.target.value as Tool; return { ...current, mouseBindings: bindings }; })}>{button === 'left' && <option value="selected">{t('toolbar.selectedToolCurrent', { tool: toolLabel(tool) })}</option>}{BUTTON_ACTIONS.map(action => <option key={action} value={action}>{toolLabel(action)}</option>)}</select></label>)}
             <div className="popover-subtitle">{t('help.wheelKey')}</div>
             <label className="mouse-binding"><span>{t('mouse.wheel.heading')}</span><select value={settings.wheelAction} onChange={event => setSettings(current => ({ ...current, wheelAction: event.target.value as WheelAction }))}>{WHEEL_ACTIONS.map(action => <option key={action} value={action}>{t(`wheel.${action}` as const)}</option>)}</select></label>
-            <label className="slider-field"><span>{t('inspector.touchpadSpeed')}<output>{settings.touchpadSpeed.toFixed(1)}×</output></span><input type="range" data-action="touchpad-speed" min={TOUCHPAD_SPEED.min} max={TOUCHPAD_SPEED.max} step={TOUCHPAD_SPEED.step} value={settings.touchpadSpeed} onChange={event => setSettings(current => ({ ...current, touchpadSpeed: Number(event.target.value) }))} /></label>
+            {/* The slider steps through the offered speeds; it reads out the speed, not its place in the list. */}
+            <label className="slider-field"><span>{t('inspector.touchpadSpeed')}<output>{touchpadSpeedText}</output></span><input type="range" data-action="touchpad-speed" min={0} max={TOUCHPAD_SPEEDS.length - 1} step={1} value={TOUCHPAD_SPEEDS.indexOf(nearestTouchpadSpeed(settings.touchpadSpeed))} aria-valuetext={touchpadSpeedText} onChange={event => setSettings(current => ({ ...current, touchpadSpeed: TOUCHPAD_SPEEDS[Number(event.target.value)] ?? TOUCHPAD_SPEED.default }))} /></label>
             <p className="field-help">{t('inspector.wheelNotch')}</p>
             <label className="check-field"><input type="checkbox" checked={settings.reverseWheel} onChange={event => setSettings(current => ({ ...current, reverseWheel: event.target.checked }))} /> {t('inspector.reverseScroll')}</label>
             <button type="button" className="text-button" onClick={resetMouse}>{t('mouse.reset')}</button>

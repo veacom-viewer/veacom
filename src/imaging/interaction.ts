@@ -8,9 +8,17 @@ export interface WheelSteps {
   fine: boolean;
 }
 
-/** The touchpad speed: a multiple of a slice per 40 px of scrolling. A mouse wheel ignores it. */
-export const TOUCHPAD_SPEED = { min: 1, max: 8, step: 0.5, default: 3 } as const;
+/** The touchpad speeds the setting offers, slowest first: multiples of a slice per 40 px of scrolling. A mouse wheel
+ * ignores them. ⅓× is about the speed Windows touchpads had before (a slice per 100–120 px). */
+export const TOUCHPAD_SPEEDS: readonly number[] = [1 / 3, 0.5, 0.75, 1, 1.5, 2, 2.5, 3, 4, 5, 6, 8];
+export const TOUCHPAD_SPEED = { min: 1 / 3, max: 8, default: 2.5 } as const;
 const PIXELS_PER_STEP = 40;
+
+/** The offered speed nearest to `value` by ratio; the default for anything that is not a speed. */
+export function nearestTouchpadSpeed(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return TOUCHPAD_SPEED.default;
+  return TOUCHPAD_SPEEDS.reduce((best, speed) => Math.abs(Math.log(speed / value)) < Math.abs(Math.log(best / value)) ? speed : best);
+}
 
 // Wheel input in notches, a slice each, as VEAcom 1.x counted it with Qt (120 units a notch) at any speed. A notch is
 // always one slice, whatever the touchpad speed: a skipped slice can hide a finding.
