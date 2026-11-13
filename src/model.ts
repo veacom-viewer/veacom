@@ -198,7 +198,8 @@ export interface ViewportProps {
   /** A still left click sets the linked point (while 3D is open beside the panes). */
   clickPicksPoint?: boolean;
   mouseBindings?: Partial<Record<'left' | 'middle' | 'right', Tool>>;
-  wheelSensitivity?: number;
+  /** How fast a touchpad's swipe pages slices (src/imaging/interaction.ts); a mouse wheel pages one a notch. */
+  touchpadSpeed?: number;
   /** What the wheel does without Ctrl: page slices (the default), zoom, turn the image 5° a notch, or nothing. */
   wheelAction?: WheelAction;
   reverseWheel?: boolean;
