@@ -429,6 +429,10 @@
 .app-version { flex-shrink: 0; color: var(--text-tertiary); }
 .app-status { position: relative; }
 .app-status > .status-language { margin-left: auto; }
+/* Feedback joins the language and the version at the right end: app-level controls, which keep their place while the
+   state on the left changes length. */
+.app-status > .status-feedback { margin-left: auto; }
+.app-status > .status-feedback + .status-language { margin-left: 0; }
 /* Cine: play and pause in the middle of the bar. */
 .status-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; gap: 2px; }
 .status-play .status-button[aria-pressed="true"] { color: var(--accent); }
