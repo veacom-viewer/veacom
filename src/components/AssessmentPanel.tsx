@@ -1,7 +1,7 @@
 import { studyKey } from '../domain/patient';
 import { useEffect, useRef, useState } from 'react';
 import { ClipboardCopy, Info, X } from './icons';
-import type { Annotation, Volume } from '../model';
+import type { Annotation, Joined, Series, Volume } from '../model';
 import { annotationSourceIndex } from '../imaging/annotations';
 import { assessmentRoiLocation } from '../ui/assessmentRoi';
 import {
@@ -17,6 +17,7 @@ import { usage } from '../usage/tracker';
 
 export interface AssessmentPanelProps {
   volumes: Volume[];
+  joinedOf: (series: Series) => Joined | null;
   annotations: Record<string, Annotation[]>;
   onClose: () => void;
   activeSeriesId?: string;
@@ -33,7 +34,7 @@ const roles = Object.keys(ROLE_NAMES) as SequenceRole[];
 const roiKey = (seriesId: string, id: string) => `${seriesId}:${id}`;
 type Opinion = { id: symbol; summary: string; pending: boolean; reply?: string; error?: string };
 
-export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId, onRequestRoi, onFinishRoi, hidden = false }: AssessmentPanelProps) {
+export function AssessmentPanel({ volumes, joinedOf, annotations, onClose, activeSeriesId, onRequestRoi, onFinishRoi, hidden = false }: AssessmentPanelProps) {
   const { locale, t } = useTranslation();
   const mrVolumes = volumes.filter(v => v.series.modality.toUpperCase() === 'MR' && v.series.components !== 3);
   const studies = [...new Map(mrVolumes.map(v => [studyKey(v.series), v.series])).values()];
@@ -318,7 +319,7 @@ export function AssessmentPanel({ volumes, annotations, onClose, activeSeriesId,
       <p className="assessment-help">{t('assessment.roiHelp')}</p>
       {/* Only the regions used as lesion or reference: other measurements would crowd the list. */}
       {assignedRois.length ? <div className="assessment-rois">{assignedRois.map(roi => <div className="assessment-roi" key={roi.key}>
-        <div><strong>{roi.title}</strong><small>{roi.series.description || t('assessment.seriesNumber', { number: roi.series.seriesNumber })} · {assessmentRoiLocation(roi.series, roi.annotation, roi.sourceIndex, t)}</small></div>
+        <div><strong>{roi.title}</strong><small>{roi.series.description || t('assessment.seriesNumber', { number: roi.series.seriesNumber })} · {assessmentRoiLocation(roi.series, roi.annotation, roi.sourceIndex, t, joinedOf(roi.series))}</small></div>
         <select data-action="assessment-roi-use" aria-label={t('assessment.useAs', { title: roi.title })} value={Object.hasOwn(assignments, roi.key) ? assignments[roi.key].kind : ''} onChange={e => assign(roi.key, e.target.value)}>
           <option value="">{t('assessment.unused')}</option><option value="lesion">{t('assessment.lesion')}</option><option value="reference">{t('assessment.reference')}</option></select>
       </div>)}</div> : <p className="assessment-empty">{t('assessment.noRois')}</p>}

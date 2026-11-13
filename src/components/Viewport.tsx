@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, us
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { Annotation, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
-import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
+import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
@@ -12,7 +12,7 @@ import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
 import { wheelSliceSteps } from '../imaging/interaction';
-import { numbersBackwards, pagesBackwards } from '../imaging/paging';
+import { pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
 import { wrapLabel } from '../ui/navigation';
@@ -32,7 +32,9 @@ import { usage, type GestureHandle, type InputKind } from '../usage/tracker';
 import { ValueReadout, type ReadoutSetter } from './ValueReadout';
 
 type Point2 = [number, number];
-interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean; }
+interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean;
+  /** Where the pane stood, when the press began, in the sequence it pages with its reference image (props.joined). */
+  place?: number; }
 /** A left drag that starts in this right-hand part of the image pages the slices whatever the tool (VEAcom 1.x). */
 /** VEAcom Next's MPR line colours (sagittal red, coronal green, axial blue) and the gap left where the lines cross, px. */
 const MPR_LINE_COLORS = { sagittal: 'rgb(255,92,92)', coronal: 'rgb(92,219,107)', axial: 'rgb(84,168,255)' } as const;
@@ -232,6 +234,8 @@ export function Viewport(props: ViewportProps) {
   const size = useRef<[number, number]>(UNMEASURED);
   const sized = useRef(false);
   const drag = useRef<Drag | null>(null);
+  /** Set while a paging drag takes the pane from a stack to its reference image or back: the drag is kept. */
+  const crossing = useRef(false);
   const touches = useRef(new Map<number, Point2>()), pinch = useRef<Pinch | null>(null);
   const construction = useRef<Vec3[]>([]);
   const constructionTool = useRef<Tool | null>(null);
@@ -291,8 +295,11 @@ export function Viewport(props: ViewportProps) {
   const syncInteractionContext = (volume: ViewportProps['volume'], view: ViewState) => {
     const next = interactionContext(volume, view), previous = context.current;
     if (sameContext(previous, next)) return;
-    const keepScroll = drag.current?.mode === 'scroll' && previous.series === next.series && previous.plane === next.plane
-      && (previous.requestedSlice !== next.requestedSlice || previous.displayedSlice !== next.displayedSlice);
+    // A paging drag goes on when the slice changes under it, and when it took the pane itself from a stack to its
+    // reference image or back (goToPlace): the drag counts places of the sequence the two share.
+    const keepScroll = drag.current?.mode === 'scroll' && (crossing.current || (previous.series === next.series && previous.plane === next.plane
+      && (previous.requestedSlice !== next.requestedSlice || previous.displayedSlice !== next.displayedSlice)));
+    crossing.current = false;
     cancelGesture(keepScroll); context.current = next;
   };
 
@@ -341,6 +348,26 @@ export function Viewport(props: ViewportProps) {
     });
   };
 
+  /** The pane's place in the sequence it pages, and that sequence's length: the series' slices in paging order, with
+   * the stack's reference image where the pane pages the two as one (props.joined). */
+  const placeNow = (view: ViewState) => placeInSequence(props.volume.series, view, Math.round(view.slice), sliceCount(props.volume.series, view), props.joined);
+  /** Goes to a place of the sequence a stack shares with its reference image. The place the other of the two holds is
+   * asked of `onCross`: the pane then takes that series. */
+  const goToPlace = (place: number) => {
+    const joined = props.joined;
+    if (!joined) return;
+    if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) { crossing.current = drag.current?.mode === 'scroll'; props.onCross?.(place); return; }
+    if (joined.lead) return;
+    const series = props.volume.series, view = liveView.current;
+    changeView({ slice: stackSliceAt(series, view, place, sliceCount(series, view), joined) });
+  };
+  /** Pages `steps` down the page from the view `from`: within the series, or along the sequence it shares with its
+   * reference image. */
+  const pageBy = (from: ViewState, steps: number) => {
+    if (!props.joined) { changeView({ slice: stepSlice(props.volume.series, from, steps * pageDirection) }); return; }
+    const { place, total } = placeNow(from);
+    goToPlace(clamp(place + steps, 0, total - 1));
+  };
   const changeView = (patch: Partial<ViewState>) => {
     const next = patchView(latest.current.volume, liveView.current, patch);
     syncInteractionContext(latest.current.volume, next);
@@ -457,7 +484,7 @@ export function Viewport(props: ViewportProps) {
     const steps = Math.trunc(wheelAccumulator.current); wheelAccumulator.current -= steps;
     if (!steps) return;
     if (action === 'rotate') changeView({ rotation: ((view.rotation + steps * 5) % 360 + 360) % 360 });
-    else changeView({ slice: stepSlice(props.volume.series, view, steps * pageDirection) });
+    else pageBy(view, steps);
   });
   useEffect(() => {
     const element = container.current!;
@@ -527,7 +554,7 @@ export function Viewport(props: ViewportProps) {
     if (button === 'left' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
       event.currentTarget.setPointerCapture(event.pointerId);
       if (event.detail <= 1) gesture.current = usage.begin('drag-scroll', input === 'touch' ? 'touch' : 'drag');
-      drag.current = { mode: 'scroll', edge: true, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
+      drag.current = { mode: 'scroll', edge: true, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating, place: placeNow(liveView.current).place };
       return;
     }
     if (button === 'left' && latest.current.onCyclePlane && !construction.current.length && !twoClick.current) {
@@ -598,7 +625,7 @@ export function Viewport(props: ViewportProps) {
     if (mode === 'text') { usage.action('point-text', input); usage.touch('marks'); event.preventDefault(); setTextPrompt({ point: world, value: '' }); return; }
     event.currentTarget.setPointerCapture(event.pointerId);
     if (event.detail <= 1) gesture.current = usage.begin(annotationTools.has(mode) ? `draw-${mode}` : `drag-${mode}`, input === 'touch' ? 'touch' : 'drag');
-    drag.current = { mode, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
+    drag.current = { mode, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating, place: placeNow(liveView.current).place };
     if (mode === 'crosshair') { pendingCrosshair.current = pickAt(...start); queue(false); }
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
@@ -675,7 +702,9 @@ export function Viewport(props: ViewportProps) {
       changeView({ zoom, pan: [active.start[0] - w / 2 - (active.start[0] - w / 2 - initial.pan[0]) * factor, active.start[1] - h / 2 - (active.start[1] - h / 2 - initial.pan[1]) * factor] });
     } else if (active.mode === 'scroll') {
       const steps = active.edge ? Math.trunc(dy / EDGE_PX_PER_SLICE) : Math.round(dy / 5);
-      changeView({ slice: stepSlice(props.volume.series, initial, steps * pageDirection) });
+      // A stack paged with its reference image: from the place the press began at, so that the pane can change series under the drag.
+      if (props.joined && active.place !== undefined) goToPlace(clamp(active.place + steps, 0, props.joined.total - 1));
+      else changeView({ slice: stepSlice(props.volume.series, initial, steps * pageDirection) });
     } else if (active.mode === 'rotate') {
       // Free rotation, as in VEAcom Next: the image turns as far as the pointer goes round the pane's centre.
       const [w, h] = size.current, angle = (p: Point2) => Math.atan2(p[1] - h / 2, p[0] - w / 2) * 180 / Math.PI;
@@ -779,15 +808,12 @@ export function Viewport(props: ViewportProps) {
       changeView({ pan: [liveView.current.pan[0] + dx, liveView.current.pan[1] + dy] });
     } else {
       const delta = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1, PageUp: -10, PageDown: 10 }[event.key];
-      if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); usage.action('key-slice', 'key', { burst: true }); changeView({ slice: stepSlice(props.volume.series, liveView.current, delta * pageDirection) }); }
+      if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); usage.action('key-slice', 'key', { burst: true }); pageBy(liveView.current, delta); }
     }
   };
 
   const mapping = screenMapping(props.volume.series, overlayView, ...dimensions);
   const frame = getPlaneFrame(props.volume.series, overlayView);
-  // One slice number: the image's own where the scanner numbered the stack 1 to N, otherwise the count in paging order,
-  // 1 at the top of an axial stack (imaging/paging.ts).
-  const shownBackwards = numbersBackwards(props.volume.series, { plane: overlayView.plane, mode: overlayView.mode, oblique: overlayView.oblique });
   // A whole-volume MIP: no drawing lies in it, and the crosshair shows wherever it is in depth.
   const projected = isProjection(props.volume.series, overlayView);
   const visibleAnnotations = props.hideMeasurements ? NO_ANNOTATIONS
@@ -913,7 +939,9 @@ export function Viewport(props: ViewportProps) {
   const sourcePlane = source && displayedSeries.orientationKnown === true ? seriesPlane(props.volume.series) : null;
   // Written as a name, capitalised ("Koronal"), as VEAcom 1.x wrote it.
   const planeName = source ? (sourcePlane ? t(`plane.${sourcePlane}` as const) : '') : tilt ? t('viewport.obliquePlane', { plane: t(`plane.${overlayView.plane}` as const), angle: tilt }) : t(`plane.${overlayView.plane}` as const);
-  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${shownBackwards ? frame.slices - Math.round(overlayView.slice) : Math.round(overlayView.slice) + 1} / ${frame.slices}`;
+  // The slice's number in the sequence the pane pages: 1 at the top of an axial stack (imaging/paging.ts).
+  const numbered = shownSlice(props.volume.series, overlayView, Math.round(overlayView.slice), frame.slices, props.joined);
+  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${numbered.number} / ${numbered.total}`;
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }

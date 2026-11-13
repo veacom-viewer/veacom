@@ -191,9 +191,24 @@ export interface ViewState {
 export interface FusionSettings { volume: Volume; opacity: number; upperSuv: number; palette: 'hot' | 'ge' | 'rainbow' | 'hot_metal' | 'red_yellow';
   /** uptake: low uptake fades out (as before); classic: the same share everywhere in the PET, as scanners draw it. */
   blend: 'uptake' | 'classic'; }
+/** A stack paged together with its reference image as one sequence (ui/referenceImages.ts), as a pane sees it. */
+export interface Joined {
+  /** How many images the sequence has: the stack's slices and the reference image. */
+  total: number;
+  /** The reference image's place in the sequence, from 0 in paging order: its start (0) or its end (total - 1). */
+  leadAt: number;
+  /** The scanner numbered the complete sequence from its last paged image to its first. */
+  reverseNumbers?: boolean;
+  /** True in the pane that shows the reference image, false in the pane that shows the stack. */
+  lead: boolean;
+}
 export interface ViewportProps {
   volume: Volume; view: ViewState; tool: Tool; annotations: Annotation[];
   active: boolean; crosshair: Vec3 | null; fusion?: FusionSettings | null;
+  /** Set where the pane pages a stack with its reference image: the sequence, and the way to a place of it that the
+   * other of the two holds (the pane then takes that series). */
+  joined?: Joined | null;
+  onCross?: (place: number) => void;
   referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string }>;
   /** A still left click sets the linked point (while 3D is open beside the panes). */
   clickPicksPoint?: boolean;

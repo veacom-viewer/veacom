@@ -8,6 +8,7 @@ import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
+import { referenceImages } from '../ui/referenceImages';
 import { foldSearch, patientKey, searchText, sequenceGuess, shownGuess, sortStudySeries, studyKey } from '../ui/seriesNames';
 import { phaseLabel } from '../ui/overlayCorners';
 import { Glyph } from './Glyph';
@@ -200,14 +201,17 @@ export function SeriesMenuItems({ series, activeId, shown, onSelect }: {
   series: Series[]; activeId?: string; shown: ReadonlySet<string>; onSelect: (item: Series) => void;
 }) {
   const { t } = useTranslation();
-  const patients = groupStudies(series);
+  // A stack and its reference image are one series here as in the list (ui/referenceImages.ts).
+  const references = referenceImages(series), counted = new Set([...references.values()].map(item => item.id));
+  const patients = groupStudies(series.filter(item => !counted.has(item.id)));
   return patients.map((patient, index) => <Fragment key={patient.key}>
     {index > 0 && <MenuDivider />}
     {patients.length > 1 && <MenuHeading>{patient.first.patientName.replaceAll('^', ' ').trim() || patient.first.patientId || '—'}</MenuHeading>}
     {patient.studies.flatMap(study => study.items.map(item => {
-      const guess = shownGuess(item, sequenceGuess(item, t));
+      const guess = shownGuess(item, sequenceGuess(item, t)), reference = references.get(item.id);
       return <MenuItem action="segmentation-kind" key={item.id} kind={item.segmentation ? 'checkbox' : 'radio'}
-        checked={item.segmentation ? shown.has(item.id) : activeId === item.id} meta={`${item.modality} · ${item.dimensions[2]}`} onClick={() => onSelect(item)}>
+        checked={item.segmentation ? shown.has(item.id) : activeId === item.id || (reference !== undefined && reference.id === activeId)}
+        meta={`${item.modality} · ${item.dimensions[2] + Number(reference !== undefined)}`} onClick={() => onSelect(item)}>
         {item.segmentation ? `${t('segmentation.kind')} · ` : ''}{item.description || item.modality}{item.phase ? ` · ${phaseLabel(item.phase)}` : ''}{guess ? ` · ${guess}` : ''}
       </MenuItem>;
     }))}
@@ -263,7 +267,13 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const searching = Boolean(query);
   const searchIndex = searching ? new Map(series.map(item => [item.id, searchText(item, guesses.get(item.id))])) : null;
   const words = query.split(/\s+/);
-  const studies = groupStudies(searchIndex ? series.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : series);
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): the image has no card of
+  // its own, the stack's card counts it among its images, and paging past the stack's end reaches it.
+  const references = referenceImages(series), onCards = new Set([...references.values()].map(item => item.id));
+  const listed = series.filter(item => !onCards.has(item.id));
+  // The stack's card stands for its reference image too: a search that finds only that image keeps the card.
+  const found = searchIndex ? (item: Series) => words.every(word => searchIndex.get(item.id)!.includes(word)) : null;
+  const studies = groupStudies(found ? listed.filter(item => found(item) || found(references.get(item.id) ?? item)) : listed);
   // A study that opens goes to the top of the list, and the list goes there with it: a reader who had scrolled down
   // sees it arrive.
   const scroller = useRef<HTMLDivElement>(null);
@@ -338,13 +348,13 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const studyItems = (key: string) => series.filter(item => studyKey(item) === key);
   const askStudy = (key: string) => {
     const items = studyItems(key); if (!items.length) return;
-    setQuestion({ ids: items.map(item => item.id), message: t('series.removeStudyQuestion', { name: `${patientName(items[0], t)} · ${dateLabel(items[0].studyDate, t)}`, count: items.length }) });
+    setQuestion({ ids: items.map(item => item.id), message: t('series.removeStudyQuestion', { name: `${patientName(items[0], t)} · ${dateLabel(items[0].studyDate, t)}`, count: items.filter(item => !onCards.has(item.id)).length }) });
   };
   const askPatient = (item: Series) => {
     const items = series.filter(value => patientKey(value) === patientKey(item));
-    setQuestion({ ids: items.map(value => value.id), message: t('series.removePatientQuestion', { name: patientName(item, t), count: items.length }) });
+    setQuestion({ ids: items.map(value => value.id), message: t('series.removePatientQuestion', { name: patientName(item, t), count: items.filter(item => !onCards.has(item.id)).length }) });
   };
-  const askAll = () => setQuestion({ ids: series.map(item => item.id), message: t('series.removeAllQuestion', { count: series.length }) });
+  const askAll = () => setQuestion({ ids: series.map(item => item.id), message: t('series.removeAllQuestion', { count: listed.length }) });
   // Collapse all folds every patient band, as in VEAcom Next.
   const studyKeys = () => studies.map(patient => patient.key);
   const menuStudy = menu?.study ?? (menu?.item ? studies.flatMap(patient => patient.studies).find(study => study.items.some(item => item.id === menu.item!.id))?.key : undefined);
@@ -375,14 +385,16 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
           {!hidden && <div className="series-study-items">{study.items.map(item => {
             if (item.segmentation) return <SegmentationCard key={item.id} item={item} series={series} shown={shownSegmentationIds?.has(item.id) ?? false} onSelect={onSelect} onMenu={event => openMenu(event, { item })} />;
             const loading = loadingIds.has(item.id);
-            const active = item.id === activeId;
+            const reference = references.get(item.id);
+            // The card is the open one while its series or its reference image is shown.
+            const active = item.id === activeId || (reference !== undefined && reference.id === activeId);
             const several = picked.length > 1 && picked.includes(item.id);
             return <button
               type="button"
               key={item.id}
               className={`series-card${active ? ' is-active' : ''}${several ? ' is-picked' : ''}`}
               aria-pressed={active}
-              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2], warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
+              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
               aria-busy={loading}
               aria-describedby={item.warnings.length ? `series-warnings-${item.id}` : undefined}
               data-testid={`series-${item.id}`}
@@ -400,7 +412,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               <span className="series-preview">
                 <Preview id={item.id} empty={item.dimensions[2] === 0} failed={Boolean(failedIds?.has(item.id) && !loading)} />
                 {item.warnings.length > 0 && <span className="series-warning" aria-hidden="true" data-tooltip={warningTexts(item, locale).join(' · ')}><TriangleAlert size={11} /></span>}
-                <span className="series-image-count">{item.dimensions[2]}</span>
+                <span className="series-image-count">{item.dimensions[2] + Number(reference !== undefined)}</span>
                 {several && <span className="sr-only">{t('series.picked', { number: picked.indexOf(item.id) + 1, count: picked.length })}</span>}
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
               </span>
@@ -416,12 +428,12 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
       <input data-action="series-search" ref={searchInput} autoFocus onBlur={event => { if (!search.trim() && event.relatedTarget !== findButton.current) setSearchOpen(false); }} aria-label={t('series.search')} placeholder={t('series.searchPlaceholder')} value={search} onChange={event => setSearch(event.target.value)} spellCheck={false} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSearch(''); setSearchOpen(false); findButton.current?.focus(); } }} />
       {search && <button data-action="series-search-clear" type="button" aria-label={t('series.clearSearch')} onClick={() => { setSearch(''); searchInput.current?.focus(); }}><X size={12} /></button>}
     </div>}
-    <div className="series-browser-footnote"><span>{t('series.count', { count: series.length })}</span><button type="button" className="series-guess-toggle" aria-pressed={guessNames} aria-label={t('series.guessNames')} data-action="series-guess-names" data-tooltip={t('series.guessNames')} onClick={toggleGuessNames}><Glyph name="sequences" size={15} /></button><button ref={findButton} type="button" aria-label={t('series.find')} data-testid="series-find" aria-expanded={searchOpen} data-tooltip={t('series.find')} onClick={() => { setSearchOpen(open => !open); if (searchOpen) setSearch(''); }}><Search size={13} /></button></div>
+    <div className="series-browser-footnote"><span>{t('series.count', { count: series.length - onCards.size })}</span><button type="button" className="series-guess-toggle" aria-pressed={guessNames} aria-label={t('series.guessNames')} data-action="series-guess-names" data-tooltip={t('series.guessNames')} onClick={toggleGuessNames}><Glyph name="sequences" size={15} /></button><button ref={findButton} type="button" aria-label={t('series.find')} data-testid="series-find" aria-expanded={searchOpen} data-tooltip={t('series.find')} onClick={() => { setSearchOpen(open => !open); if (searchOpen) setSearch(''); }}><Search size={13} /></button></div>
     {menu && <div ref={menuRef} className="context-anchor" style={{ left: menu.x, top: menu.y }}>
       <Menu label={t('series.menu')} onClose={() => closeMenu()} className={`context-menu${menu.y > window.innerHeight - 320 ? ' menu-up' : ''}`} testId="series-menu">
         {menu.item && <>
           <MenuItem action="series-open-active" onClick={() => { const item = menu.item!; act(() => onSelect(item)); }}>{t('series.openInActive')}</MenuItem>
-          <MenuItem action="series-remove" onClick={() => { const item = menu.item!; act(() => onRemove([item.id])); }}>{t('series.removeSeries')}</MenuItem>
+          <MenuItem action="series-remove" onClick={() => { const item = menu.item!, reference = references.get(item.id); act(() => onRemove(reference ? [item.id, reference.id] : [item.id])); }}>{t('series.removeSeries')}</MenuItem>
           <MenuDivider />
         </>}
         {menu.study && <MenuItem action="study-toggle" onClick={() => { const key = menu.study!; act(() => toggleStudy(key)); }}>{t(collapsed.has(menu.study) ? 'series.expand' : 'series.collapse')}</MenuItem>}
