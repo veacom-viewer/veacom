@@ -86,6 +86,19 @@ async function main() {
     check('Annotation undo and redo');
     await screenshot('after-measurement.png');
 
+    // The MPR menu: the plane the CT was acquired in shows its own slices, and the other planes are reconstructions.
+    const planeItems = page.locator('[role="menu"] [data-action="menu-option"]');
+    await page.getByTestId('tool-mpr').click();
+    assert.equal(await planeItems.count(), 3);
+    assert.equal(await page.locator('[role="menu"] [data-action="toolbar-acquired-slices"]').count(), 0, 'The acquired slices have no entry of their own.');
+    assert.equal(await planeItems.nth(0).getAttribute('aria-checked'), 'true', 'Axial, the plane the CT was acquired in, is the one shown.');
+    await planeItems.nth(1).click();
+    await page.waitForFunction(() => { const view = window.__VEACOM_TEST__.state().view; return view.mode === 'mpr' && view.plane === 'coronal'; });
+    await page.getByTestId('tool-mpr').click();
+    await planeItems.nth(0).click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.mode === 'source');
+    check('In the MPR menu the acquired plane shows the CT\'s own slices; the others are reconstructed');
+
     // A pane draws its overlay in a box of the pane's own size, which is one unit until the pane is measured. Shown then,
     // the handles on the plane lines cover the pane in their colours: note every frame that shows such an overlay.
     await page.evaluate(() => {

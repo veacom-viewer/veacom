@@ -277,7 +277,6 @@ export const en = {
   'toolbar.mpr': 'Three-plane MPR (M)',
   'toolbar.mprRestore': 'Restore layout before MPR (M)',
   'toolbar.mprPlanes': 'Reconstruction planes',
-  'toolbar.acquiredSlices': 'Acquired slices',
   'toolbar.restorePrevious': 'Restore previous layout',
   'toolbar.threePlanes': '3D MPR',
   'toolbar.oblique': 'Oblique MPR',

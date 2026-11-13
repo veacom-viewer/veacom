@@ -2097,8 +2097,11 @@ export default function App() {
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
   const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
+  /** In the MPR menu the plane the active series was acquired in shows the series' own images, as a click on the pane's
+   * plane name does (cyclePlane); the other planes are reconstructed. */
+  const activeAcquiredPlane = activeVolume ? acquiredPlane(activeVolume.series) : null;
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
-  const showPlane = (plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
+  const showPlane =(plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
   const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length : !petSeries.length);
   const fusionWhy = mrActive ? (mrBeside.length ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
@@ -2209,8 +2212,9 @@ export default function App() {
       {menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
         <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
         <MenuDivider />
-        <MenuItem action="toolbar-acquired-slices" kind="radio" checked={activeVolume ? usesSourceFrames(activeVolume.series, activeDisplayView) : false} disabled={!activeVolume} onClick={() => act(showAcquired)}>{t('toolbar.acquiredSlices')}</MenuItem>
-        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action="menu-option" key={plane} kind="radio" checked={Boolean(activeVolume && !usesSourceFrames(activeVolume.series, activeDisplayView) && activeDisplayView.plane === plane && !activeDisplayView.oblique?.some(Boolean))} disabled={!canReconstruct} onClick={() => act(() => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
+        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action="menu-option" key={plane} kind="radio"
+          checked={Boolean(activeVolume && !activeDisplayView.oblique?.some(Boolean) && (usesSourceFrames(activeVolume.series, activeDisplayView) ? plane === activeAcquiredPlane : activeDisplayView.plane === plane))}
+          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
         <MenuDivider />
         <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
       </Menu>}</div> },

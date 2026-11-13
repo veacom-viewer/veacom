@@ -280,7 +280,6 @@ export const tr: Record<keyof typeof en, string> = {
   'toolbar.mpr': '3 düzlem yan yana [M]',
   'toolbar.mprRestore': '3 düzlemi kapat (önceki görünüme dön) [M]',
   'toolbar.mprPlanes': 'Kesit düzlemleri',
-  'toolbar.acquiredSlices': 'Özgün kesitler',
   'toolbar.restorePrevious': '3 düzlemi kapat (önceki görünüme dön)',
   'toolbar.threePlanes': '3D MPR',
   'toolbar.oblique': 'Oblik MPR',
