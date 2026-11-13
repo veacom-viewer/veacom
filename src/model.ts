@@ -47,6 +47,10 @@ export interface Series {
   engineGeneration?: number;
   patientKey?: string;
   previousPetId?: string;
+  /** Where `patientKey` joins an ID without an issuer across studies: the key earlier builds made, scoped to the
+   * study, and a PET reconstruction's ID made with it. The PET measurements those builds kept are found by them. */
+  studyScopedPatientKey?: string;
+  studyScopedPetId?: string;
   catalogRevision?: number;
   sourceRevision?: number;
   id: string; uid: string; studyUid: string; patientId: string; patientName: string;

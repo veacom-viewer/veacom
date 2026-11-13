@@ -3,7 +3,7 @@ import { sphereOf } from '../src/imaging/voi';
 import type { Annotation, Series, Volume } from '../src/model';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { patientDigest, priorRecord, readPetStudies, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withStudyGlucose, type PetSeriesRecord } from '../src/domain/petStudies';
+import { patientDigest, priorRecord, readPetStudies, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withSeriesMoved, withStudyGlucose, type PetSeriesRecord } from '../src/domain/petStudies';
 
 const study = 'a'.repeat(64), series = 'b'.repeat(64), other = 'c'.repeat(64);
 const liver: PetSeriesRecord = { references: { liver: { center: [-80, -10, -218], radius: 15 } } };
@@ -29,6 +29,30 @@ describe('PET study records kept on this computer', () => {
     assert.equal(previousMeasurements(legacy, await petStorageKeys({ ...pet, studyDate: '20010101' })), undefined);
     const uid = await uidDigest(pet.uid);
     assert.deepEqual(previousMeasurements(withPetSeries({}, oldStudy, uid, liver, 0), key), { study: oldStudy, series: uid });
+  });
+
+  it('moves what was kept under a study\'s own key to the key that joins an ID without an issuer across studies', async () => {
+    const pet = { id: 'joined-reconstruction', studyScopedPetId: 'scoped-reconstruction', studyScopedPatientKey: 'e'.repeat(64), uid: '1.2.3.4',
+      studyUid: '1.2.3', patientId: 'P1', patientName: 'SENTETIK^HASTA', patientKey: 'f'.repeat(64), studyDate: '20000101' } as Series;
+    const key = await petStorageKeys(pet);
+    const scopedStudy = await uidDigest(JSON.stringify([pet.studyScopedPatientKey, pet.studyUid]));
+    const scopedSeries = await reconstructedSeriesDigest({ uid: pet.uid, id: pet.studyScopedPetId! });
+    assert.deepEqual([key.scopedStudy, key.scopedSeries], [scopedStudy, scopedSeries]);
+    assert.equal((await petStorageKeys({ ...pet, studyScopedPetId: undefined })).scopedStudy, undefined);
+    const measured: PetSeriesRecord = { ...liver, tracer: 'fdg', lesions: [{ name: 'L1', center: [0, 0, 0], radius: 5 }], limitedView: true };
+    const from = { study: scopedStudy, series: scopedSeries };
+    const earlier = withStudyGlucose(withPetSeries({}, scopedStudy, scopedSeries, measured, 1, { patient: pet.studyScopedPatientKey, date: pet.studyDate }), scopedStudy, 6, 1);
+    const moved = withSeriesMoved(earlier, from, key, 2, key);
+    assert.deepEqual(moved, { [key.study]: { savedAt: 2, series: { [key.series]: measured }, patient: pet.patientKey, date: '20000101', glucose: 6 } });
+    // A later study of the patient finds it as its prior by the joined key.
+    assert.equal(priorRecord(moved, patientDigest(pet), '20010101', 'fdg')?.date, '20000101');
+    // What the joined key already keeps stays, and a study that kept only a typed glucose moves too.
+    assert.deepEqual(withSeriesMoved(withPetSeries(earlier, key.study, key.series, liver, 3, key), from, key, 4, key)[key.study].series[key.series], liver);
+    assert.deepEqual(withSeriesMoved(withStudyGlucose({}, scopedStudy, 7, 1), from, key, 2, key), { [key.study]: { savedAt: 2, series: {}, patient: pet.patientKey, date: '20000101', glucose: 7 } });
+    assert.equal(withSeriesMoved(earlier, { study: other, series: scopedSeries }, key, 2, key), earlier);
+    // A series-UID-only record there is offered for the reader to confirm, as other earlier ones are.
+    const uid = await uidDigest(pet.uid);
+    assert.deepEqual(previousMeasurements(withPetSeries({}, scopedStudy, uid, liver, 0), key), { study: scopedStudy, series: uid });
   });
 
   it('stores each reconstructed phase separately and restores a 30 mm liver reference', async () => {

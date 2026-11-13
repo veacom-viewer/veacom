@@ -663,6 +663,8 @@ mod tests {
             study_uid: "1.3".into(),
             patient_key: String::new(),
             previous_pet_id: None,
+            study_scoped_patient_key: None,
+            study_scoped_pet_id: None,
             patient_id: String::new(),
             patient_name: String::new(),
             study_date: String::new(),

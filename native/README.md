@@ -44,6 +44,8 @@ Dedicated workers handle catalog changes, volume reads, frames, control calls, t
 | `pictureNext` | Waits up to 20 seconds for a picture. The reply carries its ID and operation in `X-Picture-Id` and `X-Picture-Want`. A probe contains the first 64 KiB. Size and pixel requests carry the full file. An idle poll returns 204. |
 | `pictureAnswer`, `{id, width, height, offset, more}` or `{id, error}` | Main sends dimensions and, for pixels, RGBA in chunks of up to 1 MiB. Each successful chunk returns 204. An incomplete probe requests the full file. |
 
+A series' `patientKey` is a digest that names its patient. An ID with an Issuer of Patient ID (0010,0021) or an issuer qualifier names one patient wherever it appears. An ID without one names one patient across studies together with the patient's name and birth date: the name compared without case, with `^` and runs of spaces as one separator, and with Turkish letters as their Latin base letters (Ş as S, İ and ı as I). With any of the three missing, the key is scoped to the study. Where a key joins studies this way, `studyScopedPatientKey` and, on a PET reconstruction, `studyScopedPetId` are the key and ID that earlier builds made, scoped to the study; the interface finds the PET measurements those builds kept by them.
+
 Errors are `{error}` with the English message, plus `note` when the message is coded. Every `warnings`
 array (import, series, export) has a `warningNotes` array of the same messages. A note is
 `{code, params?, text}`: `text` is the English, `code` is stable, and a parameter is text or another

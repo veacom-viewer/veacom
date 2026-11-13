@@ -156,6 +156,10 @@ describe('the rules arrangements replace keep their behaviour', () => {
     const older = series({ id: 'older', studyUid: 'a', studyDate: '20240101' }), recent = series({ id: 'recent', studyUid: 'b', studyDate: '20250601' });
     const stranger = series({ id: 'stranger', studyUid: 'c', studyDate: '20251201', patientId: 'Q' });
     assert.equal(findRole({ modality: 'CT', study: 'prior' }, [older, stranger, recent, now], now)?.id, 'recent');
+    // The engine's key holds the name: one written another way is the same patient when the key says so.
+    const written = series({ id: 'written', studyUid: 'd', studyDate: '20251215', patientName: 'SYNTHETIC^' });
+    assert.equal(findRole({ modality: 'CT', study: 'prior' }, [older, written, recent, now], now)?.id, 'written');
+    assert.equal(findRole({ modality: 'CT', study: 'prior' }, [{ ...written, patientKey: 'another-patient' }, now], now), null);
   });
 });
 

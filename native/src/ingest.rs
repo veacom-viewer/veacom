@@ -1560,6 +1560,8 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
         ),
         patient_key: String::new(),
         previous_pet_id: None,
+        study_scoped_patient_key: None,
+        study_scoped_pet_id: None,
         patient_id: String::new(),
         patient_name: root.name.clone(),
         study_date: String::new(),
@@ -1784,7 +1786,9 @@ fn read_frames_budget(
         ));
     }
     let patient_id = text(&obj, Tag(0x0010, 0x0020));
-    let patient_key = crate::patient::patient_key(&obj).digest();
+    let (patient, study_scoped) = crate::patient::patient_keys(&obj);
+    let (patient_key, study_scoped_patient_key) =
+        (patient.digest(), study_scoped.map(|key| key.digest()));
     let echo = text(&obj, Tag(0x0018, 0x0086));
     let (suv, pet_warnings) = if modality == "PT" {
         suv_factor(&obj)
@@ -2089,6 +2093,8 @@ fn read_frames_budget(
             study_uid: study_uid.clone(),
             patient_key: patient_key.clone(),
             previous_pet_id: None,
+            study_scoped_patient_key: study_scoped_patient_key.clone(),
+            study_scoped_pet_id: None,
             patient_id: patient_id.clone(),
             patient_name: text(&obj, Tag(0x0010, 0x0010)),
             study_date: text(&obj, Tag(0x0008, 0x0020)),
@@ -2848,7 +2854,8 @@ fn catalogue(
             .map(|&i| frames[i].clone())
             .collect::<Vec<_>>();
         info.id = crate::random::uuid_v5(&crate::random::NAMESPACE_OID, key.as_bytes());
-        // Older PET records used the reconstruction ID made with the local patient ID in this prefix.
+        // Older PET records used the reconstruction ID made with the local patient ID in this prefix, and those of an
+        // ID without an issuer that is now joined across studies, the one made with the key scoped to the study.
         if info.modality == "PT"
             && info.segmentation.is_none()
             && let Some(suffix) = key
@@ -2860,6 +2867,12 @@ fn catalogue(
                 &crate::random::NAMESPACE_OID,
                 old_key.as_bytes(),
             ));
+            info.study_scoped_pet_id = info.study_scoped_patient_key.as_ref().map(|scoped| {
+                crate::random::uuid_v5(
+                    &crate::random::NAMESPACE_OID,
+                    format!("{scoped}{suffix}").as_bytes(),
+                )
+            });
         }
         info.dimensions[2] = ordered.len();
         info.spacing = geom.spacing;

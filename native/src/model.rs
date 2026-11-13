@@ -321,6 +321,13 @@ pub struct Series {
     pub patient_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_pet_id: Option<String>,
+    /// Where `patient_key` joins an ID without an issuer across studies (`crate::patient::patient_keys`): the key
+    /// earlier builds made, scoped to the study. PET measurements those builds kept are found by it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub study_scoped_patient_key: Option<String>,
+    /// A PET reconstruction's ID as those builds made it, with that key.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub study_scoped_pet_id: Option<String>,
     pub patient_id: String,
     pub patient_name: String,
     pub study_date: String,
