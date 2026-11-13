@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { nearestTouchpadSpeed, streamWheelSteps, SWIPE_GAP_MS, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS, wheelSlices, wheelSteps, type WheelStream } from '../src/imaging/interaction';
+import { nearestTouchpadSpeed, streamSlices, streamWheelSteps, SWIPE_GAP_MS, TOUCHPAD_MAX_SLICES_PER_SECOND, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS, wheelSlices, wheelSteps, type WheelStream } from '../src/imaging/interaction';
 
 // Chromium's wheel events (blink WheelEvent, web_input_event_builders_mac.mm and _win.cc): wheelDeltaY is 120 per raw
 // notch, of the opposite sign to deltaY, and adds up when a frame's notches merge; deltaY is pixels, accelerated on
@@ -126,5 +126,44 @@ describe('the touchpad speed', () => {
     assert.equal(nearestTouchpadSpeed(0.01), 1 / 3);
     assert.equal(nearestTouchpadSpeed(100), 3);
     for (const value of [undefined, null, 'fast', Number.NaN, 0, -2]) assert.equal(nearestTouchpadSpeed(value), TOUCHPAD_SPEED.default);
+  });
+});
+
+describe('the touchpad pace', () => {
+  // Pages a run of identical events `every` ms apart from `start`, and gives the slices asked for and paged.
+  const run = (deltaY: number, count: number, every: number, speed: number, stream: WheelStream = { fineUntil: 0 }, start = 1000) => {
+    let asked = 0, paged = 0;
+    for (let index = 0; index < count; index++) {
+      const now = start + index * every, read = streamWheelSteps({ deltaY, deltaMode: 0, wheelDeltaY: -Math.trunc(deltaY) }, 1, now, stream);
+      asked += wheelSlices(read, speed); paged += streamSlices(read, speed, now, stream);
+    }
+    return { asked, paged };
+  };
+  it('holds a driver\'s steady run at the pad\'s edge to 60 slices a second at 1×, twice that at 2×', () => {
+    assert.equal(TOUCHPAD_MAX_SLICES_PER_SECOND, 60);
+    // As recorded on a Windows precision touchpad: 34 px every 8.4 ms (4000 px a second) for 1.6 s.
+    const normal = run(34, 190, 8.4, 1);
+    near(normal.asked, 190 * 34 / 16);
+    // A tenth of a second's worth at once, then the pace.
+    assert.ok(Math.abs(normal.paged - (6 + 60 * 189 * 8.4 / 1000)) < 1e-6, String(normal.paged));
+    const faster = run(34, 190, 8.4, 2);
+    assert.ok(Math.abs(faster.paged - (12 + 120 * 189 * 8.4 / 1000)) < 1e-6, String(faster.paged));
+    const backwards = run(-34, 190, 8.4, 1);
+    assert.ok(Math.abs(backwards.paged + normal.paged) < 1e-6);
+  });
+  it('leaves fingers moving slower than that alone', () => {
+    // 3 px every 8.4 ms: 22 slices a second at 1×.
+    const slow = run(3, 120, 8.4, 1);
+    near(slow.paged, slow.asked);
+    near(slow.asked, 120 * 3 / 16);
+  });
+  it('never holds back a mouse wheel\'s notches, and lets a flick through at once after a pause', () => {
+    const stream: WheelStream = { fineUntil: 0 };
+    let notches = 0;
+    for (let index = 0; index < 50; index++) notches += streamSlices(streamWheelSteps({ deltaY: 100, deltaMode: 0, wheelDeltaY: -120 }, 1, 1000, stream), 1, 1000, stream);
+    assert.equal(notches, 50);
+    run(34, 190, 8.4, 1, stream, 2000);
+    // A second after the run the tenth of a second's allowance is back: 96 px at once are six slices.
+    near(run(96, 1, 8.4, 1, stream, 2000 + 190 * 8.4 + 1000).paged, 6);
   });
 });

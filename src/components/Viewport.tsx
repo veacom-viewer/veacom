@@ -11,7 +11,7 @@ import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFo
 import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
-import { streamWheelSteps, TOUCHPAD_SPEED, wheelSlices, type WheelStream } from '../imaging/interaction';
+import { streamSlices, streamWheelSteps, TOUCHPAD_SPEED, type WheelStream } from '../imaging/interaction';
 import { pagesBackwards } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
@@ -456,11 +456,12 @@ export function Viewport(props: ViewportProps) {
       changeView({ zoom, pan: [x - w / 2 - (x - w / 2 - view.pan[0]) * factor, y - h / 2 - (y - h / 2 - view.pan[1]) * factor] });
       return;
     }
-    // A mouse wheel pages a slice a notch whatever the setting; the touchpad speed scales a touchpad's swipe only.
+    // A mouse wheel pages a slice a notch whatever the setting; the touchpad speed scales a touchpad's swipe only, up to
+    // a pace (streamSlices).
     const read = streamWheelSteps(event, window.veacom?.zoomFactor?.() ?? 1, event.timeStamp, wheelStream.current);
     // A notch starts from whole slices, so a fraction a swipe left behind can neither swallow it nor add to it.
     if (!read.fine) wheelAccumulator.current = 0;
-    wheelAccumulator.current += (action === 'rotate' ? read.steps : wheelSlices(read, props.touchpadSpeed ?? TOUCHPAD_SPEED.default)) * (props.reverseWheel ? -1 : 1);
+    wheelAccumulator.current += (action === 'rotate' ? read.steps : streamSlices(read, props.touchpadSpeed ?? TOUCHPAD_SPEED.default, event.timeStamp, wheelStream.current)) * (props.reverseWheel ? -1 : 1);
     const steps = Math.trunc(wheelAccumulator.current); wheelAccumulator.current -= steps;
     if (!steps) return;
     if (action === 'rotate') changeView({ rotation: ((view.rotation + steps * 5) % 360 + 360) % 360 });

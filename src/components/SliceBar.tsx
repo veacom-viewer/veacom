@@ -1,7 +1,7 @@
 import { useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react';
 import { useHeldStep } from '../ui/useHeldStep';
-import { streamWheelSteps, TOUCHPAD_SPEED, wheelSlices, type WheelStream } from '../imaging/interaction';
+import { streamSlices, streamWheelSteps, TOUCHPAD_SPEED, type WheelStream } from '../imaging/interaction';
 
 // The slice bar down a pane's right edge, as VEAcom 1.x's scroll bar (Qt): 14 px wide, an arrow at each end
 // (one slice, repeating while held), the track above or below the handle pages by ten, the handle drags, the
@@ -63,7 +63,7 @@ export function SliceBar({ count, position, label, valueText, onPosition, touchp
   const wheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     const read = streamWheelSteps(event.nativeEvent, window.veacom?.zoomFactor?.() ?? 1, event.timeStamp, wheelStream.current);
     if (!read.fine) wheelRest.current = 0;
-    wheelRest.current += wheelSlices(read, touchpadSpeed);
+    wheelRest.current += streamSlices(read, touchpadSpeed, event.timeStamp, wheelStream.current);
     const by = Math.trunc(wheelRest.current); wheelRest.current -= by;
     if (by) step(by);
   };

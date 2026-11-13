@@ -53,8 +53,9 @@ export function wheelSteps(event: WheelInput, zoom = 1): WheelSteps {
 /** How long a touchpad's swipe lasts past its last fine part. */
 export const SWIPE_GAP_MS = 300;
 
-/** A pane's or slice bar's wheel input over time: when the current swipe ends. */
-export interface WheelStream { fineUntil: number }
+/** A pane's or slice bar's wheel input over time: when the current swipe ends, and the touchpad slices it may still
+ * page now (streamSlices) and when that was worked out. */
+export interface WheelStream { fineUntil: number; allowance?: number; allowanceAt?: number }
 
 /** The slices of one event of a stream. A touchpad's movement can come to whole notches by chance; during a swipe
  * (within SWIPE_GAP_MS of its last fine part) such an event is read as part of the swipe, by its pixels. A mouse
@@ -67,10 +68,35 @@ export function streamWheelSteps(event: WheelInput, zoom: number, now: number, s
   return read.fine ? read : { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true };
 }
 
+const touchpadSpeedOf = (value: number) => Number.isFinite(value) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, value)) : TOUCHPAD_SPEED.default;
+
 /** The slices an event moves by at a touchpad speed: notches one each, a touchpad's pixels by the speed (a slice per
  * 16 px at 1×). */
 export function wheelSlices(read: WheelSteps, touchpadSpeed: number): number {
   if (!read.fine) return read.steps;
-  const speed = Number.isFinite(touchpadSpeed) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, touchpadSpeed)) : TOUCHPAD_SPEED.default;
-  return read.steps * TOUCHPAD_SLICES_PER_STEP * speed;
+  return read.steps * TOUCHPAD_SLICES_PER_STEP * touchpadSpeedOf(touchpadSpeed);
+}
+
+/** The most a touchpad pages at 1×, in slices a second; the speed multiplies it. Some touchpad drivers keep scrolling
+ * on their own while the fingers rest at the pad's edge, steadily at the speed the fingers had when they got there,
+ * for as long as they stay: measured on a Windows precision touchpad, 650–4000 px a second for one to two seconds,
+ * twice the fingers' own pace on average. Such a run, or a hard flick, goes no faster than this, so the pace stays
+ * that of moving fingers wherever they are on the pad: 60 a second is about their average pace at 1× there, and half
+ * a slice a frame at 120 Hz, so no slice is passed over. Slower movement is untouched. */
+export const TOUCHPAD_MAX_SLICES_PER_SECOND = 60;
+/** After a pause a touchpad may page a tenth of a second's worth at once, so a short flick answers at once. */
+const TOUCHPAD_BURST_SECONDS = 0.1;
+
+/** The slices one event of a stream moves by: wheelSlices, with a touchpad held to TOUCHPAD_MAX_SLICES_PER_SECOND at
+ * its speed. What goes past that is dropped, not kept for later, so the image stops when the fingers do. A mouse
+ * wheel's notches are never held back: each is a slice. */
+export function streamSlices(read: WheelSteps, touchpadSpeed: number, now: number, stream: WheelStream): number {
+  const slices = wheelSlices(read, touchpadSpeed);
+  if (!read.fine || slices === 0) return slices;
+  const rate = TOUCHPAD_MAX_SLICES_PER_SECOND * touchpadSpeedOf(touchpadSpeed), most = rate * TOUCHPAD_BURST_SECONDS;
+  const elapsed = stream.allowanceAt === undefined ? Infinity : Math.max(0, now - stream.allowanceAt) / 1000;
+  const allowance = Math.min(most, (stream.allowance ?? most) + elapsed * rate);
+  const paged = Math.min(Math.abs(slices), allowance);
+  stream.allowance = allowance - paged; stream.allowanceAt = now;
+  return Math.sign(slices) * paged;
 }
