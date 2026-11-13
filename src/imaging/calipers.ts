@@ -2,7 +2,7 @@
 // places on a coronal or sagittal plane, moved onto the nearest bone, and gives that item's answer together with the
 // measurement it came from. Only geometry of a millimetre or more is answered; whether a thin wall is intact is left to
 // the reader. Definitions and sources: docs/close-calipers.md.
-import type { CaliperKind, CaliperTag, Series, Vec3, ViewState, Volume } from '../model';
+import type { CaliperKind, CaliperTag, Plane, Series, Vec3, ViewState, Volume } from '../model';
 import { add, cross, dot, isProjection, length, planeAxes, sampleVolume, scale, sliceAtWorld, sub } from './geometry';
 import { translate, type Locale, type MessageKey } from '../i18n';
 import { BONE_WINDOW } from '../ui/presets';
@@ -35,7 +35,9 @@ export const ITEM_CALIPERS: Readonly<Partial<Record<string, CaliperKind>>> = { k
 
 const SUPERIOR: Vec3 = [0, 0, 1], LEFT: Vec3 = [1, 0, 0], POSTERIOR: Vec3 = [0, 1, 0];
 /** The patient axis each plane faces (LPS). */
-const FACING: Record<CaliperSpec['plane'], Vec3> = { coronal: POSTERIOR, sagittal: LEFT };
+const FACING: Record<Plane, Vec3> = { axial: SUPERIOR, coronal: POSTERIOR, sagittal: LEFT };
+/** Why a series cannot be shown on a plane: it cannot be reconstructed. */
+const NO_PLANE: Record<Plane, MessageKey> = { axial: 'caliper.noAxial', coronal: 'caliper.noCoronal', sagittal: 'caliper.noSagittal' };
 
 /** A scout (CT Image Type value 3 LOCALIZER, DICOM PS3.3 C.8.2.1.1.1) is a projection: a caliper never measures on it. */
 export const isLocalizer = (series: Pick<Series, 'imageType'>): boolean => /(?:^|[\\ ,])LOCALIZER(?:$|[\\ ,])/i.test(series.imageType ?? '');
@@ -48,10 +50,20 @@ export function caliperRefusal(series: Pick<Series, 'modality' | 'imageType'>): 
   return isLocalizer(series) ? 'caliper.localizer' : null;
 }
 
-/** A plane within 45° of the caliper's own (a tilted one still counts) whose up is the patient's head. `up` and `normal`
- * are the plane's own axes (geometry.planeAxes), whatever the image's turn on screen. */
-export function onCaliperPlane(kind: CaliperKind, up: Vec3, normal: Vec3): boolean {
-  return Math.abs(dot(normal, FACING[CALIPERS[kind].plane])) >= Math.SQRT1_2 && dot(up, SUPERIOR) >= Math.SQRT1_2;
+/** A plane within 45° of `plane` (a tilted one still counts), with the patient's head up on a coronal or sagittal one.
+ * `up` and `normal` are the plane's own axes (geometry.planeAxes), whatever the image's turn on screen. */
+export function onPlane(plane: Plane, up: Vec3, normal: Vec3): boolean {
+  return Math.abs(dot(normal, FACING[plane])) >= Math.SQRT1_2 && (plane === 'axial' || dot(up, SUPERIOR) >= Math.SQRT1_2);
+}
+
+/** A plane within 45° of the caliper's own (a tilted one still counts) whose up is the patient's head. */
+export const onCaliperPlane = (kind: CaliperKind, up: Vec3, normal: Vec3): boolean => onPlane(CALIPERS[kind].plane, up, normal);
+
+/** Whether `view` (as drawn) of `series` is a section on `plane` (onPlane), not a whole-volume projection. */
+export function showsPlane(plane: Plane, series: Series, view: Pick<ViewState, 'plane' | 'mode' | 'oblique' | 'projection'>): boolean {
+  if (isProjection(series, view)) return false;
+  const axes = planeAxes(series, view);
+  return onPlane(plane, scale(axes.v, -1), axes.normal);
 }
 
 /** Keros 1962 measured whole millimetres: type 1 is 1–3 mm, 2 is 4–7 mm, 3 is 8–16 mm. A depth is typed as Keros read
@@ -182,23 +194,26 @@ export function snapToBone(volume: Volume, point: Vec3, u: Vec3, v: Vec3): Vec3 
   return point;
 }
 
-/** What a pane showing `view` (as drawn) of `series` needs before a caliper can measure in it, as a view patch: the
- * caliper's plane, plain and through `at` (the picked point, or the pane's middle), unless the pane is on that plane
- * already, when its slice and tilt stay; and the bone window, unless its window already reaches as wide and as high (a
- * CT in HU only). Null when nothing needs to change; `blocked` when the series cannot be shown on that plane. */
-export function caliperView(kind: CaliperKind, series: Series, view: ViewState, at: Vec3, canReconstruct: boolean):
+/** What a pane showing `view` (as drawn) of `series` needs to show `plane` in the bone window, as a view patch: the plane,
+ * plain and through `at` (the picked point, or the pane's middle), unless the pane is on that plane already, when its
+ * slice and tilt stay; and the bone window, unless its window already reaches as wide and as high (a CT in HU only). Null
+ * when nothing needs to change; `blocked` when the series cannot be shown on that plane. */
+export function planeView(plane: Plane, series: Series, view: ViewState, at: Vec3, canReconstruct: boolean):
   { patch: Partial<ViewState>; plane: boolean; window: boolean } | { blocked: MessageKey } | null {
-  const spec = CALIPERS[kind], axes = planeAxes(series, view);
-  const plane = isProjection(series, view) || !onCaliperPlane(kind, scale(axes.v, -1), axes.normal);
-  if (plane && !canReconstruct) return { blocked: spec.plane === 'coronal' ? 'caliper.noCoronal' : 'caliper.noSagittal' };
-  const target = { plane: spec.plane, mode: 'mpr' as const, oblique: [0, 0] as [number, number], projection: undefined };
+  const turn = !showsPlane(plane, series, view);
+  if (turn && !canReconstruct) return { blocked: NO_PLANE[plane] };
+  const target = { plane, mode: 'mpr' as const, oblique: [0, 0] as [number, number], projection: undefined };
   const window = series.valueUnit === 'HU' && !(view.windowWidth >= BONE_WINDOW.width && view.windowCenter >= BONE_WINDOW.center);
-  if (!plane && !window) return null;
-  return { plane, window, patch: {
-    ...(plane ? { ...target, slice: sliceAtWorld(series, target, at) } : {}),
+  if (!turn && !window) return null;
+  return { plane: turn, window, patch: {
+    ...(turn ? { ...target, slice: sliceAtWorld(series, target, at) } : {}),
     ...(window ? { windowWidth: BONE_WINDOW.width, windowCenter: BONE_WINDOW.center, windowMode: 'manual' as const } : {}),
   } };
 }
+
+/** What a pane needs before a caliper can measure in it: its plane in the bone window (planeView). */
+export const caliperView = (kind: CaliperKind, series: Series, view: ViewState, at: Vec3, canReconstruct: boolean) =>
+  planeView(CALIPERS[kind].plane, series, view, at, canReconstruct);
 
 /** The caliper's points moved onto bone where its definition says so, within the plane (`up`, `normal`) they lie in. */
 export function snapCaliper(kind: CaliperKind, volume: Volume, points: readonly Vec3[], up: Vec3, normal: Vec3): Vec3[] {

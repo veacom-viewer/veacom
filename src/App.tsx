@@ -19,7 +19,7 @@ import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
-import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, caliperView, onCaliperPlane, snapCaliper } from './imaging/calipers';
+import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
 import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
@@ -270,10 +270,13 @@ const PANE_DRAG = 'application/x-veacom-pane';
  * says about it with Undo, and every pane's view before (a linked pane can move with it). */
 type CaliperRequest = { kind: CaliperKind; item: string; side: Side; study: string;
   setUp?: { slotId: string; text: string; views: Array<{ id: string; seriesId: string | null; view: ViewState }> } };
-/** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
- * rearranged. A sticky one stays until the reader's next action instead of a few seconds. */
+/** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), a plane the checklist's Show turned it to
+ * (Undo), or an offer to keep an arrangement as rearranged. A sticky one stays until the reader's next action instead of
+ * a few seconds. */
 type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
-  onUndo?: () => void; undoAction?: 'pair' | 'arrangement'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
+  onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'checklist-show'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
+/** Where a pane is set up to show a plane (calipers.planeView), and what it needs there; or why it cannot be. */
+type PanePlan = { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey };
 
 function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references,
   onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
@@ -343,6 +346,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
       {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
+          : toast.undoAction === 'checklist-show' ? <button type="button" data-action="checklist-show-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
         {toast.onKeep && (toast.keepAction === 'keep-plain' ? <button type="button" data-action="arrangement-keep-plain" onClick={toast.onKeep}>{t('arrangement.keep')}</button>
           : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}</div>}
@@ -684,28 +688,42 @@ export default function App() {
   const caliperStudy = activeSeries ? studyKey(activeSeries) : null;
   useEffect(() => { if (caliperRef.current && (!checklistShown || caliperRef.current.study !== caliperStudy)) stopCaliper(); }, [checklistShown, caliperStudy]);
   const canReconstruct = Boolean(activeVolume?.series.canReconstruct && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && activeSeries && !loadingIds.has(activeSeries.id) && !loadErrors[activeSeries.id]);
-  /** Where a caliper measures and what that pane needs first (calipers.caliperView): the active pane, or another pane of
-   * its series already on the caliper's plane, so the three-plane MPR keeps its planes; or why it cannot measure. */
-  const caliperPlan = (kind: CaliperKind): { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey } => {
+  /** Where a pane is set up to show `plane` in the bone window, from the active pane showing `volume`
+   * (calipers.planeView): the active pane, or another pane of its series already on that plane, so the three-plane MPR
+   * keeps its planes; or why it cannot be. */
+  const panePlan = (plane: Plane, volume: Volume): PanePlan => {
+    // A new plane goes through the point picked in this series' frame, else through the middle of the pane's plane.
+    const origin = crosshairSeriesId ? seriesById.get(crosshairSeriesId) : undefined;
+    const at = crosshair && origin && shareFrame(volume.series, origin) ? crosshair : getPlaneFrame(volume.series, activeDisplayView).center;
+    const own = planeView(plane, volume.series, activeDisplayView, at, canReconstruct);
+    if (own === null || ('patch' in own && !own.plane)) return { slotId: activeSlot.id, setUp: own };
+    for (const slot of slots) {
+      const other = slot.id !== activeSlot.id && slot.seriesId === activeSlot.seriesId ? volumeForSlot(slot) : undefined;
+      const theirs = other ? planeView(plane, other.series, renderedView(other, slot.view), at, false) : undefined;
+      if (theirs === null || (theirs && 'patch' in theirs)) return { slotId: slot.id, setUp: theirs };
+    }
+    return 'blocked' in own ? own : { slotId: activeSlot.id, setUp: own };
+  };
+  /** Where a caliper measures and what that pane needs first (panePlan on the caliper's plane), or why it cannot measure. */
+  const caliperPlan = (kind: CaliperKind): PanePlan => {
     if (!activeVolume) return { blocked: 'caliper.needsImage' };
     const refused = caliperRefusal(activeVolume.series);
     if (refused) return { blocked: refused };
     if (caliperMmScale(activeVolume.series) === null) return { blocked: 'caliper.needsSpacing' };
     if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'caliper.loading' };
-    // A new plane goes through the point picked in this series' frame, else through the middle of the pane's plane.
-    const origin = crosshairSeriesId ? seriesById.get(crosshairSeriesId) : undefined;
-    const at = crosshair && origin && shareFrame(activeVolume.series, origin) ? crosshair : getPlaneFrame(activeVolume.series, activeDisplayView).center;
-    const own = caliperView(kind, activeVolume.series, activeDisplayView, at, canReconstruct);
-    if (own === null || ('patch' in own && !own.plane)) return { slotId: activeSlot.id, setUp: own };
-    for (const slot of slots) {
-      const volume = slot.id !== activeSlot.id && slot.seriesId === activeSlot.seriesId ? volumeForSlot(slot) : undefined;
-      const theirs = volume ? caliperView(kind, volume.series, renderedView(volume, slot.view), at, false) : undefined;
-      if (theirs === null || (theirs && 'patch' in theirs)) return { slotId: slot.id, setUp: theirs };
-    }
-    return 'blocked' in own ? own : { slotId: activeSlot.id, setUp: own };
+    return panePlan(CALIPERS[kind].plane, activeVolume);
   };
   /** Why a caliper cannot measure from the active pane now (the checklist disables its button and says why), or null. */
   const caliperBlocked = (kind: CaliperKind): MessageKey | null => { const plan = caliperPlan(kind); return 'blocked' in plan ? plan.blocked : null; };
+  /** Where the checklist's Show turns a pane to `plane` (panePlan), or why it cannot. */
+  const showPlan = (plane: Plane): PanePlan => {
+    if (!activeVolume) return { blocked: 'checklist.showNeedsImage' };
+    if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'checklist.showLoading' };
+    return panePlan(plane, activeVolume);
+  };
+  const showBlocked = (plane: Plane): MessageKey | null => { const plan = showPlan(plane); return 'blocked' in plan ? plan.blocked : null; };
+  // The plane the active pane shows, for the checklist's Show (calipers.showsPlane).
+  const paneShows = activeVolume ? (['axial', 'coronal', 'sagittal'] as const).find(plane => showsPlane(plane, activeVolume.series, activeDisplayView)) ?? null : null;
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
   const petSeries = series.filter(fusesAsOverlay);
@@ -1525,6 +1543,43 @@ export default function App() {
       return saved ? { ...slot, view: saved.view } : slot;
     }));
     focusImage();
+  };
+  /** The checklist's Show: a pane set up to show the item called `name` on `plane`, in the bone window (showPlan). A pane
+   * goes to the first slice noted for the item on that plane in its series, else to where the item was last looked at
+   * there; with neither, a pane turned to the plane goes through the picked point or the plane's middle, and a pane
+   * already on it keeps its slice. In the three-plane MPR the pane on that plane becomes the active one. The pane says
+   * what changed, with Undo, which puts every pane's view back as it was. A caliper under way ends. */
+  const showChecklistItem = (name: string, plane: Plane, places: { noted: SliceNote[]; last?: SliceNote }) => {
+    const plan = showPlan(plane), slot = 'blocked' in plan ? undefined : slotsRef.current.find(item => item.id === plan.slotId);
+    if ('blocked' in plan || !slot) return;
+    if (caliperRef.current) stopCaliper();
+    if (slot.id !== activeIdRef.current) activateSlot(slot.id);
+    const setUp = plan.setUp, volume = volumeForSlot(slot), paneSeries = slot.seriesId;
+    if (!volume || !paneSeries) return;
+    const onIt = (place: SliceNote | undefined): place is SliceNote => place !== undefined && place.seriesId === paneSeries
+      && showsPlane(plane, volume.series, { plane: place.plane as Plane, mode: place.mode as ViewState['mode'], oblique: place.oblique });
+    const noted = places.noted.find(onIt), last = !noted && onIt(places.last) ? places.last : undefined;
+    const place = noted ?? last, shown = slot.view;
+    // A place the pane shows already is no move.
+    const moves = place && !(place.plane === shown.plane && place.mode === (shown.mode ?? 'source') && place.slice === Math.round(shown.slice) && shown.projection === undefined
+      && (place.mode !== 'mpr' || ((place.oblique?.[0] ?? 0) === (shown.oblique?.[0] ?? 0) && (place.oblique?.[1] ?? 0) === (shown.oblique?.[1] ?? 0))));
+    const patch: Partial<ViewState> = { ...setUp?.patch,
+      ...(moves ? { plane: place.plane as Plane, mode: place.mode as ViewState['mode'], slice: place.slice, oblique: place.mode === 'mpr' ? place.oblique ?? [0, 0] : undefined, projection: undefined } : {}) };
+    if (!Object.keys(patch).length) return;
+    const views = slotsRef.current.map(({ id, seriesId, view }) => ({ id, seriesId, view }));
+    updateView(slot.id, patch);
+    const where = { name, plane: t(`planeLower.${plane}`) }, bone = Boolean(setUp?.window);
+    const text = moves && noted ? t(bone ? 'checklist.shownNotedBone' : 'checklist.shownNoted', where)
+      : moves ? t(bone ? 'checklist.shownLastBone' : 'checklist.shownLast', where)
+      : setUp?.plane ? t(bone ? 'checklist.shownBone' : 'checklist.shown', where)
+      : t('checklist.shownWindow', { name });
+    setPaneToast({ slotId: slot.id, seriesId: paneSeries, text, undoAction: 'checklist-show', onUndo: () => {
+      setPaneToast(null);
+      setSlots(current => current.map(item => {
+        const saved = views.find(view => view.id === item.id && view.seriesId === item.seriesId);
+        return saved ? { ...item, view: saved.view } : item;
+      }));
+    } });
   };
   /** What a caliper under way asks for in a pane: its points in turn, or the plane it needs; and, until its first point,
    * what its set-up changed there, with Undo. */
@@ -2519,6 +2574,7 @@ export default function App() {
         onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view) : null}
         onMeasure={(item, side, kind) => startCaliper({ kind, item, side, study: studyKey(activeSeries) })}
         measuring={caliper && caliper.study === studyKey(activeSeries) ? caliper : null} measureBlocked={caliperBlocked}
+        paneShows={paneShows} onShow={showChecklistItem} showBlocked={showBlocked}
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
           updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage();

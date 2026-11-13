@@ -2,14 +2,16 @@
 // surgery, each finding marked present, absent or not assessable, per side, with the slice it was seen on. A PNS CT
 // opens the CLOSE checklist (cribriform plate, lamina papyracea, Onodi cell, sphenoid, ethmoid artery); a temporal
 // bone CT the third-window, ossicle, facial canal, inner ear and tegmen checklist.
-import type { CaliperKind, CaliperTag, Series, Vec3 } from '../model';
+import type { CaliperKind, CaliperTag, Plane, Series, Vec3 } from '../model';
 import { caliperReport, caliperResult, type CaliperResult } from '../imaging/calipers';
 import { translate } from '../i18n';
 import { foldSearch } from './seriesNames';
 
 export type ChecklistKind = 'pns' | 'temporal';
 type Words = { tr: string; en: string };
-export interface ChecklistItem { id: string; label: Words; hint: Words; sided: boolean; options?: Array<{ value: string } & Words> }
+export interface ChecklistItem { id: string; label: Words; hint: Words; sided: boolean; options?: Array<{ value: string } & Words>;
+  /** The planes it is read on, the usual one first: Show turns the pane to them in turn. */
+  planes?: readonly Plane[] }
 export interface ChecklistGroup { title: Words; items: ChecklistItem[] }
 export type Side = 'right' | 'left' | 'both';
 export type Answers = Partial<Record<string, Partial<Record<Side, string>>>>;
@@ -31,6 +33,8 @@ export interface CaliperNote {
 export interface SliceNote { seriesId: string; slice: number; shown: string; plane: string; mode: string;
   /** A tilted reconstruction: its pitch and yaw, and the tilt from the plain plane in degrees. */
   oblique?: [number, number]; tilt?: number;
+  /** Noted by itself when the side was marked present (noteAnswered): it goes again when that answer changes. */
+  auto?: boolean;
   caliper?: CaliperNote }
 /** Where each finding was seen, per item and side (`both` for an item with one answer). */
 export type Notes = Partial<Record<string, Partial<Record<Side, SliceNote>>>>;
@@ -48,22 +52,23 @@ export const CHECKLISTS: Record<ChecklistKind, { title: Words; groups: Checklist
       title: { tr: 'CLOSE', en: 'CLOSE' },
       items: [
         { id: 'keros', label: { tr: 'Kribriform plate (Keros)', en: 'Cribriform plate (Keros)' }, hint: { tr: 'Olfaktör fossa derinliği, asimetri', en: 'Olfactory fossa depth, asymmetry' }, sided: true,
-          options: [{ value: '1', tr: '1', en: '1' }, { value: '2', tr: '2', en: '2' }, { value: '3', tr: '3', en: '3' }, { value: 'unknown', tr: '?', en: '?' }] },
-        { id: 'lamina', label: { tr: 'Lamina papyracea', en: 'Lamina papyracea' }, hint: { tr: 'Dehisans, erozyon', en: 'Dehiscence, erosion' }, sided: true },
-        { id: 'onodi', label: { tr: 'Onodi hücresi', en: 'Onodi cell' }, hint: { tr: 'Optik sinirle ilişki', en: 'Relation to the optic nerve' }, sided: true },
-        { id: 'sphenoid-ica', label: { tr: 'Sfenoid: ICA', en: 'Sphenoid: ICA' }, hint: { tr: 'Dehisans / protrüzyon', en: 'Dehiscence / protrusion' }, sided: true },
-        { id: 'sphenoid-optic', label: { tr: 'Sfenoid: optik sinir', en: 'Sphenoid: optic nerve' }, hint: { tr: 'Dehisans / protrüzyon', en: 'Dehiscence / protrusion' }, sided: true },
-        { id: 'sphenoid-septum', label: { tr: 'İntersinüs septum ICA\'ya', en: 'Intersinus septum to ICA' }, hint: { tr: 'Septumun karotis kanalına yapışması', en: 'Septum inserting on the carotid canal' }, sided: true },
+          options: [{ value: '1', tr: '1', en: '1' }, { value: '2', tr: '2', en: '2' }, { value: '3', tr: '3', en: '3' }, { value: 'unknown', tr: '?', en: '?' }], planes: ['coronal'] },
+        { id: 'lamina', label: { tr: 'Lamina papyracea', en: 'Lamina papyracea' }, hint: { tr: 'Dehisans, erozyon', en: 'Dehiscence, erosion' }, sided: true, planes: ['coronal'] },
+        // Coronal shows the horizontal septum under the cell, sagittal how far back over the sphenoid sinus it reaches.
+        { id: 'onodi', label: { tr: 'Onodi hücresi', en: 'Onodi cell' }, hint: { tr: 'Optik sinirle ilişki', en: 'Relation to the optic nerve' }, sided: true, planes: ['coronal', 'sagittal'] },
+        { id: 'sphenoid-ica', label: { tr: 'Sfenoid: ICA', en: 'Sphenoid: ICA' }, hint: { tr: 'Dehisans / protrüzyon', en: 'Dehiscence / protrusion' }, sided: true, planes: ['axial', 'coronal'] },
+        { id: 'sphenoid-optic', label: { tr: 'Sfenoid: optik sinir', en: 'Sphenoid: optic nerve' }, hint: { tr: 'Dehisans / protrüzyon', en: 'Dehiscence / protrusion' }, sided: true, planes: ['coronal', 'axial'] },
+        { id: 'sphenoid-septum', label: { tr: 'İntersinüs septum ICA\'ya', en: 'Intersinus septum to ICA' }, hint: { tr: 'Septumun karotis kanalına yapışması', en: 'Septum inserting on the carotid canal' }, sided: true, planes: ['axial', 'coronal'] },
         { id: 'pneumatisation', label: { tr: 'Sfenoid pnömatizasyonu', en: 'Sphenoid pneumatisation' }, hint: { tr: 'Sella\'ya göre', en: 'Relative to the sella' }, sided: false,
-          options: [{ value: 'conchal', tr: 'Konkal', en: 'Conchal' }, { value: 'presellar', tr: 'Preseller', en: 'Presellar' }, { value: 'sellar', tr: 'Seller', en: 'Sellar' }, { value: 'postsellar', tr: 'Postseller', en: 'Postsellar' }, { value: 'unknown', tr: '?', en: '?' }] },
-        { id: 'ethmoid-artery', label: { tr: 'Ön etmoid arter', en: 'Anterior ethmoid artery' }, hint: { tr: 'Kafa tabanından ayrık (mezenterde), dehisans', en: 'Below the skull base (in a mesentery), dehiscent' }, sided: true },
+          options: [{ value: 'conchal', tr: 'Konkal', en: 'Conchal' }, { value: 'presellar', tr: 'Preseller', en: 'Presellar' }, { value: 'sellar', tr: 'Seller', en: 'Sellar' }, { value: 'postsellar', tr: 'Postseller', en: 'Postsellar' }, { value: 'unknown', tr: '?', en: '?' }], planes: ['sagittal'] },
+        { id: 'ethmoid-artery', label: { tr: 'Ön etmoid arter', en: 'Anterior ethmoid artery' }, hint: { tr: 'Kafa tabanından ayrık (mezenterde), dehisans', en: 'Below the skull base (in a mesentery), dehiscent' }, sided: true, planes: ['coronal'] },
       ],
     }, {
       title: { tr: 'Diğer', en: 'Other' },
       items: [
-        { id: 'septum', label: { tr: 'Septum deviasyonu / spur', en: 'Septal deviation / spur' }, hint: { tr: 'Taraf: deviasyonun yönü', en: 'Side: the way it deviates' }, sided: true },
-        { id: 'concha-bullosa', label: { tr: 'Konka bülloza', en: 'Concha bullosa' }, hint: { tr: 'Orta konka pnömatizasyonu', en: 'Pneumatised middle turbinate' }, sided: true },
-        { id: 'haller', label: { tr: 'Haller hücresi', en: 'Haller cell' }, hint: { tr: 'İnfraorbital etmoid hücre', en: 'Infraorbital ethmoid cell' }, sided: true },
+        { id: 'septum', label: { tr: 'Septum deviasyonu / spur', en: 'Septal deviation / spur' }, hint: { tr: 'Taraf: deviasyonun yönü', en: 'Side: the way it deviates' }, sided: true, planes: ['coronal'] },
+        { id: 'concha-bullosa', label: { tr: 'Konka bülloza', en: 'Concha bullosa' }, hint: { tr: 'Orta konka pnömatizasyonu', en: 'Pneumatised middle turbinate' }, sided: true, planes: ['coronal'] },
+        { id: 'haller', label: { tr: 'Haller hücresi', en: 'Haller cell' }, hint: { tr: 'İnfraorbital etmoid hücre', en: 'Infraorbital ethmoid cell' }, sided: true, planes: ['coronal'] },
       ],
     }],
   },
@@ -176,9 +181,10 @@ export function checklistSummary(kind: ChecklistKind, answers: Answers, notes: N
 
 /** A side of a row, where the checklist's keys act: `row` indexes the list's items in order. */
 export interface ChecklistCell { row: number; side: Side }
-/** What a key does inside the checklist: move between rows (↑ ↓) or sides (← →), or answer with the row's first to ninth
- * answer (Alt with 1–9, by position, so the keys mean the same in every language), on both sides with Shift too. */
-export type ChecklistKey = { move: 'up' | 'down' | 'left' | 'right' } | { answer: number; both: boolean };
+/** What a key does inside the checklist: move between rows (↑ ↓) or sides (← →), answer with the row's first to ninth
+ * answer (Alt with 1–9, by position, so the keys mean the same in every language), on both sides with Shift too, or show
+ * the row's item on the image (Enter). */
+export type ChecklistKey = { move: 'up' | 'down' | 'left' | 'right' } | { answer: number; both: boolean } | { show: true };
 
 const MOVES: Partial<Record<string, 'up' | 'down' | 'left' | 'right'>> = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
 
@@ -186,9 +192,10 @@ const MOVES: Partial<Record<string, 'up' | 'down' | 'left' | 'right'>> = { Arrow
  * on the image, and keeps that one meaning. The digit is read from the key's place (`code`), since Alt, Shift and the
  * layout change the character it types. ⌘ and Ctrl combinations belong to the app; so does AltGr, which Windows reports
  * as Ctrl+Alt and which types characters on a Turkish keyboard. Only the top-row digits answer: with Alt, the keypad's
- * digits type characters by their codes on Windows. */
+ * digits type characters by their codes on Windows. Enter shows the row's item, once per press. */
 export function checklistKey(event: { key: string; code: string; repeat: boolean; shiftKey: boolean; metaKey: boolean; ctrlKey: boolean; altKey: boolean }): ChecklistKey | null {
   if (event.metaKey || event.ctrlKey) return null;
+  if (event.key === 'Enter') return event.shiftKey || event.altKey || event.repeat ? null : { show: true };
   const move = MOVES[event.key];
   if (move) return event.shiftKey || event.altKey ? null : { move };
   const digit = event.altKey && !event.repeat ? /^Digit([1-9])$/.exec(event.code) : null;
@@ -216,6 +223,30 @@ export function answerByKey(state: ChecklistState, items: readonly ChecklistItem
   const next: ChecklistCell = !both && at.side === 'right' ? { row: at.row, side: 'left' }
     : following ? { row: at.row + 1, side: following.sided ? 'right' : 'both' } : at;
   return { state: { ...state, answers }, next };
+}
+
+/** The plane Show turns the pane to next for `item`: its usual plane, or the one after the plane the pane shows (`shown`).
+ * Null for an item read on no particular plane. */
+export function nextPlane(item: Pick<ChecklistItem, 'planes'>, shown: Plane | null): Plane | null {
+  const planes = item.planes ?? [];
+  if (!planes.length) return null;
+  return planes[((shown ? planes.indexOf(shown) : -1) + 1) % planes.length];
+}
+
+/** The checklist after `sides` of `item` were answered. A side now marked present (Var) with nothing noted gets `here`,
+ * the slice on screen, when the pane shows one of the item's planes (`shown`), marked as noted by itself; a side whose
+ * answer is no longer Var loses a note it got that way. A note the reader took or a caliper made stays. Only the default
+ * answers (Var, Yok, ?) note by themselves: a measured item notes where it was measured. */
+export function noteAnswered(state: ChecklistState, item: ChecklistItem, sides: readonly Side[], here: SliceNote | null, shown: Plane | null): ChecklistState {
+  if (item.options) return state;
+  const notes = { ...state.notes[item.id] };
+  let changed = false;
+  for (const side of sides) {
+    const note = notes[side], present = state.answers[item.id]?.[side] === 'yes';
+    if (present && !note && here && shown && item.planes?.includes(shown)) { notes[side] = { ...here, auto: true }; changed = true; }
+    else if (!present && note?.auto) { delete notes[side]; changed = true; }
+  }
+  return changed ? { ...state, notes: { ...state.notes, [item.id]: notes } } : state;
 }
 
 /** The checklist after a caliper drawing measured `item` on `side`: its note, and the answer it gives. A new drawing

@@ -54,6 +54,15 @@ spacing is unknown, it is still loading, or the series cannot be shown on the ca
 a scout or on another modality of the study (an MR) while a caliper waits stays a plain measurement, and such a pane's
 hint says why.
 
+Show, in the bar under the checklist, sets the pane up the same way for any sinus item, on the plane it is read on:
+coronal for Keros, the lamina papyracea, the ethmoid artery, the septum, a concha bullosa and a Haller cell; coronal,
+then sagittal for an Onodi cell; coronal, then axial for the optic nerve; axial, then coronal for the carotid artery
+and the intersinus septum; sagittal for the sphenoid pneumatisation, through the middle of the pane, near the midline.
+Its label names the plane it turns to next, so pressing it again shows an item's other plane. It goes to the slice
+noted for the item on that plane (the side the keys are on first), else to the slice the item was last looked at there
+(answered there, or left there for its other plane; kept per study while VEAcom is open), else as a caliper sets up.
+A pane already at that place keeps it. The pane says what changed, with Undo; a caliper under way ends.
+
 ## Snapping onto bone
 
 A point marked for bone moves, within its plane, to the nearest place within 2 mm whose interpolated value is 200 HU
@@ -64,14 +73,18 @@ cartilage. Moving a point by hand afterwards does not snap.
 
 ## The checklist record
 
-Notes are kept per item and side. Every side has a button that notes the slice on screen, and the four items above
-also have a caliper button; a side holds one note, whichever came last. A caliper's note holds its points (patient
+Each item takes one line of the checklist: its name and its answers. The bar under the list shows the row last clicked
+or reached by the keys: what to look for, Show, and for each side its note or measurement, a button that notes the
+slice on screen and, for the four items above, a caliper button. Notes are kept per item and side; a side holds one
+note, whichever came last. A side answered Yes, with the active pane on one of the item's planes and nothing noted on
+that side yet, notes the slice on screen by itself; its tooltip says so, and the note goes again when the answer is no
+longer Yes. Keros and the pneumatisation, answered by type, note where they are measured instead. A caliper's note holds its points (patient
 millimetres), the plane they were read on, its reading and the answer it gave. Moving a point of its drawing measures
 again, and so does a change of the series' calibration; the answer follows until the reader picks another one. Deleting
 the drawing leaves the record, and a calibration still measures it again from its points. "Copy for the report" gives
 each side its answer, measurement and slice. It leaves out a row with nothing answered or measured on any side (a slice
-noted alone included), so the checklist says how many rows that is at the end of its help line, above Copy, and
-pressing the count goes to the first of them. A row answered on one side is copied, with "–" for the other.
+noted alone included), so the checklist says how many rows that is above the item names, and pressing the count goes
+to the first of them. A row answered on one side is copied, with "–" for the other.
 
 Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.
 Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never
@@ -87,7 +100,8 @@ so they mean the same in English and Turkish (Y would be yes in one and "Yok", n
 because a plain digit is a window preset on the image (the owner's choice, 10 November 2026): no key has two meanings.
 AltGr, which Windows reports as Ctrl+Alt, answers nothing, and neither do the keypad's digits, which with Alt type
 characters by their codes on Windows. Being chords, the answers stay on when single-key shortcuts are turned off. Each
-answer's tooltip shows its keys, and Help lists them.
+answer's tooltip shows its keys, and Help lists them. Enter on a row shows its item (Show); on a button it presses the
+button.
 
 ## The theatre card
 

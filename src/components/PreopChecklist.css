@@ -1,52 +1,62 @@
-/* The pre-operative checklist beside the images (tokens from theme.css). */
+/* The pre-operative checklist beside the images (tokens from theme.css). The surfaces step up from the list: the header
+   and footer in the chrome's colour, the list on the panel, the selected row and its detail bar raised. */
 .preop-checklist { width: 470px; max-width: 100%; height: 100%; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--bg-panel); color: var(--text); }
-.preop-checklist > header { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--line-subtle); }
-.preop-checklist > header h2 { margin: 0; font-size: var(--text-lg); font-weight: 600; color: var(--text-strong); }
-.preop-count { margin-left: auto; color: var(--text-secondary); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
-.preop-kinds { display: grid; grid-template-columns: 1fr 1fr; margin: 10px 12px 4px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
+.preop-checklist > header { flex: none; display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 8px 0 12px; border-bottom: 1px solid var(--line-subtle); background: var(--bg-chrome); }
+.preop-checklist > header svg { flex: none; }
+.preop-checklist > header h2 { flex: none; margin: 0; font-size: var(--text-lg); font-weight: 600; color: var(--text-strong); }
+/* The list a recognised study opened, on the title's line. */
+.preop-kind-name { min-width: 0; overflow: hidden; color: var(--text-tertiary); font-size: var(--text-sm); white-space: nowrap; text-overflow: ellipsis; }
+.preop-count { flex: none; margin-left: auto; color: var(--text-secondary); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.preop-kinds { flex: none; display: grid; grid-template-columns: 1fr 1fr; margin: 10px 12px 4px; border: 1px solid var(--line-strong); border-radius: 6px; overflow: hidden; }
 .preop-kinds > button { height: 30px; border: 0; border-radius: 0; background: transparent; color: var(--text-secondary); font-size: var(--text-sm); }
 .preop-kinds > button + button { border-left: 1px solid var(--line-strong); }
 .preop-kinds > button.is-selected { background: var(--accent-solid); color: var(--on-accent); }
-.preop-columns, .preop-row { display: grid; grid-template-columns: minmax(0, 1fr) 136px 136px; gap: 6px; align-items: start; }
-.preop-columns { padding: 6px 12px 2px; color: var(--text-tertiary); font-size: var(--text-sm); }
+.preop-columns, .preop-row { display: grid; grid-template-columns: minmax(0, 1fr) 136px 136px; gap: 6px; align-items: center; }
+/* Above the answers, their sides; above the names, the rows Copy leaves out. */
+.preop-columns { flex: none; min-height: 32px; padding: 2px 12px; color: var(--text-tertiary); font-size: var(--text-sm); }
 .preop-columns > span { text-align: center; }
-.preop-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 12px 8px; }
-.preop-group h3 { margin: 10px 0 2px; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600; }
-.preop-row { padding: 6px 0; border-top: 1px solid var(--line-subtle); }
+.preop-unmarked { justify-self: start; min-height: 24px; padding: 0 2px; font-size: var(--text-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.preop-body { flex: 1; min-height: 0; overflow-y: auto; padding: 0 0 8px; }
+.preop-group h3 { margin: 8px 12px 2px; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600; }
+/* One line an item: its name and its answers. What else it has is in the bar under the list, so no row grows. */
+.preop-row { min-height: 34px; padding: 3px 12px; border-top: 1px solid var(--line-subtle); }
+.preop-row.is-selected { background: var(--bg-raised); }
 .preop-row.is-single > .preop-side { grid-column: 2 / 4; }
-.preop-name { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.preop-name strong { font-size: var(--text-md); font-weight: 500; color: var(--text-strong); }
-.preop-name small { color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.3; }
-/* Beside the buttons when it fits, else on the line below at full width. */
-.preop-seen { flex: 0 0 auto; max-width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: var(--accent); font-size: var(--text-sm); font-variant-numeric: tabular-nums; text-decoration: underline; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
-.preop-choice { display: flex; border: 1px solid var(--line-strong); border-radius: 5px; overflow: hidden; }
+.preop-name { min-width: 0; min-height: 28px; text-align: left; color: var(--text-strong); font-size: var(--text-md); font-weight: 500; line-height: 1.25; overflow-wrap: anywhere; }
+.preop-name:hover { text-decoration: underline; text-decoration-color: var(--line-control); text-underline-offset: 3px; }
+.preop-side { min-width: 0; }
+.preop-choice { display: flex; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); overflow: hidden; }
 /* The side the keys are on (also after going to an unmarked row by mouse): the ring sits outside the group's border,
    which clips its buttons. */
 .preop-choice:focus { outline: 2px solid var(--focus); outline-offset: 1px; }
-.preop-option { flex: 1; min-width: 0; height: 26px; padding: 0 2px; border: 0; border-radius: 0; background: transparent; color: var(--text-secondary); font-size: var(--text-sm); }
+.preop-option { flex: 1; min-width: 24px; display: inline-flex; align-items: center; justify-content: center; gap: 4px; height: var(--control-sm); padding: 0 2px; border-radius: 0; color: var(--text-secondary); font-size: var(--text-sm); }
 .preop-option + .preop-option { border-left: 1px solid var(--line-subtle); }
 .preop-option:hover { background: var(--bg-hover); color: var(--text-strong); }
-.preop-option.is-on { background: var(--accent-solid); color: var(--on-accent); }
-.preop-option.is-yes.is-on { background: #8a2d2d; color: #ffe1e1; }
-.preop-option.is-no.is-on { background: #2c5f3a; color: #dcf5e3; }
-.preop-option.is-unknown.is-on { background: #6b5a1c; color: #fff1c7; }
-/* Under each side: its note or caliper button, then where it was seen or what it measured. */
-.preop-side { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
-.preop-side-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; min-width: 0; min-height: 24px; }
-.preop-tool { flex: none; width: 24px; height: 24px; }
-.preop-tool.is-on { background: var(--accent-solid); color: var(--on-accent); }
-.preop-tool.is-unavailable, .preop-tool.is-unavailable:hover { background: transparent; color: var(--text-disabled); cursor: default; }
-/* Near a type limit or a sella line: said in a word, in the caution colour. */
-.preop-limit { flex: none; color: var(--warning); font-size: var(--text-xs); white-space: nowrap; }
-.preop-checklist > footer { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-subtle); }
-/* Three buttons and the help: the help takes its own line above them. */
-.preop-checklist > footer { flex-wrap: wrap; }
-.preop-help-row { flex: 1 0 100%; display: flex; align-items: center; gap: 8px; }
-.preop-help { flex: 1 1 auto; min-width: 0; color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.4; }
-.preop-checklist > footer > button:first-of-type { margin-left: auto; }
-.preop-undo { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; padding: 8px 12px 0; color: var(--text-secondary); font-size: var(--text-sm); }
-.preop-print-failed { margin: 0; padding: 8px 12px 0; color: var(--danger); font-size: var(--text-sm); }
+/* A picked answer: Var (present) stands out in the accent, with a dot; Yok (absent) stays quiet; ? (not assessable)
+   takes the caution colour; a number or a word of the item's own (Keros type, pneumatisation) is picked in the accent's
+   tint. The word always says which, so the colour never carries it alone. */
+.preop-option.is-on { background: var(--accent-bg); color: var(--text-strong); font-weight: 600; }
+.preop-option.is-yes.is-on { background: var(--accent-solid); color: var(--on-accent); }
+.preop-option.is-yes.is-on::before { content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.preop-option.is-no.is-on { background: var(--bg-pressed); color: var(--text-strong); }
+.preop-option.is-unknown.is-on { background: var(--warning-bg); color: var(--warning); }
 /* A one-answer row (sphenoid pneumatisation) has longer words: each choice as wide as its word. */
 .preop-row.is-single .preop-option { flex: 1 1 auto; padding: 0 5px; }
-.preop-kind-name { margin: 10px 12px 4px; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 600; }
-.preop-unmarked { min-height: 24px; padding: 0 4px; font-size: var(--text-sm); font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* The selected item: its name, what to look for and Show; then each side's note or measurement, with Note and Measure.
+   It keeps its height whichever item is selected, so nothing above it moves. */
+.preop-detail { flex: none; display: grid; gap: 2px; padding: 8px 12px 10px; border-top: 1px solid var(--line); background: var(--bg-raised); }
+.preop-detail-head { display: flex; align-items: center; gap: 8px; min-height: var(--control-sm); }
+.preop-detail-head strong { flex: 1; min-width: 0; overflow: hidden; color: var(--text-strong); font-size: var(--text-md); font-weight: 600; white-space: nowrap; text-overflow: ellipsis; }
+.preop-detail-hint { margin: 0 0 4px; overflow: hidden; color: var(--text-tertiary); font-size: var(--text-sm); line-height: 1.4; white-space: nowrap; text-overflow: ellipsis; }
+.preop-detail-sides { display: grid; gap: 4px; min-height: calc(2 * var(--control-sm) + 4px); align-content: start; }
+.preop-detail-side { display: flex; align-items: center; gap: 6px; min-width: 0; min-height: var(--control-sm); }
+.preop-detail-name { flex: none; width: 28px; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 500; }
+.preop-detail-seen { flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0; }
+.preop-seen { flex: 0 1 auto; min-width: 0; min-height: 24px; overflow: hidden; color: var(--accent); font-size: var(--text-sm); font-variant-numeric: tabular-nums; text-decoration: underline; white-space: nowrap; text-overflow: ellipsis; }
+/* Near a type limit or a sella line: said in a word, in the caution colour. */
+.preop-limit { flex: none; color: var(--warning); font-size: var(--text-xs); white-space: nowrap; }
+.preop-tool, .preop-show { flex: none; gap: 5px; }
+.preop-tool[aria-disabled=true], .preop-tool[aria-disabled=true]:hover, .preop-show[aria-disabled=true], .preop-show[aria-disabled=true]:hover { background: var(--bg-raised); border-color: var(--line); color: var(--text-disabled); cursor: default; }
+.preop-undo { flex: none; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin: 0; padding: 8px 12px; border-top: 1px solid var(--line-subtle); background: var(--bg-chrome); color: var(--text-secondary); font-size: var(--text-sm); }
+.preop-print-failed { flex: none; margin: 0; padding: 8px 12px; border-top: 1px solid var(--line-subtle); background: var(--bg-chrome); color: var(--danger); font-size: var(--text-sm); }
+.preop-checklist > footer { flex: none; display: flex; justify-content: flex-end; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--line-subtle); background: var(--bg-chrome); }
