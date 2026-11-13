@@ -1,7 +1,7 @@
 // CLOSE calipers for the sinus CT checklist (src/ui/preopChecklist.ts). Each one measures one item from points the reader
-// places on a coronal or sagittal plane, moved onto the nearest bone, and gives that item's answer together with the
-// measurement it came from. Only geometry of a millimetre or more is answered; whether a thin wall is intact is left to
-// the reader. Definitions and sources: docs/close-calipers.md.
+// places on a coronal or sagittal plane, in any order, moved onto the nearest bone, and gives that item's answer together
+// with the measurement it came from. Only geometry of a millimetre or more is answered; whether a thin wall is intact is
+// left to the reader. Definitions and sources: docs/close-calipers.md.
 import type { CaliperKind, CaliperTag, Plane, Series, Vec3, ViewState, Volume } from '../model';
 import { add, cross, dot, isProjection, length, planeAxes, sampleVolume, scale, sliceAtWorld, sub } from './geometry';
 import { translate, type Locale, type MessageKey } from '../i18n';
@@ -12,17 +12,17 @@ interface CaliperSpec {
   tool: 'length' | 'angle';
   /** The plane it is read on. */
   plane: 'coronal' | 'sagittal';
-  /** For each point in order: whether it moves onto the nearest bone. */
+  /** For each point, in the order the result reads them (caliperOrder): whether it moves onto the nearest bone. */
   snap: readonly boolean[];
-  /** What to click, point by point. */
+  /** What to click, point by point; the points may come in any order. */
   prompts: readonly MessageKey[];
 }
 
 export const CALIPERS: Record<CaliperKind, CaliperSpec> = {
-  // The cribriform plate beside the crista galli, the foot of the lateral lamella and its top at the fovea ethmoidalis:
-  // the lamella's height is the olfactory fossa depth (Keros 1962), its angle to the plate the Gera angle (Gera 2018).
-  keros: { tool: 'angle', plane: 'coronal', snap: [true, true, true], prompts: ['caliper.keros.1', 'caliper.keros.2', 'caliper.keros.3'] },
-  // The middle of the artery's canal (soft tissue, so it stays where it is clicked), then the ethmoid roof above it.
+  // The olfactory fossa's floor (the cribriform plate) and the ethmoid roof at the top of the lateral lamella (fovea
+  // ethmoidalis): the height between them is the fossa's depth (Keros 1962).
+  keros: { tool: 'length', plane: 'coronal', snap: [true, true], prompts: ['caliper.keros.1', 'caliper.keros.2'] },
+  // The middle of the artery's canal (soft tissue, so it stays where it is clicked) and the ethmoid roof above it.
   aea: { tool: 'length', plane: 'coronal', snap: [false, true], prompts: ['caliper.aea.1', 'caliper.aea.2'] },
   // Tuberculum sellae, top of the dorsum sellae, the sphenoid sinus wall furthest back, on the midsagittal plane.
   sella: { tool: 'angle', plane: 'sagittal', snap: [true, true, true], prompts: ['caliper.sella.1', 'caliper.sella.2', 'caliper.sella.3'] },
@@ -77,9 +77,6 @@ export function kerosType(depth: number): 1 | 2 | 3 {
 export function nearKerosLimit(depth: number): boolean {
   return [[3, 4], [7, 8]].some(([low, high]) => depth >= low - 0.5 && depth <= high + 0.5);
 }
-/** Gera 2018: the lateral lamella's angle to the plane of the cribriform plate; class I above 80° (low risk), II 45–80°,
- * III below 45° (high risk). */
-export const geraClass = (angle: number): 'I' | 'II' | 'III' => angle > 80 ? 'I' : angle >= 45 ? 'II' : 'III';
 /** El-Anwar 2021 (coronal CT, the artery's middle to the ethmoid roof): type 1 is 0–2 mm, 2 is 2–4, 3 is 4–6, 4 above 6. */
 export const aeaType = (distance: number): 1 | 2 | 3 | 4 => distance < 2 ? 1 : distance < 4 ? 2 : distance < 6 ? 3 : 4;
 /** At or below the skull base until 2 mm, hanging in a mesentery from there (El-Anwar's types 2 to 4). */
@@ -92,7 +89,7 @@ const MIDLINE_DEGREES = 1;
 const LIMIT_MM = 0.5;
 
 type CaliperReading =
-  | { kind: 'keros'; depth: number; type: 1 | 2 | 3; nearLimit: boolean; gera: number; geraClass: 'I' | 'II' | 'III' }
+  | { kind: 'keros'; depth: number; type: 1 | 2 | 3; nearLimit: boolean }
   | { kind: 'aea'; distance: number; type: 1 | 2 | 3 | 4; nearLimit: boolean }
   /** `behind`: mm from the tuberculum line backwards (negative in front of it); `span`: tuberculum line to dorsum line. */
   | { kind: 'sella'; position: 'anterior' | 'sellar' | 'postsellar'; behind: number; span: number; nearLimit: boolean }
@@ -116,28 +113,38 @@ const degrees = (a: Vec3, b: Vec3) => {
   return lengths > 1e-12 ? Math.acos(Math.min(1, Math.max(-1, dot(a, b) / lengths))) * 180 / Math.PI : NaN;
 };
 
-/** What the caliper's points (patient mm, in its order) give. `mmScale`: millimetres per patient millimetre (1, or a
+/** A caliper's points in the order its result reads them, whatever order they were clicked in: each landmark is known by
+ * its height on the plane (`up`). Keros and the artery: the lower point (the fossa's floor, the artery) first. The sella
+ * lines: the sinus wall, below the sella, last. The septum: the maxillary crest (the lowest), the crista galli (the
+ * highest), then the deviated point between them. */
+export function caliperOrder(kind: CaliperKind, points: readonly Vec3[], up: Vec3): Vec3[] {
+  const byHeight = [...points].sort((a, b) => dot(a, up) - dot(b, up));
+  if (kind === 'keros' || kind === 'aea') return byHeight;
+  if (points.length !== 3) return [...points];
+  if (kind === 'septum') return [byHeight[0], byHeight[2], byHeight[1]];
+  // The tuberculum and the dorsum keep their order: the result tells them apart from front to back.
+  return [...points.filter(point => point !== byHeight[0]), byHeight[0]];
+}
+
+/** What the caliper's points (patient mm, in any order) give. `mmScale`: millimetres per patient millimetre (1, or a
  * calibration's factor), null when the image's pixel spacing is unknown. */
-export function caliperResult(tag: CaliperTag, points: readonly Vec3[], mmScale: number | null): CaliperResult {
+export function caliperResult(tag: CaliperTag, clicked: readonly Vec3[], mmScale: number | null): CaliperResult {
   const side = tag.side, spec = CALIPERS[tag.kind];
   const unavailable = (key: MessageKey): CaliperResult => ({ unavailable: key, side });
   if (mmScale === null || !Number.isFinite(mmScale) || mmScale <= 0) return unavailable('caliper.noSpacing');
   if (!onCaliperPlane(tag.kind, tag.up, tag.normal)) return unavailable(spec.plane === 'coronal' ? 'caliper.notCoronal' : 'caliper.notSagittal');
-  if (points.length !== spec.snap.length || !points.every(point => point.every(Number.isFinite))) return unavailable('caliper.incomplete');
-  const mm = (value: number) => value * mmScale;
+  if (clicked.length !== spec.snap.length || !clicked.every(point => point.every(Number.isFinite))) return unavailable('caliper.incomplete');
+  const mm = (value: number) => value * mmScale, points = caliperOrder(tag.kind, clicked, tag.up);
   if (tag.kind === 'keros') {
-    const [plate, foot, top] = points;
-    const depth = mm(dot(sub(top, foot), tag.up));
-    if (!(depth > 0)) return unavailable('caliper.kerosOrder');
-    if (length(sub(foot, plate)) < 0.5) return unavailable('caliper.kerosPlate');
-    // The angle between the plate carried on past the lamella's foot and the lamella itself.
-    const gera = degrees(sub(foot, plate), sub(top, foot)), type = kerosType(depth);
-    return { reading: { kind: 'keros', depth, type, nearLimit: nearKerosLimit(depth), gera, geraClass: geraClass(gera) }, side, answer: String(type) };
+    const [floor, roof] = points;
+    const depth = mm(dot(sub(roof, floor), tag.up));
+    if (!(depth > 0)) return unavailable('caliper.sameHeight');
+    const type = kerosType(depth);
+    return { reading: { kind: 'keros', depth, type, nearLimit: nearKerosLimit(depth) }, side, answer: String(type) };
   }
   if (tag.kind === 'aea') {
     const [artery, roof] = points;
     const distance = mm(dot(sub(roof, artery), tag.up));
-    if (distance < 0) return unavailable('caliper.aeaOrder');
     const reading = { kind: 'aea' as const, distance, type: aeaType(distance), nearLimit: Math.abs(distance - AEA_BELOW_MM) <= LIMIT_MM };
     return { reading, side, ...(distance >= AEA_BELOW_MM ? { answer: 'yes' } : {}) };
   }
@@ -154,8 +161,8 @@ export function caliperResult(tag: CaliperTag, points: readonly Vec3[], mmScale:
     return { reading, side: 'both', ...(position === 'anterior' ? {} : { answer: position }) };
   }
   const [crest, crista, deviated] = points;
-  // The crista galli is the angle's vertex, above the crest: swapped, the corner moves to the crest and the angle grows.
-  if (!(dot(sub(crista, crest), tag.up) > 0)) return unavailable('caliper.septumOrder');
+  // The crista galli is the angle's vertex, above the crest.
+  if (!(dot(sub(crista, crest), tag.up) > 0)) return unavailable('caliper.sameHeight');
   const midline = sub(crest, crista), toward = sub(deviated, crista);
   const angle = degrees(midline, toward);
   if (!Number.isFinite(angle)) return unavailable('caliper.incomplete');
@@ -215,10 +222,11 @@ export function planeView(plane: Plane, series: Series, view: ViewState, at: Vec
 export const caliperView = (kind: CaliperKind, series: Series, view: ViewState, at: Vec3, canReconstruct: boolean) =>
   planeView(CALIPERS[kind].plane, series, view, at, canReconstruct);
 
-/** The caliper's points moved onto bone where its definition says so, within the plane (`up`, `normal`) they lie in. */
+/** The caliper's points in the order its result reads them (caliperOrder), moved onto bone where its definition says so,
+ * within the plane (`up`, `normal`) they lie in. */
 export function snapCaliper(kind: CaliperKind, volume: Volume, points: readonly Vec3[], up: Vec3, normal: Vec3): Vec3[] {
   const across = cross(up, normal);
-  return points.map((point, index) => CALIPERS[kind].snap[index] ? snapToBone(volume, point, up, across) : point);
+  return caliperOrder(kind, points, up).map((point, index) => CALIPERS[kind].snap[index] ? snapToBone(volume, point, up, across) : point);
 }
 
 const one = (value: number) => value.toFixed(1);
@@ -232,8 +240,7 @@ export function caliperLabel(tag: CaliperTag, result: CaliperResult, locale: Loc
   if ('unavailable' in result) return `${caliperName(tag.kind, locale)} · ${translate(locale, result.unavailable)}`;
   const reading = result.reading, words = (key: MessageKey, params?: Record<string, string | number>) => translate(locale, key, params);
   if (reading.kind === 'keros') return [words('caliper.kerosDepth', { side: sideWord(result.side, locale), value: one(reading.depth) }),
-    `${words('caliper.type', { type: reading.type })}${reading.nearLimit ? `, ${words('caliper.nearLimit')}` : ''}`,
-    words('caliper.gera', { value: one(reading.gera), class: reading.geraClass })].join(' · ');
+    `${words('caliper.type', { type: reading.type })}${reading.nearLimit ? `, ${words('caliper.nearLimit')}` : ''}`].join(' · ');
   if (reading.kind === 'aea') return [words('caliper.aeaDistance', { side: sideWord(result.side, locale), value: one(reading.distance) }),
     `${words('caliper.type', { type: reading.type })}${reading.nearLimit ? `, ${words('caliper.nearLimit')}` : ''}`].join(' · ');
   if (reading.kind === 'sella') return [caliperName('sella', locale), words(`caliper.sella.${reading.position}`), `${sellaOffset(reading, locale)}${reading.nearLimit ? `, ${words('caliper.nearLimit')}` : ''}`].join(' · ');
@@ -241,12 +248,12 @@ export function caliperLabel(tag: CaliperTag, result: CaliperResult, locale: Loc
 }
 
 /** The measurement as the report gives it after the item's answer, which it does not repeat: "3.5 mm, type 2, near
- * limit; Gera 70.1°, class II". */
+ * limit". */
 export function caliperReport(result: CaliperResult, locale: Locale): string {
   if ('unavailable' in result) return translate(locale, result.unavailable);
   const reading = result.reading, words = (key: MessageKey, params?: Record<string, string | number>) => translate(locale, key, params);
   const near = (nearLimit: boolean) => nearLimit ? `, ${words('caliper.nearLimit')}` : '';
-  if (reading.kind === 'keros') return `${one(reading.depth)} mm, ${words('caliper.type', { type: reading.type })}${near(reading.nearLimit)}; ${words('caliper.gera', { value: one(reading.gera), class: reading.geraClass })}`;
+  if (reading.kind === 'keros') return `${one(reading.depth)} mm, ${words('caliper.type', { type: reading.type })}${near(reading.nearLimit)}`;
   if (reading.kind === 'aea') return `${words('caliper.aeaBelow', { value: one(reading.distance) })}, ${words('caliper.type', { type: reading.type })}${near(reading.nearLimit)}`;
   // In front of the tuberculum line the caliper gives no answer, so the report says what it may be.
   if (reading.kind === 'sella') return `${reading.position === 'anterior' ? `${words('caliper.sella.anterior')}, ` : ''}${sellaOffset(reading, locale)}${near(reading.nearLimit)}`;
@@ -257,7 +264,7 @@ export function caliperReport(result: CaliperResult, locale: Locale): string {
 export function caliperShort(result: CaliperResult, locale: Locale): string {
   if ('unavailable' in result) return translate(locale, 'caliper.unavailable');
   const reading = result.reading;
-  if (reading.kind === 'keros') return `${one(reading.depth)} mm · ${one(reading.gera)}°`;
+  if (reading.kind === 'keros') return `${one(reading.depth)} mm`;
   if (reading.kind === 'aea') return `${one(reading.distance)} mm`;
   if (reading.kind === 'sella') return sellaOffset(reading, locale);
   return `${one(reading.angle)}° · ${translate(locale, `caliper.grade.${reading.grade}`)}`;

@@ -672,6 +672,9 @@ export default function App() {
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
   const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
+  // The lines a calibration can take as its known length: Length measurements, not a caliper's drawing (a Keros depth or
+  // an artery's distance is read from its points, not known beforehand).
+  const referenceLines = activeAnnotations.filter(annotation => annotation.type === 'length' && !annotation.caliper);
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
   const inspectorShown = Boolean(settings.panel) && (!showAssessment || assessmentBehind);
@@ -1994,7 +1997,7 @@ export default function App() {
   };
   const applyCalibration = () => {
     if (!activeSeries) return;
-    const line = activeAnnotations.find(annotation => annotation.id === calibrationLine) ?? activeAnnotations.find(annotation => annotation.type === 'length');
+    const line = referenceLines.find(annotation => annotation.id === calibrationLine) ?? referenceLines.at(0);
     const length = line?.points.length === 2 ? distanceMm(line.points[0], line.points[1]) : null;
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
@@ -2682,9 +2685,9 @@ export default function App() {
           <PanelSection id="units" title={t('inspector.units')} open={openSections.has('units')} onToggle={toggleSection}>
             <label className="stacked-field">{t('inspector.displayUnits')}<select data-action="units" value={settings.measurementUnits} onChange={event => setSettings(current => ({ ...current, measurementUnits: event.target.value as 'auto' | 'px' }))}><option value="auto">{t('inspector.unitsMillimetres')}</option><option value="px">{t('inspector.unitsPixels')}</option></select></label>
             <p className="field-help">{t('inspector.calibrationHelp')}</p>
-            <label className="stacked-field">{t('inspector.referenceLine')}<select data-action="calibration-line" aria-label={t('inspector.calibrationLine')} value={activeAnnotations.some(annotation => annotation.id === calibrationLine) ? calibrationLine : activeAnnotations.find(annotation => annotation.type === 'length')?.id ?? ''} onChange={event => setCalibrationLine(event.target.value)}><option value="">{t('inspector.chooseLength')}</option>{activeAnnotations.filter(annotation => annotation.type === 'length').map((annotation, index) => <option key={annotation.id} value={annotation.id}>{t('inspector.lengthNumber', { number: index + 1 })}</option>)}</select></label>
+            <label className="stacked-field">{t('inspector.referenceLine')}<select data-action="calibration-line" aria-label={t('inspector.calibrationLine')} value={referenceLines.some(annotation => annotation.id === calibrationLine) ? calibrationLine : referenceLines.at(0)?.id ?? ''} onChange={event => setCalibrationLine(event.target.value)}><option value="">{t('inspector.chooseLength')}</option>{referenceLines.map((annotation, index) => <option key={annotation.id} value={annotation.id}>{t('inspector.lengthNumber', { number: index + 1 })}</option>)}</select></label>
             <label className="stacked-field">{t('inspector.knownLength')}<input data-action="calibration-length" type="number" min={0.001} step="any" value={calibrationLength} onChange={event => setCalibrationLength(event.target.value)} /></label>
-            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !activeAnnotations.some(annotation => annotation.type === 'length')} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibration(activeSeries.id, undefined)}>{t('inspector.removeCalibration')}</button>}</div>
+            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !referenceLines.length} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibration(activeSeries.id, undefined)}>{t('inspector.removeCalibration')}</button>}</div>
             {activeSeries && calibrationScales[activeSeries.id] && <p className="calibration-status" role="status">{t('inspector.manualScale', { scale: calibrationScales[activeSeries.id].toPrecision(4) })}</p>}
             <label className="stacked-field">{t('inspector.petValues')}<select data-action="pet-values" value={settings.suvNormalization} onChange={event => setSettings(current => ({ ...current, suvNormalization: event.target.value as SuvNormalization }))}><option value="bw">{t('inspector.suvBw')}</option><option value="lbm">{t('inspector.suvLbm')}</option><option value="bsa">{t('inspector.suvBsa')}</option></select></label>
             <p className="field-help">{t('inspector.petValuesHelp')}</p>

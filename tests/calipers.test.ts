@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { aeaType, caliperLabel, caliperRefusal, caliperReport, caliperResult, caliperShort, caliperView, geraClass, isLocalizer, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
+import { aeaType, caliperLabel, caliperOrder, caliperRefusal, caliperReport, caliperResult, caliperShort, caliperView, isLocalizer, kerosType, nearKerosLimit, septumGrade, snapToBone, type CaliperResult } from '../src/imaging/calipers';
 import { getPlaneFrame, sub, dot } from '../src/imaging/geometry';
 import { caliperNote, checklistRows, checklistSummary, recordCaliper, remeasureRecords, type CaliperNote, type ChecklistState, type SliceNote } from '../src/ui/preopChecklist';
 import type { CaliperTag, Series, Vec3, ViewState, Volume } from '../src/model';
@@ -12,31 +12,25 @@ const close = (actual: number, expected: number, tolerance = 0.05) => assert.ok(
 /** The top of a lamella `height` mm high from (−5, 0, 10), leaning `degrees` from the horizontal towards the right. */
 const top = (degrees: number, height: number): Vec3 => [-5 - height / Math.tan(degrees * Math.PI / 180), 0, 10 + height];
 
-describe('Keros depth and the Gera angle', () => {
+describe('Keros depth', () => {
   it('types a depth as Keros read it, in whole millimetres, and marks the gaps between types', () => {
     assert.deepEqual([1, 3.4, 3.5, 6, 7.4, 7.5, 12].map(kerosType), [1, 1, 2, 2, 2, 3, 3]);
     assert.deepEqual([2.4, 2.5, 3.5, 4.5, 4.6, 6, 6.5, 8.5, 8.6].map(nearKerosLimit), [false, true, true, true, false, false, true, true, false]);
-    assert.deepEqual([90, 80.1, 80, 45, 44.9].map(geraClass), ['I', 'I', 'II', 'II', 'III']);
   });
 
-  it("measures the lamella's height straight up and its angle to the plate carried on past its foot", () => {
-    const plate: Vec3 = [-2, 0, 10], foot: Vec3 = [-5, 0, 10];
-    const leaning = caliperResult(coronal('right'), [plate, foot, top(70, 3.5)], 1), measured = reading(leaning);
-    assert.ok(measured.kind === 'keros');
-    close(measured.gera, 70);
-    assert.deepEqual({ ...measured, gera: 70 }, { kind: 'keros', depth: 3.5, type: 2, nearLimit: true, gera: 70, geraClass: 'II' });
-    assert.equal('answer' in leaning && leaning.answer, '2');
-    const upright = reading(caliperResult(coronal('right'), [plate, foot, [-5, 0, 16]], 1));
-    assert.ok(upright.kind === 'keros' && upright.depth === 6 && Math.abs(upright.gera - 90) < 1e-9 && upright.geraClass === 'I' && !upright.nearLimit);
-    const flat = reading(caliperResult(coronal('right'), [plate, foot, top(30, 2)], 1));
-    assert.ok(flat.kind === 'keros' && Math.abs(flat.gera - 30) < 1e-9 && flat.geraClass === 'III' && flat.type === 1);
-    // A lamella leaning towards the midline opens the angle past 90°.
-    const medial = reading(caliperResult(coronal('right'), [plate, foot, [-4, 0, 15]], 1));
-    assert.ok(medial.kind === 'keros' && medial.gera > 90 && medial.geraClass === 'I');
+  it('measures the height from the olfactory fossa floor to the ethmoid roof straight up, either point first', () => {
+    const floor: Vec3 = [-2, 0, 10], roof = top(70, 3.5);
+    const measured = caliperResult(coronal('right'), [floor, roof], 1);
+    assert.deepEqual(measured, { reading: { kind: 'keros', depth: 3.5, type: 2, nearLimit: true }, side: 'right', answer: '2' });
+    assert.deepEqual(caliperResult(coronal('right'), [roof, floor], 1), measured, 'The roof may be clicked first.');
+    // Only the height counts: the floor beside the crista galli or at the lamella's foot reads the same.
+    assert.deepEqual(caliperResult(coronal('right'), [[-5, 0, 10], roof], 1), measured);
+    const deep = reading(caliperResult(coronal('right'), [[-5, 0, 16], floor], 1));
+    assert.ok(deep.kind === 'keros' && deep.depth === 6 && deep.type === 2 && !deep.nearLimit);
   });
 
-  it('scales with a calibration, and fails visibly without spacing, off its plane or with points in the wrong order', () => {
-    const points: Vec3[] = [[-2, 0, 10], [-5, 0, 10], [-5, 0, 16]];
+  it('scales with a calibration, and fails visibly without spacing, off its plane, or on two points at one height', () => {
+    const points: Vec3[] = [[-2, 0, 10], [-5, 0, 16]];
     const doubled = reading(caliperResult(coronal('left'), points, 2));
     assert.ok(doubled.kind === 'keros' && doubled.depth === 12 && doubled.type === 3);
     assert.deepEqual(caliperResult(coronal('left'), points, null), { unavailable: 'caliper.noSpacing', side: 'left' });
@@ -45,8 +39,8 @@ describe('Keros depth and the Gera angle', () => {
     assert.deepEqual(caliperResult({ ...coronal('left'), up: [0, 0, -1] }, points, 1), { unavailable: 'caliper.notCoronal', side: 'left' });
     const tilt = 30 * Math.PI / 180;
     assert.equal('reading' in caliperResult({ ...coronal('left'), up: [0, -Math.sin(tilt), Math.cos(tilt)], normal: [0, Math.cos(tilt), Math.sin(tilt)] }, points, 1), true);
-    assert.deepEqual(caliperResult(coronal('left'), [points[0], points[2], points[1]], 1), { unavailable: 'caliper.kerosOrder', side: 'left' });
-    assert.deepEqual(caliperResult(coronal('left'), [[-5.2, 0, 10], points[1], points[2]], 1), { unavailable: 'caliper.kerosPlate', side: 'left' });
+    assert.deepEqual(caliperResult(coronal('left'), [[-2, 0, 10], [-6, 0, 10]], 1), { unavailable: 'caliper.sameHeight', side: 'left' });
+    assert.deepEqual(caliperResult(coronal('left'), points.slice(0, 1), 1), { unavailable: 'caliper.incomplete', side: 'left' });
   });
 });
 
@@ -60,7 +54,7 @@ describe('anterior ethmoidal artery', () => {
     assert.deepEqual(adherent, { reading: { kind: 'aea', distance: 1.25, type: 1, nearLimit: false }, side: 'left' });
     const near = reading(caliperResult(tag, [[12, 0, 12], [12, 0, 14.3]], 1));
     assert.ok(near.kind === 'aea' && near.nearLimit);
-    assert.deepEqual(caliperResult(tag, [[12, 0, 16], [12, 0, 13]], 1), { unavailable: 'caliper.aeaOrder', side: 'left' });
+    assert.deepEqual(caliperResult(tag, [[12, 0, 16], [12, 0, 13]], 1), hanging, 'The roof may be clicked first.');
   });
 });
 
@@ -70,6 +64,10 @@ describe('sella lines', () => {
     const sellar = caliperResult(sagittal, [tuberculum, dorsum, [0, 16, 0]], 1);
     assert.ok('answer' in sellar && sellar.answer === 'sellar' && sellar.side === 'both');
     assert.deepEqual(caliperResult(sagittal, [dorsum, tuberculum, [0, 16, 0]], 1), sellar);
+    // The sinus wall, below the sella, may come first or second too.
+    assert.deepEqual(caliperResult(sagittal, [[0, 16, 0], tuberculum, dorsum], 1), sellar);
+    assert.deepEqual(caliperResult(sagittal, [dorsum, [0, 16, 0], tuberculum], 1), sellar);
+    assert.deepEqual(caliperOrder('sella', [[0, 16, 0], dorsum, tuberculum], sagittal.up), [dorsum, tuberculum, [0, 16, 0]]);
     const behind = reading(caliperResult(sagittal, [tuberculum, dorsum, [0, 26, 0]], 1));
     assert.ok(behind.kind === 'sella' && behind.position === 'postsellar' && Math.abs(behind.behind - behind.span - 2.91) < 0.01);
     // In front of the tuberculum line it is presellar or conchal: the size decides, so the reader answers.
@@ -92,10 +90,14 @@ describe('septal angle', () => {
     assert.ok('reading' in straight && !('answer' in straight) && straight.side === 'left');
     assert.deepEqual([8.9, 9, 15, 15.1].map(septumGrade), ['mild', 'moderate', 'moderate', 'severe']);
   });
-  it('refuses the crest and the crista galli clicked the other way round, which would put the angle at the crest', () => {
-    // Swapped, the same three points would read about 18.5°, "severe", instead of 12° "moderate".
-    assert.deepEqual(caliperResult(coronal('right', 'septum'), [crista, crest, [x, 0, -4]], 1), { unavailable: 'caliper.septumOrder', side: 'right' });
-    assert.deepEqual(caliperResult(coronal('right', 'septum'), [crista, crista, [x, 0, -4]], 1), { unavailable: 'caliper.septumOrder', side: 'right' });
+  it('knows the crest (lowest), the crista galli (highest) and the deviated point between them in any click order', () => {
+    // Read in the clicked order, the crista galli first would put the angle at the crest: about 18.5°, "severe", not 12°.
+    const deviated: Vec3 = [x, 0, -4], left = caliperResult(coronal('right', 'septum'), [crest, crista, deviated], 1);
+    for (const order of [[crista, crest, deviated], [deviated, crista, crest], [crest, deviated, crista]]) {
+      assert.deepEqual(caliperResult(coronal('right', 'septum'), order, 1), left);
+    }
+    assert.deepEqual(caliperOrder('septum', [deviated, crista, crest], [0, 0, 1]), [crest, crista, deviated]);
+    assert.deepEqual(caliperResult(coronal('right', 'septum'), [[-1, 0, 0], [1, 0, 0], [0, 0, 0]], 1), { unavailable: 'caliper.sameHeight', side: 'right' });
   });
 });
 
@@ -114,11 +116,12 @@ describe('scouts', () => {
 
 describe('caliper words', () => {
   it('say the measurement with its unit in both languages', () => {
-    const result = caliperResult(coronal('right'), [[-2, 0, 10], [-5, 0, 10], top(70, 3.5)], 1);
-    assert.equal(caliperLabel(coronal('right'), result, 'en'), 'Keros right 3.5 mm · type 2, near limit · Gera 70.0°, class II');
-    assert.equal(caliperLabel(coronal('right'), result, 'tr'), 'Keros sağ 3.5 mm · tip 2, sınırda · Gera 70.0°, sınıf II');
-    assert.equal(caliperShort(result, 'en'), '3.5 mm · 70.0°');
-    assert.equal(caliperLabel(coronal('right'), { unavailable: 'caliper.noSpacing', side: 'right' }, 'en'), 'Keros and Gera · Unavailable: pixel spacing unknown');
+    const result = caliperResult(coronal('right'), [[-2, 0, 10], top(70, 3.5)], 1);
+    assert.equal(caliperLabel(coronal('right'), result, 'en'), 'Keros right 3.5 mm · type 2, near limit');
+    assert.equal(caliperLabel(coronal('right'), result, 'tr'), 'Keros sağ 3.5 mm · tip 2, sınırda');
+    assert.equal(caliperShort(result, 'en'), '3.5 mm');
+    assert.equal(caliperReport(result, 'en'), '3.5 mm, type 2, near limit');
+    assert.equal(caliperLabel(coronal('right'), { unavailable: 'caliper.noSpacing', side: 'right' }, 'en'), 'Keros · Unavailable: pixel spacing unknown');
     // The report follows the item's answer and does not repeat it.
     const sellar = caliperResult(sagittal, [[0, 10, 12], [0, 22, 12], [0, 14, 0]], 1);
     assert.equal(caliperLabel(sagittal, sellar, 'en'), 'Sella lines · Sellar · 4.0 mm behind tuberculum line');
@@ -157,7 +160,7 @@ describe('the checklist record of a caliper', () => {
   const slice = { seriesId: 's', slice: 41, shown: '42/120', plane: 'coronal', mode: 'mpr' };
   const note = (annotationId: string, result: CaliperResult, kind: CaliperNote['kind'] = 'keros', points: Vec3[] = []): SliceNote & { caliper: CaliperNote } =>
     ({ ...slice, caliper: caliperNote(annotationId, coronal(result.side, kind), points, result) });
-  const kerosPoints = (depth: number): Vec3[] => [[-2, 0, 10], [-5, 0, 10], [-5, 0, 10 + depth]];
+  const kerosPoints = (depth: number): Vec3[] => [[-2, 0, 10], [-5, 0, 10 + depth]];
   const keros = (depth: number) => caliperResult(coronal('right'), kerosPoints(depth), 1);
 
   it('sets the answer, follows edits of the same drawing, and keeps an answer the reader picked since', () => {
@@ -190,7 +193,7 @@ describe('the checklist record of a caliper', () => {
   });
 
   it('measures a record whose drawing was deleted again at a new scale, and leaves the records of drawings to them', () => {
-    const leftPoints: Vec3[] = [[2, 0, 10], [5, 0, 10], [5, 0, 16]];
+    const leftPoints: Vec3[] = [[2, 0, 10], [5, 0, 16]];
     let state = recordCaliper(empty, 'keros', 'right', note('deleted', keros(3.2), 'keros', kerosPoints(3.2)));
     state = recordCaliper(state, 'keros', 'left', note('drawn', caliperResult(coronal('left'), leftPoints, 1), 'keros', leftPoints));
     const doubled = remeasureRecords(state, 's', new Set(['drawn']), 2), right = doubled.notes.keros?.right?.caliper?.result;
@@ -208,15 +211,15 @@ describe('the checklist record of a caliper', () => {
   });
 
   it('gives each side its measurement and slice in the report, and both fossae their difference', () => {
-    let state = recordCaliper(empty, 'keros', 'right', note('r', caliperResult(coronal('right'), [[-2, 0, 10], [-5, 0, 10], top(70, 3.5)], 1)));
-    state = recordCaliper(state, 'keros', 'left', note('l', caliperResult(coronal('left'), [[2, 0, 10], [5, 0, 10], [5, 0, 16]], 1)));
+    let state = recordCaliper(empty, 'keros', 'right', note('r', caliperResult(coronal('right'), [[-2, 0, 10], top(70, 3.5)], 1)));
+    state = recordCaliper(state, 'keros', 'left', note('l', caliperResult(coronal('left'), [[2, 0, 10], [5, 0, 16]], 1)));
     state = recordCaliper(state, 'ethmoid-artery', 'right', note('a', caliperResult(coronal('right', 'aea'), [[-12, 0, 12], [-12, 0, 13.25]], 1), 'aea'));
     const english = checklistSummary('pns', state.answers, state.notes, 'en');
-    assert.ok(english.includes('Cribriform plate (Keros): Right 2 (3.5 mm, type 2, near limit; Gera 70.0°, class II; slice 42/120), Left 2 (6.0 mm, type 2; Gera 90.0°, class I; slice 42/120); right–left difference 2.5 mm'), english);
+    assert.ok(english.includes('Cribriform plate (Keros): Right 2 (3.5 mm, type 2, near limit; slice 42/120), Left 2 (6.0 mm, type 2; slice 42/120); right–left difference 2.5 mm'), english);
     // Measured without an answer: the side still shows what was measured.
     assert.ok(english.includes('Anterior ethmoid artery: Right – (1.3 mm below roof, type 1; slice 42/120), Left –'), english);
     const turkish = checklistSummary('pns', state.answers, state.notes, 'tr');
-    assert.ok(turkish.includes('Sağ 2 (3.5 mm, tip 2, sınırda; Gera 70.0°, sınıf II; kesit 42/120)'), turkish);
+    assert.ok(turkish.includes('Sağ 2 (3.5 mm, tip 2, sınırda; kesit 42/120)'), turkish);
     assert.ok(turkish.includes('sağ–sol fark 2.5 mm'), turkish);
   });
 });
@@ -269,7 +272,7 @@ describe('the theatre card', () => {
     let state: ChecklistState = { kind: 'pns', answers: { lamina: { left: 'yes' } }, notes: {} };
     const slice = { seriesId: 's', slice: 40, shown: '41/141', plane: 'coronal', mode: 'mpr' };
     const keros = (side: 'right' | 'left', depth: number): SliceNote & { caliper: CaliperNote } => {
-      const result = caliperResult(coronal(side), [[side === 'right' ? -2 : 2, 0, 10], [side === 'right' ? -5 : 5, 0, 10], [side === 'right' ? -5 : 5, 0, 10 + depth]], 1);
+      const result = caliperResult(coronal(side), [[side === 'right' ? -2 : 2, 0, 10], [side === 'right' ? -5 : 5, 0, 10 + depth]], 1);
       return { ...slice, caliper: caliperNote(side, coronal(side), [], result) };
     };
     state = recordCaliper(recordCaliper(state, 'keros', 'right', keros('right', 3.5)), 'keros', 'left', keros('left', 6));
@@ -277,7 +280,7 @@ describe('the theatre card', () => {
     assert.deepEqual(groups.map(group => group.title), ['CLOSE', 'Other']);
     assert.equal(groups.flatMap(group => group.items).length, 11, 'Every item, marked or not.');
     const [fossae] = groups[0].items;
-    assert.deepEqual(fossae.sides[0], { side: 'right', word: '2', marked: true, nearLimit: true, measured: '3.5 mm, type 2, near limit; Gera 90.0°, class I', slice: 'slice 41/141', plane: 'coronal' });
+    assert.deepEqual(fossae.sides[0], { side: 'right', word: '2', marked: true, nearLimit: true, measured: '3.5 mm, type 2, near limit', slice: 'slice 41/141', plane: 'coronal' });
     assert.equal(fossae.difference, 'right–left difference 2.5 mm');
     const lamina = groups[0].items.find(item => item.id === 'lamina');
     assert.deepEqual(lamina?.sides.map(side => [side.word, side.marked]), [['–', false], ['Yes', true]]);

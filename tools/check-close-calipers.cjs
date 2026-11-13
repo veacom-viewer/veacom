@@ -105,22 +105,24 @@ async function main() {
       return value(item, recorded);
     };
 
-    // Keros and Gera, on the coronal plane through the olfactory fossae.
+    // Keros on the coronal plane through the olfactory fossae: the fossa's floor and the ethmoid roof, in either order
+    // (the left side from the roof down).
     const coronal = await show('coronal', landmarks.keros.y);
     for (const which of ['right', 'left']) {
-      const text = await measure('keros', which, coronal, landmarks.keros[which]), [depth, gera] = numbers(text), wanted = expected.keros[which];
+      const points = which === 'left' ? [...landmarks.keros.left].reverse() : landmarks.keros.right;
+      const text = await measure('keros', which, coronal, points), [depth] = numbers(text), wanted = expected.keros[which];
       near(depth, wanted.depth, 0.15, `Keros ${which} depth`);
-      near(gera, wanted.gera, 1.5, `Gera ${which}`);
+      assert.equal(text, `${depth.toFixed(1)} mm`, 'Keros gives its depth alone.');
       assert.equal(await answer('keros', which), wanted.type, `Keros ${which}: type ${wanted.type} is marked.`);
       assert.equal(await detail('keros', which).locator('.preop-limit').count(), wanted.nearLimit ? 1 : 0, `Keros ${which}: near a type limit only at ${wanted.depth} mm.`);
     }
     const labels = await pane.locator('[data-annotation-id] .annotation-label').allTextContents();
     assert(labels.some(label => /Keros right 3\.2 mm/.test(label)) && labels.some(label => /Keros left 6\.0 mm/.test(label)), `The drawings name their values: ${labels.join(' | ')}`);
-    check('Keros and Gera: each side measured on the coronal plane, its type marked and a value near a type limit said so', { right: await value('keros', 'right'), left: await value('keros', 'left') });
+    check('Keros: each side measured on the coronal plane from two points in either order, its type marked and a value near a type limit said so', { right: await value('keros', 'right'), left: await value('keros', 'left') });
 
     // Moving the lamella's top 1 mm up measures again: 4.2 mm is type 2, and the answer follows the drawing it came from.
     // Undo puts the drawing and the answer back.
-    const [topX, topZ] = landmarks.keros.right[2];
+    const [topX, topZ] = landmarks.keros.right[1];
     const from = await screen(coronal, [topX, topZ]), to = await screen(coronal, [topX, topZ + 1]);
     await page.mouse.move(...from); await page.mouse.down(); await page.mouse.move(...to, { steps: 6 }); await page.mouse.up();
     await page.waitForFunction(() => (document.querySelector('[data-detail-item="keros"] [data-detail-side="right"] .preop-seen')?.textContent ?? '').startsWith('4.2 mm'));
@@ -193,10 +195,11 @@ async function main() {
     check('A calibration changes the caliper values and answers in the checklist, a deleted drawing\'s record and a cleared record brought back too, and removing it changes them back');
 
     // The anterior ethmoidal artery: in the right roof (type 1: no answer, a dehiscence is the reader's call) and 3 mm
-    // below the left one, whose roof point was clicked in the air and moved onto the bone.
+    // below the left one, whose roof point was clicked first, in the air, and moved onto the bone.
     await show('coronal', landmarks.aea.y);
     for (const which of ['right', 'left']) {
-      const text = await measure('ethmoid-artery', which, coronal, [landmarks.aea[which].canal, landmarks.aea[which].roof]), wanted = expected.aea[which];
+      const { canal, roof } = landmarks.aea[which];
+      const text = await measure('ethmoid-artery', which, coronal, which === 'left' ? [roof, canal] : [canal, roof]), wanted = expected.aea[which];
       near(numbers(text)[0], wanted.distance, 0.2, `AEA ${which}`);
       assert.equal(await answer('ethmoid-artery', which), wanted.answer === 'yes' ? 'Yes' : null, `AEA ${which}: answer.`);
     }
@@ -204,7 +207,8 @@ async function main() {
 
     // The septum, started from the right side, bows to the left: the left side records it.
     await show('coronal', landmarks.septum.y);
-    const septum = await measure('septum', 'right', coronal, [landmarks.septum.crest, landmarks.septum.crista, landmarks.septum.deviated], expected.septum.side);
+    // Clicked from the top down: the crista galli, the deviated point, the crest.
+    const septum = await measure('septum', 'right', coronal, [landmarks.septum.crista, landmarks.septum.deviated, landmarks.septum.crest], expected.septum.side);
     near(numbers(septum)[0], expected.septum.angle, 0.5, 'Septal angle');
     assert.equal(await answer('septum', 'left'), 'Yes', 'The side the septum bows to is marked.');
     assert.equal(await answer('septum', 'right'), null, 'The other side is left to the reader.');
@@ -225,7 +229,8 @@ async function main() {
 
     // The sella lines on the midsagittal plane.
     const sagittal = await show('sagittal', landmarks.sella.x);
-    const sella = await measure('pneumatisation', 'both', sagittal, [landmarks.sella.tuberculum, landmarks.sella.dorsum, landmarks.sella.wall]);
+    // The sinus wall first, then the dorsum and the tuberculum.
+    const sella = await measure('pneumatisation', 'both', sagittal, [landmarks.sella.wall, landmarks.sella.dorsum, landmarks.sella.tuberculum]);
     assert.match(sella, /^\d+\.\d mm behind tuberculum line$/);
     assert.equal(await answer('pneumatisation', 'both'), 'Sellar', 'A sinus wall between the lines is sellar.');
     await page.screenshot({ path: path.join(output, '2-sella-en.png') });
@@ -244,7 +249,7 @@ async function main() {
     await softWindow();
     // A point picked over the olfactory fossae: the coronal plane goes through it.
     await page.evaluate(() => window.__VEACOM_TEST__.setTool('crosshair'));
-    await page.mouse.click(...await screen('sagittal', [landmarks.keros.y, landmarks.keros.right[1][1]]));
+    await page.mouse.click(...await screen('sagittal', [landmarks.keros.y, landmarks.keros.right[0][1]]));
     await page.evaluate(() => window.__VEACOM_TEST__.setTool('window'));
     const before = await view();
     await select('keros');
@@ -252,7 +257,7 @@ async function main() {
     assert.equal(await caliperButton('keros', 'right').getAttribute('data-tooltip-hint'), 'Measured on a coronal plane, in a bone window');
     await caliperButton('keros', 'right').click();
     await setUp.waitFor();
-    assert.equal(await setUp.locator('span').textContent(), 'Coronal plane and bone window for Keros and Gera');
+    assert.equal(await setUp.locator('span').textContent(), 'Coronal plane and bone window for Keros');
     await shownPlane('coronal');
     const turned = await view();
     assert.deepEqual([turned.mode, turned.slice, turned.windowWidth, turned.windowCenter], ['mpr', Math.round((landmarks.keros.y - grid.origin[1]) / grid.spacing), 1500, 300],
@@ -295,7 +300,7 @@ async function main() {
       return desktop.evaluate(({ clipboard }) => clipboard.readText());
     };
     const report = await copied('Copied');
-    for (const part of [/Cribriform plate \(Keros\): Right 1 \(3\.2 mm, type 1, near limit; Gera 70\.0°, class II; slice \d+\/\d+\), Left 2 \(6\.0 mm, type 2; Gera 40\.0°, class III; slice \d+\/\d+\); right–left difference 2\.8 mm/,
+    for (const part of [/Cribriform plate \(Keros\): Right 1 \(3\.2 mm, type 1, near limit; slice \d+\/\d+\), Left 2 \(6\.0 mm, type 2; slice \d+\/\d+\); right–left difference 2\.8 mm/,
       /Anterior ethmoid artery: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left Yes \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
       /Sphenoid pneumatisation: Sellar \(\d+\.\d mm behind tuberculum line; slice \d+\/\d+\)/,
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
@@ -339,7 +344,7 @@ async function main() {
     const english = await printCard('4-theatre-card-en', 1);
     assert.equal(await card.locator('h1').textContent(), 'Theatre card · Sinus CT · before surgery');
     assert.match(await card.locator('.theatre-card-identity').textContent(), /^SYNTHETIC SINUS · Study date: 01\.01\.2000/);
-    assert.deepEqual(await cardCell('keros', 'right'), ['1', '3.2 mm, type 1, near limit; Gera 70.0°, class II', 'coronal · slice 41/141']);
+    assert.deepEqual(await cardCell('keros', 'right'), ['1', '3.2 mm, type 1, near limit', 'coronal · slice 41/141']);
     assert.deepEqual(await cardCell('lamina', 'left'), ['–'], 'A side not marked says so.');
     assert.equal(await card.locator('[data-item="keros"] th small').textContent(), 'right–left difference 2.8 mm');
     assert.equal(await card.locator('[data-item="pneumatisation"] td').count(), 1, 'An item with one answer spans both sides.');
@@ -353,7 +358,7 @@ async function main() {
     await select('keros');
     assert.equal(await detail('keros', 'right').locator('.preop-limit').textContent(), 'sınırda');
     const turkish = await copied('Kopyalandı');
-    assert.match(turkish, /Kribriform plate \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; Gera 70\.0°, sınıf II; kesit \d+\/\d+\)/);
+    assert.match(turkish, /Kribriform plate \(Keros\): Sağ 1 \(3\.2 mm, tip 1, sınırda; kesit \d+\/\d+\)/);
     assert.match(turkish, /sağ–sol fark 2\.8 mm/);
     assert.equal(await unmarkedButton.textContent(), `${rowCount - copiedRows} işaretsiz`);
     const turkishCard = await printCard('4-theatre-card-tr', 2);
@@ -365,7 +370,7 @@ async function main() {
     await softWindow();
     await caliperButton('keros', 'right').click();
     await setUp.waitFor();
-    assert.equal(await setUp.locator('span').textContent(), 'Keros ve Gera için koronal kesit ve kemik penceresi');
+    assert.equal(await setUp.locator('span').textContent(), 'Keros için koronal kesit ve kemik penceresi');
     await shownPlane('coronal');
     await page.mouse.move(5, 5);
     await page.screenshot({ path: path.join(output, '3-set-up-tr.png') });
@@ -378,7 +383,7 @@ async function main() {
     await page.mouse.move(5, 5);
     await page.screenshot({ path: path.join(output, '5-undo-tr.png') });
     await checklist.locator('[data-action="checklist-undo"]').click();
-    assert.deepEqual([await answer('keros', 'right'), await value('keros', 'right')], ['1', '3.2 mm · 70.0°'], 'Undo puts the cleared checklist back.');
+    assert.deepEqual([await answer('keros', 'right'), await value('keros', 'right')], ['1', '3.2 mm'], 'Undo puts the cleared checklist back.');
     check('In Turkish: the checklist, its limit word and the report; Clear says so and Undo puts it back', { report: turkish });
 
     // A full card fits on one page too: every side answered and noted, the measurements kept, in both languages.
@@ -396,7 +401,7 @@ async function main() {
     await page.getByTestId('language-en').press('Enter');
     await checklist.getByText('Pre-operative check').first().waitFor();
     assert.match(await printCard('6-full-card-en', 4), /0 of 21 sides not marked/);
-    assert.equal((await cardCell('keros', 'right'))[1], '3.2 mm, type 1, near limit; Gera 70.0°, class II', 'The measurements stay on the full card.');
+    assert.equal((await cardCell('keros', 'right'))[1], '3.2 mm, type 1, near limit', 'The measurements stay on the full card.');
     check('A full theatre card, every side answered and noted with the measurements kept, prints on one page in both languages');
 
     // Show turns the pane to the selected item's plane in the bone window and says so with Undo; its label names the plane

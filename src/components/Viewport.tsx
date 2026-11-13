@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import type { Annotation, CaliperKind, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
+import type { Annotation, CaliperTag, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
 import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
@@ -10,6 +10,7 @@ import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
+import { caliperOrder } from '../imaging/calipers';
 import { sliceRenderer } from '../imaging/sliceRenderer';
 import { wheelSliceSteps } from '../imaging/interaction';
 import { pagesBackwards } from '../imaging/paging';
@@ -140,17 +141,19 @@ function labelLayout(annotation: Annotation, points: readonly Vec3[], mapping: S
   return { lines, width, height, ...placeLabelBeside(shape, { width, height }, mapping, hard, soft, screen[screen.length - 1]) };
 }
 
-/** A caliper's reference lines on screen (imaging/calipers.ts), dashed: the Gera angle's other arm, the cribriform plate
- * carried on past the lamella's foot; or the sella lines through the tuberculum and the dorsum, square to the line
- * joining them, reaching past the sinus wall. */
-function caliperGuides(kind: CaliperKind, points: readonly Point2[]): string {
-  if (points.length < 3 || (kind !== 'keros' && kind !== 'sella')) return '';
+/** A caliper's reference lines on screen (imaging/calipers.ts), dashed: for Keros, the level of the olfactory fossa's
+ * floor carried out under the ethmoid roof and up to it, so the depth is the upright leg; or the sella lines through the
+ * tuberculum and the dorsum, square to the line joining them, reaching past the sinus wall. `points` are on screen, in
+ * the order the caliper reads them; `world` the same in patient mm. */
+function caliperGuides(tag: CaliperTag, points: readonly Point2[], world: readonly Vec3[], mapping: ScreenMapping): string {
+  if (tag.kind === 'keros' && world.length === 2) {
+    const [floor, roof] = world, across = sub(roof, add(floor, scale(tag.up, dot(sub(roof, floor), tag.up))));
+    const [a, b] = points, corner = worldToScreen(mapping, add(floor, across));
+    return `M${a[0]},${a[1]}L${corner[0]},${corner[1]}L${b[0]},${b[1]}`;
+  }
+  if (points.length < 3 || tag.kind !== 'sella') return '';
   const [a, b, c] = points, dx = b[0] - a[0], dy = b[1] - a[1], run = Math.hypot(dx, dy);
   if (run < 1e-6) return '';
-  if (kind === 'keros') {
-    const reach = Math.hypot(c[0] - b[0], c[1] - b[1]);
-    return `M${b[0]},${b[1]}l${dx / run * reach},${dy / run * reach}`;
-  }
   const depth = ((c[0] - a[0]) * -dy + (c[1] - a[1]) * dx) / run, sign = depth < 0 ? -1 : 1, reach = Math.abs(depth) + 24;
   const nx = -dy / run * sign * reach, ny = dx / run * sign * reach;
   return `M${a[0]},${a[1]}l${nx},${ny}M${b[0]},${b[1]}l${nx},${ny}`;
@@ -171,6 +174,9 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }) {
   const points = (shown ?? annotation.points).map(p => worldToScreen(mapping, p));
   if (!points.length) return null;
+  // A caliper's points in the order it reads them, whatever order they were clicked or dragged into.
+  const tag = annotation.caliper, world = tag ? caliperOrder(tag.kind, annotation.points, tag.up) : [];
+  const ordered = tag ? world.map(p => worldToScreen(mapping, p)) : points;
   // VEAcom's yellow for measurements (Next's #ffcc00); white while selected.
   const color = selected ? '#ffffff' : annotation.color ?? '#ffcc00';
   const common = { fill: 'none', stroke: color, strokeWidth: selected ? 2 : 1.5, vectorEffect: 'non-scaling-stroke' as const };
@@ -193,19 +199,19 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
     shape = <><polyline {...common} points={pointString(points.slice(0, 2))} />{points.length > 2 && <polyline {...common} points={pointString(points.slice(2))} />}</>;
   } else if (annotation.type === 'probe' || annotation.type === 'text') {
     shape = <><circle {...common} cx={points[0][0]} cy={points[0][1]} r={4} /><path {...common} d={`M${points[0][0] - 8},${points[0][1]}h16 M${points[0][0]},${points[0][1] - 8}v16`} /></>;
-  } else if (annotation.caliper?.kind === 'sella' && points.length >= 3) {
+  } else if (tag?.kind === 'sella' && ordered.length >= 3) {
     // The tuberculum–dorsum line, and a cross on the sinus wall.
-    const [x, y] = points[2];
-    shape = <><polyline {...common} points={pointString(points.slice(0, 2))} /><path {...common} d={`M${x - 6},${y}h12M${x},${y - 6}v12`} /></>;
+    const [x, y] = ordered[2];
+    shape = <><polyline {...common} points={pointString(ordered.slice(0, 2))} /><path {...common} d={`M${x - 6},${y}h12M${x},${y - 6}v12`} /></>;
   } else {
-    shape = <polyline {...common} points={pointString(points)} />;
+    shape = <polyline {...common} points={pointString(ordered)} />;
   }
   let arrow;
   if (annotation.type === 'arrow' && points.length >= 2) {
     const [a, b] = points, angle = Math.atan2(a[1] - b[1], a[0] - b[0]);
     arrow = <polyline {...common} points={`${a[0] - 12 * Math.cos(angle - 0.45)},${a[1] - 12 * Math.sin(angle - 0.45)} ${a} ${a[0] - 12 * Math.cos(angle + 0.45)},${a[1] - 12 * Math.sin(angle + 0.45)}`} />;
   }
-  const guides = annotation.caliper ? caliperGuides(annotation.caliper.kind, points) : '';
+  const guides = tag ? caliperGuides(tag, ordered, world, mapping) : '';
   return <>{shape}{arrow}{guides && <path {...common} d={guides} strokeDasharray="5 4" />}</>;
   };
   const lines = layout?.lines ?? [], chipWidth = layout?.width ?? 0, chipHeight = layout?.height ?? 0;
