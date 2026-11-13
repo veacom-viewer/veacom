@@ -615,8 +615,9 @@ export function Viewport(props: ViewportProps) {
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     syncInteractionContext(latest.current.volume, liveView.current);
     const point = local(event), active = drag.current;
-    // A press whose release the pane never saw (the window lost the pointer) gives the pointer back with the next move.
-    if (!active && event.buttons === 0) showCursor();
+    // A press whose release the pane never saw (the window lost the pointer) gives the pointer back with the next move
+    // made without a button.
+    if (event.buttons === 0) showCursor();
     if (event.pointerType !== 'touch') { hover.current = point; updateReadout(); }
     if (touches.current.has(event.pointerId)) touches.current.set(event.pointerId, point);
     if (pinch.current && touches.current.size >= 2) {

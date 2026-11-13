@@ -87,8 +87,8 @@ try {
   await page.evaluate(()=>window.viewportTest.setOptions({}));await settle();
   await tool('crosshair');await drag([300,300],[320,350]);check('Linked point is in patient space',(await state()).crosshair.length===3);
   // The crosshair tool points with the app's own "+" (theme.css --cursor-point), not the system crosshair, which inverts
-  // the colours under it (the green marker turned pink). While a press sets the point the pointer is hidden and the green
-  // marker alone follows it; released, the "+" is back.
+  // the colours under it (the green marker turns pink). While a press sets the point the pointer is hidden and the green
+  // marker alone follows it; released, the "+" is back, and so it is after a release the pane never saw.
   // The harness page has no stylesheet: it takes the pointer's token from src/theme.css.
   await page.addStyleTag({content:`:root{${/--cursor-point:[^;]+;/.exec(await readFile(new URL('../src/theme.css',import.meta.url),'utf8'))[0]}}`});
   const paneCursor=()=>page.evaluate(()=>getComputedStyle(document.querySelector('[data-testid="dicom-viewport"]')).cursor);
@@ -102,7 +102,14 @@ try {
   await page.mouse.move(250,260);await page.mouse.down();await settle();const pressedCursor=await paneCursor();
   const followed=[];for(const [x,y] of [[262,281],[281,300],[300,322]]){await page.mouse.move(x,y,{steps:3});await settle();const [mx,my]=await markerAt();followed.push(Math.hypot(mx-x,my-y));}
   await page.mouse.up();await settle();
-  check('Crosshair tool: the app\'s own pointer, hidden while pressed with the marker following it',pointerCursor.startsWith('url("data:image/svg+xml')&&pointerCursor.endsWith(', crosshair')
+  const releasedCursor=await paneCursor();
+  // A release the pane never saw (the window lost the pointer): the next move without a button brings the pointer back.
+  await page.mouse.move(250,260);await page.mouse.down();await settle();
+  const hiddenAgain=await paneCursor();
+  await page.evaluate(()=>{const pane=document.querySelector('[data-testid="dicom-viewport"]'),box=pane.getBoundingClientRect();pane.dispatchEvent(new PointerEvent('pointermove',{pointerId:1,pointerType:'mouse',isPrimary:true,buttons:0,clientX:box.left+262,clientY:box.top+281,bubbles:true}));});await settle();
+  const afterLostRelease=await paneCursor();
+  await page.mouse.up();await settle();
+  check('Crosshair tool: the app\'s own pointer, hidden while pressed with the marker following it',hiddenAgain==='none'&&afterLostRelease===pointerCursor&&releasedCursor===pointerCursor&&pointerCursor.startsWith('url("data:image/svg+xml')&&pointerCursor.endsWith(', crosshair')
     &&pressedCursor==='none'&&followed.every(distance=>distance<=1.5)&&await paneCursor()===pointerCursor);
   await page.evaluate(()=>window.viewportTest.setView({plane:'coronal',slice:32}));await settle();
   check('Coronal MPR renders',await page.locator('canvas').getAttribute('data-plane')==='coronal');
