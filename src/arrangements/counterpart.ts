@@ -25,10 +25,11 @@ const REGIONS: readonly [RegExp, string][] = [[/HEAD|BRAIN|SKULL/, 'head'], [/NE
 /** A part of the body as a series names it: its letters, and its words as they were written apart. */
 interface Part { letters: string; words: string[] }
 /** The parts of the body a series names: the engine keeps every part its files record, separated by backslashes. */
-const parts = (item: Series): Part[] => (item.bodyPartExamined ?? '').split('\\').flatMap(part => {
-  const words = part.toUpperCase().match(/[A-Z]+/g) ?? [];
-  return words.length ? [{ letters: words.join(''), words }] : [];
-});
+function partOf(text: string): Part {
+  const words = text.toUpperCase().match(/[A-Z]+/g) ?? [];
+  return { words, letters: words.join('') };
+}
+const parts = (item: Series): Part[] => (item.bodyPartExamined ?? '').split('\\').map(partOf).filter(part => part.words.length);
 /** Words that say a side, not a part. */
 const SIDES = new Set(['L', 'R', 'LT', 'RT', 'LEFT', 'RIGHT', 'BOTH', 'BIL', 'BILATERAL']);
 const SPINE_NAMES = new Map([['CERVICAL', 'C'], ['THORACIC', 'T'], ['DORSAL', 'T'], ['LUMBAR', 'L'], ['SACRAL', 'S']]);
@@ -41,12 +42,13 @@ function spineLevels({ letters, words }: Part): string {
   return named || (words.includes('SPINE') ? 'CTLS' : '');
 }
 /** A lone L in L SPINE names the lumbar level. Elsewhere L and R may label a paired body part. */
-function side(part: Part): 'left' | 'right' | null {
+function side(part: Part, short = true): 'left' | 'right' | 'both' | null {
   const words = part.words;
-  if (words.some(word => ['BOTH', 'BIL', 'BILATERAL'].includes(word))) return null;
-  const left = words.some(word => word === 'LEFT' || word === 'LT' || (word === 'L' && !spineLevels(part)));
-  const right = words.some(word => word === 'RIGHT' || word === 'RT' || word === 'R');
-  return left === right ? null : left ? 'left' : 'right';
+  if (words.some(word => ['BOTH', 'BIL', 'BILATERAL'].includes(word))) return 'both';
+  const left = words.some(word => word === 'LEFT' || word === 'LT' || (short && word === 'L' && !spineLevels(part)));
+  const right = words.some(word => word === 'RIGHT' || word === 'RT' || (short && word === 'R'));
+  if (left && right) return 'both';
+  return left ? 'left' : right ? 'right' : null;
 }
 
 /** Two names of one part: the same letters (L-SPINE, LSPINE), a region of the head and trunk in common, a level of the
@@ -54,16 +56,26 @@ function side(part: Part): 'left' | 'right' | null {
  * with another is not that part: HIP is not HIPPOCAMPUS, nor ARM FOREARM. */
 function alike(x: Part, y: Part): boolean {
   const xSide = side(x), ySide = side(y);
-  if (xSide && ySide && xSide !== ySide) return false;
+  if ((xSide === 'left' && ySide === 'right') || (xSide === 'right' && ySide === 'left')) return false;
   if (x.letters === y.letters || REGIONS.some(([pattern]) => pattern.test(x.letters) && pattern.test(y.letters))) return true;
   const mine = spineLevels(x), theirs = spineLevels(y);
   if (mine && theirs) return [...mine].some(level => theirs.includes(level));
   return x.words.some(word => !SIDES.has(word) && y.words.includes(word));
 }
+function seriesSide(item: Series, anatomy: Part[]) {
+  if (item.laterality) return item.laterality === 'L' ? 'left' : item.laterality === 'R' ? 'right' : null;
+  const named = new Set(anatomy.map(part => side(part)).filter(value => value !== null));
+  if (named.size) return named.size === 1 ? [...named][0] : null;
+  // A single L in a sequence description can stand for lumbar or a scan parameter.
+  return side(partOf(item.description), false);
+}
+
 /** Two series of one part of the body, as far as Body Part Examined tells: both record it and name a part in common
  * (CHEST and CHESTABDPELVIS, HEAD and BRAIN, SPINE and LSPINE), or one of them does not record it. */
 function samePart(a: Series, b: Series): boolean {
   const mine = parts(a), theirs = parts(b);
+  const x = seriesSide(a, mine), y = seriesSide(b, theirs);
+  if ((x === 'left' && y === 'right') || (x === 'right' && y === 'left')) return false;
   return !mine.length || !theirs.length || mine.some(x => theirs.some(y => alike(x, y)));
 }
 

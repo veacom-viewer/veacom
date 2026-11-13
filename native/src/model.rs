@@ -57,6 +57,9 @@ pub struct AcquisitionMetadata {
     /// by backslashes.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub body_part_examined: String,
+    /// Distinct DICOM laterality codes recorded across the series, separated by backslashes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub laterality: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub institution_name: String,
     /// The hospital's number for the study (Accession Number): the protocol number readers look for.

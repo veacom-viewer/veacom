@@ -96,6 +96,7 @@ export interface Series {
   institutionName?: string; accessionNumber?: string; magneticFieldStrength?: number; sliceThickness?: number;
   /** Body Part Examined (0018,0015), as stored; every part the series' files record, separated by backslashes. */
   bodyPartExamined?: string;
+  laterality?: string;
   /** A PET's tracer, injection and patient, for its acquisition panel (imaging/petAcquisition.ts). */
   petAcquisition?: PetAcquisition;
   /** Blood glucose in mmol/l the reader typed for this PET's study (imaging/glucose.ts): a display setting, as

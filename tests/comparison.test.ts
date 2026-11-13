@@ -122,6 +122,16 @@ describe('the comparison screen', () => {
     assert.equal(found.arrangement.link, 'level');
     assert.equal(found.arrangement.view, 'shared');
   });
+  it('leaves the opposite knee out when side is recorded separately from Body Part Examined', () => {
+    const left = series({ bodyPartExamined: 'KNEE', description: 'KNEE LEFT' });
+    const right = earlier({ ...left, description: 'KNEE RIGHT' });
+    assert.deepEqual(plan(left, [left, right])!.panes.map(pane => pane.series.id), [left.id]);
+    const coded = { ...left, description: 'Axial', laterality: 'L' };
+    const wrong = { ...right, description: 'Axial', laterality: 'R' };
+    const correct = earlier(coded, '19980101');
+    assert.equal(plan(coded, [coded, wrong, correct])!.roles.prior.id, correct.id);
+    assert.ok(counterpart(coded, { ...wrong, laterality: 'L\\R' }));
+  });
   it('takes the most recent earlier study that has a counterpart', () => {
     const found = plan(t2, [...now, earlier(t1, '19991201'), earlier(t2, '19980301'), earlier(t2, '19970101')])!;
     assert.equal(found.arrangement.id, 'compare-prior');
