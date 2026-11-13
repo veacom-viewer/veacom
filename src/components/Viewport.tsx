@@ -11,7 +11,7 @@ import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFo
 import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
-import { wheelSliceSteps } from '../imaging/interaction';
+import { streamWheelSteps, TOUCHPAD_SPEED, wheelSlices, type WheelStream } from '../imaging/interaction';
 import { pagesBackwards } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
@@ -273,6 +273,7 @@ export function Viewport(props: ViewportProps) {
   const pendingCrosshair = useRef<Vec3 | null>(null);
   const [textPrompt, setTextPrompt] = useState<{ point: Vec3; value: string } | null>(null);
   const wheelAccumulator = useRef(0);
+  const wheelStream = useRef<WheelStream>({ fineUntil: 0 });
   const renderNeeded = useRef(true);
   const context = useRef(interactionContext(props.volume, resolveView(props.volume, props.view)));
   const annotationContext = useRef<InteractionContext | null>(null);
@@ -455,8 +456,11 @@ export function Viewport(props: ViewportProps) {
       changeView({ zoom, pan: [x - w / 2 - (x - w / 2 - view.pan[0]) * factor, y - h / 2 - (y - h / 2 - view.pan[1]) * factor] });
       return;
     }
-    const amount = wheelSliceSteps(event, window.veacom?.zoomFactor?.() ?? 1) * (props.reverseWheel ? -1 : 1);
-    wheelAccumulator.current += action === 'rotate' ? amount : amount * clamp(props.wheelSensitivity ?? 1, 0.1, 10);
+    // A mouse wheel pages a slice a notch whatever the setting; the touchpad speed scales a touchpad's swipe only.
+    const read = streamWheelSteps(event, window.veacom?.zoomFactor?.() ?? 1, event.timeStamp, wheelStream.current);
+    // A notch starts from whole slices, so a fraction a swipe left behind can neither swallow it nor add to it.
+    if (!read.fine) wheelAccumulator.current = 0;
+    wheelAccumulator.current += (action === 'rotate' ? read.steps : wheelSlices(read, props.touchpadSpeed ?? TOUCHPAD_SPEED.default)) * (props.reverseWheel ? -1 : 1);
     const steps = Math.trunc(wheelAccumulator.current); wheelAccumulator.current -= steps;
     if (!steps) return;
     if (action === 'rotate') changeView({ rotation: ((view.rotation + steps * 5) % 360 + 360) % 360 });

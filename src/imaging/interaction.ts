@@ -1,21 +1,64 @@
 interface WheelInput { deltaY: number; deltaMode: number; wheelDeltaY?: number; }
 
-// Wheel input in notches, a slice each, as VEAcom 1.x counted it with Qt (120 units a notch) at any speed.
+/** Wheel input as slices: the whole notches of a mouse wheel, or a part of a touchpad's swipe. */
+export interface WheelSteps {
+  /** Slices, signed: whole for notches, a fraction for a part of a swipe. */
+  steps: number;
+  /** A touchpad, or another device that scrolls by pixels: its steps follow the touchpad speed. */
+  fine: boolean;
+}
+
+/** The touchpad speed: a multiple of a slice per 40 px of scrolling. A mouse wheel ignores it. */
+export const TOUCHPAD_SPEED = { min: 1, max: 8, step: 0.5, default: 3 } as const;
+const PIXELS_PER_STEP = 40;
+
+// Wheel input in notches, a slice each, as VEAcom 1.x counted it with Qt (120 units a notch) at any speed. A notch is
+// always one slice, whatever the touchpad speed: a skipped slice can hide a finding.
 // Chromium hands the page at most one wheel event a frame, adding up the notches that arrived within it, and on macOS
 // deltaY carries the system's acceleration (a slow notch is about 4 px, a fast one many times that): deltaY can neither
 // count notches nor tell a wheel from a trackpad. The legacy wheelDeltaY can: Chromium fills it with 120 per raw,
-// unaccelerated notch and sums it when it merges events. Trackpads and Magic Mice get 3 units a pixel there, so they
-// page a slice per 40 px, in step with the swipe however fast it is.
-// Page zoom divides the field by `zoom` and truncates it to a whole number (110% makes a notch 109): `zoom` undoes the
-// division, and a count within a legacy unit of whole notches (the truncation, with room for rounding) is taken as them.
-export function wheelSliceSteps(event: WheelInput, zoom = 1): number {
-  if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return 0;
-  const legacy = event.wheelDeltaY;
+// unaccelerated notch and sums it when it merges events. A touchpad's events carry a part of that, so they are told
+// apart by it, and page by the pixels the system scrolled (deltaY), 40 px a step at a touchpad speed of 1. Chromium
+// scales a touchpad's legacy field differently by system (3 units a pixel on macOS, 1.2 through Windows' wheel
+// messages), its pixels the same way everywhere.
+// Page zoom divides both fields by `zoom` and truncates the legacy one to a whole number (110% makes a notch 109): `zoom`
+// undoes the division, and a count within a legacy unit of whole notches (the truncation, with room for rounding) is
+// taken as them. The display's own scale does not change them.
+export function wheelSteps(event: WheelInput, zoom = 1): WheelSteps {
+  if (!Number.isFinite(event.deltaY) || event.deltaY === 0) return { steps: 0, fine: false };
+  // The direction is deltaY's: an event built in script carries wheelDeltaY with deltaY's sign, Chromium's the opposite.
+  const sign = Math.sign(event.deltaY), legacy = event.wheelDeltaY;
   if (event.deltaMode === 0 && legacy && Number.isFinite(legacy)) {
-    // The direction is deltaY's: an event built in script carries wheelDeltaY with deltaY's sign, Chromium's the opposite.
     const notches = Math.abs(legacy) * zoom / 120, whole = Math.round(notches);
-    return Math.sign(event.deltaY) * (whole && Math.abs(notches - whole) <= 1.5 * zoom / 120 ? whole : notches);
+    if (whole && Math.abs(notches - whole) <= 1.5 * zoom / 120) return { steps: sign * whole, fine: false };
+    return { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true };
   }
-  // No legacy field (not Chromium): a line is a notch, a page one step, and pixels go 40 to the notch.
-  return event.deltaMode === 1 ? event.deltaY : event.deltaMode === 2 ? Math.sign(event.deltaY) : event.deltaY * zoom / 40;
+  // No legacy field (not Chromium). Lines and pages come from a wheel: one slice an event, whatever the number of lines
+  // the system scrolls for a notch. Pixels come from a touchpad, or from a wheel the browser smooths, which reads as one.
+  if (event.deltaMode === 1 || event.deltaMode === 2) return { steps: sign, fine: false };
+  return { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true };
+}
+
+/** How long a touchpad's swipe lasts past its last fine part. */
+export const SWIPE_GAP_MS = 300;
+
+/** A pane's or slice bar's wheel input over time: when the current swipe ends. */
+export interface WheelStream { fineUntil: number }
+
+/** The slices of one event of a stream. A touchpad's movement can come to whole notches by chance; during a swipe
+ * (within SWIPE_GAP_MS of its last fine part) such an event is read as part of the swipe, by its pixels. A mouse
+ * wheel turned within that time is read the same way, which changes only its speed. */
+export function streamWheelSteps(event: WheelInput, zoom: number, now: number, stream: WheelStream): WheelSteps {
+  const read = wheelSteps(event, zoom);
+  if (read.steps === 0) return read;
+  if (!read.fine && !(event.deltaMode === 0 && now < stream.fineUntil)) return read;
+  stream.fineUntil = now + SWIPE_GAP_MS;
+  return read.fine ? read : { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true };
+}
+
+/** The slices an event moves by at a touchpad speed: notches one each, a touchpad's pixels by the speed. */
+export function wheelSlices(read: WheelSteps, touchpadSpeed: number): number {
+  if (!read.fine) return read.steps;
+  const speed = Number.isFinite(touchpadSpeed) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, touchpadSpeed)) : TOUCHPAD_SPEED.default;
+  return read.steps * speed;
 }

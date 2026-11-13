@@ -14,6 +14,7 @@ import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
 import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
+import { TOUCHPAD_SPEED } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
@@ -83,7 +84,9 @@ type Slot = { id: string; seriesId: string | null; view: ViewState; unfused?: bo
 type MouseButton = 'left' | 'middle' | 'right';
 type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showReferences: boolean;
   showOverlay: boolean; hidePatientData: boolean; hideMeasurements: boolean; showScale: boolean;
-  mouseBindings: Partial<Record<MouseButton, Tool>>; wheelAction: WheelAction; wheelSensitivity: number; reverseWheel: boolean; measurementUnits: 'auto' | 'px';
+  mouseBindings: Partial<Record<MouseButton, Tool>>; wheelAction: WheelAction;
+  /** How fast a touchpad pages slices; a mouse wheel always pages one a notch (src/imaging/interaction.ts). */ touchpadSpeed: number;
+  reverseWheel: boolean; measurementUnits: 'auto' | 'px';
   /** The SUV PET values are given in: body weight, lean body mass (SUL) or body surface area. */ suvNormalization: SuvNormalization;
   /** Single-character shortcuts (W, S, L, 0, M, +, −…) can be turned off (WCAG 2.1.4). */ singleKeys: boolean;
   /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
@@ -182,7 +185,7 @@ const focusImage = () => focusSoon('.viewport-cell.is-active [data-testid="dicom
 function readSettings(): Settings {
   const defaults: Settings = { linked: true, panel: null, showCrosshair: true, showReferences: true,
     showOverlay: true, hidePatientData: false, hideMeasurements: false, showScale: false,
-    mouseBindings: { middle: 'pan', right: 'zoom' }, wheelAction: 'scroll', wheelSensitivity: 1, reverseWheel: false, measurementUnits: 'auto',
+    mouseBindings: { middle: 'pan', right: 'zoom' }, wheelAction: 'scroll', touchpadSpeed: TOUCHPAD_SPEED.default, reverseWheel: false, measurementUnits: 'auto',
     suvNormalization: 'bw', singleKeys: true, cineFps: 10 };
   try {
     const stored = JSON.parse(localStorage.getItem('veacom:workspace:v2') ?? 'null');
@@ -198,7 +201,8 @@ function readSettings(): Settings {
         return isTool(binding) ? [[button, binding]] : [];
       })),
       wheelAction: WHEEL_ACTIONS.includes(stored.wheelAction) ? stored.wheelAction : defaults.wheelAction,
-      wheelSensitivity: Number.isFinite(stored.wheelSensitivity) ? Math.max(0.2, Math.min(5, stored.wheelSensitivity)) : 1,
+      // The old wheelSensitivity set the mouse wheel too, against a slower touchpad: the touchpad starts again from its default.
+      touchpadSpeed: Number.isFinite(stored.touchpadSpeed) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, stored.touchpadSpeed)) : TOUCHPAD_SPEED.default,
       reverseWheel: stored.reverseWheel === true,
       measurementUnits: stored.measurementUnits === 'px' ? 'px' : 'auto',
       suvNormalization: SUV_NORMALIZATIONS.includes(stored.suvNormalization) ? stored.suvNormalization : defaults.suvNormalization,
@@ -326,7 +330,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
-        mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
+        mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} touchpadSpeed={interaction.touchpadSpeed} reverseWheel={interaction.reverseWheel}
         showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
@@ -342,7 +346,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shownNumber} / {count}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
       <SliceBar count={count} position={position} valueText={projected ? `${projectionAngle(position)}°` : `${position + 1} / ${count}`}
         label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
-        onPosition={next => update({ slice: backwards ? count - 1 - next : next })} />
+        onPosition={next => update({ slice: backwards ? count - 1 - next : next })} touchpadSpeed={interaction.touchpadSpeed} />
       <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${Math.round(displayView.windowWidth)} · L ${Math.round(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
       <span className="zoom-indicator">{Math.round(displayView.zoom * 100)}%</span>
     </footer>}
@@ -1966,7 +1970,7 @@ export default function App() {
         link: String(settings.linked), overlay: join([settings.showOverlay, settings.showReferences, settings.hidePatientData, settings.hideMeasurements]),
         // The pre-op checklist is docked beside the images like the inspector.
         panel: join([settings.panel, activeId, checklistShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
-        lang: locale, prefs: JSON.stringify([settings.wheelSensitivity, settings.reverseWheel, settings.measurementUnits, calibrationScales, calibrationLine, calibrationLength, usageConsent]),
+        lang: locale, prefs: JSON.stringify([settings.touchpadSpeed, settings.reverseWheel, settings.measurementUnits, calibrationScales, calibrationLine, calibrationLength, usageConsent]),
       },
     };
   });
@@ -2462,7 +2466,8 @@ export default function App() {
             {(['left', 'middle', 'right'] as MouseButton[]).map(button => <label className="mouse-binding" key={button}><span>{t(`mouse.${button}.drag` as const)}</span><select value={settings.mouseBindings[button] ?? (button === 'left' ? 'selected' : effectiveBinding(button))} onChange={event => setSettings(current => { const bindings = { ...current.mouseBindings }; if (event.target.value === 'selected') delete bindings[button]; else bindings[button] = event.target.value as Tool; return { ...current, mouseBindings: bindings }; })}>{button === 'left' && <option value="selected">{t('toolbar.selectedToolCurrent', { tool: toolLabel(tool) })}</option>}{BUTTON_ACTIONS.map(action => <option key={action} value={action}>{toolLabel(action)}</option>)}</select></label>)}
             <div className="popover-subtitle">{t('help.wheelKey')}</div>
             <label className="mouse-binding"><span>{t('mouse.wheel.heading')}</span><select value={settings.wheelAction} onChange={event => setSettings(current => ({ ...current, wheelAction: event.target.value as WheelAction }))}>{WHEEL_ACTIONS.map(action => <option key={action} value={action}>{t(`wheel.${action}` as const)}</option>)}</select></label>
-            <label className="slider-field"><span>{t('inspector.scrollSpeed')}<output>{settings.wheelSensitivity.toFixed(1)}×</output></span><input type="range" min={0.2} max={5} step={0.2} value={settings.wheelSensitivity} onChange={event => setSettings(current => ({ ...current, wheelSensitivity: Number(event.target.value) }))} /></label>
+            <label className="slider-field"><span>{t('inspector.touchpadSpeed')}<output>{settings.touchpadSpeed.toFixed(1)}×</output></span><input type="range" data-action="touchpad-speed" min={TOUCHPAD_SPEED.min} max={TOUCHPAD_SPEED.max} step={TOUCHPAD_SPEED.step} value={settings.touchpadSpeed} onChange={event => setSettings(current => ({ ...current, touchpadSpeed: Number(event.target.value) }))} /></label>
+            <p className="field-help">{t('inspector.wheelNotch')}</p>
             <label className="check-field"><input type="checkbox" checked={settings.reverseWheel} onChange={event => setSettings(current => ({ ...current, reverseWheel: event.target.checked }))} /> {t('inspector.reverseScroll')}</label>
             <button type="button" className="text-button" onClick={resetMouse}>{t('mouse.reset')}</button>
             <p className="field-help">{t('inspector.touchHelp')}</p>

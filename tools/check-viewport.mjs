@@ -92,12 +92,18 @@ try {
   // A plane facing the way the view does (a tilted axial on an axial view) marks nothing, as in VEAcom 1.x.
   const referenceIds=await page.locator('[data-reference-plane]').evaluateAll(lines=>lines.map(line=>line.dataset.referencePlane).sort());
   check('Orthogonal and oblique patient-plane reference lines; none for a plane facing the same way',JSON.stringify(referenceIds)==='["reference-coronal","reference-oblique"]');
-  await page.evaluate(()=>window.viewportTest.setOptions({mouseBindings:{left:'pan',right:'window'},wheelSensitivity:2,reverseWheel:true}));await settle();
+  await page.evaluate(()=>window.viewportTest.setOptions({mouseBindings:{left:'pan',right:'window'},touchpadSpeed:2,reverseWheel:true}));await settle();
   await drag([300,300],[330,320]);check('User mouse binding overrides active tool',(await state()).view.pan[0]===30);
   await drag([300,300],[330,320],'right');check('Right button can control window level',(await state()).view.windowWidth>256);
-  const beforeWheel=(await state()).view.slice,sensitiveNotches=await notches();await page.mouse.wheel(0,100);await settle();
-  const sensitiveWheel=await notches()-sensitiveNotches;
-  check('Wheel direction and sensitivity settings',sensitiveWheel>=1&&(await state()).view.slice===beforeWheel+2*sensitiveWheel);
+  // A notch pages one slice at any touchpad speed, the other way when reversed.
+  const beforeWheel=(await state()).view.slice,notchesBefore=await notches();await page.mouse.wheel(0,100);await settle();
+  const notchesReceived=await notches()-notchesBefore;
+  check('Wheel direction setting; a notch pages one slice at any touchpad speed',notchesReceived>=1&&(await state()).view.slice===beforeWheel+notchesReceived);
+  // A touchpad's swipe pages by its pixels at the touchpad speed: 80 px through Windows' wheel messages (1.2 legacy units a
+  // pixel) are two slices at speed 1 and four at 2, the way the notch went.
+  const beforeSwipe=(await state()).view.slice;
+  await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect();for(let part=0;part<4;part++){canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:20,wheelDeltaY:-24,clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true}));await new Promise(resolve=>setTimeout(resolve,8));}});await settle();
+  check('Touchpad speed setting pages a swipe',(await state()).view.slice===beforeSwipe+4);
   await page.evaluate(()=>{window.viewportTest.setOptions({});window.viewportTest.reset();});await settle();
   const cdp=await page.context().newCDPSession(page);
   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:250,y:300,id:1},{x:350,y:300,id:2}]});
