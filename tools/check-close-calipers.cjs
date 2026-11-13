@@ -201,9 +201,9 @@ async function main() {
       const { canal, roof } = landmarks.aea[which];
       const text = await measure('ethmoid-artery', which, coronal, which === 'left' ? [roof, canal] : [canal, roof]), wanted = expected.aea[which];
       near(numbers(text)[0], wanted.distance, 0.2, `AEA ${which}`);
-      assert.equal(await answer('ethmoid-artery', which), wanted.answer === 'yes' ? 'Yes' : null, `AEA ${which}: answer.`);
+      assert.equal(await answer('ethmoid-artery', which), null, `AEA ${which}: the answer is the reader's.`);
     }
-    check('Ethmoid artery: its distance below the roof, yes from 2 mm, nothing marked at the skull base; a roof point moves onto the bone', { right: await value('ethmoid-artery', 'right'), left: await value('ethmoid-artery', 'left') });
+    check('Ethmoid artery: its distance below the roof and its type, the answer left to the reader; a roof point moves onto the bone', { right: await value('ethmoid-artery', 'right'), left: await value('ethmoid-artery', 'left') });
 
     // The septum, started from the right side, bows to the left: the left side records it.
     await show('coronal', landmarks.septum.y);
@@ -301,7 +301,7 @@ async function main() {
     };
     const report = await copied('Copied');
     for (const part of [/Olfactory fossa depth \(Keros\): Right 1 \(3\.2 mm, type 1, near limit; slice \d+\/\d+\), Left 2 \(6\.0 mm, type 2; slice \d+\/\d+\); right–left difference 2\.8 mm/,
-      /Floating anterior ethmoid artery: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left Yes \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
+      /Floating anterior ethmoid artery: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left – \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
       /Sphenoid pneumatisation: Sellar \(\d+\.\d mm behind tuberculum line; slice \d+\/\d+\)/,
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
     check('Copy for the report gives every caliper value with its side and slice', { report });
@@ -348,7 +348,7 @@ async function main() {
     assert.deepEqual(await cardCell('lamina', 'left'), ['–'], 'A side not marked says so.');
     assert.equal(await card.locator('[data-item="keros"] th small').textContent(), 'right–left difference 2.8 mm');
     assert.equal(await card.locator('[data-item="pneumatisation"] td').count(), 1, 'An item with one answer spans both sides.');
-    assert.match(await card.locator('footer').textContent(), /^16 of 21 sides not marked · Measured on CT: check against the images\./);
+    assert.match(await card.locator('footer').textContent(), /^17 of 21 sides not marked · Measured on CT: check against the images\./);
     check('The theatre card prints the patient, every item with both sides, measurements and slices, on one A4 page', { card: english });
 
     // The same in Turkish.

@@ -46,10 +46,10 @@ describe('Keros depth', () => {
 
 describe('anterior ethmoidal artery', () => {
   const tag = coronal('left', 'aea');
-  it('answers yes from 2 mm below the roof (El-Anwar types 2 to 4) and leaves type 1 to the reader', () => {
+  it('measures the distance below the roof and its El-Anwar type, and leaves the answer to the reader', () => {
     assert.deepEqual([0, 1.9, 2, 3.9, 4, 6.1].map(aeaType), [1, 1, 2, 2, 3, 4]);
     const hanging = caliperResult(tag, [[12, 0, 13], [12, 0, 16]], 1);
-    assert.deepEqual(hanging, { reading: { kind: 'aea', distance: 3, type: 2, nearLimit: false }, side: 'left', answer: 'yes' });
+    assert.deepEqual(hanging, { reading: { kind: 'aea', distance: 3, type: 2, nearLimit: false }, side: 'left' });
     const adherent = caliperResult(tag, [[12, 0, 12], [12.4, 0, 13.25]], 1);
     assert.deepEqual(adherent, { reading: { kind: 'aea', distance: 1.25, type: 1, nearLimit: false }, side: 'left' });
     const near = reading(caliperResult(tag, [[12, 0, 12], [12, 0, 14.3]], 1));
@@ -181,15 +181,15 @@ describe('the checklist record of a caliper', () => {
     state = recordCaliper(state, 'septum', 'right', note('s', septum(-4), 'septum'));
     assert.deepEqual(state.answers.septum, { right: 'yes' });
     assert.deepEqual(Object.keys(state.notes.septum ?? {}), ['right']);
-    // An artery measured again at the skull base: the earlier drawing's yes goes; the reader's own answer would stay.
+    // The artery's caliper only measures: it never answers, and the reader's answer stays through its records.
     const artery = (distance: number) => caliperResult(coronal('left', 'aea'), [[12, 0, 13], [12, 0, 13 + distance]], 1);
     state = recordCaliper(state, 'ethmoid-artery', 'left', note('x', artery(3), 'aea'));
-    assert.equal(state.answers['ethmoid-artery']?.left, 'yes');
-    state = recordCaliper(state, 'ethmoid-artery', 'left', note('y', artery(1), 'aea'));
     assert.equal(state.answers['ethmoid-artery']?.left, undefined);
-    state = { ...state, answers: { ...state.answers, 'ethmoid-artery': { left: 'no' } } };
-    state = recordCaliper(state, 'ethmoid-artery', 'left', note('z', artery(1), 'aea'));
-    assert.equal(state.answers['ethmoid-artery']?.left, 'no');
+    state = { ...state, answers: { ...state.answers, 'ethmoid-artery': { left: 'yes' } } };
+    state = recordCaliper(state, 'ethmoid-artery', 'left', note('y', artery(1), 'aea'));
+    assert.equal(state.answers['ethmoid-artery']?.left, 'yes');
+    state = recordCaliper(state, 'ethmoid-artery', 'left', note('y', artery(4), 'aea'));
+    assert.equal(state.answers['ethmoid-artery']?.left, 'yes');
   });
 
   it('measures a record whose drawing was deleted again at a new scale, and leaves the records of drawings to them', () => {

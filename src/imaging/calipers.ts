@@ -79,7 +79,7 @@ export function nearKerosLimit(depth: number): boolean {
 }
 /** El-Anwar 2021 (coronal CT, the artery's middle to the ethmoid roof): type 1 is 0–2 mm, 2 is 2–4, 3 is 4–6, 4 above 6. */
 export const aeaType = (distance: number): 1 | 2 | 3 | 4 => distance < 2 ? 1 : distance < 4 ? 2 : distance < 6 ? 3 : 4;
-/** At or below the skull base until 2 mm, hanging in a mesentery from there (El-Anwar's types 2 to 4). */
+/** The limit between El-Anwar's type 1 (at the skull base) and the types below it, which the reading marks when near. */
 const AEA_BELOW_MM = 2;
 /** A common grading of the septal angle, not a standard one: mild below 9°, moderate 9–15°, severe above 15°. */
 export const septumGrade = (angle: number): 'mild' | 'moderate' | 'severe' => angle < 9 ? 'mild' : angle <= 15 ? 'moderate' : 'severe';
@@ -96,8 +96,8 @@ type CaliperReading =
   | { kind: 'septum'; angle: number; side: 'right' | 'left' | null; grade: 'mild' | 'moderate' | 'severe' };
 type CaliperSide = CaliperTag['side'];
 /** What a caliper gives: its reading, the side it is for and the checklist answer it implies (none where it cannot tell:
- * a sinus in front of the tuberculum line may be presellar or conchal, an artery at the skull base may still be
- * dehiscent), or why it gives nothing. */
+ * a sinus in front of the tuberculum line may be presellar or conchal; none ever for the ethmoid artery, whether it is
+ * floating is the reader's call on the image), or why it gives nothing. */
 export type CaliperResult = { reading: CaliperReading; side: CaliperSide; answer?: string } | { unavailable: MessageKey; side: CaliperSide };
 
 /** Millimetres per patient millimetre for a caliper: a calibration's factor, 1 where the pixel spacing is known, else
@@ -146,7 +146,7 @@ export function caliperResult(tag: CaliperTag, clicked: readonly Vec3[], mmScale
     const [artery, roof] = points;
     const distance = mm(dot(sub(roof, artery), tag.up));
     const reading = { kind: 'aea' as const, distance, type: aeaType(distance), nearLimit: Math.abs(distance - AEA_BELOW_MM) <= LIMIT_MM };
-    return { reading, side, ...(distance >= AEA_BELOW_MM ? { answer: 'yes' } : {}) };
+    return { reading, side };
   }
   if (tag.kind === 'sella') {
     // The lines run through the tuberculum and the dorsum, square to the line joining them (Güldner 2012), whichever

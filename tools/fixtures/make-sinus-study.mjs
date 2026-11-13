@@ -144,7 +144,7 @@ await writeFile(path.join(destination, 'manifest.json'), `${JSON.stringify({
   },
   expected: {
     keros: { right: { depth: 3.2, type: '1', nearLimit: true }, left: { depth: 6, type: '2', nearLimit: false } },
-    aea: { right: { distance: 1, answer: null }, left: { distance: 2.8, answer: 'yes' } },
+    aea: { right: { distance: 1 }, left: { distance: 2.8 } },
     septum: { angle: Math.atan2(deviated[0], crista[1] - deviated[1]) * 180 / Math.PI, side: 'left' },
     sella: { answer: 'sellar' },
   },

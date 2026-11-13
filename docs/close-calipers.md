@@ -3,8 +3,8 @@
 The sinus CT's pre-operative checklist (CLOSE) has a caliper for the four items that are geometry of a millimetre or
 more: olfactory fossa depth, the anterior ethmoidal artery's distance below the skull base, sphenoid pneumatisation and
 septal deviation. The reader starts one from the checklist, for an item and a side, and clicks its landmarks on the
-image. The caliper draws its measurement, writes the answer its classification gives, and records the value, the
-points and the slice under that side. Whether a thin wall is intact (lamina papyracea, optic and carotid canals, a
+image. The caliper draws its measurement, writes the answer its classification gives (the artery's caliper only
+measures), and records the value, the points and the slice under that side. Whether a thin wall is intact (lamina papyracea, optic and carotid canals, a
 dehiscent artery) stays the reader's call: those walls are mostly below what CT resolves.
 
 Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the synthetic sinus CT of
@@ -15,7 +15,7 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
 | Item | Plane | Points | Value | Answer |
 | --- | --- | --- | --- | --- |
 | Olfactory fossa depth (Keros) | coronal | the olfactory fossa's floor (cribriform plate), the ethmoid roof at the top of the lateral lamella (fovea ethmoidalis) | depth: the height between them, straight up | Keros type 1–3 |
-| Floating (mesenteric) anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
+| Floating (mesenteric) anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof, El-Anwar type | none: the reader answers |
 | Sphenoid pneumatisation | sagittal | tuberculum sellae, top of the dorsum sellae, sinus wall furthest back | the wall's place against the two sella lines | sellar or postsellar; none in front of the tuberculum line |
 | Septal deviation / spur | coronal | maxillary crest, crista galli, most deviated point | angle at the crista galli, and the side it bows to | Yes on that side |
 
@@ -27,9 +27,9 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
   can read a few tenths of a millimetre differently. The Gera angle (the lamella against the plate) is not measured: it
   is rarely used, and the third point it needed made the order of the clicks unclear.
 - **Anterior ethmoidal artery** (El-Anwar et al., J Neurol Surg B Skull Base 2021;82(S3):e259–e267): the artery's
-  middle to the ethmoid roof on coronal CT; type 1 is 0–2 mm, 2 is 2–4 mm, 3 is 4–6 mm, 4 above 6 mm. Types 2 to 4
-  answer yes: the artery runs below the skull base, in a mesentery (floating). Type 1 gives no answer; the reader marks
-  it.
+  middle to the ethmoid roof on coronal CT; type 1 is 0–2 mm, 2 is 2–4 mm, 3 is 4–6 mm, 4 above 6 mm. The caliper
+  gives the distance and the type and marks no answer: whether the artery is floating, in a mesentery below the skull
+  base, is the reader's call on the image, made after finding it. Within 0.5 mm of the 2 mm limit it says "near limit".
 - **Sphenoid pneumatisation** (Güldner et al., Acta Radiol 2012;53:214–219): lines through the tuberculum and the
   dorsum, square to the line joining them. Between them the sinus is sellar, behind the dorsum line postsellar. In
   front of the tuberculum line it is presellar or conchal, which the sinus's size decides, so the reader answers.
