@@ -145,6 +145,27 @@ class ImagingBroker {
     if (JSON.stringify(operation).length > 512 * 1024) throw new Error('Measurement request is too large.');
     return (await this.requestJson('sample', { id, sourceRevision: revision, operation }, generation)).value;
   }
+  /** Lays `movingId` over `fixedId` (the engine's register): two different series this broker handed out, from one
+   * engine generation, at the source revisions the page shows. Answers the rigid transform and how well they match. */
+  async register(request) {
+    const keys = ['fixedId', 'movingId', 'generation', 'fixedRevision', 'movingRevision'];
+    if (!request || typeof request !== 'object' || Object.keys(request).some(key => !keys.includes(key))) throw new Error('Invalid registration request.');
+    const { fixedId, movingId, generation, fixedRevision, movingRevision } = request;
+    if (fixedId === movingId) throw new Error('Invalid registration request.');
+    const checkSources = () => {
+      for (const [id, revision] of [[fixedId, fixedRevision], [movingId, movingRevision]]) {
+        const series = this.requireSeries(id, generation);
+        if (!Number.isSafeInteger(revision) || revision < 1 || series.sourceRevision !== revision) throw new Error('Source series changed.');
+      }
+    };
+    checkSources();
+    const result = (await this.requestJson('register', { fixedId, movingId, fixedRevision, movingRevision }, generation)).value;
+    checkSources();
+    const finite = value => typeof value === 'number' && Number.isFinite(value);
+    if (!result || !Array.isArray(result.matrix) || result.matrix.length !== 16 || !result.matrix.every(finite)
+      || !['similarity', 'similarityBefore', 'overlap', 'angle'].every(key => finite(result[key]))) throw new Error('Invalid registration result.');
+    return result;
+  }
   getPixels(request) {
     if (!request || typeof request !== 'object' || Object.keys(request).some(key => !['seriesId', 'generation', 'index', 'revision'].includes(key))) throw new Error('Invalid pixel request.');
     const series = this.requireSeries(request.seriesId, request.generation);

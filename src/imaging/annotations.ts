@@ -5,6 +5,7 @@ import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableV
 import { t } from '../i18n';
 import { isEmission, overlayKind, petHasSuv } from './emission';
 import { sulGluGlucose } from './glucose';
+import { applyPoint, type Matrix } from './rigid';
 
 export interface RoiStatistics {
   mean: number;
@@ -519,7 +520,23 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
 /** What a PET (or SPECT) fused over the image gives at a probe or inside a region drawn on it, where the drawing lies in
  * the patient: the value of the PET voxel at the probe, or the maximum and mean of the PET voxels the region covers on
  * the drawing's plane (its hottest voxel, as SUVmax is read). Empty for other drawings. */
-export function fusedPetSummary(annotation: Annotation, pet: Volume): string {
+/** A drawing on a pane's image taken into an overlay's own frame of reference through `transform` (pane coordinates to
+ * the overlay's, imaging/registration.ts): its points, and a rectangle or ellipse by its four corners, so a turn keeps
+ * its shape. The overlay is then read in its own voxels, as a drawing on it would be. */
+export function annotationThrough(annotation: Annotation, base: Series, transform: Matrix): Annotation {
+  let points = annotation.points;
+  if ((annotation.type === 'rectangle' || annotation.type === 'ellipse') && points.length === 2) {
+    const frame = roiPlane(annotation, base);
+    const corner = (u: number, v: number): Vec3 => frame ? [0, 1, 2].map(axis => frame.origin[axis] + u * frame.u[axis] + v * frame.v[axis]) as Vec3 : points[0];
+    if (frame) points = [frame.origin, corner(frame.width, 0), corner(frame.width, frame.height), corner(0, frame.height)];
+  }
+  return { ...annotation, points: points.map(point => applyPoint(transform, point)) };
+}
+
+/** The fused PET's values under a drawing: read in the PET's own voxels, through `through` when the PET lies in a frame
+ * of reference of its own aligned to the pane's. */
+export function fusedPetSummary(original: Annotation, pet: Volume, through?: { base: Series; transform: Matrix }): string {
+  const annotation = through ? annotationThrough(original, through.base, through.transform) : original;
   if (pet.series.components === 3 || !annotation.points.length) return '';
   const quantity = quantitativeScale(pet.series), digits = quantityDigits(quantity.unit);
   const modality = overlayKind(pet.series);

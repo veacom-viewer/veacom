@@ -5,6 +5,7 @@ import type { MessageKey } from '../i18n';
 import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry';
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
+import { samePatient, shareFrame } from '../imaging/linking';
 import { BUILTIN_ARRANGEMENTS, PET_FOLLOW_UP } from './builtin';
 import { studyKey } from '../domain/patient';
 
@@ -51,6 +52,10 @@ export interface Arrangement {
   /** `shared`: the panes showing the arrangement's PETs keep one SUV scale. Windowing one gives the others the same SUV
    * range, and inverting or recolouring one does the same to them. */
   scale?: 'shared';
+  /** Aligns `role`'s frame of reference to `to`'s where they differ (imaging/registration.ts), by the series of modality
+   * `by` acquired with each, such as the CTs of two PET/CT visits, or by the two roles' own series where one has none.
+   * Linking and the crosshair then follow through the alignment. */
+  align?: { role: string; to: string; by?: string };
   notice?: { key: MessageKey; params?: Readonly<Record<string, string>> };
   /** For several picked series: at most this many. */
   max?: number;
@@ -127,6 +132,16 @@ function planFor(arrangement: Arrangement, context: MatchContext): Plan | null {
   // Pane roles are plain strings the types do not tie to `roles`: a pane whose role is unfilled leaves no plan.
   if (!arrangement.panes.every(spec => Object.hasOwn(roles, spec.role))) return null;
   return { arrangement, roles, grid, panes: arrangement.panes.map(spec => ({ spec, series: roles[spec.role] })) };
+}
+
+/** The two series an arrangement aligns (its `align`): `fixed` is laid under, `moving` over it. Null without `align`, or
+ * when the two roles lie in one frame of reference already. */
+export function alignmentPair(plan: Plan, series: readonly Series[]): { fixed: Series; moving: Series } | null {
+  const align = plan.arrangement.align, fixed = align && plan.roles[align.to], moving = align && plan.roles[align.role];
+  if (!align || !fixed || !moving || !samePatient(fixed, moving) || shareFrame(fixed, moving)) return null;
+  const by = (anchor: Series) => align.by ? findRole({ modality: align.by, frame: 'same', prefer: ['corrected', 'sameGrid', 'overlap', 'slices'] }, series, anchor) : null;
+  const fixedBy = by(fixed), movingBy = by(moving);
+  return fixedBy && movingBy ? { fixed: fixedBy, moving: movingBy } : { fixed, moving };
 }
 
 /** A repeat study can share a quantitative window only if both PETs can be displayed in SUVbw. */

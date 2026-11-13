@@ -1,4 +1,5 @@
 import { petScale } from './fusion';
+import { applyPoint, applyVector } from './rigid';
 import { MAX_PROJECTION_HALF, MAX_SLAB_HALF, slabSampling } from './slab';
 import { usesSourceFrames } from './viewState';
 import type { FusionSettings, PixelArray, Series, Vec3, ViewState, VoiLut, Volume } from '../model';
@@ -515,7 +516,10 @@ class SharedSliceRenderer {
     }
     if (fusion) {
       gl.uniform3fv(this.uniform('uPetDimensions'), fusion.volume.series.dimensions);
-      this.indexMapping('uPet', fusion.volume.series, topLeft, right, down);
+      // An overlay aligned from a frame of its own is read where the pane's points lie in its coordinates.
+      const transform = fusion.transform;
+      if (transform) this.indexMapping('uPet', fusion.volume.series, applyPoint(transform, topLeft), applyVector(transform, right), applyVector(transform, down));
+      else this.indexMapping('uPet', fusion.volume.series, topLeft, right, down);
       // A PET without SUV is scaled by its own high activity (src/imaging/fusion.ts).
       gl.uniform1f(this.uniform('uSuvFactor'), petScale(fusion.volume));
       gl.uniform1i(this.uniform('uPetBlend'), fusion.blend === 'classic' ? 1 : 0);

@@ -12,6 +12,9 @@
     "job.cancelled": "İşlem durduruldu.",
     "export.cancelled": "Dışa aktarma iptal edildi; hiçbir şey kaydedilmedi.",
     "series.notFound": "Seri bulunamadı; önce içe aktarın.",
+    "registration.needsVolumes": "Hizalama için hastada yeri, aralığı ve yönelimi bilinen iki hacim gerekir",
+    "registration.patientMismatch": "Hizalama için iki serinin de kimliği belirlenmiş aynı hastaya ait olması gerekir",
+    "registration.failed": "Bu seriler hizalanamadı: örtüşen ya da aynı anatomiyi gösteren kısımları çok az",
 
     "geometry.noFrames": "Görüntü karesi bulunamadı.",
     "geometry.missingPosition": "Image Position (Patient) eksik ya da geçersiz; hasta koordinatları kullanılamıyor.",

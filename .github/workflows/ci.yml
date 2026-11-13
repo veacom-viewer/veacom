@@ -300,6 +300,7 @@ jobs:
         if: ${{ !cancelled() && matrix.shard == 'pet' && steps.build.outcome == 'success' }}
         run: |
           node tools/fixtures/make-pet-followup.mjs "$RUNNER_TEMP/pet-followup"
+          node tools/check-registration.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/registration.json"
           node tools/check-pet-voi.cjs "$RUNNER_TEMP/pet-followup" "$EVIDENCE/pet-voi"
       - name: Check PET readings against the known synthetic values
         if: ${{ !cancelled() && matrix.shard == 'pet' && steps.build.outcome == 'success' }}

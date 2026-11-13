@@ -136,8 +136,10 @@
 .viewport-grid:not([data-panes="1"]) .viewport-cell.is-active .viewport-content::after { content: ""; position: absolute; z-index: 6; left: calc(50% - 3px); bottom: 5px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, .7); pointer-events: none; }
 .viewport-cell.is-drop-target::after { border: 2px dashed var(--accent); background: rgba(56, 108, 208, .12); }
 /* A short note in a pane, at its top, for a few seconds. */
-.pane-toast { position: absolute; z-index: 8; top: 40px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: rgba(18, 21, 26, .92); color: var(--text-strong); font-size: var(--text-md); white-space: nowrap; }
-.pane-toast button { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
+/* A note longer than the pane wraps inside it, so its Undo stays in reach. */
+.pane-toast { position: absolute; z-index: 8; top: 40px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; width: max-content; max-width: calc(100% - 2 * var(--space-4)); padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: rgba(18, 21, 26, .92); color: var(--text-strong); font-size: var(--text-md); line-height: 1.4; }
+.pane-toast > span { min-width: 0; }
+.pane-toast button { flex-shrink: 0; padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; white-space: nowrap; cursor: pointer; }
 /* Pictures, not DICOM: a note at the top centre of the image area, over the panes, until closed. */
 .picture-notice-anchor { position: relative; height: 0; z-index: 9; }
 .picture-notice { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 8px; max-width: calc(100% - 32px); padding: 5px 6px 5px 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: rgba(18, 21, 26, .92); color: var(--text-strong); font-size: var(--text-md); white-space: nowrap; }
@@ -297,6 +299,15 @@
 .series-details dt { color: var(--text-tertiary); }
 .series-details dd { margin: 0; text-align: right; color: var(--text); font-weight: 500; font-variant-numeric: tabular-nums; }
 .series-details dd.is-missing { color: var(--text-tertiary); font-weight: 400; }
+/* The display panel's alignment section (components/AlignmentSection.tsx): what lies over what, and the nudges. */
+.alignment-section { display: flex; flex-direction: column; gap: var(--space-3); }
+.alignment-section .field-help, .alignment-section .geometry-warnings { margin: 0; }
+.alignment-facts dd { text-align: left; }
+.alignment-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-1); }
+.alignment-row-label { flex: 1 0 100%; color: var(--text-secondary); font-size: var(--text-sm); font-weight: 500; }
+.alignment-step { min-width: 32px; padding: 0 var(--space-2); font-variant-numeric: tabular-nums; }
+.alignment-turn { display: inline-flex; align-items: center; gap: var(--space-1); margin-right: var(--space-2); color: var(--text-tertiary); font-size: var(--text-sm); }
+.alignment-actions { display: flex; flex-wrap: wrap; gap: var(--space-4); }
 .geometry-warnings { margin: 0 16px 14px; padding: 10px 12px; border: 1px solid var(--warning-line); border-radius: var(--radius); background: var(--warning-bg); color: #f3dca8; font-size: var(--text-sm); line-height: 1.55; }
 .geometry-warnings strong { color: var(--warning); font-weight: 600; }
 .geometry-warnings p { margin: 6px 0 0; }

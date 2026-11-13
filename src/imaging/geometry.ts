@@ -197,7 +197,7 @@ export function sliceAtWorld(series: Series, selection: PlaneSelection, point: V
   return Math.round(clamp((dot(point, normal) - e.minNormal) / e.step, 0, e.slices - 1));
 }
 
-function rotateAround(vector: Vec3, axis: Vec3, degrees: number): Vec3 {
+export function rotateAround(vector: Vec3, axis: Vec3, degrees: number): Vec3 {
   const radians = degrees * Math.PI / 180, c = Math.cos(radians), s = Math.sin(radians);
   return add(add(scale(vector, c), scale(cross(axis, vector), s)), scale(axis, dot(axis, vector) * (1 - c)));
 }

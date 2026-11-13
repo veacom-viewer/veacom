@@ -238,8 +238,12 @@ The check covers [PET quantification](../docs/pet-quantification.md):
 - At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
 - The references are kept by digest, with no UID, and the actions are recorded by id.
 - In a new session on the same computer the references and the lesion table come back.
-- After opening the current study, selecting PET follow-up in Layout and linking the two studies, the two
-  studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
+- Choosing the PET follow-up layout after opening both studies shows them together and aligns the prior by the two CTs, within
+  1 mm and 0.5°. The note says so, the two studies page together through the alignment, and a nudge in the display
+  panel moves the prior 1 mm and back. The lesion table gives each value's change against the prior lesion selected by
+  the reader.
+- With the alignment removed, the prior's PET fused over this study's CT is aligned first, by the prior's own CT, and
+  the pointer over this study's lesion reads the prior's PET there.
 - With the current study alone, that change comes from what was kept for the prior.
 
 CI's desktop job, the Windows job and `tools/verify.sh` run it.
@@ -247,6 +251,24 @@ CI's desktop job, the Windows job and `tools/verify.sh` run it.
 ```sh
 node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
 node tools/check-pet-voi.cjs /tmp/pet-followup test-results/pet-voi
+```
+
+## Registration
+
+`check-registration.cjs` imports both studies of the synthetic follow-up into the engine, through its pipes and without
+Electron, and asks it to register them (`native/src/registration.rs`). The prior was scanned at another table position
+in its own frame of reference: the same anatomy lies 24 mm further along in its coordinates, with no rotation.
+
+- The prior's CT laid over this study's CT maps each corner of the prior's volume to where it should be within 1 mm and
+  0.5°.
+- Asked again, the registration gives the same bits.
+- The prior's PET laid over this study's CT, as a PET over a CT acquired apart, lands within 1 mm and 0.5° too.
+- A series replaced since, or one the engine does not hold, is refused.
+
+CI's desktop job, the Windows job and `tools/verify.sh` run it before `check-pet-voi.cjs`.
+
+```sh
+node tools/check-registration.cjs /tmp/pet-followup test-results/registration.json
 ```
 
 ## Gamma camera studies

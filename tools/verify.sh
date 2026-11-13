@@ -48,6 +48,7 @@ run security-boundary node tools/check-security-boundary.cjs "$series" "$out/sec
 run pictures node tools/check-pictures.cjs "$series" "$out/pictures"
 run interface node tools/check-interface.cjs "$series" "$out/interface"
 run pet-followup-fixture node tools/fixtures/make-pet-followup.mjs "$out/pet-followup"
+run registration node tools/check-registration.cjs "$out/pet-followup" "$out/registration.json"
 run pet-voi node tools/check-pet-voi.cjs "$out/pet-followup" "$out/pet-voi"
 run pet-validation-inputs node tools/fixtures/make-pet-validation-inputs.mjs "$out/pet-followup"
 run pet-validation node tools/pet-validation.cjs "$out/pet-followup" "$out/pet-followup/pet-validation-spheres.json" "$out/pet-validation" --vendor "$out/pet-followup/pet-validation-expected.json"

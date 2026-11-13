@@ -131,6 +131,32 @@ describe('main-only imaging broker', () => {
     await assert.rejects(f.broker.removeSeries(['study'], 0), { message: /Invalid series request\./ });
     f.broker.dispose();
   });
+  it('registers only two different series it handed out, at the revisions shown, and checks the answer', async () => {
+    const f = fixture();
+    f.request.mock.mockImplementation(async () => Response.json({ series: [{ id: 'fixed', sourceRevision: 3 }, { id: 'moving', sourceRevision: 5 }], warnings: [] }));
+    await f.broker.listSeries();
+    const answer = { matrix: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, -24, 0, 0, 0, 1], similarity: 0.8, similarityBefore: 0.7, overlap: 0.9, angle: 0 };
+    f.request.mock.mockImplementation(async () => Response.json(answer));
+    const request = { fixedId: 'fixed', movingId: 'moving', generation: 1, fixedRevision: 3, movingRevision: 5 };
+    assert.deepEqual(await f.broker.register(request), answer);
+    assert.deepEqual(f.calls().at(-1), ['register', { fixedId: 'fixed', movingId: 'moving', fixedRevision: 3, movingRevision: 5 }]);
+    const calls = f.request.mock.callCount();
+    for (const invalid of [null, { ...request, path: '/etc' }, { ...request, movingId: 'fixed' }]) await assert.rejects(f.broker.register(invalid), { message: /Invalid registration request\./ });
+    await assert.rejects(f.broker.register({ ...request, movingId: 'unknown' }), { message: /not open|açık değil/ });
+    await assert.rejects(f.broker.register({ ...request, fixedRevision: 4 }), { message: /Source series changed\./ });
+    await assert.rejects(f.broker.register({ ...request, generation: 2 }), { message: /Engine changed/ });
+    assert.equal(f.request.mock.callCount(), calls, 'nothing invalid reaches the engine');
+    f.request.mock.mockImplementation(async () => Response.json({ ...answer, matrix: [1, 2, 3] }));
+    await assert.rejects(f.broker.register(request), { message: /Invalid registration result\./ });
+    const pending = deferred<Response>();
+    f.request.mock.mockImplementation(async () => pending.promise);
+    const stale = f.broker.register(request);
+    f.request.mock.mockImplementation(async () => Response.json({ series: [{ id: 'moving', sourceRevision: 6 }], warnings: [] }));
+    await f.broker.listSeries();
+    pending.resolve(Response.json(answer));
+    await assert.rejects(stale, /Source series changed/);
+    f.broker.dispose();
+  });
   it('rejects raw paths and consumes only main-issued one-use file selections', async () => {
     const f = fixture();
     await assert.rejects(f.broker.importSelected(['/private/unselected.dcm']), { message: /invalid or expired/ });

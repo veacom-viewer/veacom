@@ -95,7 +95,7 @@ The viewer outlines thresholded uptake inside the sphere. When it contains disco
 - Routine PET/CT opens in one fused pane even when a prior is loaded. A follow-up layout the reader explicitly kept opens automatically when it matches.
 - The `prior` role is found among every series in the session (`MatchContext.session`), not only the study that opened.
 
-The two studies lie in their own frames of reference, so their panes do not follow each other's position. The reader brings both to the same level and presses the link button, which anchors them there (`linkHere`). From then on they page together slice for slice from those anchors, scaled by slice spacing. Each study's own panes follow its crosshair as usual. A prior with the same slice count as the current study pages in step from where it is, without anchors, as the viewer does for any such pair.
+The two studies lie in their own frames of reference, so the screen aligns the prior to this study by their CTs ([alignment](arrangements.md#alignment-of-frames-of-reference)). Its note says so: "Prior aligned to this study by CT: moved 24.0 mm, turned 0.0°" on the synthetic follow-up. The prior's panes then go to where this study's PET is, and page and follow the crosshair with it through the alignment. Measurements still read each study's own voxels. If the alignment fails, the reader brings both to the same level and presses the link button, which anchors them there (`linkHere`), and they page together slice for slice from those anchors, scaled by slice spacing.
 
 ## Comparing a repeat study with its prior
 
@@ -146,6 +146,7 @@ The copy waits while the PET is loading. If the clipboard refuses the text, the 
 - `tests/pet-comparison.test.ts`: the 5 and 10 min boundaries in both directions, the strict 50% glucose-change boundary, FDG only, scanner and reconstruction alike but for case and spacing, the prior's glucose limits, a kept prior compared as a loaded one, and the flags' text in both languages.
 - `tests/glucose.test.ts`: SULglu's formula, its label after SULpeak, nothing without a glucose, outside SUL or for another tracer, DICOM glucose taking precedence over typed glucose, and typed values in mmol/l and mg/dl.
 - `tests/pet-report.test.ts`: the report text in English and Turkish on a PET whose every value is known. It covers every unit, the changes and their caution, a matched prior with no change, SULglu, the cautions, a typed glucose, partly measured spheres, a contour waiting for its regions, unavailable values, a PET without SUV and one whose SUV the engine refused.
+- `tools/check-registration.cjs`: the engine's registration on the same fixture, through its pipes: the prior's CT and PET land within 1 mm and 0.5° of where the fixture put them, and the same request gives the same bits.
 - `tools/check-pet-voi.cjs`: the desktop check on `tools/fixtures/make-pet-followup.mjs`, whose prior was scanned 72 min after its injection (12 min more than the current study) on another scanner model and reconstruction, with no glucose; the current study's files record 5.4 mmol/l. It checks the comparison's flags, the one SUV scale, and SULglu, live and with the prior kept. It also copies the report in English and Turkish, reads it back and checks the message when the clipboard refuses it, on a clipboard in memory.
 
 ## Sources

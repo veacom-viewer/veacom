@@ -4,6 +4,7 @@
 // has gone since. Every step keeps its direction in the patient, whichever way each series is stored.
 import type { Series, Vec3, ViewState } from '../model';
 import { dot, getPlaneFrame, sameFacing, sliceCount, sourceFrameSeries, sub, worldToIndex } from './geometry';
+import { applyPoint, applyVector, type Matrix } from './rigid';
 import { usesSourceFrames } from './viewState';
 
 export interface Pane { series: Series; view: ViewState }
@@ -23,7 +24,8 @@ export function shareFrame(a: Series, b: Series): boolean {
 /** Where two panes were linked by hand: each one's series and slice then. */
 export type Anchor = Record<string, { seriesId: string; slice: number }>;
 
-function placed(pane: Pane): boolean {
+/** The displayed plane has measured patient coordinates. */
+export function placed(pane: Pane): boolean {
   const frame = usesSourceFrames(pane.series, pane.view) ? sourceFrameSeries(pane.series, pane.view.slice) : pane.series;
   return frame.orientationKnown === true && frame.positionKnown !== false && frame.spacingKnown !== false;
 }
@@ -34,9 +36,12 @@ export function sharePlaneSpace(a: Pane, b: Pane): boolean {
     Boolean(referenceFrame(a.series) && referenceFrame(a.series) === referenceFrame(b.series)));
 }
 
-export function facesSame(a: Pane, b: Pane): boolean {
-  try { return sameFacing(getPlaneFrame(a.series, a.view).normal, getPlaneFrame(b.series, b.view).normal); }
-  catch { return false; }
+/** The two panes show the same kind of plane; with `toB`, `a`'s plane taken into `b`'s frame of reference first. */
+export function facesSame(a: Pane, b: Pane, toB?: Matrix): boolean {
+  try {
+    const normal = getPlaneFrame(a.series, a.view).normal;
+    return sameFacing(toB ? applyVector(toB, normal) : normal, getPlaneFrame(b.series, b.view).normal);
+  } catch { return false; }
 }
 
 /** A corresponding slice only if the target stack covers the point. Never snap an outside point to an end slice. */
@@ -63,8 +68,11 @@ export function coveredSlice(pane: Pane, point: Vec3): number | null {
   return best;
 }
 
-/** Which slice paging the source should show in another pane, if any. */
-export function linkedSlice(source: Pane, target: Pane, point: Vec3, steps: number, anchor?: { source: number; target: number }): number | null {
+/** Which slice paging the source should show in another pane, if any. `toTarget`: for series in frames of reference of
+ * their own, aligned (imaging/registration.ts), the transform from the source's patient coordinates to the target's, so
+ * the target goes where the source is in the patient, as in one frame. */
+export function linkedSlice(source: Pane, target: Pane, point: Vec3, steps: number, anchor?: { source: number; target: number }, toTarget?: Matrix): number | null {
+  if (toTarget && placed(source) && placed(target)) return facesSame(source, target, toTarget) ? coveredSlice(target, applyPoint(toTarget, point)) : null;
   if (sharePlaneSpace(source, target)) return facesSame(source, target) ? coveredSlice(target, point) : null;
   if (!placed(source) && !placed(target) && unplaced(source.series) && unplaced(target.series)) {
     return inStep(source, target) ? stepTarget(source, target, steps) : null;

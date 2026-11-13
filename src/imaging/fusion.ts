@@ -6,6 +6,7 @@ import { findRole } from '../arrangements/roles';
 import { FUSION } from '../arrangements/builtin';
 import { indexToWorld } from './geometry';
 import { shareFrame } from './linking';
+import { transformBetween, type Alignment } from './registration';
 import { isEmission, petHasSuv } from './emission';
 
 export { isEmission, overlayKind, petHasSuv } from './emission';
@@ -14,8 +15,10 @@ export { isEmission, overlayKind, petHasSuv } from './emission';
  * have no place in the patient to be fused at. */
 export const fusesAsOverlay = (series: Series) => !series.segmentation && (series.modality === 'PT' || (series.modality === 'NM' && series.canReconstruct));
 
-/** Whether `overlay` is drawn over `base`: in one frame of reference, never over itself or over another emission image. */
-export const fusesOver = (base: Series, overlay: Series) => base.id !== overlay.id && !isEmission(base) && shareFrame(base, overlay);
+/** Whether `overlay` is drawn over `base`: in one frame of reference, or in two aligned ones (imaging/registration.ts),
+ * never over itself or over another emission image. */
+export const fusesOver = (base: Series, overlay: Series, alignments: readonly Alignment[] = []) => base.id !== overlay.id && !isEmission(base)
+  && (shareFrame(base, overlay) || transformBetween(alignments, base, overlay) !== null);
 
 /** How a SPECT is fused while the reader has not changed the fusion: it has no scanner look, so uptake only, in hot
  * metal, with its own high activity at the top of the scale (see `petScale`). */

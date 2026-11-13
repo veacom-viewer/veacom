@@ -29,6 +29,7 @@ contextBridge.exposeInMainWorld('veacom', {
   cancelOperation: id => invoke('imaging:cancel', id),
   cancelExport: () => invoke('dicom:cancel'),
   measure: (id, generation, revision, operation) => invoke('imaging:measure', id, generation, revision, operation),
+  register: request => invoke('imaging:register', request),
   getTags: (seriesId, generation, frame, revision) => invoke('imaging:tags', seriesId, generation, frame, revision),
   removeSeries: (ids, generation) => invoke('imaging:remove', ids, generation),
   getPixels: request => invoke('imaging:pixels', request),

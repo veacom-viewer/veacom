@@ -185,6 +185,8 @@ jobs:
         if: ${{ !cancelled() && steps.source.outcome == 'success' }}
         run: |
           node tools/fixtures/make-pet-followup.mjs "$env:RUNNER_TEMP\pet-followup"
+          node tools/check-registration.cjs "$env:RUNNER_TEMP\pet-followup" "$env:EVIDENCE\registration.json"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           node tools/check-pet-voi.cjs "$env:RUNNER_TEMP\pet-followup" "$env:EVIDENCE\pet-voi"
       - name: Arrangements on a synthetic PET/CT
         if: ${{ !cancelled() && steps.source.outcome == 'success' }}
