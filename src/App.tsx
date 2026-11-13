@@ -201,7 +201,7 @@ function readSettings(): Settings {
         return isTool(binding) ? [[button, binding]] : [];
       })),
       wheelAction: WHEEL_ACTIONS.includes(stored.wheelAction) ? stored.wheelAction : defaults.wheelAction,
-      // The old wheelSensitivity set the mouse wheel too, against a slower touchpad: the touchpad starts again from its default.
+      // A wheelSensitivity saved by earlier versions is not carried over: it scaled the mouse wheel as well, against a slower touchpad.
       touchpadSpeed: nearestTouchpadSpeed(stored.touchpadSpeed),
       reverseWheel: stored.reverseWheel === true,
       measurementUnits: stored.measurementUnits === 'px' ? 'px' : 'auto',
@@ -2469,7 +2469,7 @@ export default function App() {
             <div className="popover-subtitle">{t('help.wheelKey')}</div>
             <label className="mouse-binding"><span>{t('mouse.wheel.heading')}</span><select value={settings.wheelAction} onChange={event => setSettings(current => ({ ...current, wheelAction: event.target.value as WheelAction }))}>{WHEEL_ACTIONS.map(action => <option key={action} value={action}>{t(`wheel.${action}` as const)}</option>)}</select></label>
             {/* The slider steps through the offered speeds; it reads out the speed, not its place in the list. */}
-            <label className="slider-field"><span>{t('inspector.touchpadSpeed')}<output>{touchpadSpeedText}</output></span><input type="range" data-action="touchpad-speed" min={0} max={TOUCHPAD_SPEEDS.length - 1} step={1} value={TOUCHPAD_SPEEDS.indexOf(nearestTouchpadSpeed(settings.touchpadSpeed))} aria-valuetext={touchpadSpeedText} onChange={event => setSettings(current => ({ ...current, touchpadSpeed: TOUCHPAD_SPEEDS[Number(event.target.value)] ?? TOUCHPAD_SPEED.default }))} /></label>
+            <label className="slider-field"><span>{t('inspector.touchpadSpeed')}<output>{touchpadSpeedText}</output></span><input type="range" data-action="touchpad-speed" min={0} max={TOUCHPAD_SPEEDS.length - 1} step={1} value={TOUCHPAD_SPEEDS.indexOf(settings.touchpadSpeed)} aria-valuetext={touchpadSpeedText} onChange={event => setSettings(current => ({ ...current, touchpadSpeed: TOUCHPAD_SPEEDS[Number(event.target.value)] }))} /></label>
             <p className="field-help">{t('inspector.wheelNotch')}</p>
             <label className="check-field"><input type="checkbox" checked={settings.reverseWheel} onChange={event => setSettings(current => ({ ...current, reverseWheel: event.target.checked }))} /> {t('inspector.reverseScroll')}</label>
             <button type="button" className="text-button" onClick={resetMouse}>{t('mouse.reset')}</button>
