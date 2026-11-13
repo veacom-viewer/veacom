@@ -24,7 +24,7 @@ export function AlignmentSection({ alignment, fixed, moving, onNudge, onAutomati
   onNudge: (nudge: Nudge) => void; onAutomatic: () => void; onRemove: () => void;
 }) {
   const { t, locale } = useTranslation();
-  const { shift, angle } = movement(alignment), cautions = alignmentCautions(alignment);
+  const { shift, angle } = movement(alignment), manual = adjusted(alignment), cautions = manual ? [] : alignmentCautions(alignment);
   const name = (item: Series | undefined) => item ? [item.description || item.modality, dicomDate(item.studyDate)].filter(Boolean).join(' · ') : '';
   const percent = (value: number) => locale === 'tr' ? `%${Math.round(value * 100)}` : `${Math.round(value * 100)}%`;
   return <div className="alignment-section" data-testid="alignment-section">
@@ -32,9 +32,11 @@ export function AlignmentSection({ alignment, fixed, moving, onNudge, onAutomati
     {fixed && moving && <p className="field-help">{t('alignment.pair', { moving: name(moving), fixed: name(fixed) })}</p>}
     <dl className="series-details alignment-facts">
       <dt>{t('alignment.movedLabel')}</dt><dd>{t('alignment.moved', { shift: shift.toFixed(1), angle: angle.toFixed(1) })}</dd>
-      <dt>{t('alignment.howLabel')}</dt><dd>{t(adjusted(alignment) ? 'alignment.adjusted' : 'alignment.automatic')}</dd>
-      <dt>{t('alignment.similarityLabel')}</dt><dd data-tooltip={t('alignment.similarityHint')}>{t('alignment.similarity', { value: alignment.similarity.toFixed(2), before: alignment.similarityBefore.toFixed(2) })}</dd>
-      <dt>{t('alignment.overlapLabel')}</dt><dd>{percent(alignment.overlap)}</dd>
+      <dt>{t('alignment.howLabel')}</dt><dd>{t(manual ? 'alignment.adjusted' : 'alignment.automatic')}</dd>
+      {!manual && <>
+        <dt>{t('alignment.similarityLabel')}</dt><dd data-tooltip={t('alignment.similarityHint')}>{t('alignment.similarity', { value: alignment.similarity.toFixed(2), before: alignment.similarityBefore.toFixed(2) })}</dd>
+        <dt>{t('alignment.overlapLabel')}</dt><dd>{percent(alignment.overlap)}</dd>
+      </>}
     </dl>
     {cautions.length > 0 && <WarningBox title={t('alignment.check')} className="alignment-cautions"
       dismissKey={`alignment:${alignment.fixed}:${alignment.moving}:${cautions.join(',')}`}>

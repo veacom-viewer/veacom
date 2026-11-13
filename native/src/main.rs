@@ -938,7 +938,17 @@ fn register_series(
     if cancelled.load(Ordering::Acquire) {
         return Err(abandoned());
     }
-    Ok(result?)
+    let result = result?;
+    let sources = core.sources.read().unwrap();
+    for (id, revision) in [
+        (&request.fixed_id, request.fixed_revision),
+        (&request.moving_id, request.moving_revision),
+    ] {
+        if sources.get(id).map(|series| series.info.source_revision) != Some(revision) {
+            return Err(changed());
+        }
+    }
+    Ok(result)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]

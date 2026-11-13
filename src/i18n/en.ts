@@ -811,6 +811,7 @@ export const en = {
   'export.scopeRange': 'Slices of the series',
   'export.scopeCurrent': 'The image on screen',
   'export.scopeLayout': 'All panes on screen',
+  'export.waitAlignment': 'Available once alignment has finished.',
   'export.waitLoading': 'Available once the series has loaded.',
   'mpr.whyLoading': 'The series is loading.',
   'mpr.whySingle': 'One slice only: no volume.',

@@ -814,6 +814,7 @@ export const tr: Record<keyof typeof en, string> = {
   'export.scopeRange': 'Serinin kesitleri',
   'export.scopeCurrent': 'Ekrandaki görüntü',
   'export.scopeLayout': 'Ekrandaki tüm pencereler',
+  'export.waitAlignment': 'Hizalama bitince seçilebilir.',
   'export.waitLoading': 'Seri yüklenince seçilebilir.',
   'mpr.whyLoading': 'Seri yükleniyor.',
   'mpr.whySingle': 'Tek kesit var: hacim yok.',

@@ -151,12 +151,16 @@ class ImagingBroker {
     const keys = ['fixedId', 'movingId', 'generation', 'fixedRevision', 'movingRevision'];
     if (!request || typeof request !== 'object' || Object.keys(request).some(key => !keys.includes(key))) throw new Error('Invalid registration request.');
     const { fixedId, movingId, generation, fixedRevision, movingRevision } = request;
-    const fixed = this.requireSeries(fixedId, generation), moving = this.requireSeries(movingId, generation);
     if (fixedId === movingId) throw new Error('Invalid registration request.');
-    for (const [series, revision] of [[fixed, fixedRevision], [moving, movingRevision]]) {
-      if (!Number.isSafeInteger(revision) || revision < 1 || series.sourceRevision !== revision) throw new Error('Source series changed.');
-    }
+    const checkSources = () => {
+      for (const [id, revision] of [[fixedId, fixedRevision], [movingId, movingRevision]]) {
+        const series = this.requireSeries(id, generation);
+        if (!Number.isSafeInteger(revision) || revision < 1 || series.sourceRevision !== revision) throw new Error('Source series changed.');
+      }
+    };
+    checkSources();
     const result = (await this.requestJson('register', { fixedId, movingId, fixedRevision, movingRevision }, generation)).value;
+    checkSources();
     const finite = value => typeof value === 'number' && Number.isFinite(value);
     if (!result || !Array.isArray(result.matrix) || result.matrix.length !== 16 || !result.matrix.every(finite)
       || !['similarity', 'similarityBefore', 'overlap', 'angle'].every(key => finite(result[key]))) throw new Error('Invalid registration result.');

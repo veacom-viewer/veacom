@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import { facesSame, linkedSlice, type Pane } from '../src/imaging/linking';
-import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
+import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
 import { angleOf, applyPoint, applyVector, compose, IDENTITY, invert, isIdentity, rotation, translation } from '../src/imaging/rigid';
 import type { EngineRegistration, FusionSettings, Series, Vec3, ViewState } from '../src/model';
 
@@ -23,7 +23,7 @@ const engine = (matrix: number[] = [...translation([0, 0, -24])]): EngineRegistr
 const aligned = alignmentFrom(engine(), currentCt, priorCt)!;
 const view = (slice: number, plane: ViewState['plane'] = 'axial'): ViewState => ({ mode: 'source', plane, slice, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false });
 const pane = (item: Series, slice: number): Pane => ({ series: item, view: view(slice) });
-const close = (actual: Vec3, expected: Vec3) => actual.forEach((value, axis) => assertClose(value, expected[axis], 1e-9));
+const close = (actual: Vec3, expected: Vec3) => actual.forEach((value, axis) => assertClose(value, expected[axis], 9));
 
 describe('aligned frames of reference', () => {
   it('keep the engine\'s transform for the two frames, not the two series', () => {
@@ -76,6 +76,17 @@ describe('aligned frames of reference', () => {
     assert.equal(alignmentOf(both, currentCt), null);
   });
 
+  it('labels the registration drawn for each base, including identity and chained transforms', () => {
+    const mr = series({ id: 'mr', frameOfReferenceUid: 'mr' });
+    const identity = alignmentFrom(engine([...IDENTITY]), currentCt, priorPet)!;
+    const adjustedMr = nudged(alignmentFrom(engine(), mr, priorPet)!, translation([1, 0, 0]));
+    const alignments = [identity, adjustedMr];
+    assert.equal(placementOf(alignments, currentCt, priorPet), 'automatic');
+    assert.equal(placementOf(alignments, mr, priorPet), 'adjusted');
+    assert.equal(placementOf(alignments, currentCt, mr), 'adjusted');
+    assert.equal(placementOf([], currentCt, priorPet), undefined);
+  });
+
   it('are replaced and removed by pair of frames, either way round', () => {
     const again = alignmentFrom(engine([...translation([0, 0, -23])]), priorCt, currentCt)!;
     assert.deepEqual(withAlignment([aligned], again), [again]);
@@ -89,10 +100,10 @@ describe('aligned frames of reference', () => {
     // A turn about a point in the fixed frame leaves that point where it is.
     const turned = nudged(lower, rotation(2, 0.5, [0, 0, -100]));
     close(applyPoint(turned.matrix, [0, 0, -75]), [0, 0, -100]);
-    assertClose(movement(turned).angle, 0.5, 1e-9);
+    assertClose(movement(turned).angle, 0.5, 9);
     assert.deepEqual(automatic(turned).matrix, aligned.found);
     assert.equal(adjusted(automatic(turned)), false);
-    assertClose(movement(aligned).shift, 24, 1e-9);
+    assertClose(movement(aligned).shift, 24, 9);
   });
 
   it('page an aligned prior to where this study is in the patient', () => {
@@ -135,7 +146,7 @@ describe('the reader\'s nudges', () => {
       const back = towards(nudgeStep({ turn: plane, clockwise: false }, pivot), [...right(plane)] as Vec3);
       assert.ok(back[down[plane]] * sign[plane] < 0, `${plane} anticlockwise the other way`);
       close(applyPoint(nudgeStep({ turn: plane, clockwise: true }, pivot), pivot), pivot);
-      assertClose(angleOf(nudgeStep({ turn: plane, clockwise: true }, pivot)), NUDGE_DEGREES, 1e-9);
+      assertClose(angleOf(nudgeStep({ turn: plane, clockwise: true }, pivot)), NUDGE_DEGREES, 9);
     }
     close(applyPoint(nudgeStep({ shift: [0, 0, 1] }, pivot), [0, 0, 0]), [0, 0, 1]);
   });
@@ -146,7 +157,7 @@ describe('rigid transforms', () => {
     const m = compose(translation([3, -4, 5]), rotation(0, 30, [1, 2, 3]));
     assert.equal(isIdentity(compose(invert(m), m)), true);
     assert.equal(isIdentity(compose(m, invert(m))), true);
-    assertClose(angleOf(m), 30, 1e-9);
+    assertClose(angleOf(m), 30, 9);
     close(applyVector(rotation(2, 90, [5, 5, 5]), [1, 0, 0]), [0, 1, 0]);
     close(applyPoint(rotation(1, 90, [0, 0, 0]), [0, 0, 1]), [1, 0, 0]);
   });

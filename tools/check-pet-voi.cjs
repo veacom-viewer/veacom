@@ -350,6 +350,14 @@ async function main() {
     assert.equal(await location(1), priorLesion.center[2]);
     check('Opened after its prior, the study lays out as the PET follow-up and aligns the prior by the CTs; the two page together', { missedMm: Number(missed.toFixed(3)), degrees: Number(turn.toFixed(3)) });
 
+    await choosePetLayout(page, 'layout-pet-follow-up');
+    await page.waitForFunction(initial => {
+      const panes = window.__VEACOM_TEST__.state().panes;
+      return panes[0].slice === initial[0] && panes[1].slice === initial[1];
+    }, s.panes.slice(0, 2).map(pane => pane.slice));
+    await goTo(0, lesion.center[2]);
+    check('Reapplying PET follow-up pages the prior from the new lead slice using the cached alignment');
+
     // A nudge in the display panel moves the prior a millimetre toward the head; back to automatic undoes it.
     if (!await page.getByTestId('inspector-tab-display').isVisible()) await page.getByTestId('tool-inspector').click();
     await page.getByTestId('inspector-tab-display').click();
@@ -361,10 +369,12 @@ async function main() {
     const nudged = (await state()).alignments[0].matrix;
     assert.ok(Math.abs(nudged[11] - aligned.matrix[11] - 1) < 1e-9, 'One millimetre toward the head, in this study\'s coordinates.');
     for (const index of [1, 3]) assert.match(await cells().nth(index).locator('[data-testid="image-overlay"]').textContent(), /Aligned, adjusted by hand/);
+    assert.doesNotMatch(await page.getByTestId('alignment-section').textContent(), /Similarity|Overlap/);
     await shot('5b-nudged');
     await page.locator('[data-action="alignment-automatic"]').click();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().alignments[0]?.adjusted === false);
     assert.deepEqual((await state()).alignments[0].matrix, aligned.matrix);
+    assert.match(await page.getByTestId('alignment-section').textContent(), /Similarity.*Overlap/);
     await page.getByTestId('inspector-tab-measurements').click();
     check('A nudge moves the aligned prior by a millimetre, and back to automatic undoes it');
 

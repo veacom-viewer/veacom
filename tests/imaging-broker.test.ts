@@ -148,6 +148,13 @@ describe('main-only imaging broker', () => {
     assert.equal(f.request.mock.callCount(), calls, 'nothing invalid reaches the engine');
     f.request.mock.mockImplementation(async () => Response.json({ ...answer, matrix: [1, 2, 3] }));
     await assert.rejects(f.broker.register(request), { message: /Invalid registration result\./ });
+    const pending = deferred<Response>();
+    f.request.mock.mockImplementation(async () => pending.promise);
+    const stale = f.broker.register(request);
+    f.request.mock.mockImplementation(async () => Response.json({ series: [{ id: 'moving', sourceRevision: 6 }], warnings: [] }));
+    await f.broker.listSeries();
+    pending.resolve(Response.json(answer));
+    await assert.rejects(stale, /Source series changed/);
     f.broker.dispose();
   });
   it('rejects raw paths and consumes only main-issued one-use file selections', async () => {

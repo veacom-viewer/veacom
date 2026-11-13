@@ -518,7 +518,7 @@ export function Viewport(props: ViewportProps) {
       const pivot = worldToScreen(mapping, props.crosshair);
       const seenPlane = renderedView(latest.current.volume, liveView.current).plane;
       const turnable = new Set(handleTargets.map(item => item.id));
-      const planes = (props.referencePlanes ?? []).filter(item => turnable.has(item.id) && lineAngle(frame, mapping, item.series, item.view, item.view.oblique ?? [0, 0]) !== null)
+      const planes = (props.referencePlanes ?? []).filter(item => turnable.has(item.id) && lineAngle(frame, mapping, item.series, item.view, item.view.oblique ?? [0, 0], item.transform) !== null)
         .map(reference => ({ reference, component: rotationComponent(reference.view.plane, seenPlane) }));
       if (planes.some(item => item.reference.id === handle.id)) {
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -631,7 +631,7 @@ export function Viewport(props: ViewportProps) {
       turn.last = angle;
       const step = event.shiftKey ? 5 : event.ctrlKey || event.metaKey ? 10 : 0;
       for (const { reference, component } of turn.planes) {
-        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, component, turn.turned, step));
+        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, component, turn.turned, step, reference.transform));
       }
       return;
     }

@@ -47,12 +47,16 @@ export const withoutAlignment = (alignments: readonly Alignment[], pair: Pick<Al
 
 // Found transforms, per list of alignments (a new list whenever one changes) and pair of frames: the same matrix object
 // each time, so what is drawn with it keeps its identity.
-const paths = new WeakMap<readonly Alignment[], Map<string, Matrix | null>>();
+interface Placement { matrix: Matrix; adjusted: boolean }
+const paths = new WeakMap<readonly Alignment[], Map<string, Placement | null>>();
 
 /** The transform taking `from`'s patient coordinates to `to`'s: the identity in one frame of reference, through the
  * alignments (either way, and one after another) between two, null where none joins them. */
 export function transformBetween(alignments: readonly Alignment[], from: Series, to: Series): Matrix | null {
-  if (shareFrame(from, to)) return IDENTITY;
+  return shareFrame(from, to) ? IDENTITY : registeredPath(alignments, from, to)?.matrix ?? null;
+}
+
+function registeredPath(alignments: readonly Alignment[], from: Series, to: Series): Placement | null {
   if (!samePatient(from, to)) return null;
   const start = frameOf(from), end = frameOf(to);
   if (!start || !end) return null;
@@ -64,17 +68,17 @@ export function transformBetween(alignments: readonly Alignment[], from: Series,
 }
 
 /** Breadth first through the alignments, each one usable either way. */
-function search(alignments: readonly Alignment[], start: string, end: string): Matrix | null {
-  const reached = new Map<string, Matrix>([[start, IDENTITY]]);
+function search(alignments: readonly Alignment[], start: string, end: string): Placement | null {
+  const reached = new Map<string, Placement>([[start, { matrix: IDENTITY, adjusted: false }]]);
   const queue = [start];
   while (queue.length) {
     const frame = queue.shift()!, so = reached.get(frame)!;
     for (const item of alignments) {
       const step = item.moving === frame ? { to: item.fixed, matrix: item.matrix } : item.fixed === frame ? { to: item.moving, matrix: invert(item.matrix) } : null;
       if (!step || reached.has(step.to)) continue;
-      const matrix = compose(step.matrix, so);
-      if (step.to === end) return matrix;
-      reached.set(step.to, matrix);
+      const placement = { matrix: compose(step.matrix, so.matrix), adjusted: so.adjusted || adjusted(item) };
+      if (step.to === end) return placement;
+      reached.set(step.to, placement);
       queue.push(step.to);
     }
   }
@@ -84,6 +88,18 @@ function search(alignments: readonly Alignment[], start: string, end: string): M
 /** Of two series in frames of their own, the transform between them once aligned; null in one frame, or unaligned. */
 export const alignedTransform = (alignments: readonly Alignment[], from: Series, to: Series): Matrix | null =>
   shareFrame(from, to) ? null : transformBetween(alignments, from, to);
+
+/** How the alignment used to display this pane should be labelled, even when it maps to identity. */
+export function placementOf(alignments: readonly Alignment[], base: Series, overlay?: Series): 'adjusted' | 'automatic' | undefined {
+  if (overlay && !shareFrame(base, overlay)) {
+    const path = registeredPath(alignments, base, overlay);
+    if (path) return path.adjusted ? 'adjusted' : 'automatic';
+    return undefined;
+  }
+  const frame = frameOf(base);
+  const alignment = alignments.find(item => item.moving === frame);
+  return alignment && (adjusted(alignment) ? 'adjusted' : 'automatic');
+}
 
 /** An overlay can be adjusted only through the registration between its frame and the pane's.
  * Without a distinct overlay frame, show controls only when this pane has one unambiguous registration. */

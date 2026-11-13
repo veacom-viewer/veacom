@@ -25,6 +25,7 @@ use veacom_core::coded;
 
 /// Joint histogram bins for each image.
 const BINS: usize = 48;
+const MIN_JOINT_SAMPLES: usize = 64;
 /// The voxel sizes the coarse levels aim for, in mm.
 const COARSE_SPACING: [f64; 2] = [8.0, 4.0];
 /// At most this many voxels in one level of one volume (32 MiB as f32).
@@ -140,7 +141,7 @@ pub fn register(
         let last = index + 1 == pyramid.len();
         let budget = SAMPLES[SAMPLES.len() - pyramid.len() + index];
         let samples = Samples::new(&level.fixed, centre, budget, fixed_range);
-        if samples.points.len() < 64 {
+        if samples.points.len() < MIN_JOINT_SAMPLES {
             bail!(coded!(
                 "registration.failed",
                 "These series could not be aligned: too little of them overlaps or shows the same anatomy"
@@ -203,11 +204,11 @@ pub fn register(
         range: moving_range,
         floor,
     };
-    let after = measure.evaluate(&parameters);
+    let (after, histogram) = measure.evaluate(&parameters);
     // No rotation and no shift: the two series' coordinates taken as one.
-    let identity = measure.evaluate(&[0.0; 6]);
+    let (identity, _) = measure.evaluate(&[0.0; 6]);
     let overlap = after.inside as f64 / finest_samples.points.len().max(1) as f64;
-    if overlap < floor || after.nmi <= 1.0 + 1e-6 {
+    if !measure.enough_overlap(after.inside) || !supports_alignment(&histogram, after.inside) {
         bail!(coded!(
             "registration.failed",
             "These series could not be aligned: too little of them overlaps or shows the same anatomy"
@@ -713,16 +714,19 @@ struct Measure<'a> {
 impl Measure<'_> {
     /// Lower is better: minus the normalised mutual information, or 0 when too few points overlap to say.
     fn cost(&self, parameters: &[f64; 6]) -> f64 {
-        let score = self.evaluate(parameters);
-        if (score.inside as f64) < self.floor * self.samples.points.len() as f64
-            || score.inside < 64
-        {
+        let (score, _) = self.evaluate(parameters);
+        if !self.enough_overlap(score.inside) {
             return 0.0;
         }
         -score.nmi
     }
 
-    fn evaluate(&self, parameters: &[f64; 6]) -> Score {
+    fn enough_overlap(&self, inside: usize) -> bool {
+        inside >= MIN_JOINT_SAMPLES
+            && inside as f64 >= self.floor * self.samples.points.len() as f64
+    }
+
+    fn evaluate(&self, parameters: &[f64; 6]) -> (Score, Vec<f64>) {
         // Fixed point p, stored as p − c, to the moving index: M⁻¹ (R (p − c) + c + t − o).
         let rotation = rotation_matrix(parameters);
         let a = multiply3(self.moving.grid.inverse, rotation);
@@ -776,10 +780,13 @@ impl Measure<'_> {
             histogram[at] += 1.0 - weight;
             histogram[at + 1] += weight;
         }
-        Score {
-            nmi: normalised_mutual_information(&histogram),
-            inside,
-        }
+        (
+            Score {
+                nmi: normalised_mutual_information(&histogram),
+                inside,
+            },
+            histogram,
+        )
     }
 }
 
@@ -812,6 +819,35 @@ fn normalised_mutual_information(histogram: &[f64]) -> f64 {
         return 1.0;
     }
     (entropy(marginal(&rows)) + entropy(marginal(&columns))) / joint_entropy
+}
+
+/// Compare a joint intensity histogram with independent marginals using Schwarz's BIC
+/// (doi:10.1214/aos/1176344136). Eight ranges per image keep the final check usable on small overlaps.
+/// The joint model also fitted the six rigid-transform parameters.
+fn supports_alignment(histogram: &[f64], inside: usize) -> bool {
+    const GROUPS: usize = 8;
+    let mut joint = [[0.0; GROUPS]; GROUPS];
+    let mut fixed = [0.0; GROUPS];
+    let mut moving = [0.0; GROUPS];
+    for (at, &count) in histogram.iter().enumerate() {
+        let a = (at / BINS) * GROUPS / BINS;
+        let b = (at % BINS) * GROUPS / BINS;
+        joint[a][b] += count;
+        fixed[a] += count;
+        moving[b] += count;
+    }
+    let n = inside as f64;
+    let mut gain = 0.0;
+    for (a, row) in joint.iter().enumerate() {
+        for (b, &count) in row.iter().enumerate() {
+            if count > 0.0 {
+                gain += count * (count * n / (fixed[a] * moving[b])).ln();
+            }
+        }
+    }
+    let occupied = |bins: &[f64]| bins.iter().filter(|&&v| v > 0.0).count();
+    let extra_parameters = (occupied(&fixed) - 1) * (occupied(&moving) - 1) + 6;
+    2.0 * gain > extra_parameters as f64 * n.ln()
 }
 
 /// Starting points for the coarsest level: the shift that puts the two bodies' centres together, moved along the
@@ -1249,6 +1285,31 @@ mod tests {
             crate::message::coded(&error).map(|note| note.code),
             Some("registration.failed")
         );
+    }
+
+    #[test]
+    fn unrelated_nonconstant_volumes_are_refused_at_large_and_small_overlaps() {
+        fn noise(side: usize, mut seed: u32) -> (SourceSeries, PixelBuffer) {
+            let (source, _) = volume([side; 3], [8.; 3], [0.; 3], false, |p| p);
+            let values = (0..side.pow(3))
+                .map(|_| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    (seed >> 16) as f32
+                })
+                .collect();
+            (source, PixelBuffer::F32(values))
+        }
+        for (fixed_size, moving_size) in [(24, 24), (6, 4)] {
+            let fixed = noise(fixed_size, 14419);
+            let moving = noise(moving_size, 7759);
+            let error = register((&fixed.0, &fixed.1), (&moving.0, &moving.1), &NEVER).unwrap_err();
+            assert_eq!(
+                crate::message::coded(&error).map(|note| note.code),
+                Some("registration.failed")
+            );
+        }
     }
 
     #[test]
