@@ -12,6 +12,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const { registrationError } = require('./lib/registration-error.cjs');
 const { EngineProcess } = require('../electron/engine-process.cjs');
 
 const [root, output] = process.argv.slice(2).map(value => path.resolve(value));
@@ -22,19 +23,6 @@ if (!root) {
 const executable = process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core';
 const binary = process.env.VEACOM_CORE_PATH || path.resolve(__dirname, '../native/target/release', executable);
 const MAX_MM = 1, MAX_DEGREES = 0.5;
-
-/** The row-major 4 × 4 matrix applied to a point. */
-const apply = (matrix, p) => [0, 1, 2].map(row => matrix[row * 4] * p[0] + matrix[row * 4 + 1] * p[1] + matrix[row * 4 + 2] * p[2] + matrix[row * 4 + 3]);
-/** The rotation the matrix holds, in degrees. */
-const angle = matrix => Math.acos(Math.min(1, Math.max(-1, (matrix[0] + matrix[5] + matrix[10] - 1) / 2))) * 180 / Math.PI;
-/** The corners of a series' volume, in its patient coordinates. */
-function corners(series) {
-  const [nx, ny, nz] = series.dimensions.map(n => n - 1), d = series.direction, s = series.spacing;
-  return [0, 1, 2, 3, 4, 5, 6, 7].map(corner => {
-    const index = [corner & 1 ? nx : 0, corner & 2 ? ny : 0, corner & 4 ? nz : 0];
-    return [0, 1, 2].map(row => series.origin[row] + d[row * 3] * index[0] * s[0] + d[row * 3 + 1] * index[1] * s[1] + d[row * 3 + 2] * index[2] * s[2]);
-  });
-}
 
 async function main() {
   const manifest = JSON.parse(await fs.readFile(path.join(root, 'manifest.json'), 'utf8'));
@@ -64,8 +52,7 @@ async function main() {
       return { ...result, ms: Math.round(performance.now() - started) };
     };
     const measured = (registration, moving) => {
-      const errors = corners(moving).map(p => Math.hypot(...apply(registration.matrix, p).map((value, axis) => value - (p[axis] - shift[axis]))));
-      return { worstMm: Number(Math.max(...errors).toFixed(3)), degrees: Number(angle(registration.matrix).toFixed(3)),
+      return { ...registrationError(registration.matrix, moving, shift),
         similarity: Number(registration.similarity.toFixed(3)), before: Number(registration.similarityBefore.toFixed(3)), overlap: Number(registration.overlap.toFixed(3)) };
     };
     assert.notEqual(imported.prior.CT.frameOfReferenceUid, imported.current.CT.frameOfReferenceUid, 'The two visits lie in frames of their own.');

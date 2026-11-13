@@ -973,6 +973,7 @@ fn optimise(
                 cost = found[n];
                 let (axis, delta) = moves[n];
                 loop {
+                    stop()?;
                     let mut further = point;
                     further[axis] += delta;
                     let further_cost = measure.cost(&further);

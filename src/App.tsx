@@ -1673,21 +1673,22 @@ export default function App() {
     // An arrangement that aligns two frames of reference (the PET follow-up: the prior's to this study's, by their CTs)
     // says so in its note: under way, then what was done. Panes in the aligned frame go to where the first pane is.
     // Every series loaded, the study just read among them (the list itself is not yet up to date when a study opens).
-    const pair = alignmentPair(plan, session ?? seriesRef.current), done = pair ? alignedTransform(alignmentsRef.current, pair.fixed, pair.moving) : null;
+    const available = session ?? seriesRef.current;
+    const pair = alignmentPair(plan, available), done = pair ? alignedTransform(alignmentsRef.current, pair.fixed, pair.moving) : null;
     const toast: PaneToast = { slotId: panes[0].id, seriesId: plan.panes[0].series.id, text: pair && !done ? `${text} ${t('alignment.priorRunning')}` : text,
       sticky: true, undoAction: 'arrangement', onUndo: undo };
     setPaneToast(toast);
-    if (pair && done) pageAligned(panes[0].id, alignmentsRef.current, panes);
+    if (pair && done) pageAligned(panes[0].id, alignmentsRef.current, panes, available);
     else if (pair) alignArranged(plan, pair, toast, text, panes[0].id);
   };
   /** Panes whose series lie in a frame of reference aligned to the pane `leadId`'s go to where it is in the patient, as
    * linked panes do; a whole-volume MIP keeps its turn. */
-  const pageAligned = (leadId: string, aligned: readonly Alignment[], panes?: readonly Slot[]) => {
-    const lead = (panes ?? slotsRef.current).find(slot => slot.id === leadId), leadSeries = lead?.seriesId ? seriesRef.current.find(item => item.id === lead.seriesId) : undefined;
+  const pageAligned = (leadId: string, aligned: readonly Alignment[], panes: readonly Slot[], available: readonly Series[]) => {
+    const lead = panes.find(slot => slot.id === leadId), leadSeries = lead?.seriesId ? available.find(item => item.id === lead.seriesId) : undefined;
     if (!lead || !leadSeries || isProjection(leadSeries, lead.view)) return;
     const at = getPlaneFrame(leadSeries, lead.view).center;
     setSlots(current => current.map(slot => {
-      const other = slot.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
+      const other = slot.seriesId ? available.find(item => item.id === slot.seriesId) : undefined;
       const toOther = other && slot.id !== leadId && !isProjection(other, slot.view) ? alignedTransform(aligned, leadSeries, other) : null;
       if (!other || !toOther) return slot;
       const slice = coveredSlice({ series: other, view: slot.view }, applyPoint(toOther, at));
@@ -1702,7 +1703,7 @@ export default function App() {
       if (!mounted.current || arranged.current?.plan !== plan) return;
       const next = withAlignment(alignmentsRef.current, found);
       changeAlignments(next);
-      pageAligned(leadId, next);
+      pageAligned(leadId, next, slotsRef.current, seriesRef.current);
       const said = t('alignment.priorDone', { by: modalityName(pair.moving), ...moved(found) });
       if (paneToastRef.current === toast) { setPaneToast({ ...toast, text: `${text} ${said}` }); return; }
       const role = plan.arrangement.align?.role, shown = role ? slotsRef.current.find(slot => slot.seriesId === plan.roles[role]?.id) : undefined;

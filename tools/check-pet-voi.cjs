@@ -30,6 +30,7 @@ const os = require('node:os');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
+const { registrationError } = require('./lib/registration-error.cjs');
 const { choosePetLayout } = require('./lib/pet-layout.cjs');
 
 async function main() {
@@ -329,8 +330,7 @@ async function main() {
     assert.deepEqual(s.panes.map(pane => pane.projection), [null, null, 'mip', 'mip']);
     // The prior's CT laid over this study's: a prior point p lies at p − (0, 0, 24) here, within 1 mm and 0.5°.
     const [aligned] = s.alignments, shift = prior.shift.map((value, axis) => value - current.shift[axis]);
-    const turn = Math.acos(Math.min(1, (aligned.matrix[0] + aligned.matrix[5] + aligned.matrix[10] - 1) / 2)) * 180 / Math.PI;
-    const missed = Math.hypot(aligned.matrix[3] + shift[0], aligned.matrix[7] + shift[1], aligned.matrix[11] + shift[2]);
+    const { worstMm: missed, degrees: turn } = registrationError(aligned.matrix, priorCt, shift);
     assert.deepEqual([aligned.fixedSeriesId, aligned.movingSeriesId], [nowCt.id, priorCt.id]);
     assert.ok(missed < 1 && turn < 0.5, `The prior lands within 1 mm and 0.5°: ${missed.toFixed(3)} mm, ${turn.toFixed(3)}°`);
     assert.deepEqual(await page.locator('.pane-toast').allTextContents(), ['PET follow-up on one SUV scale: this study · prior · their MIPs. Prior aligned to this study by CT: moved 24.0 mm, turned 0.0°.Undo']);
