@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { launchHarness } from './harness-browser.mjs';
 
 // VEACOM_BROWSER_ARGS adds browser switches, e.g. --disable-gpu to run the pixel checks on software WebGL.
@@ -85,6 +86,24 @@ try {
   check('Hiding measurements preserves their data',(await state()).annotations.length===countBeforeHiding);
   await page.evaluate(()=>window.viewportTest.setOptions({}));await settle();
   await tool('crosshair');await drag([300,300],[320,350]);check('Linked point is in patient space',(await state()).crosshair.length===3);
+  // The crosshair tool points with the app's own "+" (theme.css --cursor-point), not the system crosshair, which inverts
+  // the colours under it (the green marker turned pink). While a press sets the point the pointer is hidden and the green
+  // marker alone follows it; released, the "+" is back.
+  // The harness page has no stylesheet: it takes the pointer's token from src/theme.css.
+  await page.addStyleTag({content:`:root{${/--cursor-point:[^;]+;/.exec(await readFile(new URL('../src/theme.css',import.meta.url),'utf8'))[0]}}`});
+  const paneCursor=()=>page.evaluate(()=>getComputedStyle(document.querySelector('[data-testid="dicom-viewport"]')).cursor);
+  // Where the marker is drawn, in the pane's own coordinates: unstyled here, the text check's note form leaves the pane
+  // scrolled, with its drawings shifted from the screen.
+  const markerAt=()=>page.evaluate(()=>{const marker=document.querySelector('[data-crosshair-marker]'),box=marker.getBoundingClientRect(),layer=marker.closest('svg').getBoundingClientRect(),pane=document.querySelector('[data-testid="dicom-viewport"]').getBoundingClientRect();
+    return [box.left+box.width/2-layer.left+pane.left,box.top+box.height/2-layer.top+pane.top];});
+  // A press on a measurement takes hold of it whatever the tool: none is left under the pointer.
+  await page.evaluate(()=>window.viewportTest.clear());await settle();
+  const pointerCursor=await paneCursor();
+  await page.mouse.move(250,260);await page.mouse.down();await settle();const pressedCursor=await paneCursor();
+  const followed=[];for(const [x,y] of [[262,281],[281,300],[300,322]]){await page.mouse.move(x,y,{steps:3});await settle();const [mx,my]=await markerAt();followed.push(Math.hypot(mx-x,my-y));}
+  await page.mouse.up();await settle();
+  check('Crosshair tool: the app\'s own pointer, hidden while pressed with the marker following it',pointerCursor.startsWith('url("data:image/svg+xml')&&pointerCursor.endsWith(', crosshair')
+    &&pressedCursor==='none'&&followed.every(distance=>distance<=1.5)&&await paneCursor()===pointerCursor);
   await page.evaluate(()=>window.viewportTest.setView({plane:'coronal',slice:32}));await settle();
   check('Coronal MPR renders',await page.locator('canvas').getAttribute('data-plane')==='coronal');
   await page.evaluate(()=>window.viewportTest.setView({oblique:[15,10]}));await settle();check('Oblique MPR renders without errors',await page.locator('[role="alert"]').count()===0);

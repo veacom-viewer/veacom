@@ -260,7 +260,10 @@ export function Viewport(props: ViewportProps) {
   const editing = useRef<{ pointer: number; start: Point2; startWorld: Vec3; original: Annotation; part: AnnotationPart; labelBase: Vec3; moved: boolean; context: InteractionContext } | null>(null);
   const editLive = useRef<Annotation | null>(null);
   const [edited, setEdited] = useState<Annotation | null>(null);
-  const baseCursor = annotationTools.has(props.tool) || props.tool === 'crosshair' ? 'crosshair' : props.tool === 'pan' ? 'grab' : 'default';
+  // The crosshair and measuring tools point with the app's own "+" (theme.css), which never inverts the colours under it.
+  const baseCursor = annotationTools.has(props.tool) || props.tool === 'crosshair' ? 'var(--cursor-point, crosshair)' : props.tool === 'pan' ? 'grab' : 'default';
+  // A press that sets the crosshair hides the cursor, so its green marker alone shows the point under it; this brings it back.
+  const showCursor = () => { if (container.current?.style.cursor === 'none') container.current.style.cursor = baseCursor; };
   // Ctrl + drag on a fused image: the pointer, where it was pressed and the PET's scale then.
   const petDrag = useRef<{ pointer: number; start: Point2; settings: { upperSuv: number; opacity: number } } | null>(null);
   const turning = useRef<{ pointer: number; id: string; pivot: Point2; last: number; turned: number; frame: PlaneFrame; mapping: ScreenMapping;
@@ -285,6 +288,7 @@ export function Viewport(props: ViewportProps) {
       const pointers = new Set([...touches.current.keys(), ...(drag.current ? [drag.current.pointer] : []), ...(freehand.current ? [freehand.current.pointer] : []), ...(editing.current ? [editing.current.pointer] : []), ...(petDrag.current ? [petDrag.current.pointer] : []), ...(turning.current ? [turning.current.pointer] : [])]);
       for (const pointer of pointers) if (container.current?.hasPointerCapture(pointer)) container.current.releasePointerCapture(pointer);
       drag.current = null; touches.current.clear(); pinch.current = null; petDrag.current = null; turning.current = null; setHeldLine(null);
+      showCursor();
     }
     editing.current = null; editLive.current = null; setEdited(null);
     construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null;
@@ -602,11 +606,17 @@ export function Viewport(props: ViewportProps) {
     event.currentTarget.setPointerCapture(event.pointerId);
     if (event.detail <= 1) gesture.current = usage.begin(annotationTools.has(mode) ? `draw-${mode}` : `drag-${mode}`, input === 'touch' ? 'touch' : 'drag');
     drag.current = { mode, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
-    if (mode === 'crosshair') { pendingCrosshair.current = pickAt(...start); queue(false); }
+    if (mode === 'crosshair') {
+      pendingCrosshair.current = pickAt(...start); queue(false);
+      // In the three-plane MPR the lines' gap marks the point instead of the marker, and the pointer stays.
+      if (event.pointerType !== 'touch' && !(latest.current.onRotateReference && latest.current.referencePlanes?.length)) event.currentTarget.style.cursor = 'none';
+    }
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     syncInteractionContext(latest.current.volume, liveView.current);
     const point = local(event), active = drag.current;
+    // A press whose release the pane never saw (the window lost the pointer) gives the pointer back with the next move.
+    if (!active && event.buttons === 0) showCursor();
     if (event.pointerType !== 'touch') { hover.current = point; updateReadout(); }
     if (touches.current.has(event.pointerId)) touches.current.set(event.pointerId, point);
     if (pinch.current && touches.current.size >= 2) {
@@ -730,6 +740,7 @@ export function Viewport(props: ViewportProps) {
       return;
     }
     const active = drag.current; if (!active || active.pointer !== event.pointerId) return;
+    if (active.mode === 'crosshair') showCursor();
     gesture.current?.end(active.moved ? {} : { id: `click-${active.mode}`, input: event.pointerType === 'touch' ? 'touch' : 'mouse' }); gesture.current = null;
     drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
