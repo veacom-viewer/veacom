@@ -217,7 +217,7 @@ describe('the checklist record of a caliper', () => {
     const english = checklistSummary('pns', state.answers, state.notes, 'en');
     assert.ok(english.includes('Olfactory fossa depth (Keros): Right 2 (3.5 mm, type 2, near limit; slice 42/120), Left 2 (6.0 mm, type 2; slice 42/120); right–left difference 2.5 mm'), english);
     // Measured without an answer: the side still shows what was measured.
-    assert.ok(english.includes('Anterior ethmoid artery in mesentery / dehiscent: Right – (1.3 mm below roof, type 1; slice 42/120), Left –'), english);
+    assert.ok(english.includes('Floating anterior ethmoid artery: Right – (1.3 mm below roof, type 1; slice 42/120), Left –'), english);
     const turkish = checklistSummary('pns', state.answers, state.notes, 'tr');
     assert.ok(turkish.includes('Sağ 2 (3.5 mm, tip 2, sınırda; kesit 42/120)'), turkish);
     assert.ok(turkish.includes('sağ–sol fark 2.5 mm'), turkish);

@@ -301,7 +301,7 @@ async function main() {
     };
     const report = await copied('Copied');
     for (const part of [/Olfactory fossa depth \(Keros\): Right 1 \(3\.2 mm, type 1, near limit; slice \d+\/\d+\), Left 2 \(6\.0 mm, type 2; slice \d+\/\d+\); right–left difference 2\.8 mm/,
-      /Anterior ethmoid artery in mesentery \/ dehiscent: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left Yes \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
+      /Floating anterior ethmoid artery: Right – \(1\.0 mm below roof, type 1; slice \d+\/\d+\), Left Yes \(2\.8 mm below roof, type 2; slice \d+\/\d+\)/,
       /Sphenoid pneumatisation: Sellar \(\d+\.\d mm behind tuberculum line; slice \d+\/\d+\)/,
       /Septal deviation \/ spur: Right – \(slice \d+\/\d+\), Left Yes \(12\.6°, moderate; slice \d+\/\d+\)/]) assert.match(report, part);
     check('Copy for the report gives every caliper value with its side and slice', { report });

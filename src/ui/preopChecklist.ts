@@ -63,7 +63,7 @@ export const CHECKLISTS: Record<ChecklistKind, { title: Words; groups: Checklist
         { id: 'sphenoid-septum', label: { tr: 'İntersinüs septum karotis kanalına yapışık', en: 'Intersinus septum on the carotid canal' }, hint: { tr: 'Septumun karotis kanalında bittiği taraf', en: 'The side where the septum ends on the carotid canal' }, sided: true, planes: ['axial', 'coronal'] },
         { id: 'pneumatisation', label: { tr: 'Sfenoid pnömatizasyonu', en: 'Sphenoid pneumatisation' }, hint: { tr: 'Sella\'ya göre', en: 'Relative to the sella' }, sided: false,
           options: [{ value: 'conchal', tr: 'Konkal', en: 'Conchal' }, { value: 'presellar', tr: 'Preseller', en: 'Presellar' }, { value: 'sellar', tr: 'Seller', en: 'Sellar' }, { value: 'postsellar', tr: 'Postseller', en: 'Postsellar' }, { value: 'unknown', tr: '?', en: '?' }], planes: ['sagittal'] },
-        { id: 'ethmoid-artery', label: { tr: 'Ön etmoid arter mezenterde / dehisan', en: 'Anterior ethmoid artery in mesentery / dehiscent' }, hint: { tr: 'Kafa tabanının altında seyir ya da açık kemik kanal', en: 'Running below the skull base, or an open bony canal' }, sided: true, planes: ['coronal'] },
+        { id: 'ethmoid-artery', label: { tr: 'Mezenterik ön etmoid arter', en: 'Floating anterior ethmoid artery' }, hint: { tr: 'Kafa tabanının altında, mezenter içinde seyir', en: 'Running below the skull base, in a mesentery' }, sided: true, planes: ['coronal'] },
       ],
     }, {
       title: { tr: 'Diğer', en: 'Other' },

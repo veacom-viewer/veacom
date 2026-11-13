@@ -15,20 +15,21 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
 | Item | Plane | Points | Value | Answer |
 | --- | --- | --- | --- | --- |
 | Olfactory fossa depth (Keros) | coronal | the olfactory fossa's floor (cribriform plate), the ethmoid roof at the top of the lateral lamella (fovea ethmoidalis) | depth: the height between them, straight up | Keros type 1–3 |
-| Anterior ethmoid artery in mesentery / dehiscent | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
+| Floating (mesenteric) anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
 | Sphenoid pneumatisation | sagittal | tuberculum sellae, top of the dorsum sellae, sinus wall furthest back | the wall's place against the two sella lines | sellar or postsellar; none in front of the tuberculum line |
 | Septal deviation / spur | coronal | maxillary crest, crista galli, most deviated point | angle at the crista galli, and the side it bows to | Yes on that side |
 
 - **Keros** (Keros 1962): type 1 is 1–3 mm, 2 is 4–7 mm, 3 is 8–16 mm, read in whole millimetres as Keros measured. A
   depth within 0.5 mm of the 3–4 or 7–8 mm gaps is marked "near limit": a measurement error of about 0.5 mm (Reuter
   2026) or the other usual cut (below 4, 4–8, above 8 mm) could change its type. When both sides are measured, the
-  report gives their difference. Two points are enough: the depth is a height, so where on the plate the floor is
-  marked does not change it. The Gera angle (the lamella against the plate) is not measured: it is rarely used, and the
-  third point it needed made the order of the clicks unclear.
+  report gives their difference. Two points are enough: the depth is a height. It is defined at the lamella, from its
+  foot on the cribriform plate to its top at the fovea ethmoidalis; on a sloping plate, a floor marked further medially
+  can read a few tenths of a millimetre differently. The Gera angle (the lamella against the plate) is not measured: it
+  is rarely used, and the third point it needed made the order of the clicks unclear.
 - **Anterior ethmoidal artery** (El-Anwar et al., J Neurol Surg B Skull Base 2021;82(S3):e259–e267): the artery's
   middle to the ethmoid roof on coronal CT; type 1 is 0–2 mm, 2 is 2–4 mm, 3 is 4–6 mm, 4 above 6 mm. Types 2 to 4
-  answer yes (below the skull base). Type 1 gives no answer: the item's yes also covers a dehiscent artery, which the
-  caliper cannot see.
+  answer yes: the artery runs below the skull base, in a mesentery (floating). Type 1 gives no answer; the reader marks
+  it.
 - **Sphenoid pneumatisation** (Güldner et al., Acta Radiol 2012;53:214–219): lines through the tuberculum and the
   dorsum, square to the line joining them. Between them the sinus is sellar, behind the dorsum line postsellar. In
   front of the tuberculum line it is presellar or conchal, which the sinus's size decides, so the reader answers.
