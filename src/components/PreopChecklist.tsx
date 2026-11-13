@@ -1,8 +1,8 @@
 import { studyKey } from '../domain/patient';
 import { useRef, useState, useSyncExternalStore, type KeyboardEvent } from 'react';
 import { flushSync } from 'react-dom';
-import { ClipboardCheck, Copy, Crosshair, Printer, Ruler, X } from './icons';
-import type { CaliperKind, Series } from '../model';
+import { ClipboardCheck, Copy, Crosshair, Eye, Printer, Ruler, X } from './icons';
+import type { CaliperKind, Plane, Series } from '../model';
 import type { MessageKey } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { copyText } from '../ui/clipboard';
@@ -10,14 +10,15 @@ import { printPage } from '../ui/print';
 import { TheatreCard } from './TheatreCard';
 import { CALIPERS, caliperName, caliperShort, ITEM_CALIPERS } from '../imaging/calipers';
 import { keepChecklist, keptChecklist, subscribeChecklists } from '../ui/checklistStore';
+import { rememberView, rememberedView } from '../ui/checklistViews';
 import { modifierKey } from '../ui/presets';
-import { CHECKLISTS, FINDING, answerByKey, checklistKey, checklistKind, checklistSummary, moveCell, unmarkedItems, type ChecklistCell, type ChecklistState, type ChecklistKind, type Side, type SliceNote } from '../ui/preopChecklist';
+import { CHECKLISTS, FINDING, answerByKey, checklistKey, checklistKind, checklistSummary, moveCell, nextPlane, noteAnswered, unmarkedItems, type ChecklistCell, type ChecklistItem, type ChecklistState, type ChecklistKind, type Side, type SliceNote } from '../ui/preopChecklist';
 import { usage } from '../usage/tracker';
 import './PreopChecklist.css';
 
-/** The pre-operative checklist beside the images: each finding marked per side, with the slice it was seen on, and the
- * items with a caliper measured on the image. */
-export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, onRestored, headingRef }: {
+/** The pre-operative checklist beside the images: each finding marked per side, one line an item, and under the list the
+ * selected item with the slice each side was seen on, its caliper, and Show, which turns the pane to the item's plane. */
+export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, onMeasure, measuring, measureBlocked, paneShows, onShow, showBlocked, onRestored, headingRef }: {
   series: Series; onClose: () => void;
   /** The reader hid the patient's data: the theatre card leaves it out too. */
   hidePatient: boolean;
@@ -30,6 +31,12 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
   measuring: { item: string; side: Side } | null;
   /** Why a caliper cannot be used on the active pane now, or null. */
   measureBlocked: (kind: CaliperKind) => MessageKey | null;
+  /** The plane the active pane shows (calipers.showsPlane), or null. */
+  paneShows: Plane | null;
+  /** Shows the item called `name` on `plane`, at the first slice noted for it there, else where it was `last` looked at. */
+  onShow: (name: string, plane: Plane, places: { noted: SliceNote[]; last?: SliceNote }) => void;
+  /** Why an item cannot be shown on a plane now, or null. */
+  showBlocked: (plane: Plane) => MessageKey | null;
   /** Undo put back an earlier checklist: caliper drawings moved since measure again into the records it brought back. */
   onRestored: () => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void;
@@ -50,10 +57,24 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
   const column = useRef<'right' | 'left'>('right');
   const list = CHECKLISTS[state.kind];
   const items = list.groups.flatMap(group => group.items);
+  // The row the bar under the list shows: the one last clicked or reached by the keys.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const selected = items.find(item => item.id === selectedId) ?? items[0];
+  const select = (id: string) => { if (id !== selected.id) setSelectedId(id); };
   const sidesOf = (sided: boolean): Side[] => sided ? ['right', 'left'] : ['both'];
   const total = items.reduce((sum, item) => sum + (item.sided ? 2 : 1), 0);
   const done = items.reduce((sum, item) => sum + sidesOf(item.sided).filter(side => state.answers[item.id]?.[side]).length, 0);
-  const answer = (id: string, side: Side, value: string) => update({ ...state, answers: { ...state.answers, [id]: { ...state.answers[id], [side]: state.answers[id]?.[side] === value ? undefined : value } } });
+  /** `next` after `sides` of `item` were answered. With the pane on one of the item's planes, the slice on screen is
+   * remembered for Show, and a side marked present notes it by itself (noteAnswered). */
+  const answered = (next: ChecklistState, item: ChecklistItem, sides: readonly Side[]) => {
+    const here = paneShows && item.planes?.includes(paneShows) ? onNote() : null;
+    if (here && paneShows) rememberView(key, item.id, paneShows, here);
+    return noteAnswered(next, item, sides, here, paneShows);
+  };
+  const answer = (item: ChecklistItem, side: Side, value: string) => {
+    select(item.id);
+    update(answered({ ...state, answers: { ...state.answers, [item.id]: { ...state.answers[item.id], [side]: state.answers[item.id]?.[side] === value ? undefined : value } } }, item, [side]));
+  };
   // What Clear, or a slice note in place of a measurement, took away: Undo puts it back while the checklist is still as
   // that change left it, so it never overwrites anything done since.
   const [undo, setUndo] = useState<{ before: ChecklistState; after: ChecklistState; text: string } | null>(null);
@@ -67,6 +88,18 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     // A side holds one note: a slice note drops a caliper's record there (its drawing stays on the image).
     if (state.notes[id]?.[side]?.caliper) change(next, t('checklist.noteReplaced', { where: side === 'both' ? label : `${label} · ${sideName(side)}` }));
     else update(next);
+  };
+  /** Show: the pane turns to the item's next plane (nextPlane), at a slice noted for it there (the side the keys are on
+   * first), else where it was last looked at there. Turning from one of its planes to the other remembers where it was. */
+  const show = (item: ChecklistItem) => {
+    const plane = nextPlane(item, paneShows);
+    if (!plane || showBlocked(plane)) return;
+    select(item.id);
+    const here = paneShows && paneShows !== plane && item.planes?.includes(paneShows) ? onNote() : null;
+    if (here && paneShows) rememberView(key, item.id, paneShows, here);
+    const sides: Side[] = !item.sided ? ['both'] : column.current === 'left' ? ['left', 'right'] : ['right', 'left'];
+    const noted = sides.map(side => state.notes[item.id]?.[side]).filter((place): place is SliceNote => place !== undefined);
+    onShow(item.label[locale], plane, { noted, last: rememberedView(key, item.id, plane) });
   };
   const clear = () => {
     const next = { ...state, answers: {}, notes: {} };
@@ -96,7 +129,7 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     const side = element.closest<HTMLElement>('[data-side]')?.dataset.side as Side | undefined;
     return { row, side: side ?? (items[row].sided ? column.current : 'both') };
   };
-  /** Moves the keyboard to a side: its answers take focus, and the whole row comes into view. */
+  /** Moves the keyboard to a side: its answers take focus (which selects the row), and the whole row comes into view. */
   const focusCell = (cell: ChecklistCell) => {
     if (cell.side !== 'both') column.current = cell.side;
     const row = body.current?.querySelector<HTMLElement>(`[data-item="${items[cell.row].id}"]`);
@@ -109,6 +142,14 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     const meaning = checklistKey(event), target = event.target as Element;
     if (!meaning || measuring) return;
     const at = cellOf(target);
+    // Enter shows the item from a row's answers, where the keys put focus; on a button it presses the button.
+    if ('show' in meaning) {
+      if (!at || !target.matches('.preop-choice')) return;
+      event.preventDefault();
+      usage.action('checklist-key-show', 'key');
+      show(items[at.row]);
+      return;
+    }
     if (!at && !('move' in meaning && meaning.move === 'down' && target.matches('h2'))) return;
     event.preventDefault();
     if ('move' in meaning) {
@@ -116,13 +157,14 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
       focusCell(at ? moveCell(items, at, meaning.move, column.current) : { row: 0, side: items[0].sided ? column.current : 'both' });
       return;
     }
-    const answered = at && answerByKey(state, items, at, meaning.answer, meaning.both);
-    if (!answered) return;
+    const byKey = at && answerByKey(state, items, at, meaning.answer, meaning.both);
+    if (!byKey) return;
     usage.action(meaning.both ? 'checklist-key-both' : 'checklist-key-answer', 'key');
-    update(answered.state);
-    focusCell(answered.next);
+    const item = items[at.row];
+    update(answered(byKey.state, item, meaning.both ? sidesOf(item.sided) : [at.side]));
+    focusCell(byKey.next);
   };
-  // Rows Copy leaves out (nothing answered or measured), said beside it; pressing the count goes to the first one.
+  // Rows Copy leaves out (nothing answered or measured), counted above the names; pressing the count goes to the first.
   const unmarked = unmarkedItems(state.kind, state.answers, state.notes);
   const goToUnmarked = () => {
     const row = items.findIndex(item => item.id === unmarked[0]);
@@ -138,6 +180,9 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     try { await printPage(); } catch { setPrintFailed(true); }
   };
 
+  // The selected item's bar: Show names the plane it turns to; each side its note or measurement, Note and Measure.
+  const caliper = ITEM_CALIPERS[selected.id], target = nextPlane(selected, paneShows);
+  const showWhy = target ? showBlocked(target) : null;
   const undoKeys = mac ? '⌘Z' : 'Ctrl+Z';
   return <section className="preop-checklist" aria-label={t('checklist.title')} data-testid="preop-checklist" onKeyDown={event => {
     // ⌘Z here undoes what the checklist just lost, not the last measurement on the image.
@@ -147,65 +192,81 @@ export function PreopChecklist({ series, hidePatient, onClose, onNote, onGoTo, o
     keys(event);
   }}>
     <header><ClipboardCheck size={17} aria-hidden="true" /><h2 ref={headingRef} tabIndex={-1}>{t('checklist.title')}</h2>
+      {/* A recognised study shows its own list only; the choice is offered when the descriptions do not say. */}
+      {detected && <span className="preop-kind-name">{list.title[locale]}</span>}
       <span className="preop-count" aria-label={t('checklist.count', { done, total })}>{done} / {total}</span>
       <button type="button" className="icon-button" aria-label={t('checklist.close')} data-action="checklist-close" onClick={onClose}><X size={16} /></button></header>
-    {/* A recognised study shows its own list only; the choice is offered when the descriptions do not say. */}
-    {detected ? <div className="preop-kind-name">{list.title[locale]}</div> : <div className="preop-kinds" role="radiogroup" aria-label={t('checklist.kind')}>
+    {!detected && <div className="preop-kinds" role="radiogroup" aria-label={t('checklist.kind')}>
       {(['pns', 'temporal'] as const).map((kind: ChecklistKind) => <button key={kind} type="button" role="radio" aria-checked={state.kind === kind} data-action="checklist-kind" className={state.kind === kind ? 'is-selected' : ''}
         onClick={() => update({ ...state, kind })}>{CHECKLISTS[kind].title[locale]}</button>)}
     </div>}
-    <div className="preop-columns" aria-hidden="true"><span /><span>{t('checklist.right')}</span><span>{t('checklist.left')}</span></div>
+    <div className="preop-columns">
+      <span>{unmarked.length > 0 && <button type="button" className="text-button preop-unmarked" data-action="checklist-unmarked" data-tooltip={t('checklist.unmarkedTip')}
+        aria-description={t('checklist.unmarkedTip')} onClick={goToUnmarked}>{t('checklist.unmarked', { count: unmarked.length })}</button>}</span>
+      <span aria-hidden="true">{t('checklist.right')}</span><span aria-hidden="true">{t('checklist.left')}</span></div>
     <div className="preop-body" ref={body}>
       {list.groups.map(group => <div className="preop-group" key={group.title.en}>
         <h3>{group.title[locale]}</h3>
         {group.items.map(item => {
-          const options = item.options ?? FINDING, kind = ITEM_CALIPERS[item.id];
-          return <div className={`preop-row${item.sided ? '' : ' is-single'}`} key={item.id} data-item={item.id}>
-            <div className="preop-name"><strong>{item.label[locale]}</strong><small>{item.hint[locale]}</small></div>
-            {sidesOf(item.sided).map(side => {
-              const seen = state.notes[item.id]?.[side], measured = seen?.caliper?.result;
-              const armed = measuring?.item === item.id && measuring.side === side;
-              const why = kind && !armed ? measureBlocked(kind) : null;
-              const nearLimit = measured && 'reading' in measured && 'nearLimit' in measured.reading && measured.reading.nearLimit;
-              const named = (label: string) => side === 'both' ? label : `${label} · ${sideName(side)}`;
-              return <div className="preop-side" key={side} data-side={side}>
-                {/* The keys focus the whole side (tabIndex -1 keeps Tab on its buttons); each answer shows its keys. */}
-                <div className="preop-choice" role="radiogroup" tabIndex={-1} aria-label={named(item.label[locale])}>
-                  {options.map((option, index) => {
-                    const digit = index + 1;
-                    return <button key={option.value} type="button" role="radio" data-action="checklist-answer" aria-checked={state.answers[item.id]?.[side] === option.value}
-                      data-tooltip={option.value === 'unknown' ? t('checklist.unknown') : option[locale]} data-shortcut={answerKeys(digit)}
-                      data-tooltip-hint={item.sided ? t('checklist.bothKey', { keys: answerKeys(digit, true) }) : undefined} aria-keyshortcuts={`Alt+${digit}${item.sided ? ` Alt+Shift+${digit}` : ''}`}
-                      className={`preop-option is-${option.value}${state.answers[item.id]?.[side] === option.value ? ' is-on' : ''}`} onClick={() => answer(item.id, side, option.value)}>{option[locale]}</button>;
-                  })}
-                </div>
-                <div className="preop-side-tools">
-                  {/* A side holds one note: the slice noted here or a caliper's measurement, whichever came last. */}
-                  <button type="button" className="icon-button preop-tool" data-action="checklist-note" aria-label={named(t('checklist.note'))} data-tooltip={t('checklist.note')}
-                    onClick={() => note(item.id, side, item.label[locale])}><Crosshair size={15} /></button>
-                  {kind && <button type="button" className={`icon-button preop-tool${armed ? ' is-on' : ''}${why ? ' is-unavailable' : ''}`} data-action="checklist-caliper"
-                    aria-pressed={armed} aria-disabled={why ? true : undefined} aria-description={why ? t(why) : undefined}
-                    aria-label={armed ? t('caliper.stop') : named(t('caliper.measure', { name: caliperName(kind, locale) }))}
-                    data-tooltip={armed ? t('caliper.stop') : t('caliper.measure', { name: caliperName(kind, locale) })} data-tooltip-hint={why ? t(why) : armed ? undefined : t(CALIPERS[kind].plane === 'coronal' ? 'caliper.onCoronal' : 'caliper.onSagittal')}
-                    onClick={why ? undefined : () => onMeasure(item.id, side, kind)}><Ruler size={15} /></button>}
-                  {seen && <button type="button" className="preop-seen" data-action="checklist-go" data-tooltip={measured ? t('checklist.measuredOn', { value: caliperShort(measured, locale), slice: seen.shown }) : t('checklist.seenOn', { slice: seen.shown })}
-                    onClick={() => onGoTo(seen)}>{measured ? caliperShort(measured, locale) : t('checklist.seenOn', { slice: seen.shown })}</button>}
-                  {nearLimit && <span className="preop-limit">{t('caliper.nearLimit')}</span>}
-                </div>
-              </div>;
-            })}
+          const options = item.options ?? FINDING, isSelected = item.id === selected.id;
+          const named = (side: Side) => side === 'both' ? item.label[locale] : `${item.label[locale]} · ${sideName(side)}`;
+          return <div className={`preop-row${item.sided ? '' : ' is-single'}${isSelected ? ' is-selected' : ''}`} key={item.id} data-item={item.id} onFocus={() => select(item.id)}>
+            {/* The name selects the row for the bar below; its hint is in the bar and on the name's tooltip. */}
+            <button type="button" className="preop-name" data-action="checklist-select" aria-current={isSelected ? 'true' : undefined} data-tooltip={item.hint[locale]}
+              onClick={() => select(item.id)}>{item.label[locale]}</button>
+            {sidesOf(item.sided).map(side => <div className="preop-side" key={side} data-side={side}>
+              {/* The keys focus the whole side (tabIndex -1 keeps Tab on its buttons); each answer shows its keys. */}
+              <div className="preop-choice" role="radiogroup" tabIndex={-1} aria-label={named(side)}>
+                {options.map((option, index) => {
+                  const digit = index + 1;
+                  return <button key={option.value} type="button" role="radio" data-action="checklist-answer" aria-checked={state.answers[item.id]?.[side] === option.value}
+                    data-tooltip={option.value === 'unknown' ? t('checklist.unknown') : option[locale]} data-shortcut={answerKeys(digit)}
+                    data-tooltip-hint={item.sided ? t('checklist.bothKey', { keys: answerKeys(digit, true) }) : undefined} aria-keyshortcuts={`Alt+${digit}${item.sided ? ` Alt+Shift+${digit}` : ''}`}
+                    className={`preop-option is-${option.value}${state.answers[item.id]?.[side] === option.value ? ' is-on' : ''}`} onClick={() => answer(item, side, option.value)}>{option[locale]}</button>;
+                })}
+              </div>
+            </div>)}
           </div>;
         })}
       </div>)}
+    </div>
+    <div className="preop-detail" role="group" aria-label={selected.label[locale]} data-testid="checklist-detail" data-detail-item={selected.id}>
+      <div className="preop-detail-head"><strong>{selected.label[locale]}</strong>
+        {target && <button type="button" className="secondary-button compact preop-show" data-action="checklist-show" aria-disabled={showWhy ? true : undefined}
+          aria-description={showWhy ? t(showWhy) : undefined} data-tooltip={t(`checklist.show.${target}`)} data-tooltip-hint={showWhy ? t(showWhy) : t('checklist.showKey')}
+          onClick={showWhy ? undefined : () => show(selected)}><Eye size={14} aria-hidden="true" />{t(`checklist.show.${target}`)}</button>}</div>
+      <p className="preop-detail-hint">{selected.hint[locale]}</p>
+      <div className="preop-detail-sides">
+        {sidesOf(selected.sided).map(side => {
+          const seen = state.notes[selected.id]?.[side], measured = seen?.caliper?.result;
+          const armed = measuring?.item === selected.id && measuring.side === side;
+          const why = caliper && !armed ? measureBlocked(caliper) : null;
+          const nearLimit = measured && 'reading' in measured && 'nearLimit' in measured.reading && measured.reading.nearLimit;
+          const named = (label: string) => side === 'both' ? label : `${label} · ${sideName(side)}`;
+          return <div className="preop-detail-side" key={side} data-detail-side={side}>
+            {side !== 'both' && <span className="preop-detail-name">{sideName(side)}</span>}
+            {/* A side holds one note: the slice noted here (by the reader, or by itself on Var) or a caliper's measurement,
+                whichever came last. */}
+            <span className="preop-detail-seen">
+              {seen && <button type="button" className="preop-seen" data-action="checklist-go" data-tooltip={measured ? t('checklist.measuredOn', { value: caliperShort(measured, locale), slice: seen.shown }) : t('checklist.seenOn', { slice: seen.shown })}
+                data-tooltip-hint={seen.auto ? t('checklist.autoNoted') : undefined} onClick={() => onGoTo(seen)}>{measured ? caliperShort(measured, locale) : t('checklist.seenOn', { slice: seen.shown })}</button>}
+              {nearLimit && <span className="preop-limit">{t('caliper.nearLimit')}</span>}</span>
+            <button type="button" className="secondary-button compact preop-tool" data-action="checklist-note" aria-label={named(t('checklist.note'))} data-tooltip={t('checklist.note')}
+              onClick={() => note(selected.id, side, selected.label[locale])}><Crosshair size={14} aria-hidden="true" />{t('checklist.noteShort')}</button>
+            {caliper && <button type="button" className="secondary-button compact preop-tool" data-action="checklist-caliper"
+              aria-pressed={armed} aria-disabled={why ? true : undefined} aria-description={why ? t(why) : undefined}
+              aria-label={armed ? t('caliper.stop') : named(t('caliper.measure', { name: caliperName(caliper, locale) }))}
+              data-tooltip={armed ? t('caliper.stop') : t('caliper.measure', { name: caliperName(caliper, locale) })} data-tooltip-hint={why ? t(why) : armed ? undefined : t(CALIPERS[caliper].plane === 'coronal' ? 'caliper.onCoronal' : 'caliper.onSagittal')}
+              onClick={why ? undefined : () => onMeasure(selected.id, side, caliper)}><Ruler size={14} aria-hidden="true" />{t('caliper.measureShort')}</button>}
+          </div>;
+        })}
+      </div>
     </div>
     {undoable && <p className="preop-undo" role="status">{undoable.text}
       <button type="button" className="text-button" data-action="checklist-undo" data-tooltip={t('notice.undo')} data-shortcut={undoKeys}
         aria-keyshortcuts={mac ? 'Meta+Z' : 'Control+Z'} onClick={event => restore(event.currentTarget)}>{t('notice.undo')}</button></p>}
     {printFailed && <p className="preop-print-failed" role="alert">{t('checklist.printFailed')}</p>}
-    {/* The rows Copy leaves out are counted at the end of the help line, right above Copy: the buttons keep one row. */}
-    <footer><div className="preop-help-row"><span className="preop-help">{t('checklist.help')}</span>
-      {unmarked.length > 0 && <button type="button" className="text-button preop-unmarked" data-action="checklist-unmarked" data-tooltip={t('checklist.unmarkedTip')}
-        aria-description={t('checklist.unmarkedTip')} onClick={goToUnmarked}>{t('checklist.unmarked', { count: unmarked.length })}</button>}</div>
+    <footer>
       <button type="button" className="secondary-button compact" data-action="checklist-clear" onClick={clear}>{t('checklist.clear')}</button>
       <button type="button" className="secondary-button compact" data-action="checklist-print" data-tooltip={t('checklist.print')} data-tooltip-hint={t('checklist.printHint')}
         aria-description={t('checklist.printHint')} onClick={() => void print()}><Printer size={14} />{t('checklist.print')}</button>

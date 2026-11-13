@@ -3,8 +3,8 @@
 The sinus CT's pre-operative checklist (CLOSE) has a caliper for the four items that are geometry of a millimetre or
 more: olfactory fossa depth, the anterior ethmoidal artery's distance below the skull base, sphenoid pneumatisation and
 septal deviation. The reader starts one from the checklist, for an item and a side, and clicks its landmarks on the
-image. The caliper draws its measurement, writes the answer its classification gives, and records the value, the
-points and the slice under that side. Whether a thin wall is intact (lamina papyracea, optic and carotid canals, a
+image. The caliper draws its measurement, writes the answer its classification gives (the artery's caliper only
+measures), and records the value, the points and the slice under that side. Whether a thin wall is intact (lamina papyracea, optic and carotid canals, a
 dehiscent artery) stays the reader's call: those walls are mostly below what CT resolves.
 
 Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the synthetic sinus CT of
@@ -14,28 +14,33 @@ Code: `src/imaging/calipers.ts`. Check: `tools/check-close-calipers.cjs` on the 
 
 | Item | Plane | Points | Value | Answer |
 | --- | --- | --- | --- | --- |
-| Cribriform plate (Keros) | coronal | cribriform plate beside the crista galli, foot of the lateral lamella, its top at the fovea ethmoidalis | depth: the lamella's height, straight up; Gera angle: the lamella against the plate carried on past its foot | Keros type 1–3 |
-| Anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof | Yes from 2 mm; none below |
+| Olfactory fossa depth (Keros) | coronal | the olfactory fossa's floor (cribriform plate), the ethmoid roof at the top of the lateral lamella (fovea ethmoidalis) | depth: the height between them, straight up | Keros type 1–3 |
+| Floating (mesenteric) anterior ethmoid artery | coronal | middle of the artery's canal, ethmoid roof above it | vertical distance below the roof, El-Anwar type | none: the reader answers |
 | Sphenoid pneumatisation | sagittal | tuberculum sellae, top of the dorsum sellae, sinus wall furthest back | the wall's place against the two sella lines | sellar or postsellar; none in front of the tuberculum line |
 | Septal deviation / spur | coronal | maxillary crest, crista galli, most deviated point | angle at the crista galli, and the side it bows to | Yes on that side |
 
 - **Keros** (Keros 1962): type 1 is 1–3 mm, 2 is 4–7 mm, 3 is 8–16 mm, read in whole millimetres as Keros measured. A
   depth within 0.5 mm of the 3–4 or 7–8 mm gaps is marked "near limit": a measurement error of about 0.5 mm (Reuter
   2026) or the other usual cut (below 4, 4–8, above 8 mm) could change its type. When both sides are measured, the
-  report gives their difference.
-- **Gera** (Gera et al., Rhinology 2018;56:65–72): class I above 80°, II 45–80°, III below 45°. The plate is read from
-  the reader's own first two points, so a tilted head does not change the angle.
+  report gives their difference. Two points are enough: the depth is a height. It is defined at the lamella, from its
+  foot on the cribriform plate to its top at the fovea ethmoidalis; on a sloping plate, a floor marked further medially
+  can read a few tenths of a millimetre differently. The Gera angle (the lamella against the plate) is not measured: it
+  is rarely used, and the third point it needed made the order of the clicks unclear.
 - **Anterior ethmoidal artery** (El-Anwar et al., J Neurol Surg B Skull Base 2021;82(S3):e259–e267): the artery's
-  middle to the ethmoid roof on coronal CT; type 1 is 0–2 mm, 2 is 2–4 mm, 3 is 4–6 mm, 4 above 6 mm. Types 2 to 4
-  answer yes (below the skull base). Type 1 gives no answer: the item's yes also covers a dehiscent artery, which the
-  caliper cannot see.
+  middle to the ethmoid roof on coronal CT; type 1 is 0–2 mm, 2 is 2–4 mm, 3 is 4–6 mm, 4 above 6 mm. The caliper
+  gives the distance and the type and marks no answer: whether the artery is floating, in a mesentery below the skull
+  base, is the reader's call on the image, made after finding it. Within 0.5 mm of the 2 mm limit it says "near limit".
 - **Sphenoid pneumatisation** (Güldner et al., Acta Radiol 2012;53:214–219): lines through the tuberculum and the
   dorsum, square to the line joining them. Between them the sinus is sellar, behind the dorsum line postsellar. In
   front of the tuberculum line it is presellar or conchal, which the sinus's size decides, so the reader answers.
 - **Septal angle**: mild below 9°, moderate 9–15°, severe above 15°. This is a common grading, not a standard one.
-  Below 1° the septum is read as on the midline and no side is marked. The crista galli must lie above the crest:
-  clicked the other way round, the angle's corner would move to the crest and the angle would grow, so the caliper
-  says "Unavailable" instead.
+  Below 1° the septum is read as on the midline and no side is marked.
+
+The points may be clicked in any order: each landmark is known by its height on the plane. Keros's lower point is the
+fossa's floor; the artery lies below the roof; the sinus wall lies below the sella, under the tuberculum and the
+dorsum (which the caliper tells apart from front to back); the maxillary crest is the septum's lowest point, the crista
+galli its highest (the angle's corner), and the deviated point lies between them. Two points at one height say
+"Unavailable".
 
 Every value needs the image's pixel spacing (or a calibration), and the plane the caliper is read on: within 45° of
 coronal or sagittal, upright. A drawing made on another plane says "Unavailable" with the reason.
@@ -54,6 +59,15 @@ spacing is unknown, it is still loading, or the series cannot be shown on the ca
 a scout or on another modality of the study (an MR) while a caliper waits stays a plain measurement, and such a pane's
 hint says why.
 
+Show, in the bar under the checklist, sets the pane up the same way for any sinus item, on the plane it is read on:
+coronal for Keros, the lamina papyracea, the ethmoid artery, the septum, a concha bullosa and a Haller cell; coronal,
+then sagittal for an Onodi cell; coronal, then axial for the optic nerve; axial, then coronal for the carotid artery
+and the intersinus septum; sagittal for the sphenoid pneumatisation, through the middle of the pane, near the midline.
+Its label names the plane it turns to next, so pressing it again shows an item's other plane. It goes to the slice
+noted for the item on that plane (the side the keys are on first), else to the slice the item was last looked at there
+(answered there, or left there for its other plane; kept per study while VEAcom is open), else as a caliper sets up.
+A pane already at that place keeps it. The pane says what changed, with Undo; a caliper under way ends.
+
 ## Snapping onto bone
 
 A point marked for bone moves, within its plane, to the nearest place within 2 mm whose interpolated value is 200 HU
@@ -64,14 +78,18 @@ cartilage. Moving a point by hand afterwards does not snap.
 
 ## The checklist record
 
-Notes are kept per item and side. Every side has a button that notes the slice on screen, and the four items above
-also have a caliper button; a side holds one note, whichever came last. A caliper's note holds its points (patient
+Each item takes one line of the checklist: its name and its answers. The bar under the list shows the row last clicked
+or reached by the keys: what to look for, Show, and for each side its note or measurement, a button that notes the
+slice on screen and, for the four items above, a caliper button. Notes are kept per item and side; a side holds one
+note, whichever came last. A side answered Yes, with the active pane on one of the item's planes and nothing noted on
+that side yet, notes the slice on screen by itself; its tooltip says so, and the note goes again when the answer is no
+longer Yes. Keros and the pneumatisation, answered by type, note where they are measured instead. A caliper's note holds its points (patient
 millimetres), the plane they were read on, its reading and the answer it gave. Moving a point of its drawing measures
 again, and so does a change of the series' calibration; the answer follows until the reader picks another one. Deleting
 the drawing leaves the record, and a calibration still measures it again from its points. "Copy for the report" gives
 each side its answer, measurement and slice. It leaves out a row with nothing answered or measured on any side (a slice
-noted alone included), so the checklist says how many rows that is at the end of its help line, above Copy, and
-pressing the count goes to the first of them. A row answered on one side is copied, with "–" for the other.
+noted alone included), so the checklist says how many rows that is above the item names, and pressing the count goes
+to the first of them. A row answered on one side is copied, with "–" for the other.
 
 Clear, and a slice note that replaces a side's measurement, say what they took away under the checklist, with Undo.
 Undo puts it back while the checklist is still as that change left it; any later change ends the offer, so it never
@@ -87,7 +105,8 @@ so they mean the same in English and Turkish (Y would be yes in one and "Yok", n
 because a plain digit is a window preset on the image (the owner's choice, 10 November 2026): no key has two meanings.
 AltGr, which Windows reports as Ctrl+Alt, answers nothing, and neither do the keypad's digits, which with Alt type
 characters by their codes on Windows. Being chords, the answers stay on when single-key shortcuts are turned off. Each
-answer's tooltip shows its keys, and Help lists them.
+answer's tooltip shows its keys, and Help lists them. Enter on a row shows its item (Show); on a button it presses the
+button.
 
 ## The theatre card
 

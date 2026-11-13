@@ -134,7 +134,8 @@ await writeFile(path.join(destination, 'manifest.json'), `${JSON.stringify({
   // Where the check clicks, in patient mm (x, y, z), on the coronal planes y = -15 (fossae), y = -10 (arteries) and
   // y = -25 (septum), and the midsagittal plane x = 0 (sella), with the values those points give.
   landmarks: {
-    keros: { y: -15, right: [[-2.5, CRIBRIFORM], foot.right, top.right].map(round), left: [[2.5, CRIBRIFORM], foot.left, top.left].map(round) },
+    // Keros: the olfactory fossa's floor beside the crista galli, and the ethmoid roof at the top of the lateral lamella.
+    keros: { y: -15, right: [[-2.5, CRIBRIFORM], top.right].map(round), left: [[2.5, CRIBRIFORM], top.left].map(round) },
     aea: { y: -10, right: { canal: round(canals.right), roof: round([canals.right[0], top.right[1]]) },
       // Clicked in the air below the left roof: the point moves up onto the bone.
       left: { canal: round(canals.left), roof: [18, 15.4] } },
@@ -142,8 +143,8 @@ await writeFile(path.join(destination, 'manifest.json'), `${JSON.stringify({
     sella: { x: 0, tuberculum: [10.8, 13.8], dorsum: [DORSUM.y, DORSUM.z[1]], wall: [SINUS.y[1] - 0.5, 0] },
   },
   expected: {
-    keros: { right: { depth: 3.2, type: '1', gera: 70, nearLimit: true }, left: { depth: 6, type: '2', gera: 40, nearLimit: false } },
-    aea: { right: { distance: 1, answer: null }, left: { distance: 2.8, answer: 'yes' } },
+    keros: { right: { depth: 3.2, type: '1', nearLimit: true }, left: { depth: 6, type: '2', nearLimit: false } },
+    aea: { right: { distance: 1 }, left: { distance: 2.8 } },
     septum: { angle: Math.atan2(deviated[0], crista[1] - deviated[1]) * 180 / Math.PI, side: 'left' },
     sella: { answer: 'sellar' },
   },

@@ -36,6 +36,13 @@ describe('the checklist keys', () => {
     assert.equal(press('y', 'KeyY', { altKey: true }), null, 'No letters: Y is yes in English and Yok (no) in Turkish.');
   });
 
+  it('reads Enter as Show, once a press and without a modifier', () => {
+    assert.deepEqual(press('Enter', 'Enter'), { show: true });
+    assert.deepEqual(press('Enter', 'NumpadEnter'), { show: true });
+    assert.equal(press('Enter', 'Enter', { repeat: true }), null, 'Holding Enter does not turn the pane plane after plane.');
+    for (const modifier of ['shiftKey', 'altKey', 'ctrlKey', 'metaKey'] as const) assert.equal(press('Enter', 'Enter', { [modifier]: true }), null, modifier);
+  });
+
   it('moves between rows in a column and between the columns as shown, right first', () => {
     const keros = row('keros'), pneumatisation = row('pneumatisation');
     assert.deepEqual(moveCell(items, { row: keros, side: 'right' }, 'right', 'right'), { row: keros, side: 'left' });
