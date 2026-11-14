@@ -63,11 +63,27 @@ async function main() {
       const y = map[0][1] + point[0] * (map[1][1] - map[0][1]) + point[1] * (map[2][1] - map[0][1]);
       await page.mouse.click(box.x + x, box.y + y);
     };
+    // A notice strip above the panes (such as "Calibrated", which clears itself after 8 s) resizes the pane when it
+    // goes, and the film is fitted again: a click read off the old fit would land elsewhere. It is closed first.
+    const settle = async () => {
+      const dismiss = page.getByTestId('notice-dismiss');
+      if (await dismiss.count()) { await dismiss.first().click(); await page.waitForFunction(() => !document.querySelector('[data-testid="notice"]'), undefined, { timeout: 5_000 }); }
+      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+      await page.waitForTimeout(150);
+    };
+    // Each point must be drawn where it was clicked, read off the plan's mapping as it is after the click.
+    const landed = (name, point) => page.waitForFunction(([name, point]) => {
+      const drawing = document.querySelector('[data-testid="deformity-drawing"]'), map = JSON.parse(drawing.getAttribute('data-to-screen'));
+      const x = map[0][0] + point[0] * (map[1][0] - map[0][0]) + point[1] * (map[2][0] - map[0][0]);
+      const y = map[0][1] + point[0] * (map[1][1] - map[0][1]) + point[1] * (map[2][1] - map[0][1]);
+      return [...drawing.querySelectorAll(`[data-landmark="${name}"] circle`)].some(circle => Math.hypot(Number(circle.getAttribute('cx')) - x, Number(circle.getAttribute('cy')) - y) < 1.5);
+    }, [name, point], { timeout: 2_000 }).catch(() => { throw new Error(`The ${name} point was not drawn where it was clicked: the pane moved under the click.`); });
     const placeAll = async landmarks => {
+      await settle();
       await panel.locator('[data-action="deformity-place-start"]').click();
       for (const name of ORDER) {
         await page.waitForFunction(expected => document.querySelector('[data-testid="deformity-next"]')?.dataset.landmark === expected, name, { timeout: 5_000 });
-        for (const point of Array.isArray(landmarks[name][0]) ? landmarks[name] : [landmarks[name]]) await click(point);
+        for (const point of Array.isArray(landmarks[name][0]) ? landmarks[name] : [landmarks[name]]) { await click(point); await landed(name, point); }
       }
       await page.waitForFunction(() => !document.querySelector('[data-testid="deformity-next"]'), undefined, { timeout: 5_000 });
     };
@@ -352,10 +368,13 @@ async function main() {
     // left) is on the screen's right. The plan keeps the image's side, so the values are the unflipped film's.
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ flipX: true }));
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.flipX === true, undefined, { timeout: 5_000 });
-    await panel.locator('[data-action="deformity-patient-right"][data-side="right"]').click();
+    // The panel has the flip once the screen's right button stands for the image's left.
+    await panel.locator('[data-action="deformity-patient-right"][data-side="right"][data-image="left"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-action="deformity-patient-right"][data-side="right"]')?.getAttribute('aria-pressed') === 'true', undefined, { timeout: 5_000 });
     compare(await values('.deformity-values:not(.deformity-compare)'), right.expected, scale, 'Right leg once the side is given on a flipped pane');
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ flipX: false }));
-    assert.equal(await panel.locator('[data-action="deformity-patient-right"][data-side="left"]').getAttribute('aria-pressed'), 'true', 'Unflipped, the answer shows on the screen\'s left.');
+    await page.waitForFunction(() => document.querySelector('[data-action="deformity-patient-right"][data-side="left"]')?.getAttribute('aria-pressed') === 'true', undefined, { timeout: 5_000 })
+      .catch(() => { throw new Error('Unflipped, the answer shows on the screen\'s left.'); });
     await shot('5-no-orientation');
     check('Without Patient Orientation the kit asks where the patient\'s right is before any medial or lateral value, and reads the answer through a flipped pane');
 

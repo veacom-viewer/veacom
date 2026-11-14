@@ -245,7 +245,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         {/* The answer is on screen; the plan keeps the image's side, through the pane's turn and flip. */}
         <div className="deformity-segments">{(['left', 'right'] as const).map(side => {
           const image = imageSideOnScreen(side, paneView);
-          return <button key={side} type="button" data-action="deformity-patient-right" data-side={side} aria-pressed={image !== null && film.patientRight === image}
+          return <button key={side} type="button" data-action="deformity-patient-right" data-side={side} data-image={image ?? undefined} aria-pressed={image !== null && film.patientRight === image}
             className="secondary-button compact" disabled={!image} data-tooltip={image ? undefined : t('deformity.askUpright')}
             onClick={() => { if (image) change(current => ({ ...current, patientRight: image })); }}>{t(side === 'left' ? 'deformity.imageLeft' : 'deformity.imageRight')}</button>;
         })}</div>
