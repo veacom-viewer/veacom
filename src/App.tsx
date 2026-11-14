@@ -16,7 +16,7 @@ import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenu
 import { SliceBar } from './components/SliceBar';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
-import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
+import { measuredSlice, numbersBackwards, openingSlice, pageStep, pagesBackwards, shownSlice } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
@@ -295,10 +295,11 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
   const requestedView = volume ? resolveView(volume, slot.view) : slot.view;
   const displayView = volume ? renderedView(volume, slot.view) : slot.view;
   const count = volume ? sliceCount(volume.series, requestedView) : metadata?.dimensions[2] ?? 1;
-  // The bar and the counter go in paging order: an axial stack from the top down (see paging.ts).
+  // The bar goes in paging order: an axial stack from the top down. The counter gives the slice's number, which the
+  // image corner gives too (see paging.ts).
   const backwards = volume ? pagesBackwards(volume.series, requestedView) : false;
   const atSlice = Math.min(requestedView.slice, count - 1), position = backwards ? count - 1 - atSlice : atSlice;
-  const shownNumber = Math.min(count, backwards ? count - displayView.slice : displayView.slice + 1);
+  const shownNumber = Math.min(count, volume ? shownSlice(volume.series, displayView, displayView.slice, count) : displayView.slice + 1);
   // A whole-volume MIP pages through its turns: the bar and the counter give its angle.
   const projected = Boolean(volume && isProjection(volume.series, displayView));
   const windowText = volume && displayView.voiLut === undefined ? suvWindowText(volume.series, displayView) : null;
@@ -340,7 +341,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
     </div>
     {volume && <footer className="viewport-footer" data-export-exclude>
       <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shownNumber} / {count}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
-      <SliceBar count={count} position={position} valueText={projected ? `${projectionAngle(position)}°` : `${position + 1} / ${count}`}
+      <SliceBar count={count} position={position} valueText={projected ? `${projectionAngle(position)}°` : `${shownSlice(volume.series, requestedView, atSlice, count)} / ${count}`}
         label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
         onPosition={next => update({ slice: backwards ? count - 1 - next : next })} />
       <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${Math.round(displayView.windowWidth)} · L ${Math.round(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
@@ -1720,7 +1721,7 @@ export default function App() {
       // Cine stops: the export pages the pane itself.
       setPlaying(false);
       setExportVideoTarget({ viewport, seriesId: activeVolume.series.id, originalSlice: activeSlot.view.slice, frameCount: sliceCount(activeVolume.series, activeSlot.view),
-        nativeSize: plain ? { width: activeVolume.series.dimensions[0], height: activeVolume.series.dimensions[1] } : undefined, backwards: pagesBackwards(activeVolume.series, activeSlot.view),
+        nativeSize: plain ? { width: activeVolume.series.dimensions[0], height: activeVolume.series.dimensions[1] } : undefined, backwards: pagesBackwards(activeVolume.series, activeSlot.view), numbersBackwards: numbersBackwards(activeVolume.series, activeSlot.view),
         setSlice: slice => setSlots(current => current.map(slot => slot.id === id ? { ...slot, view: { ...slot.view, slice } } : slot)) });
     } else setExportVideoTarget(undefined);
     setExportFor(activeSeries?.id ?? null);
@@ -2341,7 +2342,7 @@ export default function App() {
         onNote={() => {
           if (!activeVolume || !activeSlot.seriesId) return null;
           const view = activeSlot.view, count = sliceCount(activeVolume.series, view), slice = Math.round(view.slice);
-          const shown = pagesBackwards(activeVolume.series, view) ? count - slice : slice + 1;
+          const shown = shownSlice(activeVolume.series, view, slice, count);
           // A tilted plane is named with its tilt, and "go to" tilts the pane back to it.
           const tilted = (view.mode ?? 'source') === 'mpr' && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number], tilt: obliqueAngle(activeVolume.series, view) } : {};
           return { seriesId: activeSlot.seriesId, slice, shown: `${shown}/${count}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
@@ -2388,6 +2389,7 @@ export default function App() {
             typedGlucose={typedGlucose} lesionPrior={lesionPrior} comparison={petPrior && { current: currentPet, prior: petPrior, limited: limitedView }} />}
           {activeAnnotations.length ? <ol className="annotation-list">{activeAnnotations.map((annotation, index) => {
             const sourceIndex = annotation.mode === 'source' && activeVolume ? annotationSourceIndex(annotation, activeVolume.series) : null;
+            const numbered = activeVolume ? measuredSlice(activeVolume.series, annotation, sourceIndex ?? undefined) : annotation.slice + 1;
             const unavailable = annotation.mode === 'source' && sourceIndex === null;
             const Icon = MEASURE_ICONS[annotation.type] ?? Ruler;
             const neighbour = activeAnnotations[index + 1]?.id ?? activeAnnotations[index - 1]?.id;
@@ -2404,7 +2406,7 @@ export default function App() {
               usage.touch('marks');
             }}>
               <span className="annotation-number"><Icon size={14} aria-hidden="true" />{index + 1}</span>
-              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: sourceIndex + 1 }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: annotation.slice + 1 })}</small></span></button>
+              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: numbered }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: numbered })}</small></span></button>
               <button data-action="measurement-delete" type="button" className="icon-button danger-hover" aria-label={t('inspector.deleteMeasurement', { number: index + 1 })} data-tooltip={t('inspector.deleteMeasurement', { number: index + 1 })} onClick={() => { if (!activeSeries) return; changeAnnotations(activeSeries.id, activeAnnotations.filter(item => item.id !== annotation.id)); focusSoon(neighbour ? `[data-annotation-row="${neighbour}"] .annotation-main` : '[data-testid="findings-add"]'); }}><X size={15} /></button>
               {sphere && activeSeries && <SphereDetails annotation={annotation} annotations={activeAnnotations} volume={activeVolume} onChange={next => changeAnnotations(activeSeries.id, next)} />}</li>;
           })}</ol>

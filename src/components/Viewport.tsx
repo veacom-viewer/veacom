@@ -12,7 +12,7 @@ import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
 import { wheelSliceSteps } from '../imaging/interaction';
-import { pagesBackwards } from '../imaging/paging';
+import { numbersBackwards, pagesBackwards } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
 import { wrapLabel } from '../ui/navigation';
@@ -788,8 +788,9 @@ export function Viewport(props: ViewportProps) {
 
   const mapping = screenMapping(props.volume.series, overlayView, ...dimensions);
   const frame = getPlaneFrame(props.volume.series, overlayView);
-  // The slice number counts in paging order: 1 at the top of an axial stack.
-  const shownBackwards = pagesBackwards(props.volume.series, { plane: overlayView.plane, mode: overlayView.mode, oblique: overlayView.oblique });
+  // One slice number: the image's own where the scanner numbered the stack 1 to N, otherwise the count in paging order,
+  // 1 at the top of an axial stack (imaging/paging.ts).
+  const shownBackwards = numbersBackwards(props.volume.series, { plane: overlayView.plane, mode: overlayView.mode, oblique: overlayView.oblique });
   // A whole-volume MIP: no drawing lies in it, and the crosshair shows wherever it is in depth.
   const projected = isProjection(props.volume.series, overlayView);
   const visibleAnnotations = props.hideMeasurements ? NO_ANNOTATIONS
@@ -921,7 +922,7 @@ export function Viewport(props: ViewportProps) {
   const sourcePlane = source && displayedSeries.orientationKnown === true ? seriesPlane(props.volume.series) : null;
   // Written as a name, capitalised ("Koronal"), as VEAcom 1.x wrote it.
   const planeName = source ? (sourcePlane ? t(`plane.${sourcePlane}` as const) : '') : tilt ? t('viewport.obliquePlane', { plane: t(`plane.${overlayView.plane}` as const), angle: tilt }) : t(`plane.${overlayView.plane}` as const);
-  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${shownBackwards ? frame.slices - Math.round(overlayView.slice) : Math.round(overlayView.slice) + 1} / ${frame.slices}${source && props.volume.series.frameMetadata?.[overlayView.slice]?.instanceNumber !== undefined ? t('viewport.instance', { number: props.volume.series.frameMetadata[overlayView.slice].instanceNumber! }) : ''}`;
+  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${shownBackwards ? frame.slices - Math.round(overlayView.slice) : Math.round(overlayView.slice) + 1} / ${frame.slices}`;
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }

@@ -38,11 +38,8 @@ describe('image corner texts', () => {
     assert.deepEqual(topLeftLines(series(), true), [{ text: '45y K' }]);
     assert.deepEqual(topLeftLines(series({ patientAgeText: undefined, patientSex: '' }), true), []);
     assert.deepEqual(topLeftLines(series({ studyTime: undefined, patientBirthDate: undefined }), false).map(line => line.text), ['Sentetik Hasta (45y K)', 'Çekim Tarihi: 05.03.2024']);
-    // The protocol number right under the name; it names the patient, so it goes with patient data hidden.
-    const numbered = topLeftLines(series({ accessionNumber: 'LHK000000001' }), false);
-    assert.deepEqual(numbered.map(line => line.text), ['Sentetik Hasta (45y K)', 'Protokol No: LHK000000001', 'DOB: 02.01.1979', 'Çekim Tarihi: 05.03.2024 10:15']);
-    assertFields(numbered[1], { short: 'LHK000000001', identity: true });
-    assert.deepEqual(topLeftLines(series({ accessionNumber: 'LHK000000001' }), true), [{ text: '45y K' }]);
+    // The accession number is not written on the image.
+    assert.deepEqual(topLeftLines(series({ accessionNumber: 'LHK000000001' }), false).map(line => line.text), ['Sentetik Hasta (45y K)', 'DOB: 02.01.1979', 'Çekim Tarihi: 05.03.2024 10:15']);
   });
   it('puts the institution and descriptions top right, once each, above the modality', () => {
     assert.deepEqual(topRightLines(series(), false).map(line => line.text), ['Deneme Hastanesi', 'Beyin MR', 'T1 aks', 'MR']);

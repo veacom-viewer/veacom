@@ -30,7 +30,7 @@ export function sexText(value = '', translate = t): string {
 /** Like %g: 1.5 → 1.5, 3 → 3, 4.7600001 → 4.76. */
 export const general = (value: number) => String(Number(value.toPrecision(6)));
 
-/** Name (age sex), protocol number, birth date, study date and time; with patient data hidden, age and sex alone. */
+/** Name (age sex), birth date, study date and time; with patient data hidden, age and sex alone. */
 export function topLeftLines(series: Series, hidePatient: boolean, translate = t): CornerLine[] {
   const bits = [ageText(series.patientAgeText, translate), sexText(series.patientSex, translate)].filter(Boolean).join(' ');
   if (hidePatient) return bits ? [{ text: bits }] : [];
@@ -38,8 +38,6 @@ export function topLeftLines(series: Series, hidePatient: boolean, translate = t
   const name = series.patientName.replaceAll('^', ' ').trim();
   const who = name && bits ? `${name} (${bits})` : name || bits;
   if (who) lines.push({ text: who, identity: Boolean(name) });
-  const protocol = series.accessionNumber?.trim();
-  if (protocol) lines.push({ text: translate('viewport.accession', { number: protocol }), short: protocol, identity: true });
   const birth = dicomDate(series.patientBirthDate);
   if (birth) lines.push({ text: translate('viewport.birthDate', { date: birth }), short: birth, identity: true });
   const studyDate = dicomDate(series.studyDate);

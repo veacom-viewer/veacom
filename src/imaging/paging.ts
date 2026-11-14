@@ -1,10 +1,11 @@
-import type { Series, ViewState } from '../model';
+import type { Annotation, Series, ViewState } from '../model';
 import { getPlaneFrame, sliceCount, sub } from './geometry';
+import { usesSourceFrames } from './viewState';
 
 // Paging the slices the way VEAcom 1.x does: an axial stack from the top down (the head first; the wheel, a
 // downward drag and the down keys go towards the feet), a coronal one from the front, a sagittal one from the
 // middle, paging from right to left. Slice indices stay in the series' own order; the direction a reader pages
-// in, and where a series opens, follow these rules.
+// in, and where a series opens, follow these rules. The number a slice shows is another matter: numbersBackwards.
 
 type Paged = Pick<ViewState, 'plane' | 'mode' | 'oblique'>;
 
@@ -30,6 +31,41 @@ export function pagesBackwards(series: Series, view: Paged): boolean {
   if (!step) return false;
   const axis = axisOf(step);
   return axis !== null && (axis === 2 ? step[2] > 0 : step[axis] < 0);
+}
+
+/** How the scanner numbered a stack's acquired images, where it numbered them 1 to N in the series' order (`up`) or
+ * N to 1 (`down`). */
+const scannerNumbering = new WeakMap<object, 'up' | 'down' | null>();
+function ownNumbering(series: Series): 'up' | 'down' | null {
+  const frames = series.frameMetadata, count = series.dimensions[2];
+  if (!frames || count < 2 || frames.length !== count) return null;
+  let known = scannerNumbering.get(frames);
+  if (known === undefined) {
+    known = frames.every((frame, index) => frame.instanceNumber === index + 1) ? 'up'
+      : frames.every((frame, index) => frame.instanceNumber === count - index) ? 'down' : null;
+    scannerNumbering.set(frames, known);
+  }
+  return known;
+}
+
+/** True when the slice number shown falls as the slice index rises. Acquired images that the scanner numbered 1 to N in
+ * their order show those numbers: the number on screen is then the image's number in a report or in another viewer, and
+ * it may fall as the reader pages down. Everything else counts in paging order, 1 at the top of an axial stack. */
+export function numbersBackwards(series: Series, view: Paged): boolean {
+  const own = usesSourceFrames(series, view) ? ownNumbering(series) : null;
+  return own ? own === 'down' : pagesBackwards(series, view);
+}
+
+/** The number shown for slice index `slice` of `count`, from 1 (see numbersBackwards). */
+export function shownSlice(series: Series, view: Paged, slice: number, count: number): number {
+  return numbersBackwards(series, view) ? count - slice : slice + 1;
+}
+
+/** The pane's number for an annotation on an acquired frame or reconstructed slice. */
+export function measuredSlice(series: Series, annotation: Pick<Annotation, 'plane' | 'slice' | 'oblique'>, frame?: number): number {
+  if (frame !== undefined) return shownSlice(series, { mode: 'source', plane: 'axial' }, frame, series.dimensions[2]);
+  const plane: Paged = { mode: 'mpr', plane: annotation.plane, oblique: annotation.oblique };
+  return shownSlice(series, plane, annotation.slice, sliceCount(series, plane));
 }
 
 /** A paging step (+1 is down the page) as a change of slice index. */
