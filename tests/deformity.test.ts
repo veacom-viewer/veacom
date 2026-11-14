@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import { fitCircle, intersect, signedAngle, type Point } from '../src/imaging/deformity/plane';
 import { lateralOnImage, measureLeg, type LegInput } from '../src/imaging/deformity/measure';
-import { coras, malalignmentTest } from '../src/imaging/deformity/analysis';
+import { coraNeeds, coras, malalignmentTest } from '../src/imaging/deformity/analysis';
 import { fragmentFor, movedLandmarks, paleyRule, simulate, solveAngle, type Osteotomy } from '../src/imaging/deformity/osteotomy';
 
 const deg = Math.PI / 180;
@@ -168,6 +168,50 @@ describe('the malalignment test and the CORA', () => {
     const { tibia } = coras(measureLeg(input), [1, 1], [-1, 0]);
     assert.ok(tibia && (tibia.level < 0 || tibia.level > 1), 'The CORA of joint-level deformities lies outside the bone.');
   });
+
+  it('measures subluxation across the leg, not across the film', () => {
+    // A leg running along (0.6, 0.8) on the film, lateral −x. The tibial joint midpoint lies 8 mm further down the leg
+    // than the femoral one, (4.8, 6.4), and not across it: no subluxation. Across the film it would read 4.8 mm.
+    const d: Point = [0.6, 0.8], at = (t: number, across = 0): Point => [t * d[0] - across * d[1], t * d[1] + across * d[0]];
+    const input: LegInput = { side: 'R', mmPerPixel: [1, 1], lateral: [-1, 0], points: {
+      femoralHeadContour: [at(-20), at(0, 20), at(20)], kneeCentre: [at(400)], ankleCentre: [at(800)],
+      femoralCondyleMedial: [at(400, -20)], femoralCondyleLateral: [at(400, 20)],
+      tibialPlateauMedial: [at(408, -20)], tibialPlateauLateral: [at(408, 20)] } };
+    const subluxation = (points: LegInput['points']) => malalignmentTest(measureLeg({ ...input, points }), points, [1, 1], [-1, 0]).at(-1)!.result;
+    assert.equal(subluxation(input.points), 'normal');
+    // Shifted 4 mm across the leg, it is.
+    assert.equal(subluxation({ ...input.points, tibialPlateauMedial: [at(408, -16)], tibialPlateauLateral: [at(408, 24)] }), 'subluxed');
+  });
+
+  it('gives no line, and says why, for a pair placed on one point', () => {
+    const input = straight();
+    // Both condyles on one point (as a click or a drag can put them, or a file can hold them).
+    input.points = { ...input.points, femoralCondyleMedial: [[0, 410]], femoralCondyleLateral: [[0.2, 410]] };
+    const leg = measureLeg(input);
+    assert.deepEqual(leg.together, ['femoralCondyleMedial', 'femoralCondyleLateral']);
+    for (const key of ['mLDFA', 'aLDFA', 'JLCA'] as const) {
+      assert.equal(leg.values[key].value, null, key);
+      assert.deepEqual(leg.values[key].missing, { together: ['femoralCondyleMedial', 'femoralCondyleLateral'] }, key);
+    }
+    // The CORA needs the line; it is not built, and nothing throws.
+    const both = coras(leg, [1, 1], [-1, 0]);
+    assert.equal(both.femur, null);
+    assert.deepEqual(coraNeeds(leg, [-1, 0], 'femur'), { together: ['femoralCondyleMedial', 'femoralCondyleLateral'] });
+    // The plateau and the plafond, too.
+    input.points = { ...input.points, tibialPlateauMedial: [[3, 415]], tibialPlateauLateral: [[3, 415]] };
+    assert.doesNotThrow(() => coras(measureLeg(input), [1, 1], [-1, 0]));
+    assert.equal(measureLeg(input).values.MPTA.value, null);
+  });
+
+  it('says what a CORA lacks before calling the axes parallel', () => {
+    const input = straight(), full = measureLeg(input);
+    assert.equal(coraNeeds(full, [-1, 0], 'tibia'), undefined);
+    assert.deepEqual(coraNeeds(full, null, 'tibia'), { reason: 'side' });
+    const { ankleCentre: _ankle, greaterTrochanterTip: _trochanter, ...rest } = input.points;
+    const partial = measureLeg({ ...input, points: rest });
+    assert.deepEqual(coraNeeds(partial, [-1, 0], 'femur'), { landmarks: ['ankleCentre', 'greaterTrochanterTip'] });
+    assert.deepEqual(coraNeeds(partial, [-1, 0], 'tibia'), { landmarks: ['ankleCentre'] });
+  });
 });
 
 describe('a simulated osteotomy', () => {
@@ -267,17 +311,19 @@ describe('a simulated osteotomy', () => {
   // A tibia bent `bend` degrees at C, 100 mm below a level plateau: proximal axis 3° medial of straight down (MPTA
   // 87°), the distal one the rest of the bend the other way, and a level plafond at the normal LDTA. Built as in the
   // CORA test above.
-  const bentTibia = (bend: number) => {
+  const bentTibia = (bend: number, spacing: readonly [number, number] = [1, 1]) => {
     const K: Point = [0, 400], C: Point = [100 * Math.sin(3 * deg), 400 + 100 * Math.cos(3 * deg)];
     const q: Point = [Math.sin((3 - bend) * deg), Math.cos((3 - bend) * deg)], A: Point = [C[0] + 300 * q[0], C[1] + 300 * q[1]];
     // The plafond at the normal LDTA (89°) to the distal axis, pointing laterally (−x).
     const turnBy = (v: Point, a: number): Point => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
     const up: Point = [-q[0], -q[1]], L = [turnBy(up, 89 * deg), turnBy(up, -89 * deg)].find(v => v[0] < 0)!;
-    const input: LegInput = { side: 'R', mmPerPixel: [1, 1], lateral: [-1, 0], points: {
-      femoralHeadContour: [[-20, 0], [0, -20], [20, 0]], kneeCentre: [K], ankleCentre: [A],
-      tibialPlateauMedial: [[20, 410]], tibialPlateauLateral: [[-20, 410]],
-      plafondMedial: [[A[0] - 15 * L[0], A[1] - 15 * L[1]]], plafondLateral: [[A[0] + 15 * L[0], A[1] + 15 * L[1]]] } };
-    const cora = coras(measureLeg(input), [1, 1], [-1, 0]).tibia!;
+    // Built in mm, placed on a film of `spacing` mm per pixel.
+    const px = (p: Point): Point => [p[0] / spacing[0], p[1] / spacing[1]];
+    const input: LegInput = { side: 'R', mmPerPixel: [spacing[0], spacing[1]], lateral: [-1, 0], points: {
+      femoralHeadContour: ([[-20, 0], [0, -20], [20, 0]] as Point[]).map(px), kneeCentre: [px(K)], ankleCentre: [px(A)],
+      tibialPlateauMedial: [px([20, 410])], tibialPlateauLateral: [px([-20, 410])],
+      plafondMedial: [px([A[0] - 15 * L[0], A[1] - 15 * L[1]])], plafondLateral: [px([A[0] + 15 * L[0], A[1] + 15 * L[1]])] } };
+    const cora = coras(measureLeg(input), input.mmPerPixel, [-1, 0]).tibia!;
     // The translation left after turning the distal axis back onto the proximal one about a hinge, worked out here by
     // turning the axis itself, independently of paleyRule.
     const residual = (hinge: Point, degrees: number) => {
@@ -288,11 +334,13 @@ describe('a simulated osteotomy', () => {
       return Math.abs((moved[0] - K[0]) * p[1] - (moved[1] - K[1]) * p[0]);
     };
     const cutAt = (y: number): Pick<Osteotomy, 'cut'> => ({ cut: [[C[0] + 25, y], [C[0] - 25, y]] });
-    // Across the bone towards the lateral cortex, and down it, from the CORA.
-    const across = cora.bisector[0] < 0 ? cora.bisector : [-cora.bisector[0], -cora.bisector[1]] as Point;
+    // Across the bone towards the lateral cortex, and down it, from the CORA, in mm (the bisector is given on the image).
+    const inMm: Point = [cora.bisector[0] * spacing[0], cora.bisector[1] * spacing[1]], size = Math.hypot(inMm[0], inMm[1]);
+    const bisector: Point = [inMm[0] / size, inMm[1] / size];
+    const across = bisector[0] < 0 ? bisector : [-bisector[0], -bisector[1]] as Point;
     const along: Point = [across[1], -across[0]]; // −across[0] > 0: distally
     const at = (a: number, d: number): Point => [C[0] + a * across[0] + d * along[0], C[1] + a * across[1] + d * along[1]];
-    return { input, cora, residual, cutAt, at, C };
+    return { input, cora, residual, cutAt, at, C, px };
   };
 
   it('names the Paley rule against a real CORA, and the translation an off-bisector hinge leaves', () => {
@@ -300,33 +348,54 @@ describe('a simulated osteotomy', () => {
     assertClose(cora.magnitude, 10, 6);
     // Hinge on the lateral cortex at the CORA's level, the cut through the CORA: rule 1, nothing left over.
     const atCora = at(15, 0);
-    const one = paleyRule(plan(input, { ...cutAt(C[1]), hinge: atCora, degrees: 10 }), cora, [1, 1]);
+    const one = paleyRule(plan(input, { ...cutAt(C[1]), hinge: atCora, degrees: 10 }), cora, [1, 1])!;
     assert.equal(one.rule, 1);
     assertClose(residual(atCora, 10), 0, 6);
     assertClose(one.translation, residual(atCora, 10), 1);
     // Hinge and cut 80 mm further down the bone: rule 3, and the translation the turn really leaves, 2·80·sin 5°.
     const low = at(0, 80);
-    const three = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10 }), cora, [1, 1]);
+    const three = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10 }), cora, [1, 1])!;
     assert.equal(three.rule, 3);
     assertClose(three.translation, residual(low, 10), 1);
     assertClose(three.translation, 2 * 80 * Math.sin(5 * deg), 1);
     // Hinge on the bisector at the CORA's level, cut lower: rule 2.
-    assert.equal(paleyRule(plan(input, { ...cutAt(C[1] + 40), hinge: atCora, degrees: 10 }), cora, [1, 1]).rule, 2);
+    assert.equal(paleyRule(plan(input, { ...cutAt(C[1] + 40), hinge: atCora, degrees: 10 }), cora, [1, 1])!.rule, 2);
+    // Measured in pixels, the rules' 5 mm tolerance cannot be told: no rule.
+    assert.equal(paleyRule(plan(input, { ...cutAt(C[1]), hinge: atCora, degrees: 10 }), cora, null), null);
   });
 
   it('gives the review\'s 10.5° case: no translation 30 mm across the bone, 2·80·sin 5.25° 80 mm down it', () => {
     const { input, cora, residual, cutAt, at, C } = bentTibia(10.5);
     assertClose(cora.magnitude, 10.5, 6);
     const lateral = at(30, 0);
-    const across = paleyRule(plan(input, { ...cutAt(C[1]), hinge: lateral, degrees: 10.5 }), cora, [1, 1]);
+    const across = paleyRule(plan(input, { ...cutAt(C[1]), hinge: lateral, degrees: 10.5 }), cora, [1, 1])!;
     assert.equal(across.rule, 1);
     assertClose(residual(lateral, 10.5), 0, 6);
     assertClose(across.translation, 0, 6);
     const low = at(0, 80);
-    const down = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10.5 }), cora, [1, 1]);
+    const down = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10.5 }), cora, [1, 1])!;
     assert.equal(down.rule, 3);
     assertClose(down.translation, residual(low, 10.5), 6);
     assertClose(down.translation, 2 * 80 * Math.sin(5.25 * deg), 6); // 14.64 mm
+  });
+
+  it('measures the hinge off the bisector in mm on non-square pixels, the bisector given on the image', () => {
+    const spacing = [0.2, 0.4] as const;
+    const { input, cora, cutAt, at, C, px } = bentTibia(10.5, spacing);
+    assertClose(cora.magnitude, 10.5, 6);
+    // On the image, the bisector is the mm one with each axis divided by its spacing.
+    const square = bentTibia(10.5).cora.bisector, expected: Point = [square[0] / spacing[0], square[1] / spacing[1]];
+    const size = Math.hypot(expected[0], expected[1]);
+    assertClose(Math.abs(cora.bisector[0] * expected[1] - cora.bisector[1] * expected[0]) / size, 0, 9);
+    const osteotomy = (hinge: Point, y: number): Osteotomy => ({ ...plan(input), cut: cutAt(y).cut.map(px) as [Point, Point], hinge: px(hinge), degrees: 10.5 });
+    // 30 mm across the bone at the CORA's level: on the bisector, rule 1, no translation.
+    const across = paleyRule(osteotomy(at(30, 0), C[1]), cora, input.mmPerPixel)!;
+    assert.equal(across.rule, 1);
+    assertClose(across.offset, 0, 6);
+    // 80 mm down the bone: rule 3 and 2·80·sin 5.25°, in mm.
+    const low = at(0, 80), down = paleyRule(osteotomy(low, low[1]), cora, input.mmPerPixel)!;
+    assert.equal(down.rule, 3);
+    assertClose(down.translation, 2 * 80 * Math.sin(5.25 * deg), 6);
   });
 });
 

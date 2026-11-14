@@ -13,6 +13,7 @@ import type { Missing, Side, Value } from '../imaging/deformity/measure';
 import { NORMALS, type ValueKey } from '../imaging/deformity/normals';
 import { fitCircle, distance } from '../imaging/deformity/plane';
 import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
+import { coraNeeds } from '../imaging/deformity/analysis';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
 import { imageSideOnScreen, nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
 import { parsePlanFile, planFile } from '../ui/deformityFile';
@@ -67,6 +68,7 @@ export function normalText(key: Value['key']): string {
 export function missingText(missing: Missing | undefined, t: Translator): string {
   if (!missing) return '';
   if ('landmarks' in missing) return t('deformity.needs', { names: missing.landmarks.map(name => t(LANDMARK_TEXT[name].name)).join(', ') });
+  if ('together' in missing) return t('deformity.together', { names: missing.together.map(name => t(LANDMARK_TEXT[name].name)).join(', ') });
   return t(missing.reason === 'side' ? 'deformity.needsSide' : missing.reason === 'calibration' ? 'deformity.needsCalibration' : 'deformity.parallel');
 }
 
@@ -403,7 +405,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
 
 function coraText(view: PlanView, bone: 'femur' | 'tibia', t: Translator): string {
   const cora = view.cora[bone], leg = view.leg;
-  if (!cora) return t('deformity.cora.none');
+  // No CORA: say what the plan lacks, and that the axes are parallel only when nothing is missing.
+  if (!cora) return missingText(coraNeeds(leg, view.lateral, bone), t) || t('deformity.cora.none');
   // Under 1.5° the axes' angle is within the joints' normal variation (normals.ts).
   if (cora.magnitude < 1.5) return t('deformity.cora.small', { angle: cora.magnitude.toFixed(1) });
   const length = (bone === 'femur' ? leg.values.femurLength.value : leg.values.tibiaLength.value) ?? 0;

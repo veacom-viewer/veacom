@@ -119,21 +119,24 @@ calibration, when angles assume square pixels and say so.
 | Femur, tibia, limb length | hip to knee, knee to ankle, hip to ankle | |
 
 A value outside its range is written in the caution colour with the word "high" or "low". A value that cannot be given
-says what it needs: the landmarks, the patient's right, or a calibration. The normal values are data
+says what it needs: the landmarks, the patient's right, or a calibration; a medial–lateral pair placed within half a
+pixel of each other gives no line and says so. The normal values are data
 (`src/imaging/deformity/normals.ts`), with their sources on the row's tooltip.
 
 ### Malalignment test and CORA
 
 Paley's test, as a checklist: the MAD says whether the limb is malaligned (outside 1–15 mm medial: varus or valgus; it
 needs a calibration), then mLDFA for the femur, MPTA for the tibia, JLCA beyond 2° for the joint, and the femoral and
-tibial joint midpoints more than 3 mm apart across the leg for subluxation. "Not assessable" is an answer, with what it
+tibial joint midpoints more than 3 mm apart across the leg (square to its axis) for subluxation. "Not assessable" is an answer, with what it
 needs.
 
 The CORA of each bone: the proximal axis drawn from the proximal joint at its normal angle (mLPFA 90° at the hip, MPTA
 87° at the knee), the distal axis from the distal joint at its normal angle (mLDFA 88°, LDTA 89°), both mechanical.
-They cross at the CORA; the angle between them is the deformity, drawn with the bisector. The panel gives its distance
-below the joint, or says it lies outside the bone (a multiapical deformity or one at the joint). Under 1.5° it is within
-the joints' normal variation and is not drawn.
+They cross at the CORA; the angle between them is the deformity, drawn with the transverse bisector (across the bone,
+40 mm each side). The panel gives its distance below the joint, or says it lies outside the bone (a multiapical
+deformity or one at the joint). Under 1.5° it is within the joints' normal variation and is not drawn. Without a CORA
+the panel says what the bone lacks (landmarks, a pair on one point, the patient's right), and that the axes are
+parallel only when nothing is missing.
 
 ### Osteotomy
 
@@ -151,8 +154,9 @@ corners can be dragged. Then:
 - Shift lateral and distal, and lengthen along the bone, in mm.
 - The wedge height at the opening (or closing) cortex, 2 w sin(θ/2) with w the distance from the hinge to that cortex
   (Rolim 2016), and the limb's change in length.
-- Paley's rule: 1 with the cut through the CORA and the hinge on its bisector; 2 with the hinge on the bisector away
-  from the CORA; 3 with the hinge off it, and the translation it leaves, 2 d tan(θ/2) (Barksfield 2015).
+- Paley's rule: 1 with the cut through the CORA and the hinge on its transverse bisector; 2 with the hinge on the
+  bisector and the cut away from the CORA; 3 with the hinge more than 5 mm off it, and the translation it leaves,
+  2 d sin(θ/2) for a hinge d off the bisector. The distances are in mm, so a film measured in pixels gets no rule.
 
 Every landmark beyond the cut's line, distally along the bone, moves with the fragment and the leg is measured again at
 once (the outline says only which pixels are drawn moved); the panel lists now and planned

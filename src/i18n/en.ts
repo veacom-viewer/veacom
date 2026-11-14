@@ -564,6 +564,7 @@ export const en = {
   'deformity.value.limbLength': 'Limb length',
   'deformity.needs': 'Needs {names}',
   'deformity.needsSide': 'Needs the patient\'s right',
+  'deformity.together': '{names}: on one point, so no line',
   'deformity.needsCalibration': 'Needs a calibration',
   'deformity.parallel': 'Lines are parallel',
   'deformity.needsLandmarks': 'Place the hip, knee and ankle first.',

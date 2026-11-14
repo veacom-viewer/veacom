@@ -24,7 +24,8 @@ export interface LegInput {
 }
 
 /** Why a value cannot be given: the landmarks it still needs, or what else is missing. */
-export type Missing = { landmarks: LandmarkName[] } | { reason: 'side' | 'parallel' | 'calibration' };
+/** Why a value is not given: landmarks not placed, a pair placed on one point (no line), or a reason. */
+export type Missing = { landmarks: LandmarkName[] } | { together: LandmarkName[] } | { reason: 'side' | 'parallel' | 'calibration' };
 
 export interface Value {
   key: ValueKey | 'WBL' | 'femurLength' | 'tibiaLength' | 'limbLength';
@@ -47,6 +48,8 @@ export interface Leg {
   values: Record<Value['key'], Value>;
   /** Medial and lateral points placed on the wrong sides of the leg, and a femoral head that is not round. */
   swapped: LandmarkName[];
+  /** Pairs placed on one point (within half a pixel), which give no line. */
+  together: LandmarkName[];
   headFitPoor: boolean;
   unit: 'mm' | 'px';
 }
@@ -76,7 +79,14 @@ export function measureLeg(input: LegInput): Leg {
   const contour = (input.points.femoralHeadContour ?? []).map(toPlane);
   const head = contour.length >= CONTOUR_MINIMUM ? fitCircle(contour) : null;
   const H = head?.centre ?? null, K = at('kneeCentre'), A = at('ankleCentre'), GT = at('greaterTrochanterTip');
-  const pair = (medial: LandmarkName, lateral: LandmarkName) => { const m = at(medial), l = at(lateral); return m && l ? [m, l] as [Point, Point] : null; };
+  // A pair placed within half a pixel of each other gives no line: its values are not given, and say why.
+  const together = new Set<LandmarkName>(), apart = 0.5 * Math.min(sx, sy);
+  const pair = (medial: LandmarkName, lateral: LandmarkName) => {
+    const m = at(medial), l = at(lateral);
+    if (!m || !l) return null;
+    if (length(sub(l, m)) < apart) { together.add(medial); together.add(lateral); return null; }
+    return [m, l] as [Point, Point];
+  };
   const condyles = pair('femoralCondyleMedial', 'femoralCondyleLateral'), plateau = pair('tibialPlateauMedial', 'tibialPlateauLateral');
   const plafond = pair('plafondMedial', 'plafondLateral');
   const femoralShaft = pair('femoralShaftProximal', 'femoralShaftDistal'), tibialShaft = pair('tibialShaftProximal', 'tibialShaftDistal');
@@ -92,7 +102,8 @@ export function measureLeg(input: LegInput): Leg {
   };
   const needs = (...names: Array<[LandmarkName, unknown]>): Missing | undefined => {
     const absent = names.filter(([, value]) => value === null || value === undefined).map(([name]) => name);
-    return absent.length ? { landmarks: absent } : undefined;
+    const unplaced = absent.filter(name => !together.has(name));
+    return unplaced.length ? { landmarks: unplaced } : absent.length ? { together: absent } : undefined;
   };
   const values = {} as Record<Value['key'], Value>;
   const angle = (key: ValueKey, missing: Missing | undefined, compute: () => number | null, sided = true) => {
@@ -141,7 +152,7 @@ export function measureLeg(input: LegInput): Leg {
   return {
     hip: head ? { centre: toImage(head.centre), radius: head.radius, residual: head.residual } : null,
     knee: image(K), ankle: image(A), trochanter: image(GT), femoralLine: line(condyles), tibialLine: line(plateau), plafondLine: line(plafond),
-    femoralShaft: line(femoralShaft), tibialShaft: line(tibialShaft), madFoot: image(foot), wblPoint: image(wbl), values, swapped,
+    femoralShaft: line(femoralShaft), tibialShaft: line(tibialShaft), madFoot: image(foot), wblPoint: image(wbl), values, swapped, together: [...together],
     headFitPoor: Boolean(head && head.residual > 0.02 * head.radius), unit: unitName,
   };
 }

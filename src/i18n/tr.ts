@@ -566,6 +566,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.value.tibiaLength': 'Tibia boyu',
   'deformity.value.limbLength': 'Bacak boyu',
   'deformity.needs': 'Gerekli: {names}',
+  'deformity.together': '{names}: aynı noktada, çizgi yok',
   'deformity.needsSide': 'Hastanın sağı gerekli',
   'deformity.needsCalibration': 'Kalibrasyon gerekli',
   'deformity.parallel': 'Çizgiler paralel',

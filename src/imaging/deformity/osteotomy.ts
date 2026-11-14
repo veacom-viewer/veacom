@@ -135,7 +135,9 @@ export function solveAngle(input: LegInput, before: Leg, osteotomy: Osteotomy, t
  * apart by 2 d sin(θ/2), d the hinge's distance from the bisector: turning about it instead of about a point of the
  * bisector moves the fragment by (I - R)·d. Within 5 mm counts as on.
  */
-export function paleyRule(osteotomy: Osteotomy, cora: { point: Point; bisector: Point }, mm: LegInput['mmPerPixel']): { rule: 1 | 2 | 3; offset: number; translation: number } {
+export function paleyRule(osteotomy: Osteotomy, cora: { point: Point; bisector: Point }, mm: LegInput['mmPerPixel']): { rule: 1 | 2 | 3; offset: number; translation: number } | null {
+  // The rules' 5 mm tolerance needs millimetres: on a film measured in pixels the rule is not given.
+  if (!mm) return null;
   const hinge = toPlane(osteotomy.hinge, mm), corePoint = toPlane(cora.point, mm);
   const bisector = unit(toPlane(cora.bisector, mm)) ?? cora.bisector;
   const offset = Math.abs(cross(sub(hinge, corePoint), bisector));
