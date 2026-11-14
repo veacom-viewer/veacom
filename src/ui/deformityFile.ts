@@ -139,7 +139,9 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
     if (!list || (m.method !== 'ball' && m.method !== 'ruler') || !finite(m.knownMm) || m.knownMm <= 0 || m.knownMm > 2000) return { error: 'content' };
     marker = { method: m.method, points: list, knownMm: m.knownMm, depthConfirmed: m.depthConfirmed === true };
   }
-  const active = finite(value.active) && value.active >= 0 && value.active < plans.length ? value.active : 0;
+  // Which plan was in front: a whole index into the plans, or the first when the file leaves it out.
+  if (value.active !== undefined && !(Number.isInteger(value.active) && (value.active as number) >= 0 && (value.active as number) < plans.length)) return { error: 'content' };
+  const active = (value.active as number | undefined) ?? 0;
   const right = isObject(recorded) && (recorded.patientRight === 'left' || recorded.patientRight === 'right') ? recorded.patientRight : undefined;
   // A plan saved on a ball or ruler calibration calibrates the film again on its marker.
   const calibrated = marker !== null && isObject(value.calibration) && value.calibration.state === 'manual';

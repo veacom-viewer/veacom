@@ -626,6 +626,7 @@ export const en = {
   'deformity.reportSaved': 'Report saved: {file}',
   'deformity.opened': 'Plan opened: {count} points',
   'deformity.failed': 'Not saved: {reason}',
+  'deformity.openFailed': 'Not opened: {reason}',
   'deformity.wrongFilm': 'This plan belongs to another film.',
   'deformity.badFile': 'Not a VEAcom deformity plan: {reason}',
   'deformity.reason.size': 'the file is too large',

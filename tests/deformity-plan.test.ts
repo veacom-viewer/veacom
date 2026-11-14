@@ -149,6 +149,11 @@ describe('the plan file', () => {
     const steep = structuredClone(value); steep.plans[0].osteotomy = { bone: 'tibia', cut: [[0, 0], [1, 1]], hinge: [1, 1], fragment: [[0, 0], [1, 0], [1, 1]], wedge: 'opening', direction: 'valgus', degrees: 90, shiftLateral: 0, shiftDistal: 0, lengthen: 0 };
     assert.deepEqual(await parsePlanFile(JSON.stringify(steep), current, frame), { error: 'content' });
     assert.deepEqual(await parsePlanFile(' '.repeat(2_000_001), current, frame), { error: 'size' });
+    // Which plan was in front must be a whole index into the plans: half a plan is refused, not opened as nothing.
+    for (const active of [0.5, -1, 1, '0', null]) assert.deepEqual(await parsePlanFile(JSON.stringify({ ...value, active }), current, frame), { error: 'content' }, `active ${String(active)}`);
+    const { active: _active, ...unstated } = value;
+    const first = await parsePlanFile(JSON.stringify(unstated), current, frame);
+    assert.ok(!('error' in first)); assert.equal(first.active, 0);
     // Unknown landmarks and fields are left out; text is bounded.
     const extra = structuredClone(value); extra.plans[0].name = 'x'.repeat(500); extra.plans[0].landmarks.push({ name: '__proto__', points: [[1, 1]] });
     const read = await parsePlanFile(JSON.stringify(extra), current, frame);

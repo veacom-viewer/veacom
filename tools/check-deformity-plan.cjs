@@ -199,6 +199,12 @@ async function main() {
     await panel.locator('[role="tab"]', { hasText: 'Right leg' }).click();
     const reopened = await values('.deformity-values:not(.deformity-compare)');
     for (const key of [...ANGLES, ...LENGTHS]) near(reopened[key], before[key], 1e-6, `Reopened ${key}`);
+    // A file naming half a plan as the one in front is refused out loud, and the plans stay as they were.
+    const halfPath = path.join(output, 'plan-half.json');
+    await fs.writeFile(halfPath, JSON.stringify({ ...saved, active: 0.5 }));
+    await panel.locator('[data-action="deformity-open-file"]').setInputFiles(halfPath);
+    await page.waitForFunction(() => /Not a VEAcom deformity plan: a point or value is out of range/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 10_000 });
+    assert.deepEqual(await values('.deformity-values:not(.deformity-compare)'), reopened, 'A refused file changes nothing.');
     await desktop.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, reportPath);
     await panel.locator('[data-action="deformity-report"]').click();
     await page.waitForFunction(() => /Report saved/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 30_000 });
@@ -227,7 +233,7 @@ async function main() {
     marks = drawn(decodePng(await fs.readFile(hiddenPath)));
     assert(marks.yellow > 200 && marks.green > 200, `With patient data hidden the report still shows the plan (${JSON.stringify(marks)}).`);
     await page.keyboard.press('Shift+F12');
-    check('The plan saves as versioned JSON with image-pixel labels and no identifiers, opens again identically, and the report saves as an A4 PNG with the plan drawn, patient data shown or hidden', { planPath, reportPath });
+    check('The plan saves as versioned JSON with image-pixel labels and no identifiers, opens again identically (a malformed one is refused out loud), and the report saves as an A4 PNG with the plan drawn, patient data shown or hidden', { planPath, reportPath });
 
     // Every point is a handle: a real drag of the ankle centre and of the hinge, each one Undo step.
     const drag = async (from, by) => {

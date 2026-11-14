@@ -629,6 +629,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.reportSaved': 'Rapor kaydedildi: {file}',
   'deformity.opened': 'Plan açıldı: {count} nokta',
   'deformity.failed': 'Kaydedilemedi: {reason}',
+  'deformity.openFailed': 'Açılamadı: {reason}',
   'deformity.wrongFilm': 'Bu plan başka bir grafiye ait.',
   'deformity.badFile': 'VEAcom deformite planı değil: {reason}',
   'deformity.reason.size': 'dosya çok büyük',

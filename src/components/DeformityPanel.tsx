@@ -182,12 +182,15 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     event.target.value = '';
     if (!chosen) return;
     if (chosen.size > 2_000_000) { setStatus(t('deformity.badFile', { reason: t('deformity.reason.size') })); return; }
-    const result = await parsePlanFile(await chosen.text(), film, frame);
-    if ('error' in result) { setStatus(result.error === 'film' ? t('deformity.wrongFilm') : t('deformity.badFile', { reason: t(`deformity.reason.${result.error}` as MessageKey) })); return; }
-    change(current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, ...(result.patientRight ? { patientRight: result.patientRight } : {}) }));
-    if (result.calibrated && result.marker) applyMarker(result.marker);
-    const count = result.plans.reduce((sum, item) => sum + Object.values(item.points).reduce((n, list) => n + list.length, 0), 0);
-    setStatus(t('deformity.opened', { count }));
+    // A file that cannot be read, or that fails after it was read, says so: nothing changes silently.
+    try {
+      const result = await parsePlanFile(await chosen.text(), film, frame);
+      if ('error' in result) { setStatus(result.error === 'film' ? t('deformity.wrongFilm') : t('deformity.badFile', { reason: t(`deformity.reason.${result.error}` as MessageKey) })); return; }
+      change(current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, ...(result.patientRight ? { patientRight: result.patientRight } : {}) }));
+      if (result.calibrated && result.marker) applyMarker(result.marker);
+      const count = result.plans.reduce((sum, item) => sum + Object.values(item.points).reduce((n, list) => n + list.length, 0), 0);
+      setStatus(t('deformity.opened', { count }));
+    } catch (error) { setStatus(t('deformity.openFailed', { reason: error instanceof Error ? error.message : String(error) })); }
   };
   const report = async () => {
     const element = viewport();
