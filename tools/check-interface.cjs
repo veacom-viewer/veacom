@@ -439,6 +439,32 @@ async function main() {
     await page.waitForFunction(before => window.__VEACOM_TEST__.state().view.slice === before, measuredSlice);
     await pickedDrawing.waitFor();
     assert.equal(await page.locator('[data-annotation-id][data-selected]').count(), 0, 'Leaving the slice ends the selection, so Delete cannot remove a measurement off screen.');
+
+    const originalView = await page.evaluate(() => window.__VEACOM_TEST__.state().view);
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ mode: 'source', plane: 'axial' }));
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().displayedView.mode === 'source');
+    const spacingRow = page.locator('.series-details dt').filter({ hasText: /^(Pixel spacing|Piksel aralığı)$/ }).locator('+ dd');
+    const dicomSpacing = await spacingRow.innerText();
+    await page.getByTestId('tool-measure-menu').click();
+    await page.locator('[data-action="toolbar-units-calibration"]').click();
+    await page.locator('[data-action="calibration-length"]').fill('200');
+    await page.locator('[data-action="calibrate"]').click();
+    await page.locator('.calibration-status').waitFor();
+    await page.getByTestId('inspector-tab-measurements').click();
+    const appliedSpacing = await spacingRow.innerText();
+    assert.notEqual(appliedSpacing, dicomSpacing, 'The reference line changes CT pixel spacing.');
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ mode: 'mpr', plane: 'coronal' }));
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().displayedView.plane === 'coronal');
+    assert.equal(await spacingRow.innerText(), appliedSpacing, 'MPR keeps the calibrated CT spacing in the inspector.');
+    await page.getByTestId('inspector-tab-display').click();
+    await page.locator('[data-action="calibration-remove"]').click();
+    await page.locator('#section-units-toggle').click();
+    await page.getByTestId('inspector-tab-measurements').click();
+    assert.equal(await spacingRow.innerText(), dicomSpacing);
+    await page.evaluate(view => window.__VEACOM_TEST__.setView(view), originalView);
+    await pickedDrawing.waitFor();
+    check('CT pixel spacing follows calibration in acquired and reconstructed views');
+
     await page.getByTestId('findings-delete-all').click();
     await page.waitForFunction(() => !document.querySelector('[data-annotation-id]:not([data-annotation-id="draft"])'));
     await page.getByTestId('notice-dismiss').click();

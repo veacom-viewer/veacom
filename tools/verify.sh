@@ -39,6 +39,8 @@ run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
 run video-encoder node tools/check-video-encoder.cjs "$out/video-encoder"
 run video-encoder-no-gpu node tools/check-video-encoder.cjs "$out/video-encoder" --no-gpu
 run click-budget node tools/check-click-budget.cjs "$study" "$out/click-budget"
+run longleg-fixture node tools/fixtures/make-longleg-study.mjs "$out/longleg"
+run deformity-plan node tools/check-deformity-plan.cjs "$out/longleg" "$out/deformity-plan"
 run budget-coverage node tools/check-budget-coverage.cjs "$out"
 run file-drop node tools/check-file-drop.cjs --study "$series" --output "$out/file-drop"
 run engine-pipe node tools/check-engine-pipe.cjs

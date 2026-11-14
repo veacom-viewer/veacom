@@ -279,6 +279,30 @@ node tools/fixtures/make-nm-study.mjs /tmp/nm-study
 node tools/check-gamma-camera.cjs /tmp/nm-study test-results/gamma-camera
 ```
 
+## Deformity plan
+
+`make-longleg-study.mjs` writes a synthetic standing long-leg DX of both legs, drawn from chosen joint angles: a right leg
+with an 8° proximal tibia vara (its CORA 90 mm below the knee centre) and a left leg with a valgus distal femur. A
+25.0 mm ball and a ruler marked every 10 mm sit at the bones' depth, magnified 1.1 times. Each series carries the same
+pixels with other spacing tags (Pixel Spacing only, Imager Pixel Spacing only, with ERMF, equal, GEOMETRY, FIDUCIAL,
+differing without a type, none), and two more are mirrored (Patient Orientation R\F) or have no Patient Orientation.
+Its manifest gives every landmark in DICOM image-relative pixels and the values the angles imply, in closed form, before
+and after an 8° opening wedge HTO.
+
+```sh
+node tools/fixtures/make-longleg-study.mjs /tmp/longleg [--variants=ips-only,none]
+node tools/check-deformity-plan.cjs /tmp/longleg /tmp/deformity-plan
+```
+
+`check-deformity-plan.cjs` opens the films in the desktop app and clicks every landmark where the plan's drawing puts
+it. It checks the calibration each variant names and the femur's length it gives; on the Imager Pixel Spacing film,
+every angle of both legs to 0.1° and every length to 0.5 mm, the malalignment test and the tibial CORA; the HTO
+measured again, its wedge height, and the fragment drawn moved (bone where the talus went, dimmed where it was); ⌘Z
+and redo; MAD 0 solved; the plan saved (through a stubbed save dialog), opened again with identical values, and the
+report saved as an A4 PNG; the ball calibrating the film without spacing to the true 440 mm femur; the mirrored film
+giving the same angles under the same names; and the film without Patient Orientation asking where the patient's
+right is before any medial or lateral value. CI runs it in the `screens` shard on llvmpipe.
+
 ## Pictures
 
 `node tools/check-pictures.cjs <DICOM series folder> <output>` checks picture imports in the desktop app.

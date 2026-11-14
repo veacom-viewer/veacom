@@ -6,6 +6,7 @@ import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProject
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
+import { calibrationTag, projectionEdgeLabels, projectionLine } from '../imaging/radiograph';
 import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
@@ -30,6 +31,7 @@ import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle, type InputKind } from '../usage/tracker';
 import { ValueReadout, type ReadoutSetter } from './ValueReadout';
+import { PlanDrawing, PlanLayers } from './DeformityOverlay';
 
 type Point2 = [number, number];
 interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean; }
@@ -863,7 +865,8 @@ export function Viewport(props: ViewportProps) {
   const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
   const normalAxis = frame.normal.reduce((best, value, axis) => Math.abs(value) > Math.abs(frame.normal[best]) ? axis : best, 0);
   const location = displayedSeries.orientationKnown === true && displayedSeries.positionKnown !== false ? frame.center[normalAxis] : null;
-  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t);
+  // A projection film names its side and what its millimetres stand for there instead (imaging/radiograph.ts).
+  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t) || projectionLine(displayedSeries);
   const scanner = scannerLines(props.volume.series);
   const bottomRight = props.showOverlay === false ? [] : [...scanner, ...(props.fusion ? [
     fusionLine(props.fusion.volume.series, props.hidePatientData === true, t),
@@ -925,7 +928,7 @@ export function Viewport(props: ViewportProps) {
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
-    : { left: '', right: '', top: '', bottom: '' };
+    : projectionEdgeLabels(displayedSeries, mapping) ?? { left: '', right: '', top: '', bottom: '' };
   const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
     const theirs = getPlaneFrame(reference.series, reference.view);
     const segment = referenceSegment(frame, theirs);
@@ -963,6 +966,8 @@ export function Viewport(props: ViewportProps) {
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
     <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
+    <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
       {/* Segmentation masks (from main, #3) sit on the image, under every line, measurement and overlay text. */}
       {segmentationFrames.length > 0 && <g data-testid="segmentation-overlay" pointerEvents="none">
@@ -994,6 +999,7 @@ export function Viewport(props: ViewportProps) {
       {shownAnnotations.map((annotation, index) => <AnnotationDrawing key={annotation.id} annotation={annotation} shown={shown[index].points} dashed={shown[index].dashed}
         handles={!projected} mapping={mapping} layout={labelLayouts[index]} selected={selected === annotation.id} />)}
       {!props.hideMeasurements && draft && <AnnotationDrawing annotation={draft} shown={draftShown} mapping={mapping} layout={draftLayout} selected={false} />}
+      <PlanDrawing volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
       {/* Overlay text last: laterality and patient identification stay on top of everything else. */}
       {props.showOverlay !== false && <g data-testid="patient-overlay" data-patient-corners fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         {topLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16} data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}
@@ -1019,7 +1025,7 @@ export function Viewport(props: ViewportProps) {
         <OverlayText text={sliceLine} y={dimensions[1] - 13} width={bottomWidth} fontFamily={fontFamily} />
         {bottomRight.map((line, index) => index !== fusionNameAt && <text key={`s${index}`} x={dimensions[0] - 14} y={bottomRightY(index)} fontSize={12} textAnchor="end"><title>{line.text}</title>{line.fitted}</text>)}
         {props.showScale && <>
-        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}</text>
+        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}{measure.unit === 'mm' && calibrationTag(displayedSeries) ? ` · ${calibrationTag(displayedSeries)}` : ''}</text>
         <path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#000" strokeWidth={3} strokeLinecap="round" opacity={0.75} fill="none" /><path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#c9d3df" strokeWidth={1} fill="none" />
         </>}
       </g>}

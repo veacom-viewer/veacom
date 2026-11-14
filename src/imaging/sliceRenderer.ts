@@ -109,6 +109,7 @@ uniform vec3 uIndexTopLeft;
 uniform vec3 uIndexRight;
 uniform vec3 uIndexDown;
 uniform float uScreenHeight;
+${dimension === '2d' ? 'uniform vec3 uFull;\nuniform vec4 uTile;\nuniform vec2 uTileOrigin;' : ''}
 ${color || dimension !== '3d' ? '' : 'uniform int uSlabMode;\nuniform int uSlabHalf;\nuniform vec3 uSlabStep;'}
 ${color ? '' : 'uniform vec2 uWindow;\nuniform bool uInvert;\nuniform int uBasePalette;\nuniform int uVoiFunction;\nuniform bool uVoi;\nuniform usampler2D uVoiLut;\nuniform float uVoiFirst;\nuniform int uVoiCount;\nuniform float uVoiMax;'}
 ${pet ? `uniform ${samplerType(pet, '3d')} uPet;
@@ -162,7 +163,10 @@ vec3 palette(float t,int selected) {
 }`}
 void main() {
   vec3 p=uIndexTopLeft+uIndexRight*gl_FragCoord.x+uIndexDown*(uScreenHeight-gl_FragCoord.y);
-  if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
+  ${dimension === '2d' ? `// A frame over the GPU's 2D limit is drawn as tiles (frameTiles): each draw keeps its own part of the frame.
+  if (outside(p,uFull)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
+  if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
+  p.xy-=uTileOrigin;` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${color ? `
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
   outColor=vec4(texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb,1.0);
@@ -194,11 +198,34 @@ void main() {
 }`;
 }
 
+/** A part of a source frame drawn on its own: `core` is the part it draws, in pixels [x0, y0, x1, y1), and the texture
+ * holds it with `TILE_HALO` pixels more on each side where the frame has them, for sampling that reads beyond a pixel. */
+export interface FrameTile { x: number; y: number; width: number; height: number; core: [number, number, number, number] }
+/** Pixels each tile's texture holds beyond the part it draws. */
+export const TILE_HALO = 64;
+/**
+ * The tiles of a source frame of `width` × `height` pixels for a GPU whose 2D textures hold `limit` pixels a side: one
+ * tile, the whole frame, when it fits. Feasibility study gap G4: a long film may exceed the limit (16,384 on most GPUs,
+ * WARP and llvmpipe; 8,192 on SwiftShader).
+ */
+export function frameTiles(width: number, height: number, limit: number): FrameTile[] {
+  if (width <= limit && height <= limit) return [{ x: 0, y: 0, width, height, core: [0, 0, width, height] }];
+  const step = limit - 2 * TILE_HALO;
+  if (step < 1) throw new Error(t('gpu.frameTextureLimit', { limit }));
+  const cuts = (size: number) => { const list: Array<[number, number]> = []; for (let at = 0; at < size; at += step) list.push([at, Math.min(size, at + step)]); return list; };
+  return cuts(height).flatMap(([y0, y1]) => cuts(width).map(([x0, x1]) => {
+    const x = Math.max(0, x0 - TILE_HALO), y = Math.max(0, y0 - TILE_HALO);
+    return { x, y, width: Math.min(width, x1 + TILE_HALO) - x, height: Math.min(height, y1 + TILE_HALO) - y, core: [x0, y0, x1, y1] as [number, number, number, number] };
+  }));
+}
+
 /** One GPU context and texture cache is shared by all 2D panes, including 5×5 layouts. */
 class SharedSliceRenderer {
   readonly canvas = document.createElement('canvas');
   readonly gl: WebGL2RenderingContext;
   info: RendererInfo;
+  /** A smaller 2D texture limit than the GPU's, for checks that exercise tiling on any GPU (frameTiles). */
+  private forcedTextureLimit: number | null = null;
   private programs = new Map<string, Program>();
   private current: Program | null = null;
   private textures = new Map<string, CachedTexture>();
@@ -292,6 +319,9 @@ class SharedSliceRenderer {
     if (id === undefined) { id = this.nextIdentity++; this.identities.set(object, id); }
     return id;
   }
+  /** Draws source frames as if the GPU's 2D textures held at most `limit` pixels a side (null: the GPU's own limit). */
+  limitTexturesForTesting(limit: number | null): void { this.forcedTextureLimit = limit; }
+  private get textureLimit(): number { return Math.min(this.info.maxTextureSize, this.forcedTextureLimit ?? Infinity); }
   private textureKey(volume: Volume, kind: TextureKind, sourceFrame?: number): string {
     const series = volume.series;
     const range = sourceFrame === undefined ? series.paddingRange : series.frameMetadata?.[sourceFrame]?.paddingRange ?? series.paddingRange;
@@ -360,11 +390,12 @@ class SharedSliceRenderer {
       this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
     }
   }
-  private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>()): string {
+  private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile): string {
     const gl = this.gl, series = volume.series;
     if (series.dimensions.some(d => !Number.isInteger(d) || d < 1)) throw new Error('Invalid volume dimensions');
-    const limit = sourceFrame === undefined ? this.info.max3DTextureSize : this.info.maxTextureSize;
-    if (series.dimensions[0] > limit || series.dimensions[1] > limit || (sourceFrame === undefined && series.dimensions[2] > limit)) {
+    const limit = sourceFrame === undefined ? this.info.max3DTextureSize : this.textureLimit;
+    const [tileWidth, tileHeight] = tile ? [tile.width, tile.height] : [series.dimensions[0], series.dimensions[1]];
+    if (tileWidth > limit || tileHeight > limit || (sourceFrame === undefined && series.dimensions[2] > limit)) {
       throw new Error(t(sourceFrame === undefined ? 'gpu.volumeTextureLimit' : 'gpu.frameTextureLimit', { limit }));
     }
     const components = kind === 'rgb8' ? 3 : 1;
@@ -374,10 +405,11 @@ class SharedSliceRenderer {
     if (partial && (sourceFrame === undefined || volume.sourceFrameIndex !== sourceFrame)) throw new Error(t('gpu.frameNotLoaded'));
     const target = sourceFrame === undefined ? gl.TEXTURE_3D : gl.TEXTURE_2D;
     gl.activeTexture(gl.TEXTURE0 + unit);
-    const key = this.textureKey(volume, kind, sourceFrame);
+    const tiled = tile && (tile.width !== series.dimensions[0] || tile.height !== series.dimensions[1]) ? tile : undefined;
+    const key = this.textureKey(volume, kind, sourceFrame) + (tiled ? `:tile:${tiled.x},${tiled.y},${tiled.width},${tiled.height}` : '');
     let cached = this.textures.get(key);
     if (!cached) {
-      const texels = series.dimensions[0] * series.dimensions[1] * (sourceFrame === undefined ? series.dimensions[2] : 1);
+      const texels = tileWidth * tileHeight * (sourceFrame === undefined ? series.dimensions[2] : 1);
       // Drivers may store RGB8 as RGBA8; reserve four bytes per colour texel.
       const byteCount = texels * (kind === 'float32' || kind === 'rgb8' ? 4 : kind === 'int16' || kind === 'uint16' ? 2 : 1);
       this.prune(byteCount + (sourceFrame === undefined ? series.dimensions[2] : 1) * 16, protectedKeys);
@@ -385,16 +417,21 @@ class SharedSliceRenderer {
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
       let displayData = sourceData;
       if (sourceData instanceof Float64Array) {
-        const copy = new Float32Array(sourceData.length);
-        for (let frame = 0; frame < (sourceFrame === undefined ? series.dimensions[2] : 1); frame++) {
+        const depth = sourceFrame === undefined ? series.dimensions[2] : 1;
+        const copy = new Float32Array(texels);
+        let output = 0;
+        for (let frame = 0; frame < depth; frame++) {
           const range = series.frameMetadata?.[sourceFrame ?? frame]?.paddingRange ?? series.paddingRange;
           if (range && !range.every(Number.isFinite)) throw new Error('Invalid pixel padding range.');
           const low = range ? Math.min(...range) : NaN, high = range ? Math.max(...range) : NaN;
-          for (let i = frame * frameLength; i < (frame + 1) * frameLength; i++) {
-            const value = sourceData[i];
-            copy[i] = range && value >= low && value <= high ? NaN : value;
-            if (Number.isFinite(value) && !Number.isFinite(copy[i]) && !(range && value >= low && value <= high)) {
-              throw new Error(t('gpu.float64Range'));
+          for (let row = 0; row < tileHeight; row++) {
+            const start = frame * frameLength + (row + (tiled?.y ?? 0)) * series.dimensions[0] + (tiled?.x ?? 0);
+            for (let i = start; i < start + tileWidth; i++) {
+              const value = sourceData[i];
+              const padding = value >= low && value <= high;
+              const displayed = padding ? NaN : Math.fround(value);
+              if (!padding && Number.isFinite(value) && !Number.isFinite(displayed)) throw new Error(t('gpu.float64Range'));
+              copy[output++] = displayed;
             }
           }
         }
@@ -406,13 +443,18 @@ class SharedSliceRenderer {
       gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       if (sourceFrame === undefined) gl.texParameteri(target, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-      const [w, h] = series.dimensions, d = sourceFrame === undefined ? series.dimensions[2] : 1;
+      const [w, h] = [tileWidth, tileHeight], d = sourceFrame === undefined ? series.dimensions[2] : 1;
       const format: [number, number, number] = kind === 'int16' ? [gl.R16I, gl.RED_INTEGER, gl.SHORT]
         : kind === 'uint16' ? [gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT]
           : kind === 'uint8' ? [gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE]
             : kind === 'rgb8' ? [gl.RGB8, gl.RGB, gl.UNSIGNED_BYTE] : [gl.R32F, gl.RED, gl.FLOAT];
       if (sourceFrame === undefined) gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData);
-      else gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData);
+      else if (tiled && !(sourceData instanceof Float64Array)) {
+        // A tile is read from the frame in place: rows of the whole frame, from the tile's corner.
+        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, series.dimensions[0]); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, tiled.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, tiled.y);
+        try { gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData); }
+        finally { gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0); }
+      } else gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData);
       const error = gl.getError();
       if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
       let padding: WebGLTexture | null = null;
@@ -482,7 +524,8 @@ class SharedSliceRenderer {
     this.finishProgram(program);
     this.current = program;
     gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
-    const pinned = new Set([this.bind(volume, 0, mainKind, sourceFrame)]); gl.uniform1i(this.uniform('uImage'), 0);
+    const tiles = sourceFrame === undefined ? [] : frameTiles(volume.series.dimensions[0], volume.series.dimensions[1], this.textureLimit);
+    const pinned = new Set([this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0])]); gl.uniform1i(this.uniform('uImage'), 0);
     if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
     const ratio = target.width / Math.max(1, target.getBoundingClientRect().width || target.clientWidth || target.width);
     const cssWidth = w / ratio, cssHeight = h / ratio;
@@ -523,7 +566,22 @@ class SharedSliceRenderer {
       gl.uniform1f(this.uniform('uPetUpper'), fusion.upperSuv);
       gl.uniform1i(this.uniform('uPalette'), ['hot', 'ge', 'rainbow', 'hot_metal', 'red_yellow'].indexOf(fusion.palette));
     }
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    if (sourceFrame === undefined) gl.drawArrays(gl.TRIANGLES, 0, 3);
+    else {
+      // Every pixel of the frame lies in one tile's part; the screen outside the frame is black in each draw.
+      const [fullWidth, fullHeight] = volume.series.dimensions;
+      gl.uniform3fv(this.uniform('uFull'), [fullWidth, fullHeight, 1]);
+      if (tiles.length > 1) { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+      tiles.forEach((tile, index) => {
+        if (index) pinned.add(this.bind(volume, 0, mainKind, sourceFrame, pinned, tile));
+        const [x0, y0, x1, y1] = tile.core;
+        // A part's edges in pixel-centre coordinates; the frame's own edges stay open, as outside() leaves them.
+        gl.uniform4f(this.uniform('uTile'), x0 ? x0 - 0.5 : -1e9, y0 ? y0 - 0.5 : -1e9, x1 < fullWidth ? x1 - 0.5 : 1e9, y1 < fullHeight ? y1 - 0.5 : 1e9);
+        gl.uniform2f(this.uniform('uTileOrigin'), tile.x, tile.y);
+        gl.uniform3fv(this.uniform('uDimensions'), [tile.width, tile.height, 1]);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+      });
+    }
     const context = target.getContext('2d', { alpha: false });
     if (!context) throw new Error(t('gpu.compositorFailed'));
     context.drawImage(this.canvas, 0, 0);

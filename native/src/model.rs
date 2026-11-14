@@ -251,6 +251,9 @@ pub struct FrameMetadata {
     /// A gamma camera frame: which detector took it, in which view, energy window and phase.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nm: Option<NmFrame>,
+    /// A projection radiograph: the spacing measurements use and what it means, the side and orientation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection: Option<crate::projection::Projection>,
 }
 
 /// What a gamma camera (NM) frame is, from the vectors its file's Frame Increment Pointer names (PS3.3 C.8.4.8). The

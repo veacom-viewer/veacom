@@ -18,7 +18,9 @@ import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
+import { isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
+import { deformity, type FilmSelection } from './ui/deformityStore';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -76,6 +78,7 @@ const FeedbackDialog = lazy(() => import('./components/FeedbackDialog').then(mod
 const VolumeView = lazy(() => import('./components/VolumeView').then(module => ({ default: module.VolumeView })));
 const PreopChecklist = lazy(() => import('./components/PreopChecklist').then(module => ({ default: module.PreopChecklist })));
 const AssessmentPanel = lazy(() => import('./components/AssessmentPanel').then(module => ({ default: module.AssessmentPanel })));
+const DeformityPanel = lazy(() => import('./components/DeformityPanel').then(module => ({ default: module.DeformityPanel })));
 
 type Panel = 'measurements' | 'display' | 'tags' | null;
 /** `unfused`: this pane never shows the fusion (the plain CT beside the fused one); a new series or the fusion button in it clears it. */
@@ -99,7 +102,8 @@ function readOpenSections(): Set<DisplaySection> {
   } catch { /* Storage may be disabled by the host. */ }
   return new Set(['window', 'color', 'orientation']);
 }
-type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]> };
+type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]>; plans: ReturnType<typeof deformity.snapshot>;
+  calibration?: FilmSelection & { value: FilmCalibration | null } };
 // A notice built from a message key is shown in the current language, and the key is its test hook.
 type Notice = { message: string; kind: 'error' | 'info'; key?: MessageKey; params?: MessageParams; code?: string;
   /** Engine warnings, translated again when the language changes. */
@@ -238,12 +242,13 @@ function windowClass(volume: Volume | undefined, view: ViewState, autoWindows: M
 }
 
 /** How a volume is shown: its calibration, units and SUV, and for a PET the blood glucose typed for its study. */
-type Decoration = { scale: number | undefined; units: Settings['measurementUnits']; suvNormalization: SuvNormalization; glucose: number | undefined };
-const sameDecoration = (a: Decoration, b: Decoration) => a.scale === b.scale && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
-function decorateVolume(volume: Volume, { scale, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
+type Decoration = { scale: number | undefined; films: FilmCalibrations | undefined; units: Settings['measurementUnits']; suvNormalization: SuvNormalization; glucose: number | undefined };
+const sameDecoration = (a: Decoration, b: Decoration) => a.scale === b.scale && a.films === b.films && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
+function decorateVolume(volume: Volume, { scale, films, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
   let sourceFramesOnly = false;
   try { sourceFramesOnly = sourceFrameOnly(volume); } catch { /* The viewport reports an unavailable GPU. */ }
-  return { ...volume, series: { ...volume.series, sourceFramesOnly, measurementScale: scale, measurementUnits, suvNormalization, typedGlucose: glucose } };
+  // A film's ball or ruler outranks the series' known-length scale on that film (radiograph.ts withFilmCalibrations).
+  return { ...volume, series: withFilmCalibrations({ ...volume.series, sourceFramesOnly, measurementScale: scale, measurementUnits, suvNormalization, typedGlucose: glucose }, films) };
 }
 
 // `testId` gives the scripted desktop checks (tools/*.cjs) a hook that does not depend on the language.
@@ -407,6 +412,9 @@ export default function App() {
   const [settings, setSettings] = useState(readSettings);
   const [openSections, setOpenSections] = useState(readOpenSections);
   const [calibrationScales, setCalibrationScales] = useState<Record<string, number>>({});
+  // Ball and ruler calibrations from the deformity plan, by series and film: each stands for its own film only.
+  const [filmCalibrations, setFilmCalibrations] = useState<Partial<Record<string, FilmCalibrations>>>({});
+  const filmCalibrationsRef = useRef(filmCalibrations);
   const [calibrationLine, setCalibrationLine] = useState('');
   const [calibrationLength, setCalibrationLength] = useState('');
   const settingsRef = useRef(settings);
@@ -587,7 +595,7 @@ export default function App() {
   const petRecords = usePetRecords(series, setAnnotations);
   const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
   const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const resolvedSlots = slots.map(slot => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
@@ -597,7 +605,7 @@ export default function App() {
   });
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
   const displaySlotFrames = new Map(Object.entries(slotFrames).map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const volumeForSlot = (slot: Slot) => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     const frame = displaySlotFrames.get(slot.id);
@@ -624,6 +632,9 @@ export default function App() {
   const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
+  // The film the active pane shows, with its calibration (a ball or ruler holds for one film), for the inspector.
+  const shownFilm = activeVolume && usesSourceFrames(activeVolume.series, activeDisplayView)
+    ? sourceFrameSeries(activeVolume.series, activeDisplayView.slice) : activeVolume?.series ?? activeSeries;
   const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
@@ -637,6 +648,9 @@ export default function App() {
   // A CT's assessment button opens the pre-op checklist instead (the assessment is for MR).
   const opensChecklist = activeSeries?.modality === 'CT';
   const checklistShown = checklistOpen && opensChecklist;
+  // On a standing long-leg DX or CR it opens the deformity plan (docs/deformity-planning.md), in the same place.
+  const opensDeformity = !opensChecklist && Boolean(activeSeries && isLongLegFilm(activeSeries));
+  const deformityShown = checklistOpen && opensDeformity && Boolean(activeVolume);
   const canReconstruct = Boolean(activeVolume?.series.canReconstruct && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && activeSeries && !loadingIds.has(activeSeries.id) && !loadErrors[activeSeries.id]);
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
@@ -761,21 +775,38 @@ export default function App() {
     if (closed) requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-testid="${closed}"]`) ?? document.querySelector<HTMLElement>('[data-testid="tool-more"]'))?.focus());
   }, [show3d, showAssessment, checklistOpen]);
 
-  const remember = () => {
-    history.current.past.push({ slots: slotsRef.current, annotations: annotationRef.current });
+  const setFilmCalibration = (seriesId: string, key: string, value: FilmCalibration | null) => {
+    setFilmCalibrations(current => {
+      const films = { ...current[seriesId] }, next = { ...current };
+      if (value) films[key] = value; else delete films[key];
+      if (Object.keys(films).length) next[seriesId] = films; else delete next[seriesId];
+      return next;
+    });
+  };
+  const snapshotFor = (selection?: FilmSelection): Snapshot => ({
+    slots: slotsRef.current, annotations: annotationRef.current, plans: deformity.snapshot(),
+    // Importing a plan changes this film's scale in the same step. A landmark edit never changes a calibration.
+    ...(selection ? { calibration: { ...selection, value: filmCalibrationsRef.current[selection.seriesId]?.[selection.key] ?? null } } : {}),
+  });
+  const remember = (selection?: FilmSelection) => {
+    history.current.past.push(snapshotFor(selection));
     if (history.current.past.length > 30) history.current.past.shift();
     history.current.future = []; setHistoryCount([history.current.past.length, 0]);
   };
   const undo = (redo = false) => {
     const from = redo ? history.current.future : history.current.past, to = redo ? history.current.past : history.current.future;
     const snapshot = from.pop(); if (!snapshot) return;
-    to.push({ slots: slotsRef.current, annotations: annotationRef.current });
+    to.push(snapshotFor(snapshot.calibration));
+    if (snapshot.calibration) setFilmCalibration(snapshot.calibration.seriesId, snapshot.calibration.key, snapshot.calibration.value);
     setSlots(current => current.map(slot => {
       const saved = snapshot.slots.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
       return saved ? { ...slot, view: saved.view } : slot;
     }));
-    setAnnotations(snapshot.annotations); setHistoryCount([history.current.past.length, history.current.future.length]);
+    setAnnotations(snapshot.annotations); deformity.restore(snapshot.plans); setHistoryCount([history.current.past.length, history.current.future.length]);
   };
+  // A deformity plan's steps are Undo steps too (src/ui/deformityStore.ts). `remember` reads only refs, so the first one
+  // serves for the window's life.
+  useEffect(() => { deformity.connectUndo(remember); return () => deformity.connectUndo(null); }, []);
 
   const publishVolumes = (candidate: Map<string, Volume>) => {
     const pinned = new Set([...pending.current.keys(), ...requestedPins.current, ...assessmentPinnedIds.current]);
@@ -1775,6 +1806,8 @@ export default function App() {
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
     setCalibrationScales(current => ({ ...current, [activeSeries.id]: known / length }));
+    // A known length sets the whole series' scale: the films' own ball or ruler calibrations give way to it.
+    setFilmCalibrations(current => { if (!current[activeSeries.id]) return current; const next = { ...current }; delete next[activeSeries.id]; return next; });
     setSettings(current => ({ ...current, measurementUnits: 'auto' }));
     say('notice.calibrated', 'info', undefined, true);
   };
@@ -1965,8 +1998,8 @@ export default function App() {
         seg: shownSegmentations.join('|'), fusion: join([showFusion, fusionId, fusionOpacity, fusionUpper, fusionPalette, fusionBlend]),
         link: String(settings.linked), overlay: join([settings.showOverlay, settings.showReferences, settings.hidePatientData, settings.hideMeasurements]),
         // The pre-op checklist is docked beside the images like the inspector.
-        panel: join([settings.panel, activeId, checklistShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
-        lang: locale, prefs: JSON.stringify([settings.wheelSensitivity, settings.reverseWheel, settings.measurementUnits, calibrationScales, calibrationLine, calibrationLength, usageConsent]),
+        panel: join([settings.panel, activeId, checklistShown, deformityShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
+        lang: locale, prefs: JSON.stringify([settings.wheelSensitivity, settings.reverseWheel, settings.measurementUnits, calibrationScales, filmCalibrations, calibrationLine, calibrationLength, usageConsent]),
       },
     };
   });
@@ -2008,6 +2041,7 @@ export default function App() {
     isMprRef.current = isMpr;
     annotationRef.current = annotations;
     settingsRef.current = settings;
+    filmCalibrationsRef.current = filmCalibrations;
     toolRef.current = tool;
     crosshairRef.current = crosshair;
     crosshairSeriesIdRef.current = crosshairSeriesId;
@@ -2228,7 +2262,7 @@ export default function App() {
     { id: 'orientation', group: 'image', priority: 6, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<Glyph name="mirror" />} label={t('toolbar.orientation')} testId="tool-orientation" popup="menu" indicator expanded={menu === 'orientation'} disabled={noImage} onClick={() => toggleMenu('orientation')} />
       {menu === 'orientation' && <Menu label={t('toolbar.orientation')} onClose={closeMenu}>{orientationItems()}</Menu>}</div> },
-    { id: 'assessment', group: 'image', priority: 2, node: opensChecklist ? <ToolButton icon={<Stethoscope size={18} />} label={t('checklist.title')} testId="tool-assessment" active={checklistOpen} onClick={toggleChecklist} />
+    { id: 'assessment', group: 'image', priority: 2, node: opensChecklist || opensDeformity ? <ToolButton icon={<Stethoscope size={18} />} label={t(opensDeformity ? 'deformity.title' : 'checklist.title')} testId="tool-assessment" active={checklistOpen} onClick={toggleChecklist} />
       : <ToolButton icon={<Stethoscope size={18} />} label={showAssessment && !assessmentShown ? t('toolbar.assessmentBehind') : t('toolbar.assessment')} testId="tool-assessment" active={assessmentShown} className={showAssessment && !assessmentShown ? 'is-behind' : ''} disabled={!activeVolume || !ASSESSMENT_AVAILABLE} why={ASSESSMENT_AVAILABLE ? undefined : t('toolbar.assessmentSoon')} onClick={() => {
         // Shows or hides the assessment; only its own Close button (or Esc inside it) ends it and discards its input.
         if (!showAssessment) void openAssessment();
@@ -2349,6 +2383,17 @@ export default function App() {
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
           updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage(); }} /></Suspense></div>}
+      {deformityShown && activeVolume && <div className="assessment-overlay"><Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
+        onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
+        viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
+        onCalibrate={(id, key, calibration) => {
+          const before = filmCalibrations[id]?.[key];
+          setFilmCalibration(id, key, calibration);
+          // Confirming the ball's depth changes no scale: no announcement.
+          if (calibration && calibration.method !== 'dicom' && (before?.method === 'dicom' || calibration.scale !== before?.scale)) {
+            setSettings(current => ({ ...current, measurementUnits: 'auto' })); say('notice.calibratedFilm', 'info', undefined, true);
+          }
+        }} /></Suspense></div>}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
       <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} onError={showTagError}>
         {inspectorShown && <>
@@ -2409,7 +2454,7 @@ export default function App() {
               {sphere && activeSeries && <SphereDetails annotation={annotation} annotations={activeAnnotations} volume={activeVolume} onChange={next => changeAnnotations(activeSeries.id, next)} />}</li>;
           })}</ol>
             : <div className="inspector-empty"><span className="empty-icon" aria-hidden="true"><Ruler size={20} strokeWidth={1.6} /></span><strong>{t('inspector.emptyTitle')}</strong><p>{t('inspector.emptyText')}</p><button data-action="measure-length" type="button" className="secondary-button compact" data-testid="findings-add" disabled={!activeVolume} onClick={() => setTool('length')}><Plus size={14} /> {t('inspector.addMeasurement')}{settings.singleKeys && <kbd className="button-kbd">L</kbd>}</button></div>}
-          <section className="panel-block" aria-labelledby="series-details-title"><h3 className="block-title" id="series-details-title">{t('inspector.seriesDetails')}</h3>{activeSeries ? <dl className="series-details"><dt>{t('inspector.modality')}</dt><dd>{activeSeries.modality}</dd><dt>{t('inspector.images')}</dt><dd>{activeSeries.dimensions[2].toLocaleString()}</dd><dt>{t('inspector.matrix')}</dt><dd>{activeSeries.dimensions[0]} × {activeSeries.dimensions[1]}</dd><dt>{t('inspector.pixelSpacing')}</dt><dd>{activeSeries.spacingKnown === true ? `${activeSeries.spacing.slice(0, 2).map(n => n.toFixed(2)).join(' × ')} mm` : t('inspector.notCalibrated')}</dd><dt>{t('inspector.sliceSpacing')}</dt><dd>{activeSeries.canReconstruct ? `${activeSeries.spacing[2].toFixed(2)} mm` : t('inspector.notVerified')}</dd><dt>{t('inspector.values')}</dt><dd>{storedUnit(activeSeries) || t('inspector.storedValues')}</dd></dl> : <p className="muted-copy">{t('inspector.openStudy')}</p>}</section>
+          <section className="panel-block" aria-labelledby="series-details-title"><h3 className="block-title" id="series-details-title">{t('inspector.seriesDetails')}</h3>{activeSeries ? <dl className="series-details"><dt>{t('inspector.modality')}</dt><dd>{activeSeries.modality}</dd><dt>{t('inspector.images')}</dt><dd>{activeSeries.dimensions[2].toLocaleString()}</dd><dt>{t('inspector.matrix')}</dt><dd>{activeSeries.dimensions[0]} × {activeSeries.dimensions[1]}</dd><dt>{t('inspector.pixelSpacing')}</dt><dd>{shownFilm ? pixelSpacingText(shownFilm) : t('inspector.notCalibrated')}</dd><dt>{t('inspector.sliceSpacing')}</dt><dd>{activeSeries.canReconstruct ? `${activeSeries.spacing[2].toFixed(2)} mm` : t('inspector.notVerified')}</dd><dt>{t('inspector.values')}</dt><dd>{storedUnit(activeSeries) || t('inspector.storedValues')}</dd></dl> : <p className="muted-copy">{t('inspector.openStudy')}</p>}</section>
           {acquisitionPet && <PetAcquisitionPanel key={acquisitionPet.id} series={acquisitionPet} prior={petPrior} current={currentPet}
             cautions={cautions} cautionKey={cautionKey} limited={limitedView} onLimited={checked => petRecords.setLimitedView(acquisitionPet, checked)}
             typed={{ value: typedGlucose, ready: petRecords.keys.has(acquisitionPet.id), failed: petRecords.saveFailed,
