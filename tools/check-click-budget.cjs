@@ -16,6 +16,7 @@ const { ClickBudget } = require('./click-budget.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { temporaryExportFolder } = require('./lib/export-folder.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 
 // Only synthetic, fingerprinted fixtures can enter this lab run or supply its label.
 async function main() {
@@ -118,8 +119,8 @@ async function main() {
 
     await page.waitForTimeout(500);
     if (await enabled('tool-mpr')) {
-      await budget.task('mpr', () => page.getByTestId('tool-mpr').click(), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
-      await budget.task('mpr-restore', () => page.getByTestId('tool-mpr').click(), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 1) });
+      await budget.task('mpr', () => toggleMpr(page), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
+      await budget.task('mpr-restore', () => toggleMpr(page), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 1) });
     }
 
     if (await enabled('tool-3d')) {

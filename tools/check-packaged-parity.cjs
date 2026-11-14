@@ -8,6 +8,7 @@ const { _electron: electron } = require('playwright');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { decodePng } = require('./lib/png.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 
 const state = page => page.evaluate(() => window.__VEACOM_TEST__.state());
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -74,7 +75,7 @@ async function exportFiles(page, destination, mode, scope, expected) {
   return dir;
 }
 async function checkMpr(page, output) {
-  await page.getByTestId('tool-mpr').click();
+  await toggleMpr(page);
   await page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer][data-mode="mpr"]').length === 3);
   const canvases = page.locator('canvas[data-renderer]');
   const planes = await canvases.evaluateAll(nodes => nodes.map(n => n.dataset.plane).sort());
