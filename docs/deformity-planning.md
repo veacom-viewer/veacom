@@ -92,6 +92,8 @@ supplements.
 
 Medial and lateral come from the leg's side and the film's Patient Orientation. A film without it asks where the
 patient's right is (image left or right) before any medial or lateral value; the usual AP convention is never assumed.
+The reader answers from the film's R/L marker as the pane shows it, so the answer goes through the pane's turn and
+left-right flip to the side of the stored image; while the pane is turned near a quarter it cannot be given.
 
 ### Values
 

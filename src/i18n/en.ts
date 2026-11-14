@@ -514,6 +514,7 @@ export const en = {
   'deformity.askRight': 'The film does not record its orientation. Where is the patient\'s right?',
   'deformity.imageLeft': 'Image left',
   'deformity.imageRight': 'Image right',
+  'deformity.askUpright': 'Turn the image upright to answer.',
   'deformity.plans': 'Plans',
   'deformity.rightLeg': 'Right leg',
   'deformity.leftLeg': 'Left leg',

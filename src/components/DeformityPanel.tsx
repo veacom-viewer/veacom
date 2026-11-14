@@ -5,7 +5,7 @@
 // the reader saves one as a file, or a report as a picture.
 import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
-import type { Volume } from '../model';
+import type { ViewState, Volume } from '../model';
 import { sourceFrameSeries } from '../imaging/geometry';
 import { calibrationTag, calibrationText, isProjectionFilm, manualCalibration, projectionOf, recordManualCalibration, sideText } from '../imaging/radiograph';
 import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARK_TEXT, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
@@ -14,7 +14,7 @@ import { NORMALS, type ValueKey } from '../imaging/deformity/normals';
 import { fitCircle, distance } from '../imaging/deformity/plane';
 import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
-import { nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
+import { imageSideOnScreen, nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
 import { parsePlanFile, planFile } from '../ui/deformityFile';
 import { drawReport, pngBytes, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
@@ -79,9 +79,11 @@ async function save(name: string, data: ArrayBuffer | string): Promise<string | 
 
 const frames = (count: number) => new Promise<void>(resolve => { const step = (left: number) => left ? requestAnimationFrame(() => step(left - 1)) : resolve(); step(count); });
 
-export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate, onUndo, history, hidePatientData, viewport }: {
+export function DeformityPanel({ volume, slice, view: paneView, onClose, headingRef, onCalibrate, onUndo, history, hidePatientData, viewport }: {
   /** The active pane's film, as decorated with its calibration (App's measurement scale). */
   volume: Volume; slice: number;
+  /** The pane's view, as shown: its turn and flips tell which side of the image the pane's left and right are. */
+  view: Pick<ViewState, 'rotation' | 'flipX'>;
   onClose: () => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void;
   /** Sets the series' measurement scale (mm per coordinate unit), or removes it. */
@@ -235,8 +237,13 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
       {projection && !/LEG|LIMB|EXTREMITY|LOWEXM/i.test(projection.bodyPart ?? '') && <p className="deformity-caution">{t('deformity.qualify')}</p>}
       {view.askRight && <div className="deformity-ask" role="group" aria-label={t('deformity.askRight')}>
         <span>{t('deformity.askRight')}</span>
-        <div className="deformity-segments">{(['left', 'right'] as const).map(side => <button key={side} type="button" data-action="deformity-patient-right" aria-pressed={film.patientRight === side}
-          className="secondary-button compact" onClick={() => change(current => ({ ...current, patientRight: side }))}>{t(side === 'left' ? 'deformity.imageLeft' : 'deformity.imageRight')}</button>)}</div>
+        {/* The answer is on screen; the plan keeps the image's side, through the pane's turn and flip. */}
+        <div className="deformity-segments">{(['left', 'right'] as const).map(side => {
+          const image = imageSideOnScreen(side, paneView);
+          return <button key={side} type="button" data-action="deformity-patient-right" data-side={side} aria-pressed={image !== null && film.patientRight === image}
+            className="secondary-button compact" disabled={!image} data-tooltip={image ? undefined : t('deformity.askUpright')}
+            onClick={() => { if (image) change(current => ({ ...current, patientRight: image })); }}>{t(side === 'left' ? 'deformity.imageLeft' : 'deformity.imageRight')}</button>;
+        })}</div>
       </div>}
 
       <div className="deformity-plans" role="tablist" aria-label={t('deformity.plans')}>

@@ -39,6 +39,18 @@ export function planView(film: FilmPlans, series: Series, plan: LegPlan = active
     rule: osteotomy && bone ? paleyRule(osteotomy, bone, mm) : null };
 }
 
+/**
+ * The side of the stored image (its x axis) that a side of the pane shows, through the view's turn and left-right flip:
+ * the reader answers where the patient's right is from the film's R/L marker as the pane shows it, and the plan keeps
+ * the image's side. Null while the pane is turned near a quarter, when its left and right are the image's top and
+ * bottom. A pane's right edge runs along the image's +x by cos(turn), negated by a left-right flip (screenMapping).
+ */
+export function imageSideOnScreen(screen: 'left' | 'right', view: Pick<ViewState, 'rotation' | 'flipX'>): 'left' | 'right' | null {
+  const along = Math.cos(view.rotation * Math.PI / 180) * (view.flipX ? -1 : 1);
+  if (Math.abs(along) < 0.7) return null;
+  return (along > 0) === (screen === 'right') ? 'right' : 'left';
+}
+
 /** Image pixels as the kit keeps them (DICOM image-relative: the first pixel's centre at 0.5, 0.5) in the viewer's
  * patient coordinates of a frame, and back. */
 export const pixelToWorld = (frame: Series, p: Point): Vec3 => indexToWorld(frame, [p[0] - 0.5, p[1] - 0.5, 0]);

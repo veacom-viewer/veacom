@@ -4,7 +4,8 @@ import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
-import { movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, worldToPixel } from '../src/ui/deformityPlan';
+import { imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, worldToPixel } from '../src/ui/deformityPlan';
+import { lateralOnImage } from '../src/imaging/deformity/measure';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
 import type { Point } from '../src/imaging/deformity/plane';
 
@@ -49,6 +50,25 @@ describe('the fragment drawn as a view of the film', () => {
       }
     });
   }
+});
+
+describe('the patient\'s right, answered on screen', () => {
+  // The reader answers from the R/L marker as the pane shows it; the plan keeps the side of the stored image.
+  it('follows the pane\'s flips and turns', () => {
+    assert.equal(imageSideOnScreen('right', view({ rotation: 0, flipX: false })), 'right');
+    assert.equal(imageSideOnScreen('right', view({ rotation: 0, flipX: true })), 'left');
+    assert.equal(imageSideOnScreen('right', view({ rotation: 180, flipX: false })), 'left');
+    assert.equal(imageSideOnScreen('right', view({ rotation: 180, flipX: true })), 'right');
+    assert.equal(imageSideOnScreen('left', view({ rotation: 0, flipY: true })), 'left', 'An upside-down flip keeps left and right.');
+    // Turned a quarter, the pane's left and right are the image's top and bottom: no answer.
+    assert.equal(imageSideOnScreen('right', view({ rotation: 90 })), null);
+  });
+  it('gives the right leg the lateral side the reader saw, on a flipped pane', () => {
+    // Patient's right on the screen's right of a pane flipped left to right: in the image, its left (−x).
+    const stored = imageSideOnScreen('right', view({ flipX: true }))!;
+    assert.deepEqual(lateralOnImage('R', undefined, stored), [-1, 0]);
+    assert.deepEqual(lateralOnImage('R', undefined, imageSideOnScreen('left', view({ rotation: 180 }))!), [1, 0]);
+  });
 });
 
 /** A film's plans as the store makes them, for the right leg only. */

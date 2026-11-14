@@ -517,6 +517,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.askRight': 'Grafi yönünü kaydetmiyor. Hastanın sağı nerede?',
   'deformity.imageLeft': 'Görüntünün solu',
   'deformity.imageRight': 'Görüntünün sağı',
+  'deformity.askUpright': 'Yanıtlamak için görüntüyü dik çevirin.',
   'deformity.plans': 'Planlar',
   'deformity.rightLeg': 'Sağ bacak',
   'deformity.leftLeg': 'Sol bacak',

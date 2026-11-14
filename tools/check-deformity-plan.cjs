@@ -341,10 +341,16 @@ async function main() {
     await placeAll(right.landmarks);
     assert.equal((await values('.deformity-values:not(.deformity-compare)')).MPTA, null, 'MPTA waits for the side.');
     assert.match(await panel.locator('tr[data-value-key="MPTA"]').textContent(), /Needs the patient's right/);
-    await panel.locator('[data-action="deformity-patient-right"]', { hasText: 'Image left' }).click();
-    compare(await values('.deformity-values:not(.deformity-compare)'), right.expected, scale, 'Right leg once the side is given');
+    // The reader answers from the film as the pane shows it: flipped left to right, the patient's right (the image's
+    // left) is on the screen's right. The plan keeps the image's side, so the values are the unflipped film's.
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ flipX: true }));
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.flipX === true, undefined, { timeout: 5_000 });
+    await panel.locator('[data-action="deformity-patient-right"][data-side="right"]').click();
+    compare(await values('.deformity-values:not(.deformity-compare)'), right.expected, scale, 'Right leg once the side is given on a flipped pane');
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ flipX: false }));
+    assert.equal(await panel.locator('[data-action="deformity-patient-right"][data-side="left"]').getAttribute('aria-pressed'), 'true', 'Unflipped, the answer shows on the screen\'s left.');
     await shot('5-no-orientation');
-    check('Without Patient Orientation the kit asks where the patient\'s right is before any medial or lateral value');
+    check('Without Patient Orientation the kit asks where the patient\'s right is before any medial or lateral value, and reads the answer through a flipped pane');
 
     // The usage timings carry only control ids from the schema: no landmark, point, value or file.
     const schema = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'electron', 'usage-schema.json'), 'utf8'));

@@ -51,7 +51,7 @@ flip, and they do not change when the calibration does.
 | `film.sopInstanceSha256` | SHA-256 of the film's SOP Instance UID, in hex: it finds the film again without naming it. The same film gives the same hash on every computer, so files of one film can be linked; anonymisation for research replaces it. |
 | `film.frame` | The frame number in a multi-frame file, 1 otherwise. |
 | `film.columns`, `film.rows` | The pixel grid the points are on. |
-| `film.patientOrientation`, `film.laterality`, `film.patientRight` | What set medial and lateral: the file's Patient Orientation and laterality, or the reader's answer where the patient's right is. |
+| `film.patientOrientation`, `film.laterality`, `film.patientRight` | What set medial and lateral: the file's Patient Orientation and laterality, or the reader's answer where the patient's right is, as the side of the stored image (`left` for −x, `right` for +x) after the pane's turn and flip. |
 | `calibration.state` | What the film's millimetres stood for: `calibrated`, `magnification`, `detector`, `unstated`, `manual` or `pixels` (`src/imaging/radiograph.ts`). |
 | `calibration.mmPerPixel` | Millimetres per pixel along x and y, null in pixels only; with the stored Pixel Spacing, Imager Pixel Spacing, ERMF and calibration type. |
 | `calibration.marker` | A ball or ruler the reader marked: its points, its size in mm, whether the ball's depth was confirmed, whether it was applied. |

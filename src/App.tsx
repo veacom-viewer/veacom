@@ -2358,7 +2358,7 @@ export default function App() {
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
           updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage(); }} /></Suspense></div>}
-      {deformityShown && activeVolume && <div className="assessment-overlay"><Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice}
+      {deformityShown && activeVolume && <div className="assessment-overlay"><Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
         onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
         viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
         onCalibrate={(id, scale) => {
