@@ -22,6 +22,10 @@ describe('panes paging together', () => {
     assert.equal(samePatient(a, b), true);
     assert.equal(samePatient(a, series({ patientId: 'P2' })), false);
     assert.equal(samePatient(series({ patientId: '', patientName: '' }), series({ patientId: '', patientName: '' })), false);
+    // The key holds the name (for an ID without an issuer, without case or separators), so the key decides.
+    assert.equal(samePatient(a, { ...b, patientName: 'sentetik hasta' }), true);
+    assert.equal(samePatient(a, { ...b, patientKey: 'another-patient' }), false);
+    assert.equal(samePatient(a, { ...b, patientKey: undefined }), false);
   });
   it('steps two series of pictures image for image, whatever their number', () => {
     const photos = series({ id: 'p', modality: 'OT', orientationKnown: false, canReconstruct: false, dimensions: [8, 8, 12] });
