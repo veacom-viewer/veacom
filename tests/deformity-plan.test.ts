@@ -7,6 +7,7 @@ import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
 import { imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, worldToPixel } from '../src/ui/deformityPlan';
 import { lateralOnImage } from '../src/imaging/deformity/measure';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
+import { reportHeader } from '../src/ui/deformityReport';
 import type { Point } from '../src/imaging/deformity/plane';
 
 const deg = Math.PI / 180;
@@ -161,5 +162,20 @@ describe('the plan file', () => {
     assert.equal(view.askRight, false);
     assert.deepEqual(view.lateral, [-1, 0]);
     assertClose(view.leg.values.tibiaLength.value, Math.hypot(5, 400) * 0.33, 9);
+  });
+});
+
+describe('the report header', () => {
+  const named: Series = { ...series, patientName: 'DOE^JANE', patientId: 'ID-77', studyDate: '20000101', studyTime: '120000', description: 'Long leg standing',
+    studyDescription: 'Lower limbs', institutionName: 'Synthetic Hospital', accessionNumber: 'ACC-1', patientAgeText: '045Y', patientSex: 'F' };
+  it('names the patient, the study and the film as the pane does', () => {
+    const lines = reportHeader(named, sourceFrameSeries(named, 0), false).join('\n');
+    assert.match(lines, /DOE JANE/); assert.match(lines, /01\.01\.2000/); assert.match(lines, /Long leg standing/);
+    assert.match(lines, /Both sides · Detector plane, not corrected/);
+  });
+  it('leaves out what the pane hides with patient data hidden', () => {
+    const lines = reportHeader(named, sourceFrameSeries(named, 0), true).join('\n');
+    for (const hidden of ['DOE', 'JANE', 'ID-77', '2000', 'Long leg standing', 'Lower limbs', 'Synthetic Hospital', 'ACC-1']) assert.doesNotMatch(lines, new RegExp(hidden), hidden);
+    assert.match(lines, /DX/); assert.match(lines, /Both sides · Detector plane, not corrected/);
   });
 });

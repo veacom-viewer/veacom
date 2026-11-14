@@ -1,6 +1,21 @@
 // The plan as one printable picture (PNG, A4 in proportion): the film as planned, and the simulated correction when
 // there is one, beside every value with its normal range, the calibration and the side. The pictures are the panes as
 // the reader sees them (export-video.ts captureViewportCanvas), so the report shows what was checked on screen.
+import type { Series } from '../model';
+import { t as translateDefault } from '../i18n';
+import { calibrationText, sideText } from '../imaging/radiograph';
+import { topLeftLines, topRightLines } from './overlayCorners';
+
+/**
+ * The report's lines under its title: who and when, what film, by the pane's own corner rules (overlayCorners.ts), so
+ * a report made with patient data hidden carries no name, date or description either; then the side and calibration.
+ */
+export function reportHeader(series: Series, frame: Series, hidePatient: boolean, translate = translateDefault): string[] {
+  const left = topLeftLines(series, hidePatient, translate).map(line => line.text).join(' · ');
+  const right = topRightLines(series, hidePatient, undefined, translate).map(line => line.text).join(' · ');
+  return [left, right, `${sideText(frame)} · ${calibrationText(frame)}`].filter(Boolean);
+}
+
 export interface ReportSection { title: string; rows: Array<[string, string, string?]> }
 export interface ReportContent { title: string; lines: string[]; pictures: Array<{ caption: string; canvas: HTMLCanvasElement }>; sections: ReportSection[]; footer: string[] }
 

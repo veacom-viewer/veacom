@@ -16,7 +16,7 @@ import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
 import { imageSideOnScreen, nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
 import { parsePlanFile, planFile } from '../ui/deformityFile';
-import { drawReport, pngBytes, type ReportSection } from '../ui/deformityReport';
+import { drawReport, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
 import { Download, FolderOpen, Images, Plus, Redo2, Undo2, X } from './icons';
 import { WarningBox } from './WarningBox';
@@ -212,9 +212,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}`] as [string, string]),
         ] });
       }
-      const identity = hidePatientData ? [] : [`${series.patientName} · ${series.patientId}`];
       const canvas = drawReport({ title: `${t('deformity.title')} · ${planName(film, plan.id, t)}`,
-        lines: [...identity, `${series.studyDate} · ${series.description}`, `${sideText(frame)} · ${calibrationText(frame)}`],
+        lines: reportHeader(series, frame, hidePatientData, t),
         pictures, sections,
         footer: [view.simulation ? t('deformity.report.simulated') : '', t('deformity.report.footer', { version: window.veacom?.getVersion() ?? '', date: new Date().toLocaleString(locale) })].filter(Boolean) });
       const where = await save('veacom-deformity-report.png', await pngBytes(canvas));
