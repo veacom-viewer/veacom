@@ -5,7 +5,7 @@ import type { MessageKey } from '../i18n';
 import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry';
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
-import { BUILTIN_ARRANGEMENTS, PET_FOLLOW_UP } from './builtin';
+import { BUILTIN_ARRANGEMENTS, COMPARISONS, PET_FOLLOW_UP } from './builtin';
 import { studyKey } from '../domain/patient';
 
 export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from './roles';
@@ -32,6 +32,9 @@ export interface PaneSpec {
   /** For gamma camera frames: the view of the frame the pane opens on, such as `ANT` or `POST`. */
   view?: string;
   display?: PaneDisplay;
+  /** For the series the reader shows in the active pane: the pane keeps its view (slice, window, zoom, pan) and its
+   * fusion as they are. */
+  asShown?: true;
 }
 export interface Arrangement {
   id: string;
@@ -46,8 +49,14 @@ export interface Arrangement {
   /** For several picked series, one `picked` pane stands for each of them. */
   panes: readonly PaneSpec[];
   /** `crosshair`: positions and the crosshair follow across panes in one frame of reference. `none`: each pane pages
-   * on its own. */
-  link?: 'crosshair' | 'none';
+   * on its own. `level`: for two studies, which share no frame of reference: the other panes open at the level the
+   * pane kept `asShown` is at and are linked there, as the link button links panes by hand. */
+  link?: 'crosshair' | 'none' | 'level';
+  /** `shared`: while linked, the panes zoom and pan together, and CT panes take one window (Hounsfield units are one
+   * scale; an MR's values are not). */
+  view?: 'shared';
+  /** Empty panes before the listed ones: the listed panes start this many places into the grid. */
+  lead?: number;
   /** `shared`: the panes showing the arrangement's PETs keep one SUV scale. Windowing one gives the others the same SUV
    * range, and inverting or recolouring one does the same to them. */
   scale?: 'shared';
@@ -100,7 +109,7 @@ export function resolveRoles(arrangement: Arrangement, series: readonly Series[]
   const fill = (index: number): boolean => {
     if (index === order.length) return true;
     const [name, spec] = order[index];
-    const found = findRole(spec, spec.study === 'prior' ? session : series, spec.of ? roles[spec.of] : null, item => {
+    const found = findRole(spec, spec.study === 'prior' || spec.study === 'later' ? session : series, spec.of ? roles[spec.of] : null, item => {
       roles[name] = item;
       return fill(index + 1);
     });
@@ -235,6 +244,22 @@ export function matchOnOpen(kept: Kept, context: MatchContext): Plan | null {
 export function activeStudyContext(active: Series, session: Series[]): MatchContext {
   const key = studyKey(active);
   return { series: session.filter(item => studyKey(item) === key), session };
+}
+
+/** The series a comparison may put beside `active`: every series loaded, less the other PET studies when its own study
+ * holds a PET. Two PET studies are read on the PET follow-up screen, which keeps its own sides (this study on the
+ * left), so the comparison screen is not offered between them. */
+export function comparableSeries(active: Series, session: readonly Series[]): Series[] {
+  const own = studyKey(active), pet = new Set(session.filter(item => item.modality === 'PT').map(item => studyKey(item)));
+  return pet.has(own) ? session.filter(item => studyKey(item) === own || !pet.has(studyKey(item))) : [...session];
+}
+
+/** The comparison screen for the series in the active pane (COMPARISONS): beside it its counterpart in the same
+ * patient's earlier study, else in the later one, or an empty side where the other study has none. Null when no
+ * other study of the patient is loaded. */
+export function matchComparison(active: Series, session: readonly Series[]): Plan | null {
+  const own = studyKey(active);
+  return match(COMPARISONS, 'screen', { series: session.filter(item => studyKey(item) === own), picked: [active], session: comparableSeries(active, session) });
 }
 
 /** What a pane on screen shows, for keeping: its series and view, and the series fused over it, if any. */

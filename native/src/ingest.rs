@@ -128,6 +128,11 @@ fn contrast_usage(obj: &InMemDicomObject, frame: usize, tag: Tag) -> String {
         .unwrap_or_default()
 }
 
+// DICOM PS3.3 C.7.3.1: a paired body part can have frame, image, or series laterality.
+fn laterality_code(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
+    nonempty_text(obj, tag).filter(|code| matches!(code.as_str(), "L" | "R" | "B" | "U"))
+}
+
 fn acquisition_metadata(obj: &InMemDicomObject, frame: usize) -> AcquisitionMetadata {
     let mut image_type = frame_value(obj, frame, Tag(0x0018, 0x9226), |v| {
         nonempty_text(v, Tag(0x0008, 0x9007))
@@ -189,6 +194,13 @@ fn acquisition_metadata(obj: &InMemDicomObject, frame: usize) -> AcquisitionMeta
         patient_age_text: text(obj, Tag(0x0010, 0x1010)),
         study_time: text(obj, Tag(0x0008, 0x0030)),
         study_description: text(obj, Tag(0x0008, 0x1030)),
+        body_part_examined: text(obj, Tag(0x0018, 0x0015)),
+        laterality: frame_value(obj, frame, Tag(0x0020, 0x9071), |group| {
+            laterality_code(group, Tag(0x0020, 0x9072))
+        })
+        .or_else(|| laterality_code(obj, Tag(0x0020, 0x0062)))
+        .or_else(|| laterality_code(obj, Tag(0x0020, 0x0060)))
+        .unwrap_or_default(),
         institution_name: text(obj, Tag(0x0008, 0x0080)),
         accession_number: text(obj, Tag(0x0008, 0x0050)),
         magnetic_field_strength: number(obj, Tag(0x0018, 0x0087)).filter(|v| *v > 0.),
@@ -2738,6 +2750,14 @@ fn catalogue(
                     }
                     merge_calibration(group, &info);
                     merge_pet_acquisition(group, &info);
+                    merge_anatomy_value(
+                        &mut group.acquisition.body_part_examined,
+                        &info.acquisition.body_part_examined,
+                    );
+                    merge_anatomy_value(
+                        &mut group.acquisition.laterality,
+                        &info.acquisition.laterality,
+                    );
                     frames.push(frame);
                 }
             }
@@ -4039,6 +4059,29 @@ impl PetAcquisition {
     }
 }
 
+/// The most parts of the body one series is let name, and the longest name kept (CS holds 16 characters).
+const MAX_BODY_PARTS: usize = 8;
+const MAX_BODY_PART_TEXT: usize = 64;
+
+/// A file joins a series: a Body Part Examined it records that the series does not name yet is added. A series whose
+/// first file lacks the value still has it, and one whose files name several parts names them all, as a
+/// multi-valued attribute would (`HEAD\NECK`): a comparison then never takes it for a series of no known part.
+fn merge_anatomy_value(series: &mut String, file: &str) {
+    let part = file.trim();
+    if part.is_empty() || part.len() > MAX_BODY_PART_TEXT {
+        return;
+    }
+    let named = || series.split('\\').filter(|name| !name.is_empty());
+    let known = named().any(|name| name.eq_ignore_ascii_case(part));
+    if known || named().count() >= MAX_BODY_PARTS {
+        return;
+    }
+    if !series.is_empty() {
+        series.push('\\');
+    }
+    series.push_str(part);
+}
+
 /// A file joins `group`: the PET details it records that the series' first file lacks are added.
 fn merge_pet_acquisition(group: &mut Series, info: &Series) {
     if let Some(theirs) = &info.acquisition.pet_acquisition {
@@ -4390,12 +4433,34 @@ mod tests {
         assert_eq!(meta.acquisition_date_time, "20261103101112.5+0100");
     }
     #[test]
+    fn frame_and_image_laterality_take_precedence_over_series_laterality() {
+        let mut obj = metadata_object(2);
+        obj.put_str(Tag(0x0020, 0x0060), VR::CS, "R");
+        assert_eq!(acquisition_metadata(&obj, 0).laterality, "R");
+        obj.put_str(Tag(0x0020, 0x0062), VR::CS, "B");
+        let anatomy = InMemDicomObject::from_element_iter([DataElement::new(
+            Tag(0x0020, 0x9072),
+            VR::CS,
+            "L",
+        )]);
+        obj.put(sequence(
+            Tag(0x5200, 0x9230),
+            vec![
+                InMemDicomObject::from_element_iter([sequence(Tag(0x0020, 0x9071), vec![anatomy])]),
+                InMemDicomObject::new_empty(),
+            ],
+        ));
+        assert_eq!(acquisition_metadata(&obj, 0).laterality, "L");
+        assert_eq!(acquisition_metadata(&obj, 1).laterality, "B");
+    }
+    #[test]
     fn corner_text_fields_are_read_and_the_frame_thickness_wins() {
         let mut obj = metadata_object(2);
         obj.put_str(Tag(0x0010, 0x0030), VR::DA, "19800102");
         obj.put_str(Tag(0x0010, 0x1010), VR::AS, "045Y");
         obj.put_str(Tag(0x0008, 0x0030), VR::TM, "101530");
         obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Beyin MR");
+        obj.put_str(Tag(0x0018, 0x0015), VR::CS, "BRAIN");
         obj.put_str(Tag(0x0008, 0x0080), VR::LO, "Deneme Hastanesi");
         obj.put_str(Tag(0x0008, 0x0050), VR::SH, "LHK000000001");
         obj.put(ds(Tag(0x0018, 0x0087), "1.5"));
@@ -4405,6 +4470,7 @@ mod tests {
         assert_eq!(shared.patient_age_text, "045Y");
         assert_eq!(shared.study_time, "101530");
         assert_eq!(shared.study_description, "Beyin MR");
+        assert_eq!(shared.body_part_examined, "BRAIN");
         assert_eq!(shared.institution_name, "Deneme Hastanesi");
         assert_eq!(shared.accession_number, "LHK000000001");
         assert_eq!(shared.magnetic_field_strength, Some(1.5));
@@ -5062,6 +5128,28 @@ mod tests {
         // The first file's scanner stays, whatever the administrations.
         assert_eq!(first.scanner_model, "Model A");
         assert_eq!(first.uptake_seconds, None);
+    }
+    #[test]
+    fn a_series_keeps_the_body_part_its_first_file_lacks_and_names_every_part_its_files_record() {
+        let mut series = String::new();
+        merge_anatomy_value(&mut series, "");
+        assert_eq!(series, "");
+        merge_anatomy_value(&mut series, "BRAIN");
+        merge_anatomy_value(&mut series, "");
+        merge_anatomy_value(&mut series, " brain ");
+        assert_eq!(series, "BRAIN");
+        // Two parts in one series are both kept: neither is dropped, and the series is not left without one.
+        merge_anatomy_value(&mut series, "NECK");
+        assert_eq!(series, "BRAIN\\NECK");
+        merge_anatomy_value(&mut series, "NECK");
+        assert_eq!(series, "BRAIN\\NECK");
+        // A file cannot make the list grow without bound.
+        merge_anatomy_value(&mut series, &"X".repeat(MAX_BODY_PART_TEXT + 1));
+        for index in 0..20 {
+            merge_anatomy_value(&mut series, &format!("PART{index}"));
+        }
+        assert_eq!(series.split('\\').count(), MAX_BODY_PARTS);
+        assert!(series.starts_with("BRAIN\\NECK\\PART0"));
     }
     #[test]
     fn values_already_in_suv_convert_only_from_body_weight() {

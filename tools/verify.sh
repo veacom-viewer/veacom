@@ -54,6 +54,8 @@ run pet-validation node tools/pet-validation.cjs "$out/pet-followup" "$out/pet-f
 run pet-validation-cases node tools/check-pet-validation-cases.mjs "$out/pet-followup" "$out/pet-validation-cases"
 run petct-fixture node tools/fixtures/make-petct-study.mjs "$out/petct-study"
 run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arrangements"
+run comparison-fixture node tools/fixtures/make-comparison-studies.mjs "$out/comparison-studies"
+run comparison node tools/check-comparison.cjs "$out/comparison-studies" "$out/pet-followup" "$out/comparison"
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"
 run nm-fixture node tools/fixtures/make-nm-study.mjs "$out/nm-study"
 run gamma-camera node tools/check-gamma-camera.cjs "$out/nm-study" "$out/gamma-camera"
