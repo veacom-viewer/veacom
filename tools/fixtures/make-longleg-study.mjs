@@ -221,15 +221,17 @@ for (const name of chosen) {
     patientOrientation: orientation, mirrored, tags: variant.tags };
 }
 
-/** A leg's landmarks in image pixels, mirrored for the mirrored film. */
+/** A leg's landmarks in image pixels, mirrored for the mirrored film, named as the kit names them
+ * (src/imaging/deformity/landmarks.ts). hipCentre and tibialCora are the true centre and apex, for checks. */
 function landmarks(l, mirrored) {
   const at = point => { const [x, y] = pixel(point); return mirrored ? [round(COLUMNS - x, 4), y] : [x, y]; };
   return {
-    femoralHeadContour: l.headContour.map(at), hipCentre: at(l.H), greaterTrochanter: at(l.gt), kneeCentre: at(l.K), ankleCentre: at(l.A),
+    femoralHeadContour: l.headContour.map(at), hipCentre: at(l.H), greaterTrochanterTip: at(l.gt), kneeCentre: at(l.K), ankleCentre: at(l.A),
     femoralCondyleMedial: at(l.condyles.medial), femoralCondyleLateral: at(l.condyles.lateral),
     tibialPlateauMedial: at(l.plateau.medial), tibialPlateauLateral: at(l.plateau.lateral),
     plafondMedial: at(l.plafond.medial), plafondLateral: at(l.plafond.lateral),
-    femoralShaft: l.femoralShaft.map(at), tibialShaft: l.tibialShaft.map(at), tibialCora: at(l.apex),
+    femoralShaftProximal: at(l.femoralShaft[0]), femoralShaftDistal: at(l.femoralShaft[1]),
+    tibialShaftProximal: at(l.tibialShaft[0]), tibialShaftDistal: at(l.tibialShaft[1]), tibialCora: at(l.apex),
   };
 }
 const rounded = object => Object.fromEntries(Object.entries(object).map(([key, value]) => [key, round(value)]));
