@@ -85,8 +85,9 @@ export interface Simulation {
   /** What the turn does at the cut's first cortex: opens it (an opening wedge) or closes it (a closing wedge, bone taken
    * out); null without a turn. The hinge's side and the direction decide it, whatever the plan says. */
   wedge: 'opening' | 'closing' | null;
-  /** Wedge height at the opening (or closing) cortex: 2 w sin(θ/2), w the distance from the hinge to that cortex
-   * (Rolim 2016). */
+  /** The cut's end across from the hinge: the cortex that opens or closes, in image pixels. */
+  cortex: Point;
+  /** Wedge height at that cortex: 2 w sin(θ/2), w its distance from the hinge (Rolim 2016). */
   wedgeHeight: number;
   /** How far the limb lengthens (positive) or shortens, hip to ankle. */
   lengthChange: number | null;
@@ -97,12 +98,14 @@ export function simulate(input: LegInput, before: Leg, osteotomy: Osteotomy): Si
   if (!motion || !axis) return null;
   const points = movedLandmarks(input.points, osteotomy, motion, input.mmPerPixel, axis);
   const leg = measureLeg({ ...input, points });
-  const width = distance(toPlane(osteotomy.hinge, input.mmPerPixel), toPlane(osteotomy.cut[0], input.mmPerPixel));
+  // The cortex that opens or closes is the cut's end farther from the hinge, whichever end the reader clicked first.
+  const ends = osteotomy.cut.map(p => toPlane(p, input.mmPerPixel)), across = distance(ends[0], motion.pivot) >= distance(ends[1], motion.pivot) ? 0 : 1;
+  const width = distance(motion.pivot, ends[across]);
   const was = before.values.limbLength.value, now = leg.values.limbLength.value;
   // The first cortex moved distally, away from the proximal fragment, opens the cut; moved proximally, it closes it.
-  const start = toPlane(osteotomy.cut[0], input.mmPerPixel), turned = add(motion.pivot, rotate(sub(start, motion.pivot), motion.degrees));
+  const start = ends[across], turned = add(motion.pivot, rotate(sub(start, motion.pivot), motion.degrees));
   const wedge = Math.abs(motion.degrees) < 1e-9 ? null : dot(sub(turned, start), axis) > 0 ? 'opening' : 'closing';
-  return { leg, motion, points, wedge, wedgeHeight: 2 * width * Math.sin(osteotomy.degrees / 2 * Math.PI / 180), lengthChange: was !== null && now !== null ? now - was : null };
+  return { leg, motion, points, wedge, cortex: osteotomy.cut[across], wedgeHeight: 2 * width * Math.sin(osteotomy.degrees / 2 * Math.PI / 180), lengthChange: was !== null && now !== null ? now - was : null };
 }
 
 export type Target = { kind: 'mad'; mm: number } | { kind: 'wbl'; percent: number };

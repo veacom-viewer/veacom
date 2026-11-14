@@ -252,9 +252,16 @@ describe('a simulated osteotomy', () => {
     assert.equal(simulate(input, before, plan(input, { degrees: 0 }))!.wedge, null);
   });
 
-  it('measures the wedge from the hinge to the opening cortex', () => {
+  it('measures the wedge from the hinge to the cortex across the cut, wherever the hinge is', () => {
     const input = straight(), before = measureLeg(input);
     assertClose(simulate(input, before, plan(input, { hinge: [0, 500] }))!.wedgeHeight, 2 * 20 * Math.sin(5 * deg), 9);
+    // The cut drawn medial (+x) to lateral, varus 10°: hinged laterally it closes the medial cortex; hinged medially,
+    // on the cut's first point, it opens the lateral cortex, by the same 2 × 40 × sin 5° = 6.97 mm.
+    const lateral = simulate(input, before, plan(input, { direction: 'varus' }))!;
+    assert.equal(lateral.wedge, 'closing'); assertClose(lateral.wedgeHeight, 2 * 40 * Math.sin(5 * deg), 9);
+    const medial = simulate(input, before, plan(input, { direction: 'varus', hinge: [20, 500] }))!;
+    assert.equal(medial.wedge, 'opening'); assertClose(medial.wedgeHeight, 2 * 40 * Math.sin(5 * deg), 9);
+    assert.deepEqual(medial.cortex, [-20, 500]);
   });
 
   it('names the Paley rule against a real CORA, and the translation an off-bisector hinge leaves', () => {
