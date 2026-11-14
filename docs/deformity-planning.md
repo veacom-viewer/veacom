@@ -158,8 +158,9 @@ Every change is a step of the viewer's Undo (⌘Z, Ctrl+Z), with the measurement
 memory while VEAcom is open. Nothing is written to disk unless the reader asks:
 
 - **Save** writes the film's plans as a versioned JSON file (docs/deformity-labels.md) through the system's save dialog,
-  or a download in the browser. **Open** reads one back onto the same film; a file for another film, from another
-  version, or with a point or value out of range is refused and says why.
+  or a download in the browser. **Open** reads one back onto the same film, through the page's file input: the reader
+  picks the file in the system's dialog and the page receives its contents, never a path. A file for another film, from
+  another version, or with a point or value out of range is refused and says why (docs/deformity-labels.md).
 - **Report** saves the plan as one A4 picture (PNG): the pane as measured and as simulated, every value with its normal
   range, the calibration and the side, the malalignment test, the CORA and the osteotomy, the patient unless the reader
   hides patient data, and that the correction is simulated.
@@ -184,5 +185,6 @@ would (`tests/source-renderer.browser.mjs`). Before, such a film failed to draw 
 - DICOM SR (TID 1500) for the plan, GSPS, Secondary Capture and an Encapsulated PDF report: the plan is a JSON file and
   the report a PNG for now.
 - Opt-in autosave, after the approvals above.
+- A keyboard way to place and nudge points: they are placed and moved with the mouse, pen or touch only.
 - Snapping points to bone edges, automatic ball detection, stitched films, implant templates, double-level and dome
   osteotomies, sagittal analysis and printing the report through the system print dialog (PR #31's path).
