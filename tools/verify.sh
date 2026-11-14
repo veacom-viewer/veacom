@@ -39,6 +39,8 @@ run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
 run video-encoder node tools/check-video-encoder.cjs "$out/video-encoder"
 run video-encoder-no-gpu node tools/check-video-encoder.cjs "$out/video-encoder" --no-gpu
 run click-budget node tools/check-click-budget.cjs "$study" "$out/click-budget"
+run longleg-fixture node tools/fixtures/make-longleg-study.mjs "$out/longleg"
+run deformity-plan node tools/check-deformity-plan.cjs "$out/longleg" "$out/deformity-plan"
 run budget-coverage node tools/check-budget-coverage.cjs "$out"
 run file-drop node tools/check-file-drop.cjs --study "$series" --output "$out/file-drop"
 run engine-pipe node tools/check-engine-pipe.cjs
@@ -57,8 +59,6 @@ run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arra
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"
 run nm-fixture node tools/fixtures/make-nm-study.mjs "$out/nm-study"
 run gamma-camera node tools/check-gamma-camera.cjs "$out/nm-study" "$out/gamma-camera"
-run longleg-fixture node tools/fixtures/make-longleg-study.mjs "$out/longleg"
-run deformity-plan node tools/check-deformity-plan.cjs "$out/longleg" "$out/deformity-plan"
 run browser-gpu node tools/check-browser-gpu.mjs "$out/browser-gpu"
 run gpu-startup node tools/check-gpu-startup.cjs "$series" "$out/gpu-startup.json"
 run hardware-rendering node tools/check-software-rendering.cjs "$series" "$out/hardware-rendering" --expect hardware

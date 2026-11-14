@@ -600,7 +600,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.direction': 'Yön',
   'deformity.solve': 'Hedef',
   'deformity.solveMad': 'MAD 0',
-  'deformity.solveWbl': 'WBL %62,5',
+  'deformity.solveWbl': 'WBL %62.5',
   'deformity.solveFailed': '45° içinde bu hedefe ulaşan açı yok.',
   'deformity.shiftLateral': 'Laterale kaydır',
   'deformity.shiftDistal': 'Distale kaydır',

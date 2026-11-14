@@ -16,6 +16,7 @@ import { toImage, toPlane } from '../imaging/deformity/measure';
 import { deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
 import { fragmentView, moveHandle, movedView, pixelToScreen, place, planView, worldToPixel, type Handle, type PlanView } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
+import { usage, type GestureHandle } from '../usage/tracker';
 
 // Colours on the image only (the design guidelines' --measure family): the measure yellow for mechanical axes and
 // joint lines, so the angles they make read as measurements; the others tell constructions apart.
@@ -78,7 +79,7 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
 export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const { t } = useTranslation();
   const state = useDeformity();
-  const drag = useRef<{ handle: Handle; key: string; frame: Series; moved: boolean } | null>(null);
+  const drag = useRef<{ handle: Handle; key: string; frame: Series; moved: boolean; gesture: GestureHandle } | null>(null);
   const found = state.open ? shown(volume, view, state.films) : null;
   if (!found) return null;
   const { film, frame, key } = found;
@@ -96,7 +97,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     if (event.button !== 0 || placing) return;
     event.stopPropagation(); event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { handle, key, frame, moved: false };
+    drag.current = { handle, key, frame, moved: false, gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
   };
   const follow = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
@@ -106,13 +107,19 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     deformity.change(held.key, current => moveHandle(current, held.handle, point), !held.moved);
     held.moved = true;
   };
-  const release = (event: ReactPointerEvent<SVGElement>) => { if (drag.current) { drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId); } };
+  const release = (event: ReactPointerEvent<SVGElement>) => {
+    const held = drag.current;
+    if (!held) return;
+    drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId);
+    held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
+  };
   const handleProps = (handle: Handle) => ({ onPointerDown: grab(handle), onPointerMove: follow, onPointerUp: release, onPointerCancel: release, style: { pointerEvents: placing ? 'none' : 'all', cursor: 'move' } as const });
   const placeHere = (event: ReactPointerEvent<SVGRectElement>) => {
     if (event.button !== 0 || !placing) return;
     event.stopPropagation(); event.preventDefault();
     const current = deformity.get().films[key];
     if (!current) return;
+    usage.action('deformity-landmark', event.pointerType === 'touch' ? 'touch' : 'mouse');
     const result = place(current, placing, pixelAt(local(event)), frame);
     deformity.change(key, () => result.film);
     deformity.setPlacing(result.placing);

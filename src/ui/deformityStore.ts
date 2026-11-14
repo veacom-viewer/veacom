@@ -3,6 +3,7 @@
 // same store. Each change the reader makes is one step of the viewer's own Undo: the store asks App to remember the
 // state before it, and App's Undo puts a remembered state back (App.tsx, `remember` and `undo`).
 import { useSyncExternalStore } from 'react';
+import { usage } from '../usage/tracker';
 import type { LandmarkName } from '../imaging/deformity/landmarks';
 import type { Landmarks, Side } from '../imaging/deformity/measure';
 import type { Osteotomy } from '../imaging/deformity/osteotomy';
@@ -77,6 +78,8 @@ export const deformity = {
     if (next === film) return;
     if (remember) rememberHook?.();
     set({ ...state, films: { ...state.films, [key]: next } });
+    // The usage timings count that the plan changed, never what changed (telemetry/TELEMETRY.md).
+    usage.touch('marks');
   },
   /** What Undo keeps: the plans only (the panel and what a click places are not undone). */
   snapshot: () => state.films,

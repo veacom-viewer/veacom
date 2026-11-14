@@ -1974,7 +1974,7 @@ export default function App() {
         seg: shownSegmentations.join('|'), fusion: join([showFusion, fusionId, fusionOpacity, fusionUpper, fusionPalette, fusionBlend]),
         link: String(settings.linked), overlay: join([settings.showOverlay, settings.showReferences, settings.hidePatientData, settings.hideMeasurements]),
         // The pre-op checklist is docked beside the images like the inspector.
-        panel: join([settings.panel, activeId, checklistShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
+        panel: join([settings.panel, activeId, checklistShown, deformityShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
         lang: locale, prefs: JSON.stringify([settings.wheelSensitivity, settings.reverseWheel, settings.measurementUnits, calibrationScales, calibrationLine, calibrationLength, usageConsent]),
       },
     };

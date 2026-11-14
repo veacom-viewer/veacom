@@ -14,6 +14,7 @@ const os = require('node:os');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { decodePng } = require('./lib/png.cjs');
+const { ClickBudget } = require('./click-budget.cjs');
 
 const ANGLE = 0.1, LENGTH = 0.5;
 const ORDER = ['femoralHeadContour', 'greaterTrochanterTip', 'femoralShaftProximal', 'femoralShaftDistal', 'kneeCentre', 'femoralCondyleMedial', 'femoralCondyleLateral',
@@ -39,6 +40,7 @@ async function main() {
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length >= 1, undefined, { timeout: 120_000 });
     const shot = name => page.screenshot({ path: path.join(output, `${name}.png`) });
+    const budget = new ClickBudget(page);
     const panel = page.getByTestId('deformity-panel');
     const open = async description => {
       const s = await page.evaluate(() => window.__VEACOM_TEST__.state());
@@ -47,7 +49,8 @@ async function main() {
       await page.evaluate(id => window.__VEACOM_TEST__.selectSeries(id), target.id);
       await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id && window.__VEACOM_TEST__.state().pendingLoads === 0, target.id, { timeout: 120_000 });
       await page.waitForFunction(() => document.querySelector('.viewport-cell.is-active canvas[data-renderer]'), undefined, { timeout: 60_000 });
-      if (!(await panel.count())) await page.getByTestId('tool-assessment').click();
+      // Opening the plan is one press of the assessment button (click budget deformity-open).
+      if (!(await panel.count())) await budget.task('deformity-open', () => page.getByTestId('tool-assessment').click(), { until: () => panel.waitFor() });
       await page.getByTestId('deformity-drawing').waitFor({ state: 'attached' });
       await page.waitForTimeout(300);
     };
@@ -216,7 +219,8 @@ async function main() {
       await panel.locator('[data-landmark="femoralHeadContour"] [data-action="deformity-place"]').click();
       for (const point of right.landmarks.femoralHeadContour) await click(point);
       await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-place"]').click();
-      await click(right.landmarks.kneeCentre);
+      // A landmark the kit asks for is one click on the film (click budget deformity-landmark).
+      await budget.task('deformity-landmark', () => click(right.landmarks.kneeCentre), { until: () => page.waitForFunction(() => document.querySelector('.deformity-landmarks [data-landmark="kneeCentre"]')?.hasAttribute('data-placed')) });
       await panel.locator('[data-action="deformity-place-stop"]').click().catch(() => {});
       const femur = (await values('.deformity-values:not(.deformity-compare)')).femurLength;
       if (variant.mmPerPixel) near(femur, right.expected.femurLength * variant.mmPerPixel / manifest.objectMm, LENGTH, `${name} femur length`);
@@ -293,7 +297,8 @@ async function main() {
     }
     check('The usage timings carry only schema control ids, never a landmark, value or file', { actions: actions.filter(id => id?.startsWith('deformity-')).length });
     assert.deepEqual(errors, []);
-    await fs.writeFile(path.join(output, 'deformity-plan.json'), JSON.stringify({ checks }, null, 2) + '\n');
+    budget.assert();
+    await fs.writeFile(path.join(output, 'deformity-plan.json'), JSON.stringify({ checks, budgets: budget.results }, null, 2) + '\n');
     console.log(`All ${checks.length} deformity plan checks passed.`);
   } finally {
     await closeDesktop(desktop);
