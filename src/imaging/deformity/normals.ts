@@ -21,10 +21,10 @@ export const NORMALS: Record<ValueKey, Normal> = {
   JLCA: { typical: 0, low: -2, high: 2, source: 'POSNA 2020, Fig. 4: 0 ± 2°', others: ['Schneider 2025: 0–2°', 'Fisher 2025: ≤ 2°', 'Marques Luís 2021: 0–1° medial'] },
   AMA: { typical: 6, low: 5, high: 7, source: 'Marques Luís 2021: 6 ± 1°', others: ['Fisher 2025: 7°'] },
   // Paley's 8 ± 7 mm medial, as Schneider 2025 and Da Cunha 2020 cite it.
-  MAD: { typical: 8, low: 1, high: 15, source: 'Paley: 8 ± 7 mm medial', others: ['Marques Luís 2021: 4 ± 2 mm medial', 'Sinai chart (POSNA 2020): 0 ± 3 mm'] },
+  MAD: { typical: 8, low: 1, high: 15, source: 'Paley: 8 ± 7 mm medial', others: ['Marques Luís 2021: 4 ± 2 mm medial', 'Sinai (POSNA 2020): 0 ± 3 mm'] },
   // No single range is agreed. Within 3° of straight is used, the threshold Bellemans 2012 gives for constitutional
   // varus; Moreland 1987 found a mean 1.5° (right) and 1.1° (left) varus in 25 normal men.
-  HKA: { typical: 0, low: -3, high: 3, source: 'Bellemans 2012: 3° or more is constitutional varus', others: ['Moreland 1987: 1.5° R, 1.1° L varus (mean)'] },
+  HKA: { typical: 0, low: -3, high: 3, source: 'Bellemans 2012: ≥ 3° varus', others: ['Moreland 1987: 1.5° R, 1.1° L varus'] },
 };
 
 export type Verdict = 'normal' | 'high' | 'low';

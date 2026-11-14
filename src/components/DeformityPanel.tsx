@@ -205,7 +205,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
       if (view.simulation && plan.osteotomy) {
         const after = view.simulation.leg.values, o = plan.osteotomy;
         sections.push({ title: t('deformity.osteotomy'), rows: [
-          [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t(o.wedge === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
+          [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t((view.simulation.wedge ?? o.wedge) === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
           [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`],
           ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}`] as [string, string]),
         ] });
@@ -366,6 +366,8 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
             className={after[name].verdict && after[name].verdict !== 'normal' ? 'is-out' : ''}>
             <th scope="row">{NAMED[name] ? t(NAMED[name]) : name}</th><td>{valueText(leg.values[name], '', t)}</td><td>{valueText(after[name], '', t)}</td></tr>)}</tbody>
         </table>}
+        {view.simulation?.wedge && view.simulation.wedge !== osteotomy.wedge && <p className="deformity-caution" role="note" data-testid="deformity-wedge-mismatch">
+          {t(view.simulation.wedge === 'opening' ? 'deformity.wedgeIsOpening' : 'deformity.wedgeIsClosing')}</p>}
         {view.simulation && <p className="deformity-fit" data-testid="deformity-wedge" data-wedge={view.simulation.wedgeHeight}>
           {t('deformity.wedgeHeight', { height: view.simulation.wedgeHeight.toFixed(1), unit: leg.unit })}
           {view.simulation.lengthChange !== null ? ` · ${t('deformity.lengthChange', { change: `${view.simulation.lengthChange >= 0 ? '+' : ''}${view.simulation.lengthChange.toFixed(1)}`, unit: leg.unit })}` : ''}

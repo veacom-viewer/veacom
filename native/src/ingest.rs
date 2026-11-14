@@ -1899,8 +1899,14 @@ fn read_frames_budget(
                 None
             }
         });
-        // A projection radiograph measures with the spacing the DICOM rules give (projection.rs), named with it.
-        let projection = crate::projection::read(&obj, index, &modality);
+        // A projection radiograph measures with the spacing the DICOM rules give (projection.rs), named with it. A frame
+        // placed in the patient by Image Orientation is a cross-section, even of a projection modality (a breast
+        // tomosynthesis or XA 3D slice), and keeps its Pixel Spacing as before.
+        let projection = if orientation.is_some_and(valid_orientation) {
+            None
+        } else {
+            crate::projection::read(&obj, index, &modality)
+        };
         let pixel_spacing = match &projection {
             Some(projection) => projection.spacing,
             None => pixel_spacing,
@@ -5668,6 +5674,22 @@ mod tests {
         assert!(!pixels.spacing_known);
         assert_eq!(basis(pixels), Some(crate::projection::Basis::None));
         assert!(codes(pixels).contains(&"series.noPixelSpacing"));
+    }
+    #[test]
+    fn a_slice_placed_in_the_patient_is_no_projection_whatever_its_modality() {
+        // A breast tomosynthesis slice: MG, with Image Orientation and Position, Pixel Spacing alone.
+        let mut slice = radiograph(6, &[(Tag(0x0028, 0x0030), VR::DS, "0.1\\0.1")]);
+        slice.put(DataElement::new(Tag(0x0008, 0x0060), VR::CS, "MG"));
+        slice.put(DataElement::new(
+            Tag(0x0020, 0x0037),
+            VR::DS,
+            "1\\0\\0\\0\\1\\0",
+        ));
+        slice.put(DataElement::new(Tag(0x0020, 0x0032), VR::DS, "0\\0\\0"));
+        let imported = import_dir(&write_slices(vec![slice]));
+        let info = &imported.sources[0].info;
+        assert!(info.frame_metadata[0].projection.is_none());
+        assert_eq!(&info.spacing[..2], &[0.1, 0.1]);
     }
     fn phase(source: &SourceSeries) -> &PhaseIdentity {
         source.info.phase.as_ref().expect("series has no phase")

@@ -136,7 +136,10 @@ click and can be dragged. The fragment is a polygon around the leg below the cut
 25 mm at least, down to 60 mm past the ankle), never a half-plane, so a film of both legs moves one leg only; its
 corners can be dragged. Then:
 
-- Opening or closing wedge, the angle and its direction (valgus turns the distal end laterally).
+- Opening or closing wedge, the angle and its direction (valgus turns the distal end laterally). Which wedge a cut
+  makes follows from the hinge's side and the direction: the first cortex moving away from the proximal fragment opens
+  the cut, moving into it closes it. The panel says so when that differs from the wedge chosen, and the report and the
+  drawing give the wedge the geometry makes.
 - Solve for MAD 0, or for the weight-bearing line at 62.5% of the plateau (Fujisawa), between 45° of varus and valgus,
   on the leg measured again: a femoral cut moves the knee and the plateau too.
 - Shift lateral and distal, and lengthen along the bone, in mm.

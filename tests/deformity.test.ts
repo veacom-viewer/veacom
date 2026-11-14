@@ -242,6 +242,16 @@ describe('a simulated osteotomy', () => {
     assert.notDeepEqual(simulate(input, before, narrow)!.leg.ankle, before.ankle);
   });
 
+  it('tells an opening wedge from a closing one by where the first cortex goes', () => {
+    const input = straight(), before = measureLeg(input);
+    // Lateral hinge (−x) and valgus: the medial cortex moves distally and the cut opens; varus closes it.
+    assert.equal(simulate(input, before, plan(input))!.wedge, 'opening');
+    assert.equal(simulate(input, before, plan(input, { direction: 'varus' }))!.wedge, 'closing');
+    // A medial hinge with valgus closes the cut at the lateral cortex: a closing wedge HTO.
+    assert.equal(simulate(input, before, plan(input, { cut: [[-20, 500], [20, 500]], hinge: [20, 500] }))!.wedge, 'closing');
+    assert.equal(simulate(input, before, plan(input, { degrees: 0 }))!.wedge, null);
+  });
+
   it('measures the wedge from the hinge to the opening cortex', () => {
     const input = straight(), before = measureLeg(input);
     assertClose(simulate(input, before, plan(input, { hinge: [0, 500] }))!.wedgeHeight, 2 * 20 * Math.sin(5 * deg), 9);

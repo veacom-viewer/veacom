@@ -4,7 +4,7 @@
 // with it and the leg is measured again (measure.ts); the renderer draws the fragment as a layer (DeformityOverlay).
 import { CONTOUR_MINIMUM, type LandmarkName } from './landmarks';
 import { type LegInput, type Leg, type Landmarks, measureLeg, toImage, toPlane } from './measure';
-import { add, applyRigid, bisect, cross, distance, dot, length, type Point, type Rigid, scale, sub, unit } from './plane';
+import { add, applyRigid, bisect, cross, distance, dot, length, type Point, type Rigid, scale, sub, unit, rotate } from './plane';
 
 export interface Osteotomy {
   bone: 'femur' | 'tibia';
@@ -82,6 +82,9 @@ export interface Simulation {
   motion: Rigid;
   /** The plan's landmarks where the correction puts them. */
   points: Landmarks;
+  /** What the turn does at the cut's first cortex: opens it (an opening wedge) or closes it (a closing wedge, bone taken
+   * out); null without a turn. The hinge's side and the direction decide it, whatever the plan says. */
+  wedge: 'opening' | 'closing' | null;
   /** Wedge height at the opening (or closing) cortex: 2 w sin(θ/2), w the distance from the hinge to that cortex
    * (Rolim 2016). */
   wedgeHeight: number;
@@ -96,7 +99,10 @@ export function simulate(input: LegInput, before: Leg, osteotomy: Osteotomy): Si
   const leg = measureLeg({ ...input, points });
   const width = distance(toPlane(osteotomy.hinge, input.mmPerPixel), toPlane(osteotomy.cut[0], input.mmPerPixel));
   const was = before.values.limbLength.value, now = leg.values.limbLength.value;
-  return { leg, motion, points, wedgeHeight: 2 * width * Math.sin(osteotomy.degrees / 2 * Math.PI / 180), lengthChange: was !== null && now !== null ? now - was : null };
+  // The first cortex moved distally, away from the proximal fragment, opens the cut; moved proximally, it closes it.
+  const start = toPlane(osteotomy.cut[0], input.mmPerPixel), turned = add(motion.pivot, rotate(sub(start, motion.pivot), motion.degrees));
+  const wedge = Math.abs(motion.degrees) < 1e-9 ? null : dot(sub(turned, start), axis) > 0 ? 'opening' : 'closing';
+  return { leg, motion, points, wedge, wedgeHeight: 2 * width * Math.sin(osteotomy.degrees / 2 * Math.PI / 180), lengthChange: was !== null && now !== null ? now - was : null };
 }
 
 export type Target = { kind: 'mad'; mm: number } | { kind: 'wbl'; percent: number };

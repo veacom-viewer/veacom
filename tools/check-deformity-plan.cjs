@@ -162,6 +162,12 @@ async function main() {
     await page.waitForFunction(() => Number(document.querySelector('[data-action="deformity-angle"]')?.value) === 8, undefined, { timeout: 5_000 });
     check('Undo and Redo take the plan\'s last step back and forth');
 
+    // The wedge the geometry makes: a lateral hinge turned to valgus opens the cut; choosing a closing wedge says so.
+    assert.equal(await panel.getByTestId('deformity-wedge-mismatch').count(), 0, 'A lateral hinge turned to valgus is the opening wedge planned.');
+    await panel.locator('[data-action="deformity-wedge"]', { hasText: 'Closing wedge' }).click();
+    assert.match(await panel.getByTestId('deformity-wedge-mismatch').textContent(), /open the cut: an opening wedge/);
+    await panel.locator('[data-action="deformity-wedge"]', { hasText: 'Opening wedge' }).click();
+
     // Solve for MAD 0.
     await panel.locator('[data-action="deformity-solve-mad"]').click();
     await page.waitForTimeout(200);
@@ -306,6 +312,18 @@ async function main() {
     await panel.locator('[data-action="deformity-calibrate"]').click();
     await page.waitForFunction(() => document.querySelector('[data-testid="deformity-calibration"]')?.dataset.state === 'manual', undefined, { timeout: 5_000 });
     check('A 25.0 mm ball calibrates the film without spacing; the femur measures its true 440 mm; Undo leaves the calibration, Remove and Calibrate toggle it');
+
+    // The ruler: two marks 200 mm apart at the bones' depth calibrate the same film.
+    await panel.locator('[data-action="deformity-ruler"]').click();
+    await click(manifest.ruler.from); await click(manifest.ruler.to);
+    await panel.locator('[data-action="deformity-known-mm"]').fill(String(manifest.ruler.lengthMm));
+    near(Number(await panel.getByTestId('deformity-marker-fit').getAttribute('data-mm-per-pixel')), manifest.objectMm, 0.0005, 'Ruler mm per pixel');
+    await panel.locator('[data-action="deformity-calibrate"]').click();
+    await page.waitForFunction(() => /Ruler 200\.0 mm/.test(document.querySelector('[data-testid="deformity-calibration"]')?.textContent ?? ''), undefined, { timeout: 5_000 });
+    near((await values('.deformity-values:not(.deformity-compare)')).femurLength, right.expected.femurLength, LENGTH, 'Ruler-calibrated femur length');
+    assert.match(await panel.locator('tr[data-value-key="femurLength"]').textContent(), /ruler 200\.0 mm/);
+    await shot('4b-ruler-calibration');
+    check('A ruler\'s marks 200 mm apart calibrate the film; the femur measures 440 mm, named "ruler 200.0 mm"');
 
     // 6. The mirrored film (Patient Orientation R\F): the same angles, the same names.
     await open(manifest.series.mirrored.description);

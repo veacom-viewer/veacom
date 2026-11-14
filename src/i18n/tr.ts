@@ -597,6 +597,8 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.wedge': 'Kama',
   'deformity.wedge.opening': 'Açık kama',
   'deformity.wedge.closing': 'Kapalı kama',
+  'deformity.wedgeIsOpening': 'Bu menteşe ve yön kesiyi açar: açık kama.',
+  'deformity.wedgeIsClosing': 'Bu menteşe ve yön kesiyi kapatır: kapalı kama.',
   'deformity.angle': 'Açı (°)',
   'deformity.direction': 'Yön',
   'deformity.solve': 'Hedef',

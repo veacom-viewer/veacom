@@ -214,7 +214,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
 function wedge(plan: PlanView, at: (p: Point) => [number, number]) {
   const osteotomy = plan.plan.osteotomy!, degrees = plan.simulation!.motion.degrees, mm = plan.mm;
   const hinge = toPlane(osteotomy.hinge, mm), start = toPlane(osteotomy.cut[0], mm);
-  const tip = toImage(add(hinge, rotate(sub(start, hinge), osteotomy.wedge === 'closing' ? -degrees : degrees)), mm);
+  const kind = plan.simulation!.wedge ?? osteotomy.wedge;
+  const tip = toImage(add(hinge, rotate(sub(start, hinge), kind === 'closing' ? -degrees : degrees)), mm);
   const corners = [osteotomy.hinge, osteotomy.cut[0], tip].map(at);
-  return <polygon data-plan-wedge={osteotomy.wedge} points={corners.map(p => p.join(',')).join(' ')} fill="rgba(255, 107, 107, 0.25)" stroke={COLOUR.cut} strokeWidth={1.2} />;
+  return <polygon data-plan-wedge={kind} points={corners.map(p => p.join(',')).join(' ')} fill="rgba(255, 107, 107, 0.25)" stroke={COLOUR.cut} strokeWidth={1.2} />;
 }

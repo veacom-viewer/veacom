@@ -594,6 +594,8 @@ export const en = {
   'deformity.wedge': 'Wedge',
   'deformity.wedge.opening': 'Opening wedge',
   'deformity.wedge.closing': 'Closing wedge',
+  'deformity.wedgeIsOpening': 'This hinge and direction open the cut: an opening wedge.',
+  'deformity.wedgeIsClosing': 'This hinge and direction close the cut: a closing wedge.',
   'deformity.angle': 'Angle (°)',
   'deformity.direction': 'Direction',
   'deformity.solve': 'Solve for',
