@@ -325,6 +325,12 @@ jobs:
         run: |
           node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
           node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
+      # The deformity plan on a synthetic long-leg DX: calibration variants, landmarks, values, osteotomy, save, report.
+      - name: Deformity plan on synthetic long-leg films
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-longleg-study.mjs "$RUNNER_TEMP/longleg"
+          node tools/check-deformity-plan.cjs "$RUNNER_TEMP/longleg" "$EVIDENCE/deformity-plan"
       # What Explorer's "Open with VEAcom" does while VEAcom runs: a later launch hands its study to the open window.
       - name: A later launch opens its study in the running window
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}

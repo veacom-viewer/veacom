@@ -582,6 +582,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.cora': 'CORA',
   'deformity.cora.label': 'CORA {angle}°',
   'deformity.cora.none': 'Yok: eksenler paralel',
+  'deformity.cora.small': '{angle}°: normal değişkenlik içinde',
   'deformity.cora.outside': '{angle}°, kemiğin dışında: çok apeksli ya da eklemde',
   'deformity.cora.belowHip': '{angle}°, kalça merkezinin {distance} {unit} altında',
   'deformity.cora.belowKnee': '{angle}°, diz merkezinin {distance} {unit} altında',

@@ -579,6 +579,7 @@ export const en = {
   'deformity.cora': 'CORA',
   'deformity.cora.label': 'CORA {angle}°',
   'deformity.cora.none': 'None: the axes are parallel',
+  'deformity.cora.small': '{angle}°: within normal variation',
   'deformity.cora.outside': '{angle}°, outside the bone: multiapical or at the joint',
   'deformity.cora.belowHip': '{angle}°, {distance} {unit} below the hip centre',
   'deformity.cora.belowKnee': '{angle}°, {distance} {unit} below the knee centre',

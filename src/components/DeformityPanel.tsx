@@ -321,7 +321,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
         {placing?.kind === 'cut' && <p className="deformity-hint" role="status">{t('deformity.cutHint')}</p>}
         {(!leg.ankle || !leg.knee) && <p className="deformity-missing">{t('deformity.needsLandmarks')}</p>}
       </div> : <div className="deformity-osteotomy" data-testid="deformity-osteotomy">
-        <p>{t('deformity.cutOn', { bone: t(`deformity.bone.${osteotomy.bone}` as MessageKey) })}</p>
+        <p>{t('deformity.cutOn', { bone: t(`deformity.bone.${osteotomy.bone}` as MessageKey).toLocaleLowerCase(locale) })}</p>
         <div className="deformity-segments" role="radiogroup" aria-label={t('deformity.wedge')}>{(['opening', 'closing'] as const).map(wedge => <button key={wedge} type="button" role="radio" data-action="deformity-wedge"
           aria-checked={osteotomy.wedge === wedge} className="secondary-button compact" onClick={() => changeOsteotomy({ wedge })}>{t(wedge === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')}</button>)}</div>
         <div className="deformity-fields">
@@ -378,6 +378,8 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
 function coraText(view: PlanView, bone: 'femur' | 'tibia', t: Translator): string {
   const cora = view.cora[bone], leg = view.leg;
   if (!cora) return t('deformity.cora.none');
+  // Under 1.5° the axes' angle is within the joints' normal variation (normals.ts).
+  if (cora.magnitude < 1.5) return t('deformity.cora.small', { angle: cora.magnitude.toFixed(1) });
   const length = (bone === 'femur' ? leg.values.femurLength.value : leg.values.tibiaLength.value) ?? 0;
   if (!(cora.level >= 0 && cora.level <= 1)) return t('deformity.cora.outside', { angle: cora.magnitude.toFixed(1) });
   return t(bone === 'femur' ? 'deformity.cora.belowHip' : 'deformity.cora.belowKnee', { angle: cora.magnitude.toFixed(1), distance: (cora.level * length).toFixed(0), unit: leg.unit });

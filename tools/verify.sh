@@ -57,6 +57,8 @@ run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arra
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"
 run nm-fixture node tools/fixtures/make-nm-study.mjs "$out/nm-study"
 run gamma-camera node tools/check-gamma-camera.cjs "$out/nm-study" "$out/gamma-camera"
+run longleg-fixture node tools/fixtures/make-longleg-study.mjs "$out/longleg"
+run deformity-plan node tools/check-deformity-plan.cjs "$out/longleg" "$out/deformity-plan"
 run browser-gpu node tools/check-browser-gpu.mjs "$out/browser-gpu"
 run gpu-startup node tools/check-gpu-startup.cjs "$series" "$out/gpu-startup.json"
 run hardware-rendering node tools/check-software-rendering.cjs "$series" "$out/hardware-rendering" --expect hardware
