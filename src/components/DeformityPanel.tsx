@@ -19,6 +19,7 @@ import { parsePlanFile, planFile } from '../ui/deformityFile';
 import { drawReport, pngBytes, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
 import { Download, FolderOpen, Images, Plus, Redo2, Undo2, X } from './icons';
+import { WarningBox } from './WarningBox';
 import { useTranslation } from '../i18n/react';
 import type { MessageKey, Translator } from '../i18n';
 import './DeformityPanel.css';
@@ -272,7 +273,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
             onChange={event => { const confirmed = event.target.checked; change(current => ({ ...current, marker: current.marker && { ...current.marker, depthConfirmed: confirmed } }));
               const recorded = manualCalibration(frame); if (recorded) recordManualCalibration(series.id, { ...recorded, depthConfirmed: confirmed }); }} />{t('deformity.depth')}</label>}
           <div className="deformity-actions">
-            <button type="button" className="primary-button compact" data-action="deformity-calibrate" disabled={!fit || applied} onClick={() => applyMarker(marker)}>{t('deformity.apply')}</button>
+            <button type="button" className="secondary-button compact" data-action="deformity-calibrate" disabled={!fit || applied} onClick={() => applyMarker(marker)}>{t('deformity.apply')}</button>
             {known && <button type="button" className="text-button" data-action="deformity-calibration-remove" onClick={removeCalibration}>{t('deformity.removeCalibration')}</button>}
           </div>
         </div>}
@@ -292,9 +293,10 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
       </ol>
       <div className="deformity-actions">
         {placing ? <button type="button" className="secondary-button compact" data-action="deformity-place-stop" onClick={() => deformity.setPlacing(null)}>{t('deformity.stop')}</button>
-          : nextLandmark(plan) && <button type="button" className="primary-button compact" data-action="deformity-place-start" onClick={() => startPlacing()}>{t('deformity.start')}</button>}
+          : nextLandmark(plan) && <button type="button" className="secondary-button compact" data-action="deformity-place-start" onClick={() => startPlacing()}>{t('deformity.start')}</button>}
       </div>
-      {leg.swapped.length > 0 && <p className="deformity-warning" role="alert">{t('deformity.swapped', { names: leg.swapped.map(name => t(LANDMARK_TEXT[name].name)).join(', ') })}</p>}
+      {leg.swapped.length > 0 && <WarningBox title={t('deformity.swappedTitle')} dismissKey={`deformity-swapped:${plan.id}:${leg.swapped.join(',')}`} testId="deformity-swapped">
+        <p>{t('deformity.swapped', { names: leg.swapped.map(name => t(LANDMARK_TEXT[name].name)).join(', ') })}</p></WarningBox>}
       {leg.headFitPoor && <p className="deformity-caution">{t('deformity.headFit')}</p>}
 
       <h3>{t('deformity.values')}</h3>
@@ -326,7 +328,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
       {!osteotomy ? <div className="deformity-osteotomy">
         <div className="deformity-segments" role="radiogroup" aria-label={t('deformity.bone')}>{(['femur', 'tibia'] as const).map(name => <button key={name} type="button" role="radio" data-action="deformity-bone"
           aria-checked={bone === name} className="secondary-button compact" onClick={() => setBone(name)}>{t(`deformity.bone.${name}` as MessageKey)}</button>)}</div>
-        <button type="button" className="primary-button compact" data-action="deformity-cut" disabled={!leg.ankle || !(bone === 'tibia' ? leg.knee : leg.hip)}
+        <button type="button" className="secondary-button compact" data-action="deformity-cut" disabled={!leg.ankle || !(bone === 'tibia' ? leg.knee : leg.hip)}
           onClick={() => deformity.setPlacing({ film: key, kind: 'cut', bone })}>{t('deformity.placeCut')}</button>
         {placing?.kind === 'cut' && <p className="deformity-hint" role="status">{t('deformity.cutHint')}</p>}
         {(!leg.ankle || !leg.knee) && <p className="deformity-missing">{t('deformity.needsLandmarks')}</p>}

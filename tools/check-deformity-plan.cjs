@@ -122,10 +122,18 @@ async function main() {
     for (const key of ['MPTA', 'LDTA', 'JLCA', 'HKA']) near(planned[key], manifest.osteotomy.expected[key], ANGLE, `After HTO ${key}`);
     for (const key of ['MAD', 'limbLength']) near(planned[key], manifest.osteotomy.expected[key] * scale, LENGTH, `After HTO ${key}`);
     near(Number(await panel.getByTestId('deformity-wedge').getAttribute('data-wedge')), manifest.osteotomy.wedgeHeightMm * scale, LENGTH, 'Wedge height');
-    assert.equal(await page.getByTestId('deformity-simulated').count(), 1, 'The pane says the picture is simulated.');
     const fragment = page.getByTestId('deformity-fragment');
     assert.equal(await fragment.count(), 1, 'The fragment is drawn as a layer.');
     await page.waitForTimeout(300);
+    // "Simulated" is drawn on the layer itself, above the fragment, so no copy of the pane shows it unmarked.
+    assert.equal(await fragment.getAttribute('data-label'), 'Simulated');
+    const labelled = await fragment.evaluate(canvas => {
+      const ratio = canvas.width / canvas.clientWidth, x = Math.round(canvas.width / 2), y = Math.round(36 * ratio);
+      const pixels = canvas.getContext('2d').getImageData(x - Math.round(30 * ratio), y - Math.round(8 * ratio), Math.round(60 * ratio), Math.round(12 * ratio)).data;
+      let green = 0; for (let i = 0; i < pixels.length; i += 4) if (pixels[i + 3] > 200 && pixels[i + 1] > 180 && pixels[i] < 150) green++;
+      return green;
+    });
+    assert(labelled > 20, `The layer carries its "Simulated" label (${labelled} label pixels).`);
     // The moved talus is bone where the fragment put it; where it was, the pane is dimmed.
     const pane = await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').boundingBox();
     const map = JSON.parse(await page.getByTestId('deformity-drawing').getAttribute('data-to-screen'));
@@ -210,6 +218,39 @@ async function main() {
     assert(marks.yellow > 200 && marks.green > 200, `With patient data hidden the report still shows the plan (${JSON.stringify(marks)}).`);
     await page.keyboard.press('Shift+F12');
     check('The plan saves as versioned JSON with image-pixel labels and no identifiers, opens again identically, and the report saves as an A4 PNG with the plan drawn, patient data shown or hidden', { planPath, reportPath });
+
+    // Every point is a handle: a real drag of the ankle centre and of the hinge, each one Undo step.
+    const drag = async (from, by) => {
+      const map = JSON.parse(await page.getByTestId('deformity-drawing').getAttribute('data-to-screen'));
+      const box = await page.locator('.viewport-cell.is-active svg[data-testid="annotation-overlay"]').boundingBox();
+      const x = box.x + map[0][0] + from[0] * (map[1][0] - map[0][0]) + from[1] * (map[2][0] - map[0][0]), y = box.y + map[0][1] + from[0] * (map[1][1] - map[0][1]) + from[1] * (map[2][1] - map[0][1]);
+      await page.mouse.move(x, y); await page.mouse.down();
+      for (let step = 1; step <= 5; step++) await page.mouse.move(x + by[0] * step / 5, y + by[1] * step / 5);
+      await page.mouse.up();
+    };
+    await panel.locator('[data-action="deformity-simulate"]').uncheck();
+    const tibiaBefore = (await values('.deformity-values:not(.deformity-compare)')).tibiaLength;
+    await drag(right.landmarks.ankleCentre, [0, 12]);
+    const tibiaDragged = (await values('.deformity-values:not(.deformity-compare)')).tibiaLength;
+    assert(tibiaDragged > tibiaBefore + 5, `Dragging the ankle centre down lengthens the tibia (${tibiaBefore} → ${tibiaDragged}).`);
+    const movedPath = path.join(output, 'plan-moved.json');
+    await desktop.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, movedPath);
+    await panel.locator('[data-action="deformity-save"]').click();
+    await page.waitForFunction(() => /plan-moved/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 10_000 });
+    const movedFile = JSON.parse(await fs.readFile(movedPath, 'utf8'));
+    assert.deepEqual(movedFile.plans[0].landmarks.find(item => item.name === 'ankleCentre').provenance, ['moved']);
+    await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(expected => Number(document.querySelector('.deformity-values:not(.deformity-compare) tr[data-value-key="tibiaLength"]')?.dataset.value) === expected, tibiaBefore, { timeout: 5_000 });
+    await panel.locator('[data-action="deformity-simulate"]').check();
+    const wedgeBefore = Number(await panel.getByTestId('deformity-wedge').getAttribute('data-wedge'));
+    await drag(manifest.osteotomy.hinge, [20, 0]);
+    const wedgeDragged = Number(await panel.getByTestId('deformity-wedge').getAttribute('data-wedge'));
+    assert(Math.abs(wedgeDragged - wedgeBefore) > 0.2, `Dragging the hinge changes the wedge height (${wedgeBefore} → ${wedgeDragged}).`);
+    await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(expected => Number(document.querySelector('[data-testid="deformity-wedge"]')?.dataset.wedge) === expected, wedgeBefore, { timeout: 5_000 });
+    check('A landmark and the hinge drag on the film: values follow, the label says moved, and one Undo puts each back', { tibiaBefore, tibiaDragged, wedgeBefore, wedgeDragged });
 
     // 4. The other spacing variants: the calibration each names, and the femur's length it gives.
     for (const [name, variant] of Object.entries(manifest.series)) {

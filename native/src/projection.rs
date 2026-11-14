@@ -7,7 +7,8 @@
 //! with neither Imager Pixel Spacing nor Pixel Spacing Calibration Type (0028,0A02) it cannot be told which. Imager
 //! Pixel Spacing is measured at the front of the detector and is never adjusted for magnification. Where it is the
 //! only spacing, the Estimated Radiographic Magnification Factor (0018,1114, SID/SOD, C.8.11.5) corrects it to the
-//! depth of the table or bucky, as the IHE Mammography Image profile does. Nothing is chosen silently: the basis is
+//! depth of the table or bucky, as the IHE Mammography Image profile does; Pixel Spacing equal to Imager Pixel Spacing
+//! keeps its own millimetres, named the detector plane. Nothing is chosen silently: the basis is
 //! sent with every frame, and the interface names it beside each value.
 use crate::ingest::{frame_value, nonempty_text, number, numbers, text};
 use dicom_core::Tag;
@@ -140,7 +141,10 @@ pub fn read(obj: &InMemDicomObject, frame: usize, modality: &str) -> Option<Proj
             (Basis::Calibrated, Some(pixel))
         }
         (Some(pixel), None) => (Basis::Unstated, Some(pixel)),
-        (_, Some(imager)) => match magnification {
+        // Pixel Spacing equal to Imager Pixel Spacing measured in its millimetres before this module: it keeps them,
+        // now named the detector plane, and the factor is not applied on top until the owner decides it should be.
+        (Some(pixel), Some(_)) => (Basis::Detector, Some(pixel)),
+        (None, Some(imager)) => match magnification {
             Some(factor) => (
                 Basis::Magnification,
                 Some([imager[0] / factor, imager[1] / factor]),
@@ -242,17 +246,29 @@ mod tests {
             ),
             (Basis::Detector, Some([0.33, 0.33]))
         );
-        // Not corrected, so the factor the file gives still applies.
-        let (kind, used) = basis(
+        // Not corrected, but stored as Pixel Spacing: the factor is not applied on top (the numbers stay as they were).
+        let projection = read(
+            &film(
+                "CR",
+                &[
+                    (PS, VR::DS, "0.33\\0.33"),
+                    (IPS, VR::DS, "0.33\\0.33"),
+                    (ERMF, VR::DS, "1.1"),
+                ],
+            ),
+            0,
             "CR",
-            &[
-                (PS, VR::DS, "0.33\\0.33"),
-                (IPS, VR::DS, "0.33\\0.33"),
-                (ERMF, VR::DS, "1.1"),
-            ],
+        )
+        .unwrap();
+        assert_eq!(
+            (projection.basis, projection.spacing),
+            (Basis::Detector, Some([0.33, 0.33]))
         );
-        assert_eq!(kind, Basis::Magnification);
-        assert!((used.unwrap()[0] - 0.3).abs() < 1e-12);
+        assert_eq!(
+            projection.magnification,
+            Some(1.1),
+            "The factor is still reported."
+        );
     }
 
     #[test]

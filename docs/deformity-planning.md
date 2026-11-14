@@ -19,16 +19,18 @@ PS3.3 10.7.1.1 and C.8.11.4 give, and the engine says which with each frame:
 | Tags | Spacing used | Named |
 | --- | --- | --- |
 | Pixel Spacing that differs from Imager Pixel Spacing, or a Pixel Spacing Calibration Type | Pixel Spacing | "Calibrated for magnification (GEOMETRY)", "Calibrated on an object (FIDUCIAL)" or "Calibrated, method not stated"; after a length "calibrated" |
-| Imager Pixel Spacing alone, or equal to Pixel Spacing, with an Estimated Radiographic Magnification Factor of at least 1 | Imager Pixel Spacing ÷ ERMF | "Detector ÷ ERMF 1.10: table depth"; "ERMF ×1.10" |
-| Imager Pixel Spacing alone, or equal to Pixel Spacing | Imager Pixel Spacing | "Detector plane, not corrected"; "detector plane" |
+| Imager Pixel Spacing alone, with an Estimated Radiographic Magnification Factor of at least 1 | Imager Pixel Spacing ÷ ERMF | "Detector ÷ ERMF 1.10: table depth"; "ERMF ×1.10" |
+| Imager Pixel Spacing alone, or equal to Pixel Spacing (with or without an ERMF) | Imager Pixel Spacing | "Detector plane, not corrected"; "detector plane" |
 | Pixel Spacing alone | Pixel Spacing | "Pixel Spacing: correction not stated"; "calibration not stated" |
 | None | pixels | "Pixels only"; lengths in px |
 
 - Imager Pixel Spacing is at the detector's front plane and is never adjusted for magnification (C.8.11.4): lengths
   measured with it are magnified, about 5% on a standing film (Sabharwal 2006).
 - The ERMF is SID/SOD with SOD measured to the table or bucky (C.8.11.5), so it corrects to that depth, not the bone's.
-  It is applied, as the IHE Mammography Image profile asks, and named. A factor below 1 or not a number is left out with
-  a note.
+  Where Imager Pixel Spacing is the only spacing it is applied, as the IHE Mammography Image profile asks, and named;
+  those films measured in pixels only before. Pixel Spacing equal to Imager Pixel Spacing keeps its own millimetres, as
+  before, now named the detector plane: applying the factor there too would change existing numbers, which waits for
+  the owner. A factor below 1 or not a number is left out with a note.
 - Pixel Spacing alone on a radiograph cannot say whether it was corrected (10.7.1.1): it is used and says so.
 - CT, MR, PET and the other cross-sections keep their Pixel Spacing; their labels do not change.
 

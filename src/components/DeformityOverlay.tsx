@@ -33,7 +33,9 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
 
 /** Under the drawing: the place a moved fragment left, dimmed, and the fragment drawn moved. */
 export function PlanLayers({ volume, view, size, mapping }: Props) {
+  const { t } = useTranslation();
   const state = useDeformity();
+  const label = t('deformity.simulated');
   const canvas = useRef<HTMLCanvasElement>(null);
   const found = state.open && state.simulate ? shown(volume, view, state.films) : null;
   const plan = found ? planView(found.film, found.frame) : null;
@@ -61,6 +63,14 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
       corners.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
       context.closePath(); context.fill();
       context.restore();
+      // "Simulated" is drawn on the layer itself, so no copy of the pane (a picture, a video, with or without its
+      // drawings) shows the moved fragment without it.
+      context.save();
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      context.font = '600 13px Inter, system-ui, sans-serif'; context.textAlign = 'center';
+      context.lineWidth = 3; context.strokeStyle = '#000'; context.fillStyle = COLOUR.corrected;
+      context.strokeText(label, size[0] / 2, 40); context.fillText(label, size[0] / 2, 40);
+      context.restore();
     } catch {
       context.clearRect(0, 0, target.width, target.height); // The pane itself reports a renderer failure.
     }
@@ -71,7 +81,7 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
     <svg style={layerStyle} viewBox={`0 0 ${size[0]} ${size[1]}`} aria-hidden="true">
       <polygon points={outline(osteotomy.fragment)} fill="rgba(0, 0, 0, 0.6)" stroke={COLOUR.cut} strokeWidth={1} strokeDasharray="4 4" />
     </svg>
-    <canvas ref={canvas} style={layerStyle} data-testid="deformity-fragment" data-outline={outline(movedOutline)} aria-hidden="true" />
+    <canvas ref={canvas} style={layerStyle} data-testid="deformity-fragment" data-outline={outline(movedOutline)} data-label={label} role="img" aria-label={label} />
   </>;
 }
 
@@ -197,7 +207,6 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°` : '', v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
     {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit}${Math.abs(v.MAD.value) < 0.05 ? '' : ` ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
     {chip(points.ankle, v.LDTA.value === null ? [] : [`LDTA ${number(v.LDTA.value)}°`], simulating ? COLOUR.corrected : COLOUR.axis, outward, 'ankle')}
-    {simulating && <text data-testid="deformity-simulated" x={size[0] / 2} y={40} textAnchor="middle" fill={COLOUR.corrected} fontSize={13} fontWeight={600} fontFamily="var(--font-ui)" stroke="#000" strokeWidth={3} paintOrder="stroke">{t('deformity.simulated')}</text>}
   </g>;
 }
 

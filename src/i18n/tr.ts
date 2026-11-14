@@ -547,6 +547,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.start': 'Noktaları işaretle',
   'deformity.stop': 'Durdur',
   'deformity.swapped': 'Medial ve lateral yer değiştirmiş görünüyor: {names}.',
+  'deformity.swappedTitle': 'Noktaları kontrol edin',
   'deformity.headFit': 'Baş kenarı yuvarlak değil: noktalarını kontrol edin.',
   'deformity.values': 'Ölçümler',
   'deformity.value': 'Değer',

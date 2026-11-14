@@ -544,6 +544,7 @@ export const en = {
   'deformity.start': 'Place points',
   'deformity.stop': 'Stop',
   'deformity.swapped': 'Medial and lateral look swapped: {names}.',
+  'deformity.swappedTitle': 'Check the landmarks',
   'deformity.headFit': 'The head\'s outline is not round: check its points.',
   'deformity.values': 'Measurements',
   'deformity.value': 'Value',

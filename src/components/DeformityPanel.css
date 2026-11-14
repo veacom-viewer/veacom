@@ -8,10 +8,9 @@
 .deformity-body p { margin: 6px 0; line-height: 1.4; }
 .deformity-film { color: var(--text-strong); font-weight: 500; }
 .deformity-caution { color: var(--warning); }
-.deformity-warning { padding: 6px 8px; border: 1px solid var(--danger-line); border-radius: var(--radius-sm); background: var(--danger-bg); color: var(--danger); }
 .deformity-hint { color: var(--accent); }
 .deformity-missing { color: var(--text-tertiary); }
-.deformity-ask { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 8px; border: 1px solid var(--warning-line); border-radius: var(--radius-sm); background: var(--warning-bg); }
+.deformity-ask { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; padding: 8px 0; border-top: 1px solid var(--line-subtle); border-bottom: 1px solid var(--line-subtle); color: var(--text-strong); }
 .deformity-segments { display: flex; gap: 4px; flex-wrap: wrap; }
 .deformity-plans { display: flex; align-items: center; gap: 2px; margin: 10px 0 6px; border-bottom: 1px solid var(--line-subtle); }
 .deformity-plans > [role=tab] { height: var(--control); padding: 0 10px; border: 1px solid transparent; border-bottom: 0; border-radius: var(--radius-sm) var(--radius-sm) 0 0; background: none; color: var(--text-secondary); font-size: var(--text-sm); }
