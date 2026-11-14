@@ -387,17 +387,18 @@ async function main() {
     await page.getByTestId('inspector-tab-measurements').click();
     await settle();
     const canvasBox = await page.getByTestId('dicom-canvas').first().boundingBox();
-    // A measurement is selected when it is drawn, and a press beside it only lets it go (as in VEAcom Next): Esc in the
-    // image lets go first, so each drag draws a new one.
+    // A measurement is selected when it is drawn, and a drag beside it draws the next one at once: no press is spent
+    // letting it go.
     const drawLine = async (from, to) => {
-      if (await page.locator('[data-annotation-id][data-selected]').count()) { await viewport.focus(); await page.keyboard.press('Escape'); }
       await page.mouse.move(canvasBox.x + canvasBox.width * from[0], canvasBox.y + canvasBox.height * from[1]); await page.mouse.down();
       await page.mouse.move(canvasBox.x + canvasBox.width * to[0], canvasBox.y + canvasBox.height * to[1], { steps: 5 }); await page.mouse.up();
     };
     await viewport.focus(); await page.keyboard.press('l');
     await drawLine([0.3, 0.3], [0.45, 0.35]); await drawLine([0.3, 0.5], [0.5, 0.55]);
     await page.waitForFunction(before => document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])').length === before + 2, annotationsBefore);
-    const ids = () => page.evaluate(() => [...document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])')].map(group => group.getAttribute('data-annotation-id')).sort());
+    assert.equal(await page.locator('[data-annotation-id][data-selected]').count(), 1, 'Only the measurement drawn last is selected.');
+    check('A drag beside the selected measurement draws the next one at once');
+    const ids =() => page.evaluate(() => [...document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])')].map(group => group.getAttribute('data-annotation-id')).sort());
     const drawn = await ids();
     await page.getByTestId('findings-delete-all').click();
     await page.waitForFunction(() => !document.querySelector('[data-annotation-id]:not([data-annotation-id="draft"])'));
