@@ -210,6 +210,9 @@ async function run(build, study, counter) {
       await page.waitForLoadState('networkidle');
       row.pixelPaths = pixelPaths;
     } else if (study === 'pet') {
+      // Beta 2 fuses a PET/CT as it opens. The candidate opens it on its first image and fuses it when Fusion is pressed:
+      // pressed here once the study has opened, as a reader asks for it.
+      if (!await page.locator('[data-testid="tool-fusion"][aria-pressed="true"]').count()) await page.getByTestId('tool-fusion').click();
       await page.waitForFunction(() => {
         const s = window.__VEACOM_TEST__.state();
         return window.__fusedDraw && s.fusionId && s.pendingLoads === 0 && [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(c => c.dataset.volumeComplete === 'true');
@@ -282,7 +285,9 @@ async function main() {
       const paired = rows.map(row => ({ base: row.base[metric], head: row.head[metric] }));
       const comparison = compareRounds(paired, { threshold: .15, minMs: metric === 'videoBytes' ? 1 : 20, seed: 4109 });
       report.comparisons.push({ study, metric, ...comparison });
-      if (comparison.verdict === 'slower') report.failures.push(study+' '+metric+' regressed');
+      // Beta 2's PET fusion starts as the study opens and the candidate's when Fusion is pressed: shown, not judged.
+      const judged = !(study === 'pet' && metric === 'fusionMs');
+      if (judged && comparison.verdict === 'slower') report.failures.push(study+' '+metric+' regressed');
       if (metric === 'videoBytes' && comparison.change > -.25) report.failures.push('MP4 size reduction below 25%');
     }
     save();

@@ -20,7 +20,7 @@ An arrangement defines which series fill the panes, how they link and which imag
 }
 ```
 
-PET/CT opens in one axial pane with PET uptake over the matching CT. Layout offers a four-pane reading view with CT, PET, fusion and MIP. It also offers follow-up when a suitable prior is loaded. The menu beside Fusion opens the applicable nuclear medicine screen for the active patient and study. A PET layout the reader previously kept still takes precedence on import.
+A PET/CT opens as any study does, on its first image, and Fusion lays the PET uptake over the matching CT in one press. Layout offers this one-pane fusion and a four-pane reading view with CT, PET, fusion and MIP. It also offers follow-up when a suitable prior is loaded. The menu beside Fusion opens the applicable nuclear medicine screen for the active patient and study. A PET layout the reader kept opens by itself on import.
 
 ## Vocabulary
 
@@ -43,13 +43,13 @@ A required role that finds no series means no match. An anchor takes the best se
 
 | Trigger | Arrangement | Behaviour kept from today |
 |---|---|---|
-| A study opens (`importStudies`) | Kept PET follow-up, then `pet-ct` | A matching PET/CT opens in 1×1 fusion unless the reader has kept a different layout. Other studies open their first image in the active pane. |
+| A study opens (`importStudies`) | Kept PET follow-up, then kept `pet-ct` | Only a layout the reader kept opens by itself. Every other study, PET/CT included, opens its first image in the active pane. |
 | Nuclear medicine screen beside Fusion | PET follow-up, four-pane PET/CT, whole body or SPECT/CT | The reader’s active patient and study supply the screen. Only a follow-up prior is drawn from the wider session and must match patient and tracer. [PET quantification](pet-quantification.md) |
 | One series picked into a pane (`selectSeries`, `dropSeries`) | `dwi-adc`, `adc-dwi` | Only with exactly two panes and no three-plane MPR. The partner goes into the other pane, linking turns on, and the pane says "ADC added to this pane" with Undo. |
 | Several series picked together (`openSideBySide`) | `side-by-side` | `grid` by count: 2 → 1×2, 3 → 1×3, 4 → 2×2, 5–6 → 2×3. The first picked goes first, at most six, with no notice. |
 | The fusion button (`startFusion`, `fuseInActive`) | `fusion` | Its `overlay` role (a PET or a reconstructed SPECT) and `ct` role replace `bestPartner`'s callback and scoring. They give the same ranking, and `tests/fusion.test.ts` stays as it is. For a CT, `ungated` picks a summed SPECT over its gates; a gate shown in the pane is fused itself. |
 
-An automatic arrangement records no usage action. The pane notice names it, such as “PET/CT fusion (1 × 1)”, and offers **Undo** until the reader's next action. Undo restores the previous panes, layout, active pane, linking, fusion and crosshair and opens the study's first image in the active pane.
+An automatic arrangement, a kept layout opening by itself, records no usage action. The pane notice names it, such as “Your PET/CT layout”, and offers **Undo** until the reader's next action. Undo restores the previous panes, layout, active pane, linking, fusion and crosshair and opens the study's first image in the active pane.
 
 ## Keep this
 
@@ -140,7 +140,7 @@ Both panes show the one series, each on its own frame. Panes showing one PET or 
 - PET look on every PET pane, not only arranged ones. The nuclear medicine review asks for inverted grey PET by default and one scale across panes.
 - A MIP click picks the hottest voxel near the ray, as PET workstations do, with 4 mm of tolerance for a click slightly off a small lesion.
 - The fused pane takes the scanner's look, as the fusion button does, so one fusion never looks two ways.
-- Routine PET/CT uses one fused axial pane. For reporting, choose the four-pane reading view in Layout. To keep a custom view, change a pane’s plane and choose Keep.
+- A PET/CT opens on its first image, unfused: not every reading starts from the fusion, and a fused opening reads the PET as well before the screen settles. Fusion fuses it in one press. For reporting, choose the four-pane reading view in Layout. To have PET/CT open in a view of its own, change a pane’s plane and choose Keep.
 
 - SPECT/CT is the PET/CT screen with the SPECT's own window, as a PET without SUV has. Inverted grey matches the PET panes and a bone scan's planar views.
 - Log or square-root display for bone scans is not offered. It does not fit the window and palette primitives: the VOI function comes from the file, not from the reader, and the palettes are fixed colour scales in the shader. A curve would need a renderer change. Saturation is the window's upper end.

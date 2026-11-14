@@ -5,7 +5,7 @@ import type { MessageKey } from '../i18n';
 import { acquiredPlane, getPlaneFrame, sliceAtWorld } from '../imaging/geometry';
 import { bodyWeightFactor, windowFor, windowIn, type QuantityUnit, type QuantityWindow } from '../imaging/quantity';
 import { findRole, frameInView, ofKind, type RoleSpec } from './roles';
-import { BUILTIN_ARRANGEMENTS, PET_FOLLOW_UP } from './builtin';
+import { BUILTIN_ARRANGEMENTS, PET_CT, PET_FOLLOW_UP } from './builtin';
 import { studyKey } from '../domain/patient';
 
 export { findRole, frameInView, ROLE_RANKS, type RoleRank, type RoleSpec } from './roles';
@@ -226,8 +226,10 @@ export function withKept(kept: Kept, builtins: readonly Arrangement[] = BUILTIN_
   });
 }
 
+/** What a study opens with by itself. A PET/CT opens as any study does, its first image in the active pane; the fusion
+ * button fuses it in one press. Only a layout the reader kept for PET/CT, or for the PET follow-up, opens by itself. */
 export function matchOnOpen(kept: Kept, context: MatchContext): Plan | null {
-  const automatic = withKept(kept).filter(rule => rule.id !== PET_FOLLOW_UP.id || rule.kept);
+  const automatic = withKept(kept).filter(rule => (rule.id !== PET_FOLLOW_UP.id && rule.id !== PET_CT.id) || rule.kept);
   return match(automatic, 'open', context);
 }
 
