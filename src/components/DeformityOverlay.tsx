@@ -137,7 +137,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   // Which way is out, on screen, for the leg's labels.
   const outward = plan.lateral && leg.knee ? Math.sign(at(add(leg.knee, scale(plan.lateral, 20)))[0] - at(leg.knee)[0]) || 1 : 1;
   const points = simulating ? (plan.simulation ? plan.simulation.leg : leg) : leg;
-  const shownPoints = simulating && plan.plan.osteotomy ? movedPoints(plan) : plan.plan.points;
+  const shownPoints = simulating && plan.simulation ? plan.simulation.points : plan.plan.points;
   // A CORA under 1.5° is within normal variation of the joint angles: listed in the panel, not drawn.
   const coraLines = (cora: Cora | null) => cora && cora.magnitude >= 1.5 && <g data-plan-cora={cora.bone}>
     {line(cora.proximal.from, cora.point, COLOUR.cora, { dash: '6 4' })}{line(cora.distal.from, cora.point, COLOUR.cora, { dash: '6 4' })}
@@ -187,28 +187,11 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     }))}
     {chip(points.hip?.centre ?? null, v.mLPFA.value === null ? [] : [`mLPFA ${number(v.mLPFA.value)}°`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'hip')}
     {chip(points.knee, [v.mLDFA.value !== null ? `mLDFA ${number(v.mLDFA.value)}°` : '', v.MPTA.value !== null ? `MPTA ${number(v.MPTA.value)}°` : '',
-      v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°` : '', v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}° ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
-    {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit} ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
+      v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°` : '', v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
+    {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit}${Math.abs(v.MAD.value) < 0.05 ? '' : ` ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
     {chip(points.ankle, v.LDTA.value === null ? [] : [`LDTA ${number(v.LDTA.value)}°`], simulating ? COLOUR.corrected : COLOUR.axis, outward, 'ankle')}
     {simulating && <text data-testid="deformity-simulated" x={size[0] / 2} y={40} textAnchor="middle" fill={COLOUR.corrected} fontSize={13} fontWeight={600} fontFamily="var(--font-ui)" stroke="#000" strokeWidth={3} paintOrder="stroke">{t('deformity.simulated')}</text>}
   </g>;
-}
-
-/** The plan's landmarks where the simulation puts them: those in the fragment moved. */
-function movedPoints(plan: PlanView) {
-  const osteotomy = plan.plan.osteotomy!, motion = plan.simulation!.motion;
-  return Object.fromEntries(Object.entries(plan.plan.points).map(([name, points]) => {
-    const inside = points.some(p => insideFragment(p, osteotomy.fragment));
-    return [name, inside && name !== 'femoralHeadContour' ? points.map(p => moved(motion, p, plan.mm)) : points];
-  })) as PlanView['plan']['points'];
-}
-function insideFragment(p: Point, polygon: readonly Point[]): boolean {
-  let hit = false;
-  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const a = polygon[i], b = polygon[j];
-    if ((a[1] > p[1]) !== (b[1] > p[1]) && p[0] < (b[0] - a[0]) * (p[1] - a[1]) / (b[1] - a[1]) + a[0]) hit = !hit;
-  }
-  return hit;
 }
 
 /** The wedge: for an opening wedge the gap the turn opens at the cut, for a closing wedge the bone taken out above it. */

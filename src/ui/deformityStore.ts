@@ -16,8 +16,10 @@ export interface LegPlan {
   osteotomy: Osteotomy | null;
 }
 
-/** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. */
-export interface Marker { method: 'ball' | 'ruler'; points: Point[]; knownMm: number; depthConfirmed: boolean; applied: boolean }
+/** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it
+ * calibrates the series is the series' own state (App's measurement scale, radiograph.ts), not the plan's: Undo of a plan
+ * step never changes a calibration. */
+export interface Marker { method: 'ball' | 'ruler'; points: Point[]; knownMm: number; depthConfirmed: boolean }
 
 export interface FilmPlans {
   /** The pane's film: the series and its frame, with the frame's SOP Instance UID and frame number, which a saved plan

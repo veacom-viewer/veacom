@@ -107,7 +107,7 @@ describe('the plan file', () => {
     const knee = file.plans[0].landmarks.find(label => label.name === 'kneeCentre')!;
     assert.deepEqual(knee, { name: 'kneeCentre', points: [[200, 500]], confidence: 'manual', provenance: ['placed'], spacing: 'detector', side: 'R', software: 'unknown', suggestionShown: false });
     assert.doesNotMatch(JSON.stringify(file), /2\.25\.1|SYNTHETIC|Synthetic/);
-    assertClose(file.plans[0].values.tibiaLength.value!, Math.hypot(5, 400) * 0.33, 9);
+    assertClose(file.plans[0].values.tibiaLength.value, Math.hypot(5, 400) * 0.33, 9);
   });
 
   it('opens its own file, and refuses another film\'s, a broken or hostile one', async () => {
@@ -140,6 +140,6 @@ describe('the plan file', () => {
     const view = planView(planned(), frame);
     assert.equal(view.askRight, false);
     assert.deepEqual(view.lateral, [-1, 0]);
-    assertClose(view.leg.values.tibiaLength.value!, Math.hypot(5, 400) * 0.33, 9);
+    assertClose(view.leg.values.tibiaLength.value, Math.hypot(5, 400) * 0.33, 9);
   });
 });

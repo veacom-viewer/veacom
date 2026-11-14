@@ -181,9 +181,32 @@ async function main() {
     await desktop.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, reportPath);
     await panel.locator('[data-action="deformity-report"]').click();
     await page.waitForFunction(() => /Report saved/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 30_000 });
+    // The report's pictures carry the plan's drawing (measure yellow) and the simulated one (green), with patient data
+    // shown and hidden.
+    const drawn = picture => {
+      let yellow = 0, green = 0;
+      for (let y = 0; y < picture.height; y += 2) for (let x = 0; x < picture.width / 2; x += 2) {
+        const offset = (y * picture.width + x) * 4, [r, g, b] = picture.data.subarray(offset, offset + 3);
+        if (r > 220 && g > 170 && g < 230 && b < 60) yellow++;
+        if (r < 120 && g > 220 && b > 100 && b < 180) green++;
+      }
+      return { yellow, green };
+    };
     const report = decodePng(await fs.readFile(reportPath));
     assert.deepEqual([report.width, report.height], [2480, 3508]);
-    check('The plan saves as versioned JSON with image-pixel labels and no identifiers, opens again identically, and the report saves as an A4 PNG', { planPath, reportPath });
+    let marks = drawn(report);
+    assert(marks.yellow > 200 && marks.green > 200, `The report shows the plan drawn and simulated (${JSON.stringify(marks)}).`);
+    const hiddenPath = path.join(output, 'report-hidden.png');
+    await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
+    await page.keyboard.press('Shift+F12');
+    await page.waitForFunction(() => !/SYNTHETIC/.test(document.querySelector('.viewport-cell.is-active [data-testid="patient-overlay"]')?.textContent ?? ''), undefined, { timeout: 5_000 });
+    await desktop.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, hiddenPath);
+    await panel.locator('[data-action="deformity-report"]').click();
+    await page.waitForFunction(() => /report-hidden/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 30_000 });
+    marks = drawn(decodePng(await fs.readFile(hiddenPath)));
+    assert(marks.yellow > 200 && marks.green > 200, `With patient data hidden the report still shows the plan (${JSON.stringify(marks)}).`);
+    await page.keyboard.press('Shift+F12');
+    check('The plan saves as versioned JSON with image-pixel labels and no identifiers, opens again identically, and the report saves as an A4 PNG with the plan drawn, patient data shown or hidden', { planPath, reportPath });
 
     // 4. The other spacing variants: the calibration each names, and the femur's length it gives.
     for (const [name, variant] of Object.entries(manifest.series)) {
@@ -203,6 +226,20 @@ async function main() {
 
     // 5. No spacing: the ball calibrates the film at the bones' depth; lengths become true millimetres.
     await open(manifest.series.none.description);
+    // Not circular: the bright ball's centre in the rendered pixels lies where the plan's mapping puts the manifest's.
+    {
+      const map = JSON.parse(await page.getByTestId('deformity-drawing').getAttribute('data-to-screen'));
+      const pane = await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').boundingBox();
+      const at = point => [map[0][0] + point[0] * (map[1][0] - map[0][0]) + point[1] * (map[2][0] - map[0][0]), map[0][1] + point[0] * (map[1][1] - map[0][1]) + point[1] * (map[2][1] - map[0][1])];
+      const [cx, cy] = at(manifest.ball.centre), radius = manifest.ball.radiusPixels * (map[1][0] - map[0][0]);
+      const shotPicture = decodePng(await page.screenshot({ clip: { x: pane.x + cx - 2 * radius, y: pane.y + cy - 2 * radius, width: 4 * radius, height: 4 * radius } }));
+      const k = shotPicture.width / (4 * radius);
+      let sx = 0, sy = 0, n = 0;
+      for (let y = 0; y < shotPicture.height; y++) for (let x = 0; x < shotPicture.width; x++) if (shotPicture.data[(y * shotPicture.width + x) * 4] > 235) { sx += x; sy += y; n++; }
+      const off = Math.hypot(sx / n / k - 2 * radius, sy / n / k - 2 * radius);
+      assert(n > 50 && off < 1, `The ball drawn on screen is centred where the plan maps its pixels (${off.toFixed(2)} px off).`);
+      check('The plan\'s pixel mapping matches the rendered film: the ball\'s centroid within 1 screen pixel', { off });
+    }
     await panel.locator('[data-action="deformity-ball"]').click();
     for (const point of manifest.ball.edge) await click(point);
     await panel.locator('[data-action="deformity-ball"]').click();
@@ -214,7 +251,16 @@ async function main() {
     near((await values('.deformity-values:not(.deformity-compare)')).femurLength, right.expected.femurLength, LENGTH, 'Ball-calibrated femur length');
     assert.match(await panel.locator('tr[data-value-key="femurLength"]').textContent(), /ball 25\.0 mm/);
     await shot('4-ball-calibration');
-    check('A 25.0 mm ball calibrates the film without spacing; the femur measures its true 440 mm');
+    // ⌘Z takes back plan steps, never the calibration: it stays until Remove.
+    await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForTimeout(200);
+    assert.equal(await calibration().getAttribute('data-state'), 'manual', 'Undo leaves the calibration.');
+    await panel.locator('[data-action="deformity-calibration-remove"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="deformity-calibration"]')?.dataset.state === 'none', undefined, { timeout: 5_000 });
+    await panel.locator('[data-action="deformity-calibrate"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="deformity-calibration"]')?.dataset.state === 'manual', undefined, { timeout: 5_000 });
+    check('A 25.0 mm ball calibrates the film without spacing; the femur measures its true 440 mm; Undo leaves the calibration, Remove and Calibrate toggle it');
 
     // 6. The mirrored film (Patient Orientation R\F): the same angles, the same names.
     await open(manifest.series.mirrored.description);
@@ -234,6 +280,18 @@ async function main() {
     await shot('5-no-orientation');
     check('Without Patient Orientation the kit asks where the patient\'s right is before any medial or lateral value');
 
+    // The usage timings carry only control ids from the schema: no landmark, point, value or file.
+    const schema = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'electron', 'usage-schema.json'), 'utf8'));
+    const events = await page.evaluate(() => window.__VEACOM_TEST__.usage());
+    const actions = events.filter(event => event.name === 'ux.action').map(event => event.attributes['veacom.action']);
+    assert(actions.some(id => id?.startsWith('deformity-')), 'The kit\'s controls are counted.');
+    for (const event of events) for (const [key, value] of Object.entries(event.attributes ?? {})) {
+      assert(key in schema.spanAttributes || schema.resourceAttributes.includes(key), `Usage attribute ${key} is in the schema.`);
+      // The kit's own ids; the main process drops any id the schema does not list.
+      if (key === 'veacom.action' && String(value).startsWith('deformity-')) assert(schema.spanAttributes['veacom.action'].enum.includes(value), `Usage action ${value} is in the schema.`);
+      assert.doesNotMatch(String(value), /kneeCentre|femoralHead|ankleCentre|plan\.json|SYNTHETIC/, `Usage attribute ${key} names no landmark, file or patient.`);
+    }
+    check('The usage timings carry only schema control ids, never a landmark, value or file', { actions: actions.filter(id => id?.startsWith('deformity-')).length });
     assert.deepEqual(errors, []);
     await fs.writeFile(path.join(output, 'deformity-plan.json'), JSON.stringify({ checks }, null, 2) + '\n');
     console.log(`All ${checks.length} deformity plan checks passed.`);

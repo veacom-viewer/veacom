@@ -51,7 +51,9 @@ In the plan, Ball and Ruler calibrate the series on an object on the film:
 
 Calibrate sets the series' measurement scale, the one the Units panel's known-length calibration sets, so every
 measurement on the film uses it and names it ("ball 25.0 mm"). It is announced like any calibration. Remove takes it
-away. A known-length calibration made later replaces it and is named as a scale set by hand.
+away. Like the Units panel's, it is not an Undo step: ⌘Z takes back the marker's points, never the calibration. A
+known-length calibration made later replaces it and is named as a scale set by hand. A plan saved on a ball or ruler
+calibration calibrates the film again when it is opened.
 
 ## Opening the plan
 
@@ -133,13 +135,16 @@ click and can be dragged. The fragment is a polygon around the leg below the cut
 corners can be dragged. Then:
 
 - Opening or closing wedge, the angle and its direction (valgus turns the distal end laterally).
-- Solve for MAD 0, or for the weight-bearing line at 62.5% of the plateau (Fujisawa), between 45° of varus and valgus.
+- Solve for MAD 0, or for the weight-bearing line at 62.5% of the plateau (Fujisawa), between 45° of varus and valgus,
+  on the leg measured again: a femoral cut moves the knee and the plateau too.
 - Shift lateral and distal, and lengthen along the bone, in mm.
-- The wedge height at the cortex, 2 w sin(θ/2) with w the cut's length (Rolim 2016), and the limb's change in length.
+- The wedge height at the opening (or closing) cortex, 2 w sin(θ/2) with w the distance from the hinge to that cortex
+  (Rolim 2016), and the limb's change in length.
 - Paley's rule: 1 with the cut through the CORA and the hinge on its bisector; 2 with the hinge on the bisector away
   from the CORA; 3 with the hinge off it, and the translation it leaves, 2 d tan(θ/2) (Barksfield 2015).
 
-The landmarks inside the fragment move with it and the leg is measured again at once; the panel lists now and planned
+Every landmark beyond the cut's line, distally along the bone, moves with the fragment and the leg is measured again at
+once (the outline says only which pixels are drawn moved); the panel lists now and planned
 side by side. The pane shows the fragment moved and the place it left dimmed, and says "Simulated". The fragment is the
 film itself, drawn by the pane's renderer with the fragment's turn and shift as its view and cut to its outline: no
 pixel is changed or copied into a new image, and the fragment can move past the film's edge. Show simulation turns this

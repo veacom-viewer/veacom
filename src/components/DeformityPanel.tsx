@@ -43,6 +43,10 @@ export function planName(film: FilmPlans, id: string, t: Translator): string {
 export function valueText(value: Value, tag: string, t: Translator): string {
   if (value.value === null) return '–';
   const n = value.value;
+  // A direction is named only where the value shows one: 0.0 is neither varus nor valgus.
+  const straight = Math.abs(n) < 0.05;
+  if (straight && (value.key === 'HKA' || value.key === 'JLCA')) return '0.0°';
+  if (straight && value.key === 'MAD') return `0.0 ${value.unit}${value.unit === 'mm' && tag ? ` · ${tag}` : ''}`;
   if (value.key === 'HKA') return `${Math.abs(n).toFixed(1)}° ${t(n >= 0 ? 'deformity.varus' : 'deformity.valgus')}`;
   if (value.key === 'JLCA') return `${Math.abs(n).toFixed(1)}° ${t(n >= 0 ? 'deformity.medial' : 'deformity.lateral')}`;
   if (value.key === 'MAD') return `${Math.abs(n).toFixed(1)} ${value.unit} ${t(n >= 0 ? 'deformity.medial' : 'deformity.lateral')}${value.unit === 'mm' && tag ? ` · ${tag}` : ''}`;
@@ -100,7 +104,8 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
   useEffect(() => {
     const metadata = series.frameMetadata?.[frameIndex];
     deformity.ensure(series.id, frameIndex, sidesOf(projection?.laterality), { sopInstanceUid: metadata?.sopInstanceUid ?? series.uid, frameNumber: metadata?.sourceFrameNumber ?? 1 });
-  }, [series.id, series.uid, series.frameMetadata, frameIndex, projection?.laterality]);
+    // Undo past the film's first step removes it from the store: it is made again, empty.
+  }, [series.id, series.uid, series.frameMetadata, frameIndex, projection?.laterality, Boolean(film)]);
   // Esc stops placing points wherever focus is (the pane included); the next Esc in the panel closes it.
   const placing = state.placing?.film === key ? state.placing : null;
   useEffect(() => {
@@ -139,6 +144,12 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
     return { world: Math.hypot((b[0] - a[0]) * sx, (b[1] - a[1]) * sy), pixels: distance(a, b), residual: 0 };
   };
   const fit = markerFit(marker);
+  /** Ball or Ruler: new points for a new marker of that kind; pressed again while placing, it stops. */
+  const startMarker = (method: Marker['method']) => {
+    if (placing?.kind === method) { deformity.setPlacing(null); return; }
+    change(current => ({ ...current, marker: { method, points: [], knownMm: current.marker?.method === method ? current.marker.knownMm : method === 'ball' ? 25 : 100, depthConfirmed: false } }));
+    deformity.setPlacing({ film: key, kind: method });
+  };
   const known = manualCalibration(frame);
   const applyMarker = (current: Marker) => {
     const measured = markerFit(current);
@@ -146,12 +157,10 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
     const scale = current.knownMm / measured.world;
     recordManualCalibration(series.id, { method: current.method, knownMm: current.knownMm, scale, depthConfirmed: current.depthConfirmed });
     onCalibrate(series.id, scale);
-    change(film => ({ ...film, marker: film.marker ? { ...film.marker, applied: true } : null }));
   };
-  const removeCalibration = () => {
-    recordManualCalibration(series.id, null); onCalibrate(series.id, null);
-    change(film => ({ ...film, marker: null }));
-  };
+  const removeCalibration = () => { recordManualCalibration(series.id, null); onCalibrate(series.id, null); };
+  // The marker calibrates the series while the series' scale is the one it gives.
+  const applied = Boolean(known && fit && marker && known.method === marker.method && Math.abs(known.scale - marker.knownMm / fit.world) <= 1e-9 * known.scale);
   const imager = projection?.imagerPixelSpacing;
   const mmPerPixel = fit && marker ? marker.knownMm / fit.pixels : null;
 
@@ -173,6 +182,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
     const result = await parsePlanFile(await chosen.text(), film, frame);
     if ('error' in result) { setStatus(result.error === 'film' ? t('deformity.wrongFilm') : t('deformity.badFile', { reason: t(`deformity.reason.${result.error}` as MessageKey) })); return; }
     change(current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, ...(result.patientRight ? { patientRight: result.patientRight } : {}) }));
+    if (result.calibrated && result.marker) applyMarker(result.marker);
     const count = result.plans.reduce((sum, item) => sum + Object.values(item.points).reduce((n, list) => n + list.length, 0), 0);
     setStatus(t('deformity.opened', { count }));
   };
@@ -183,10 +193,10 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
     const simulated = state.simulate;
     try {
       deformity.setSimulate(false); await frames(3);
-      const pictures = [{ caption: t('deformity.report.now'), canvas: await captureViewportCanvas(element, { hideIdentity: hidePatientData }) }];
+      const pictures = [{ caption: t('deformity.report.now'), canvas: await captureViewportCanvas(element, { hidePatientData }) }];
       if (view.simulation) {
         deformity.setSimulate(true); await frames(3);
-        pictures.push({ caption: t('deformity.report.planned'), canvas: await captureViewportCanvas(element, { hideIdentity: hidePatientData }) });
+        pictures.push({ caption: t('deformity.report.planned'), canvas: await captureViewportCanvas(element, { hidePatientData }) });
       }
       const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name, leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t), normalText(name) || undefined]) },
         { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey)]) },
@@ -195,7 +205,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
         const after = view.simulation.leg.values, o = plan.osteotomy;
         sections.push({ title: t('deformity.osteotomy'), rows: [
           [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t(o.wedge === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
-          [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}`],
+          [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`],
           ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}`] as [string, string]),
         ] });
       }
@@ -244,17 +254,17 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
       <h3>{t('deformity.calibration')}</h3>
       <div className="deformity-calibrate">
         <div className="deformity-segments">
-          <button type="button" className="secondary-button compact" data-action="deformity-ball" aria-pressed={placing?.kind === 'ball'} onClick={() => deformity.setPlacing(placing?.kind === 'ball' ? null : { film: key, kind: 'ball' })}>{t('deformity.ball')}</button>
-          <button type="button" className="secondary-button compact" data-action="deformity-ruler" aria-pressed={placing?.kind === 'ruler'} onClick={() => deformity.setPlacing(placing?.kind === 'ruler' ? null : { film: key, kind: 'ruler' })}>{t('deformity.ruler')}</button>
+          <button type="button" className="secondary-button compact" data-action="deformity-ball" aria-pressed={placing?.kind === 'ball'} onClick={() => startMarker('ball')}>{t('deformity.ball')}</button>
+          <button type="button" className="secondary-button compact" data-action="deformity-ruler" aria-pressed={placing?.kind === 'ruler'} onClick={() => startMarker('ruler')}>{t('deformity.ruler')}</button>
         </div>
         {(placing?.kind === 'ball' || placing?.kind === 'ruler') && <p className="deformity-hint" role="status">{t(placing.kind === 'ball' ? 'deformity.ballHint' : 'deformity.rulerHint')}</p>}
         {marker && <div className="deformity-marker">
           <label>{t(marker.method === 'ball' ? 'deformity.diameter' : 'deformity.distance')}
             {marker.method === 'ball' ? <select data-action="deformity-known-size" value={BALLS.includes(marker.knownMm) ? String(marker.knownMm) : 'other'}
-              onChange={event => { const value = event.target.value === 'other' ? marker.knownMm : Number(event.target.value); change(current => ({ ...current, marker: current.marker && { ...current.marker, knownMm: value, applied: false } })); }}>
+              onChange={event => { const value = event.target.value === 'other' ? marker.knownMm : Number(event.target.value); change(current => ({ ...current, marker: current.marker && { ...current.marker, knownMm: value } })); }}>
               {BALLS.map(size => <option key={size} value={String(size)}>{size.toFixed(1)} mm</option>)}<option value="other">{t('deformity.otherSize')}</option></select> : null}
             <input type="number" min={1} max={2000} step={0.1} data-action="deformity-known-mm" value={marker.knownMm} aria-label={t(marker.method === 'ball' ? 'deformity.diameter' : 'deformity.distance')}
-              onChange={event => { const value = Number(event.target.value); if (value > 0 && value <= 2000) change(current => ({ ...current, marker: current.marker && { ...current.marker, knownMm: value, applied: false } })); }} /></label>
+              onChange={event => { const value = Number(event.target.value); if (value > 0 && value <= 2000) change(current => ({ ...current, marker: current.marker && { ...current.marker, knownMm: value } })); }} /></label>
           {fit && <p className="deformity-fit" data-testid="deformity-marker-fit" data-mm-per-pixel={mmPerPixel ?? undefined}>{t(marker.method === 'ball' ? 'deformity.ballFit' : 'deformity.rulerFit', { pixels: fit.pixels.toFixed(1), mm: (mmPerPixel ?? 0).toFixed(4) })}
             {imager && mmPerPixel ? ` · ${t('deformity.againstDetector', { factor: (imager[1] / mmPerPixel).toFixed(3) })}` : ''}
             {marker.method === 'ball' && fit.residual > 0.5 ? ` · ${t('deformity.fitResidual', { residual: fit.residual.toFixed(1) })}` : ''}</p>}
@@ -262,8 +272,8 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
             onChange={event => { const confirmed = event.target.checked; change(current => ({ ...current, marker: current.marker && { ...current.marker, depthConfirmed: confirmed } }));
               const recorded = manualCalibration(frame); if (recorded) recordManualCalibration(series.id, { ...recorded, depthConfirmed: confirmed }); }} />{t('deformity.depth')}</label>}
           <div className="deformity-actions">
-            <button type="button" className="primary-button compact" data-action="deformity-calibrate" disabled={!fit || marker.applied} onClick={() => applyMarker(marker)}>{t('deformity.apply')}</button>
-            <button type="button" className="text-button" data-action="deformity-calibration-remove" onClick={removeCalibration}>{t('deformity.removeCalibration')}</button>
+            <button type="button" className="primary-button compact" data-action="deformity-calibrate" disabled={!fit || applied} onClick={() => applyMarker(marker)}>{t('deformity.apply')}</button>
+            {known && <button type="button" className="text-button" data-action="deformity-calibration-remove" onClick={removeCalibration}>{t('deformity.removeCalibration')}</button>}
           </div>
         </div>}
       </div>

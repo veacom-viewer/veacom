@@ -88,7 +88,7 @@ const finite = (value: unknown): value is number => typeof value === 'number' &&
 
 /** Reads a plan file for this film: its plans and marker, or why it cannot be used. Points must lie within the film
  * or half its size around it; text is bounded; unknown fields are ignored. */
-export async function parsePlanFile(text: string, film: FilmPlans, frame: Series): Promise<{ plans: LegPlan[]; active: number; marker: Marker | null; patientRight?: 'left' | 'right' } | { error: ParseError }> {
+export async function parsePlanFile(text: string, film: FilmPlans, frame: Series): Promise<{ plans: LegPlan[]; active: number; marker: Marker | null; calibrated: boolean; patientRight?: 'left' | 'right' } | { error: ParseError }> {
   if (text.length > MAX_BYTES) return { error: 'size' };
   let value: unknown;
   try { value = JSON.parse(text); } catch { return { error: 'json' }; }
@@ -137,11 +137,13 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
   if (isObject(m)) {
     const list = points(m.points, 8);
     if (!list || (m.method !== 'ball' && m.method !== 'ruler') || !finite(m.knownMm) || m.knownMm <= 0 || m.knownMm > 2000) return { error: 'content' };
-    marker = { method: m.method, points: list, knownMm: m.knownMm, depthConfirmed: m.depthConfirmed === true, applied: false };
+    marker = { method: m.method, points: list, knownMm: m.knownMm, depthConfirmed: m.depthConfirmed === true };
   }
   const active = finite(value.active) && value.active >= 0 && value.active < plans.length ? value.active : 0;
   const right = isObject(recorded) && (recorded.patientRight === 'left' || recorded.patientRight === 'right') ? recorded.patientRight : undefined;
-  return { plans, active, marker, ...(right ? { patientRight: right } : {}) };
+  // A plan saved on a ball or ruler calibration calibrates the film again on its marker.
+  const calibrated = marker !== null && isObject(value.calibration) && value.calibration.state === 'manual';
+  return { plans, active, marker, calibrated, ...(right ? { patientRight: right } : {}) };
 }
 
 export { activePlan };

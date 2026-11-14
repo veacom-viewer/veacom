@@ -4,7 +4,7 @@
 // with it and the leg is measured again (measure.ts); the renderer draws the fragment as a layer (DeformityOverlay).
 import { CONTOUR_MINIMUM, type LandmarkName } from './landmarks';
 import { type LegInput, type Leg, type Landmarks, measureLeg, toImage, toPlane } from './measure';
-import { add, applyRigid, bisect, cross, distance, dot, inside, length, offsetFrom, type Point, type Rigid, scale, sub, unit } from './plane';
+import { add, applyRigid, bisect, cross, distance, dot, length, type Point, type Rigid, scale, sub, unit } from './plane';
 
 export interface Osteotomy {
   bone: 'femur' | 'tibia';
@@ -59,12 +59,20 @@ export function fragmentMotion(osteotomy: Osteotomy, leg: Leg, input: Pick<LegIn
 /** A point of the image after the motion, in image pixels. */
 export const moved = (motion: Rigid, p: Point, mm: LegInput['mmPerPixel']) => toImage(applyRigid(motion, toPlane(p, mm)), mm);
 
-/** The landmarks with those inside the fragment moved by it. The femoral head's outline moves only whole. */
-export function movedLandmarks(points: Landmarks, osteotomy: Osteotomy, motion: Rigid, mm: LegInput['mmPerPixel']): Landmarks {
+/**
+ * The landmarks with those of the distal fragment moved: every landmark beyond the cut's line, distally along the bone.
+ * The plan holds one leg, so its side of the cut is the whole question; the fragment's outline only says which pixels are
+ * drawn moved. The femoral head's outline moves only whole.
+ */
+export function movedLandmarks(points: Landmarks, osteotomy: Osteotomy, motion: Rigid, mm: LegInput['mmPerPixel'], axis: Point): Landmarks {
+  const a = toPlane(osteotomy.cut[0], mm), b = toPlane(osteotomy.cut[1], mm), along = unit(sub(b, a));
+  const normal: Point | null = along && [-along[1], along[0]];
+  const distalSide = normal ? (dot(normal, axis) >= 0 ? normal : scale(normal, -1)) : axis;
+  const beyond = (p: Point) => dot(sub(toPlane(p, mm), a), distalSide) > 0;
   const result: Landmarks = {};
   for (const [name, list] of Object.entries(points) as Array<[LandmarkName, readonly Point[]]>) {
-    const all = list.length >= CONTOUR_MINIMUM ? list.every(p => inside(p, osteotomy.fragment)) : list.some(p => inside(p, osteotomy.fragment));
-    result[name] = all ? list.map(p => moved(motion, p, mm)) : list;
+    const moves = list.length >= CONTOUR_MINIMUM ? list.every(beyond) : list.some(beyond);
+    result[name] = moves ? list.map(p => moved(motion, p, mm)) : list;
   }
   return result;
 }
@@ -72,51 +80,40 @@ export function movedLandmarks(points: Landmarks, osteotomy: Osteotomy, motion: 
 export interface Simulation {
   leg: Leg;
   motion: Rigid;
-  /** Wedge height at the opening (or closing) cortex: 2 w sin(θ/2), w the cut's length (Rolim 2016). */
+  /** The plan's landmarks where the correction puts them. */
+  points: Landmarks;
+  /** Wedge height at the opening (or closing) cortex: 2 w sin(θ/2), w the distance from the hinge to that cortex
+   * (Rolim 2016). */
   wedgeHeight: number;
   /** How far the limb lengthens (positive) or shortens, hip to ankle. */
   lengthChange: number | null;
 }
 
 export function simulate(input: LegInput, before: Leg, osteotomy: Osteotomy): Simulation | null {
-  const motion = fragmentMotion(osteotomy, before, input);
-  if (!motion) return null;
-  const leg = measureLeg({ ...input, points: movedLandmarks(input.points, osteotomy, motion, input.mmPerPixel) });
-  const width = distance(toPlane(osteotomy.cut[0], input.mmPerPixel), toPlane(osteotomy.cut[1], input.mmPerPixel));
+  const motion = fragmentMotion(osteotomy, before, input), axis = boneAxis(osteotomy.bone, before, input.mmPerPixel);
+  if (!motion || !axis) return null;
+  const points = movedLandmarks(input.points, osteotomy, motion, input.mmPerPixel, axis);
+  const leg = measureLeg({ ...input, points });
+  const width = distance(toPlane(osteotomy.hinge, input.mmPerPixel), toPlane(osteotomy.cut[0], input.mmPerPixel));
   const was = before.values.limbLength.value, now = leg.values.limbLength.value;
-  return { leg, motion, wedgeHeight: 2 * width * Math.sin(osteotomy.degrees / 2 * Math.PI / 180), lengthChange: was !== null && now !== null ? now - was : null };
+  return { leg, motion, points, wedgeHeight: 2 * width * Math.sin(osteotomy.degrees / 2 * Math.PI / 180), lengthChange: was !== null && now !== null ? now - was : null };
 }
 
 export type Target = { kind: 'mad'; mm: number } | { kind: 'wbl'; percent: number };
 
 /**
- * The correction that brings the weight-bearing line (hip centre to the moved ankle centre) through the target: the
- * knee centre (MAD 0, or a given MAD), or a point at a share of the plateau's width from its medial edge (62.5% for an
- * HTO, Fujisawa). Solved by bisection between 45° of varus and 45° of valgus; null when no angle in that range reaches
+ * The correction that brings the weight-bearing line through the target, measured again after the fragment moves: a MAD
+ * (0 for the knee centre), or a share of the plateau's width from its medial edge (62.5% for an HTO, Fujisawa). The
+ * knee and the plateau move too when the cut is in the femur, so the target is read on the simulated leg, never on the
+ * film as it was. Solved by bisection between 45° of varus and 45° of valgus; null when no angle in that range reaches
  * the target.
  */
 export function solveAngle(input: LegInput, before: Leg, osteotomy: Osteotomy, target: Target): Pick<Osteotomy, 'degrees' | 'direction'> | null {
-  const mm = input.mmPerPixel;
-  if (!before.hip || !before.ankle || !before.knee || !input.lateral) return null;
-  const H = toPlane(before.hip.centre, mm), L = toPlane(input.lateral, mm);
-  let point: Point | null;
-  if (target.kind === 'mad') {
-    const K = toPlane(before.knee, mm), ankle = toPlane(before.ankle, mm), distal = unit(sub(ankle, H));
-    const lateral = distal && unit(sub(L, scale(distal, dot(L, distal))));
-    point = lateral ? sub(K, scale(lateral, target.mm)) : null;
-  } else {
-    const line = before.tibialLine, a = line && toPlane(line[0], mm), b = line && toPlane(line[1], mm);
-    if (!a || !b) return null;
-    const [medial, lateralEnd] = dot(sub(b, a), L) >= 0 ? [a, b] : [b, a];
-    point = add(medial, scale(sub(lateralEnd, medial), target.percent / 100));
-  }
-  if (!point) return null;
   const at = (signed: number) => {
     const trial = { ...osteotomy, degrees: Math.abs(signed), direction: signed >= 0 ? 'valgus' as const : 'varus' as const };
-    const motion = fragmentMotion(trial, before, input);
-    if (!motion) return NaN;
-    const ankle = applyRigid(motion, toPlane(before.ankle!, mm));
-    return offsetFrom(point, H, sub(ankle, H), L) ?? NaN;
+    const values = simulate(input, before, trial)?.leg.values;
+    const value = target.kind === 'mad' ? values?.MAD.value : values?.WBL.value;
+    return value === null || value === undefined ? NaN : target.kind === 'mad' ? value - target.mm : target.percent - value;
   };
   const signed = bisect(at, -45, 45);
   return signed === null ? null : { degrees: Math.abs(signed), direction: signed >= 0 ? 'valgus' : 'varus' };

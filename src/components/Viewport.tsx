@@ -6,7 +6,7 @@ import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProject
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
-import { projectionEdgeLabels, projectionLine } from '../imaging/radiograph';
+import { calibrationTag, projectionEdgeLabels, projectionLine } from '../imaging/radiograph';
 import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
@@ -1025,7 +1025,7 @@ export function Viewport(props: ViewportProps) {
         <OverlayText text={sliceLine} y={dimensions[1] - 13} width={bottomWidth} fontFamily={fontFamily} />
         {bottomRight.map((line, index) => index !== fusionNameAt && <text key={`s${index}`} x={dimensions[0] - 14} y={bottomRightY(index)} fontSize={12} textAnchor="end"><title>{line.text}</title>{line.fitted}</text>)}
         {props.showScale && <>
-        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}</text>
+        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}{measure.unit === 'mm' && calibrationTag(displayedSeries) ? ` · ${calibrationTag(displayedSeries)}` : ''}</text>
         <path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#000" strokeWidth={3} strokeLinecap="round" opacity={0.75} fill="none" /><path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#c9d3df" strokeWidth={1} fill="none" />
         </>}
       </g>}

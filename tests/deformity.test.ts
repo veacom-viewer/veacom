@@ -202,7 +202,7 @@ describe('a simulated osteotomy', () => {
 
   it('moves only the landmarks inside the fragment', () => {
     const input = straight(), osteotomy = plan(input);
-    const moved = movedLandmarks(input.points, osteotomy, { pivot: [0, 0], degrees: 0, shift: [7, 0] }, [1, 1]);
+    const moved = movedLandmarks(input.points, osteotomy, { pivot: [0, 0], degrees: 0, shift: [7, 0] }, [1, 1], [0, 1]);
     assert.deepEqual(moved.kneeCentre, [[0, 400]]);
     assert.deepEqual(moved.ankleCentre, [[7, 800]]);
     assert.deepEqual(moved.femoralHeadContour, input.points.femoralHeadContour);
@@ -219,6 +219,32 @@ describe('a simulated osteotomy', () => {
       if (target.kind === 'mad') assertClose(after.MAD.value, 0, 6);
       else assertClose(after.WBL.value, 62.5, 6);
     }
+  });
+
+  it('solves a femoral cut on the leg measured again, where the knee moves too', () => {
+    const input = straight();
+    input.points = { ...input.points, ankleCentre: [[40, 800]], plafondMedial: [[55, 805]], plafondLateral: [[25, 805]] };
+    const before = measureLeg(input), cut: [Point, Point] = [[20, 300], [-20, 300]];
+    const osteotomy = plan(input, { bone: 'femur', cut, hinge: [-20, 300], fragment: fragmentFor(cut, 'femur', before, input.mmPerPixel)! });
+    for (const target of [{ kind: 'mad' as const, mm: 0 }, { kind: 'wbl' as const, percent: 50 }]) {
+      const solved = solveAngle(input, before, osteotomy, target)!;
+      const after = simulate(input, before, { ...osteotomy, ...solved })!;
+      assert.notDeepEqual(after.leg.knee, before.knee, 'The knee moves with a femoral fragment.');
+      if (target.kind === 'mad') assertClose(after.leg.values.MAD.value, 0, 6);
+      else assertClose(after.leg.values.WBL.value, 50, 6);
+    }
+  });
+
+  it('moves every landmark beyond the cut, whatever the fragment\'s outline', () => {
+    const input = straight(), before = measureLeg(input);
+    // The outline dragged off the ankle: the ankle is still on the distal fragment.
+    const narrow = plan(input, { fragment: [[45, 500], [-45, 500], [-45, 600], [45, 600]] });
+    assert.notDeepEqual(simulate(input, before, narrow)!.leg.ankle, before.ankle);
+  });
+
+  it('measures the wedge from the hinge to the opening cortex', () => {
+    const input = straight(), before = measureLeg(input);
+    assertClose(simulate(input, before, plan(input, { hinge: [0, 500] }))!.wedgeHeight, 2 * 20 * Math.sin(5 * deg), 9);
   });
 
   it('names the Paley rule the hinge follows', () => {

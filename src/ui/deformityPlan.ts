@@ -98,7 +98,7 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
     return { film: withPlan(film, next), placing: following ? { film: placing.film, kind: 'landmark', name: following } : null };
   }
   if (placing.kind === 'ball' || placing.kind === 'ruler') {
-    const marker = film.marker?.method === placing.kind && !film.marker.applied ? film.marker : { method: placing.kind, points: [], knownMm: placing.kind === 'ball' ? 25 : 100, depthConfirmed: false, applied: false };
+    const marker = film.marker?.method === placing.kind ? film.marker : { method: placing.kind, points: [], knownMm: placing.kind === 'ball' ? 25 : 100, depthConfirmed: false };
     const points = [...marker.points, point].slice(placing.kind === 'ruler' ? -2 : -8);
     const done = placing.kind === 'ruler' ? points.length === 2 : points.length === 8;
     return { film: { ...film, marker: { ...marker, points } }, placing: done ? null : placing };
