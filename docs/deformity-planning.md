@@ -54,10 +54,12 @@ In the plan, Ball and Ruler calibrate the film on an object on it:
 Calibrate sets the film's measurement scale, so every measurement on that film uses it and names it ("ball 25.0 mm").
 It holds for that film only (series and frame): the object stands at that film's magnification, so the series' other
 films, such as a repeat or a lateral, keep their own spacing and name it. On its film it outranks the Units panel's
-known-length scale, which is the series'. It is announced like any calibration. Remove takes it away. Like the Units
-panel's, it is not an Undo step: ⌘Z takes back the marker's points, never the calibration. A known-length calibration
-made later sets the whole series' scale, replaces the films' ball and ruler calibrations, and is named as a scale set by
-hand. A plan saved on a ball or ruler calibration calibrates the film again when it is opened.
+known-length scale, which is the series'. It is announced like any calibration, and the inspector's pixel spacing
+names it for the film shown. The plan's Remove takes it away; the Units panel's Remove takes away only the series'
+scale. Like the Units panel's, it is not an Undo step: ⌘Z takes back the marker's points, never the calibration. A
+known-length calibration made later sets the whole series' scale, replaces the films' ball and ruler calibrations, and
+is named as a scale set by hand. A plan saved on a ball or ruler calibration calibrates the film again when it is
+opened.
 
 ## Opening the plan
 

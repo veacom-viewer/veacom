@@ -18,7 +18,7 @@ import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
 import { calibrationTag, isLongLegFilm, withFilmCalibrations, type FilmCalibrations } from './imaging/radiograph';
 import { deformity } from './ui/deformityStore';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
@@ -630,6 +630,8 @@ export default function App() {
   const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
+  // The film the active pane shows, with its calibration (a ball or ruler holds for one film), for the inspector.
+  const shownFilm = activeVolume && usesSourceFrames(activeVolume.series, activeDisplayView) ? sourceFrameSeries(activeVolume.series, activeDisplayView.slice) : activeSeries;
   const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
@@ -2437,7 +2439,7 @@ export default function App() {
               {sphere && activeSeries && <SphereDetails annotation={annotation} annotations={activeAnnotations} volume={activeVolume} onChange={next => changeAnnotations(activeSeries.id, next)} />}</li>;
           })}</ol>
             : <div className="inspector-empty"><span className="empty-icon" aria-hidden="true"><Ruler size={20} strokeWidth={1.6} /></span><strong>{t('inspector.emptyTitle')}</strong><p>{t('inspector.emptyText')}</p><button data-action="measure-length" type="button" className="secondary-button compact" data-testid="findings-add" disabled={!activeVolume} onClick={() => setTool('length')}><Plus size={14} /> {t('inspector.addMeasurement')}{settings.singleKeys && <kbd className="button-kbd">L</kbd>}</button></div>}
-          <section className="panel-block" aria-labelledby="series-details-title"><h3 className="block-title" id="series-details-title">{t('inspector.seriesDetails')}</h3>{activeSeries ? <dl className="series-details"><dt>{t('inspector.modality')}</dt><dd>{activeSeries.modality}</dd><dt>{t('inspector.images')}</dt><dd>{activeSeries.dimensions[2].toLocaleString()}</dd><dt>{t('inspector.matrix')}</dt><dd>{activeSeries.dimensions[0]} × {activeSeries.dimensions[1]}</dd><dt>{t('inspector.pixelSpacing')}</dt><dd>{activeSeries.spacingKnown === true ? `${activeSeries.spacing.slice(0, 2).map(n => n.toFixed(2)).join(' × ')} mm${calibrationTag(activeSeries) ? ` · ${calibrationTag(activeSeries)}` : ''}` : t('inspector.notCalibrated')}</dd><dt>{t('inspector.sliceSpacing')}</dt><dd>{activeSeries.canReconstruct ? `${activeSeries.spacing[2].toFixed(2)} mm` : t('inspector.notVerified')}</dd><dt>{t('inspector.values')}</dt><dd>{storedUnit(activeSeries) || t('inspector.storedValues')}</dd></dl> : <p className="muted-copy">{t('inspector.openStudy')}</p>}</section>
+          <section className="panel-block" aria-labelledby="series-details-title"><h3 className="block-title" id="series-details-title">{t('inspector.seriesDetails')}</h3>{activeSeries ? <dl className="series-details"><dt>{t('inspector.modality')}</dt><dd>{activeSeries.modality}</dd><dt>{t('inspector.images')}</dt><dd>{activeSeries.dimensions[2].toLocaleString()}</dd><dt>{t('inspector.matrix')}</dt><dd>{activeSeries.dimensions[0]} × {activeSeries.dimensions[1]}</dd><dt>{t('inspector.pixelSpacing')}</dt><dd>{activeSeries.spacingKnown === true ? `${activeSeries.spacing.slice(0, 2).map(n => n.toFixed(2)).join(' × ')} mm${shownFilm && calibrationTag(shownFilm) ? ` · ${calibrationTag(shownFilm)}` : ''}` : t('inspector.notCalibrated')}</dd><dt>{t('inspector.sliceSpacing')}</dt><dd>{activeSeries.canReconstruct ? `${activeSeries.spacing[2].toFixed(2)} mm` : t('inspector.notVerified')}</dd><dt>{t('inspector.values')}</dt><dd>{storedUnit(activeSeries) || t('inspector.storedValues')}</dd></dl> : <p className="muted-copy">{t('inspector.openStudy')}</p>}</section>
           {acquisitionPet && <PetAcquisitionPanel key={acquisitionPet.id} series={acquisitionPet} prior={petPrior} current={currentPet}
             cautions={cautions} cautionKey={cautionKey} limited={limitedView} onLimited={checked => petRecords.setLimitedView(acquisitionPet, checked)}
             typed={{ value: typedGlucose, ready: petRecords.keys.has(acquisitionPet.id), failed: petRecords.saveFailed,
