@@ -106,6 +106,10 @@ describe('the calibration of a projection film', () => {
     const length = (frame: number): Annotation => ({ id: `l${frame}`, type: 'length', points: [[0, 0, 0], [0, 33, 0]], plane: 'axial', slice: frame, mode: 'source', sourceFrame: frame });
     assert.equal(annotationSummary(length(0), volume), '30.0 mm · ball 25.0 mm');
     assert.equal(annotationSummary(length(1), volume), '33.0 mm · detector plane');
+    // An area too: 33 × 33 mm at the detector, (33 / 1.1)² = 900 mm² on the ball's film.
+    const box = (frame: number): Annotation => ({ id: `r${frame}`, type: 'rectangle', points: [[0, 0, 0], [33, 33, 0]], plane: 'axial', slice: frame, mode: 'source', sourceFrame: frame });
+    assert.match(annotationSummary(box(0), volume), /^900\.0 mm² .* · ball 25\.0 mm$/);
+    assert.match(annotationSummary(box(1), volume), /^1089\.0 mm² .* · detector plane$/);
     // The series' known-length scale stays on the films without a ball of their own; the ball outranks it on its film.
     const both = withFilmCalibrations({ ...series, measurementScale: 0.95 }, { 0: { method: 'ball', knownMm: 25, scale: 1 / 1.1 } });
     assert.equal(calibrationTag(sourceFrameSeries(both, 0)), 'ball 25.0 mm');

@@ -264,11 +264,12 @@ describe('a simulated osteotomy', () => {
     assert.deepEqual(medial.cortex, [-20, 500]);
   });
 
-  it('names the Paley rule against a real CORA, and the translation an off-bisector hinge leaves', () => {
-    // A tibia bent 10° at C, 100 mm below a level plateau: proximal axis 3° medial of straight down (MPTA 87°), the
-    // distal one 7° the other way, and a level plafond at the normal LDTA. Built as in the CORA test above.
+  // A tibia bent `bend` degrees at C, 100 mm below a level plateau: proximal axis 3° medial of straight down (MPTA
+  // 87°), the distal one the rest of the bend the other way, and a level plafond at the normal LDTA. Built as in the
+  // CORA test above.
+  const bentTibia = (bend: number) => {
     const K: Point = [0, 400], C: Point = [100 * Math.sin(3 * deg), 400 + 100 * Math.cos(3 * deg)];
-    const q: Point = [Math.sin(-7 * deg), Math.cos(-7 * deg)], A: Point = [C[0] + 300 * q[0], C[1] + 300 * q[1]];
+    const q: Point = [Math.sin((3 - bend) * deg), Math.cos((3 - bend) * deg)], A: Point = [C[0] + 300 * q[0], C[1] + 300 * q[1]];
     // The plafond at the normal LDTA (89°) to the distal axis, pointing laterally (−x).
     const turnBy = (v: Point, a: number): Point => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
     const up: Point = [-q[0], -q[1]], L = [turnBy(up, 89 * deg), turnBy(up, -89 * deg)].find(v => v[0] < 0)!;
@@ -276,35 +277,56 @@ describe('a simulated osteotomy', () => {
       femoralHeadContour: [[-20, 0], [0, -20], [20, 0]], kneeCentre: [K], ankleCentre: [A],
       tibialPlateauMedial: [[20, 410]], tibialPlateauLateral: [[-20, 410]],
       plafondMedial: [[A[0] - 15 * L[0], A[1] - 15 * L[1]]], plafondLateral: [[A[0] + 15 * L[0], A[1] + 15 * L[1]]] } };
-    const leg = measureLeg(input), cora = coras(leg, [1, 1], [-1, 0]).tibia!;
-    assertClose(cora.magnitude, 10, 6);
+    const cora = coras(measureLeg(input), [1, 1], [-1, 0]).tibia!;
     // The translation left after turning the distal axis back onto the proximal one about a hinge, worked out here by
     // turning the axis itself, independently of paleyRule.
     const residual = (hinge: Point, degrees: number) => {
       const p: Point = [Math.sin(3 * deg), Math.cos(3 * deg)];
-      const turn = (v: Point, a: number): Point => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
-      const sign = Math.abs(Math.atan2(turn(q, degrees * deg)[0], turn(q, degrees * deg)[1]) - 3 * deg) < 1e-9 ? 1 : -1;
-      const moved: Point = [hinge[0] + turn([A[0] - hinge[0], A[1] - hinge[1]], sign * degrees * deg)[0], hinge[1] + turn([A[0] - hinge[0], A[1] - hinge[1]], sign * degrees * deg)[1]];
+      const turned = (sign: number) => turnBy(q, sign * degrees * deg);
+      const sign = Math.abs(Math.atan2(turned(1)[0], turned(1)[1]) - 3 * deg) < 1e-9 ? 1 : -1;
+      const arm = turnBy([A[0] - hinge[0], A[1] - hinge[1]], sign * degrees * deg), moved: Point = [hinge[0] + arm[0], hinge[1] + arm[1]];
       return Math.abs((moved[0] - K[0]) * p[1] - (moved[1] - K[1]) * p[0]);
     };
     const cutAt = (y: number): Pick<Osteotomy, 'cut'> => ({ cut: [[C[0] + 25, y], [C[0] - 25, y]] });
-    // Hinge on the lateral cortex at the CORA's level, the cut through the CORA: rule 1, nothing left over.
+    // Across the bone towards the lateral cortex, and down it, from the CORA.
     const across = cora.bisector[0] < 0 ? cora.bisector : [-cora.bisector[0], -cora.bisector[1]] as Point;
-    const atCora: Point = [C[0] + 15 * across[0], C[1] + 15 * across[1]];
+    const along: Point = [across[1], -across[0]]; // −across[0] > 0: distally
+    const at = (a: number, d: number): Point => [C[0] + a * across[0] + d * along[0], C[1] + a * across[1] + d * along[1]];
+    return { input, cora, residual, cutAt, at, C };
+  };
+
+  it('names the Paley rule against a real CORA, and the translation an off-bisector hinge leaves', () => {
+    const { input, cora, residual, cutAt, at, C } = bentTibia(10);
+    assertClose(cora.magnitude, 10, 6);
+    // Hinge on the lateral cortex at the CORA's level, the cut through the CORA: rule 1, nothing left over.
+    const atCora = at(15, 0);
     const one = paleyRule(plan(input, { ...cutAt(C[1]), hinge: atCora, degrees: 10 }), cora, [1, 1]);
     assert.equal(one.rule, 1);
     assertClose(residual(atCora, 10), 0, 6);
     assertClose(one.translation, residual(atCora, 10), 1);
-    // Hinge and cut 80 mm further down the bone: rule 3, and the translation the turn really leaves, about 14 mm.
-    // 80 mm down the bone from the CORA: square to the transverse bisector.
-    const along: Point = [across[1], -across[0]]; // −across[0] > 0: distally
-    const low: Point = [C[0] + 80 * along[0], C[1] + 80 * along[1]];
+    // Hinge and cut 80 mm further down the bone: rule 3, and the translation the turn really leaves, 2·80·sin 5°.
+    const low = at(0, 80);
     const three = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10 }), cora, [1, 1]);
     assert.equal(three.rule, 3);
     assertClose(three.translation, residual(low, 10), 1);
     assertClose(three.translation, 2 * 80 * Math.sin(5 * deg), 1);
     // Hinge on the bisector at the CORA's level, cut lower: rule 2.
     assert.equal(paleyRule(plan(input, { ...cutAt(C[1] + 40), hinge: atCora, degrees: 10 }), cora, [1, 1]).rule, 2);
+  });
+
+  it('gives the review\'s 10.5° case: no translation 30 mm across the bone, 2·80·sin 5.25° 80 mm down it', () => {
+    const { input, cora, residual, cutAt, at, C } = bentTibia(10.5);
+    assertClose(cora.magnitude, 10.5, 6);
+    const lateral = at(30, 0);
+    const across = paleyRule(plan(input, { ...cutAt(C[1]), hinge: lateral, degrees: 10.5 }), cora, [1, 1]);
+    assert.equal(across.rule, 1);
+    assertClose(residual(lateral, 10.5), 0, 6);
+    assertClose(across.translation, 0, 6);
+    const low = at(0, 80);
+    const down = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10.5 }), cora, [1, 1]);
+    assert.equal(down.rule, 3);
+    assertClose(down.translation, residual(low, 10.5), 6);
+    assertClose(down.translation, 2 * 80 * Math.sin(5.25 * deg), 6); // 14.64 mm
   });
 });
 
