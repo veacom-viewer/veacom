@@ -22,6 +22,22 @@ export interface ReportContent { title: string; lines: string[]; pictures: Array
 const PAGE = { width: 2480, height: 3508 }; // A4 at 300 dpi
 const MARGIN = 120, TEXT = '#111418', MUTED = '#4a5361', RULE = '#c9ced6';
 
+/** Where the report's text starts below its header lines, and the box each of `count` pictures fits in. */
+const picturesTop = (lines: number) => MARGIN + 40 + 56 + 46 * lines + 16;
+const pictureWidth = (PAGE.width - 2 * MARGIN) * 0.5 - 30;
+export function pictureBox(count: number, lines: number): { width: number; height: number } {
+  return { width: pictureWidth, height: (PAGE.height - picturesTop(lines) - 260) / Math.max(1, count) - 60 };
+}
+/**
+ * The size to capture a pane of `pane` CSS pixels at for the report: its aspect, filling the picture's box, so that
+ * its drawing is drawn at the report's own resolution, as sharp on a screen of 1 device pixel per CSS pixel as on a
+ * denser one (the screen's pixels would otherwise be scaled up, softening every line).
+ */
+export function pictureSize(pane: { width: number; height: number }, count: number, lines: number): { width: number; height: number } {
+  const box = pictureBox(count, lines), scale = Math.min(box.width / pane.width, box.height / pane.height);
+  return { width: Math.max(16, Math.round(pane.width * scale)), height: Math.max(16, Math.round(pane.height * scale)) };
+}
+
 export function drawReport(content: ReportContent): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = PAGE.width; canvas.height = PAGE.height;
@@ -34,17 +50,15 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
   for (const line of content.lines) { context.fillText(line, MARGIN, y, PAGE.width - 2 * MARGIN); y += 46; }
   y += 16;
   // Pictures on the left half, the values on the right.
-  const pictureWidth = (PAGE.width - 2 * MARGIN) * 0.5 - 30, top = y;
+  const top = y, box = pictureBox(content.pictures.length, content.lines.length);
   let pictureY = top;
-  const room = PAGE.height - top - 260;
-  const each = content.pictures.length ? room / content.pictures.length : 0;
   for (const picture of content.pictures) {
-    const scale = Math.min(pictureWidth / picture.canvas.width, (each - 60) / picture.canvas.height);
+    const scale = Math.min(box.width / picture.canvas.width, box.height / picture.canvas.height);
     const width = picture.canvas.width * scale, height = picture.canvas.height * scale;
     context.fillStyle = '#000'; context.fillRect(MARGIN, pictureY, width, height);
     context.drawImage(picture.canvas, MARGIN, pictureY, width, height);
     context.fillStyle = MUTED; context.font = font(30, 500); context.fillText(picture.caption, MARGIN, pictureY + height + 40);
-    pictureY += each;
+    pictureY += box.height + 60;
   }
   const left = MARGIN + (content.pictures.length ? pictureWidth + 60 : 0), width = PAGE.width - MARGIN - left;
   y = top + 20;

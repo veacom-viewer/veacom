@@ -16,7 +16,7 @@ import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
 import { imageSideOnScreen, nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
 import { parsePlanFile, planFile } from '../ui/deformityFile';
-import { drawReport, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
+import { drawReport, pictureSize, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
 import { Download, FolderOpen, Images, Plus, Redo2, Undo2, X } from './icons';
 import { WarningBox } from './WarningBox';
@@ -196,10 +196,13 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     const simulated = state.simulate;
     try {
       deformity.setSimulate(false); await frames(3);
-      const pictures = [{ caption: t('deformity.report.now'), canvas: await captureViewportCanvas(element, { hidePatientData }) }];
+      // Captured at the report's own resolution (pictureSize), so the drawing is sharp whatever the screen.
+      const header = reportHeader(series, frame, hidePatientData, t), bounds = element.getBoundingClientRect();
+      const outputSize = pictureSize(bounds, view.simulation ? 2 : 1, header.length);
+      const pictures = [{ caption: t('deformity.report.now'), canvas: await captureViewportCanvas(element, { hidePatientData, outputSize }) }];
       if (view.simulation) {
         deformity.setSimulate(true); await frames(3);
-        pictures.push({ caption: t('deformity.report.planned'), canvas: await captureViewportCanvas(element, { hidePatientData }) });
+        pictures.push({ caption: t('deformity.report.planned'), canvas: await captureViewportCanvas(element, { hidePatientData, outputSize }) });
       }
       const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name, leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t), normalText(name) || undefined]) },
         { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey)]) },
@@ -213,7 +216,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         ] });
       }
       const canvas = drawReport({ title: `${t('deformity.title')} · ${planName(film, plan.id, t)}`,
-        lines: reportHeader(series, frame, hidePatientData, t),
+        lines: header,
         pictures, sections,
         footer: [view.simulation ? t('deformity.report.simulated') : '', t('deformity.report.footer', { version: window.veacom?.getVersion() ?? '', date: new Date().toLocaleString(locale) })].filter(Boolean) });
       const where = await save('veacom-deformity-report.png', await pngBytes(canvas));

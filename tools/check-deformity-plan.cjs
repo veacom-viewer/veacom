@@ -5,7 +5,7 @@
 // 8° opening wedge HTO measured again live and its fragment drawn moved, Undo and Redo, saving and opening the plan,
 // and the report. On the film without spacing it calibrates on the ball; on the mirrored film the angles keep their
 // names; on the film without Patient Orientation the kit asks where the patient's right is.
-// usage: node tools/check-deformity-plan.cjs LONGLEG_STUDY [OUTPUT_DIR]
+// usage: node tools/check-deformity-plan.cjs LONGLEG_STUDY [OUTPUT_DIR] [-- app switches, e.g. --force-device-scale-factor=1]
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
 const path = require('node:path');
@@ -22,13 +22,14 @@ const ORDER = ['femoralHeadContour', 'greaterTrochanterTip', 'femoralShaftProxim
 const ANGLES = ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA'], LENGTHS = ['MAD', 'femurLength', 'tibiaLength', 'limbLength'];
 
 async function main() {
-  const study = path.resolve(process.argv[2]);
-  const output = path.resolve(process.argv[3] || 'test-results/deformity-plan');
+  const split = process.argv.indexOf('--'), own = split < 0 ? process.argv.slice(2) : process.argv.slice(2, split), switches = split < 0 ? [] : process.argv.slice(split + 1);
+  const study = path.resolve(own[0]);
+  const output = path.resolve(own[1] || 'test-results/deformity-plan');
   const manifest = JSON.parse(await fs.readFile(path.join(study, 'manifest.json'), 'utf8'));
   assert.equal(manifest.generator, 'veacom-longleg-v1', 'Run on the films made by tools/fixtures/make-longleg-study.mjs.');
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-deformity-'));
-  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), '--study', study], timeout: 90_000,
+  const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), ...switches, '--study', study], timeout: 90_000,
     env: { ...process.env, VEACOM_USER_DATA: userData, VEACOM_LOCALE: 'en', VEACOM_TELEMETRY_CONSENT: 'denied', VEACOM_USAGE_CHECK_LOCAL: '1', VEACOM_TEST_MODE: '1' } });
   const errors = [], checks = [];
   const check = (name, detail) => { checks.push({ name, detail }); console.log(`PASS ${name}`); };
