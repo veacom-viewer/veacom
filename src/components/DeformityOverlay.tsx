@@ -158,7 +158,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   // A CORA under 1.5° is within normal variation of the joint angles: listed in the panel, not drawn.
   const coraLines = (cora: Cora | null) => cora && cora.magnitude >= 1.5 && <g data-plan-cora={cora.bone}>
     {line(cora.proximal.from, cora.point, COLOUR.cora, { dash: '6 4' })}{line(cora.distal.from, cora.point, COLOUR.cora, { dash: '6 4' })}
-    {line(cora.point, add(cora.point, scale(cora.bisector, 60 / Math.max(1e-6, plan.mm?.[0] ?? 1))), COLOUR.cora, { dash: '2 3', width: 1 })}
+    {/* The transverse bisector, 40 mm either side of the CORA, across the bone. */}
+    {line(sub(cora.point, scale(cora.bisector, 40 / Math.max(1e-6, plan.mm?.[0] ?? 1))), add(cora.point, scale(cora.bisector, 40 / Math.max(1e-6, plan.mm?.[0] ?? 1))), COLOUR.cora, { dash: '2 3', width: 1, test: 'bisector' })}
     <circle cx={at(cora.point)[0]} cy={at(cora.point)[1]} r={5} fill="none" stroke={COLOUR.cora} strokeWidth={2} />
     {chip(cora.point, [t('deformity.cora.label', { angle: cora.magnitude.toFixed(1) })], COLOUR.cora, -outward, `cora-${cora.bone}`)}
   </g>;

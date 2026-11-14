@@ -6,12 +6,13 @@
 //
 // CORA (Paley ch. 4): the proximal axis is drawn from the proximal joint at its normal angle, the distal axis from the
 // distal joint at its normal angle, both mechanical in the frontal plane. They cross at the CORA; the angle between
-// them is the deformity's magnitude. The bisector halves that angle through the CORA; osteotomies hinged on it
+// them is the deformity's magnitude. The transverse bisector halves that angle across the bone at the CORA; osteotomies
+// hinged on it
 // correct without translation (Paley's rules 1 and 2).
 import type { LandmarkName } from './landmarks';
 import { type Leg, type Landmarks, type Missing, toPlane, toImage } from './measure';
 import { CORA_ANGLES } from './normals';
-import { add, angleBetween, along, dot, intersect, midpoint, type Point, rotate, scale, sub, unit } from './plane';
+import { angleBetween, along, dot, intersect, midpoint, type Point, rotate, scale, sub, unit } from './plane';
 
 export type StepResult = 'normal' | 'varus' | 'valgus' | 'subluxed' | 'unassessable';
 export interface Step { step: 'mad' | 'femur' | 'tibia' | 'joint' | 'subluxation'; result: StepResult; missing?: Missing }
@@ -46,7 +47,8 @@ export interface Cora {
   bone: 'femur' | 'tibia';
   /** In image pixels. */
   point: Point;
-  /** The deformity's angle, degrees, and the axes' directions (distally) and the bisector, all on the image. */
+  /** The deformity's angle, degrees, the axes' directions (distally), and the transverse bisector's direction, across
+   * the bone through the CORA, all on the image. */
   magnitude: number;
   proximal: { from: Point; direction: Point }; distal: { from: Point; direction: Point };
   bisector: Point;
@@ -74,7 +76,9 @@ export function coras(leg: Leg, mmPerPixel: readonly [number, number] | null, la
     const magnitude = angleBetween(topDirection, scale(bottomDirection, -1));
     if (!point || magnitude === null || magnitude < 0.05) return null;
     const down = unit(scale(bottomDirection, -1))!, up = unit(topDirection)!;
-    const bisector = unit(add(up, down)) ?? up;
+    // Both axes point distally, so their sum runs along the bone; their difference is the transverse bisector, across the
+    // bone through the CORA, where a hinge corrects without translation (Paley's ACA).
+    const bisector = unit(sub(up, down)) ?? ([-up[1], up[0]] as Point);
     return { bone, point: image(point), magnitude, proximal: { from: image(top), direction: up }, distal: { from: image(bottom), direction: down },
       bisector, level: along(point, top, bottom) ?? NaN };
   };

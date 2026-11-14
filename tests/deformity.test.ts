@@ -257,14 +257,47 @@ describe('a simulated osteotomy', () => {
     assertClose(simulate(input, before, plan(input, { hinge: [0, 500] }))!.wedgeHeight, 2 * 20 * Math.sin(5 * deg), 9);
   });
 
-  it('names the Paley rule the hinge follows', () => {
-    const input = straight(), osteotomy = plan(input);
-    // A CORA on the cut with a vertical bisector: the hinge 20 mm off it.
-    const offBisector = paleyRule(osteotomy, { point: [0, 500], bisector: [0, 1] }, [1, 1]);
-    assert.equal(offBisector.rule, 3);
-    assertClose(offBisector.translation, 2 * 20 * Math.tan(5 * deg), 9);
-    assert.equal(paleyRule({ ...osteotomy, hinge: [0, 500] }, { point: [0, 500], bisector: [0, 1] }, [1, 1]).rule, 1);
-    assert.equal(paleyRule({ ...osteotomy, hinge: [0, 560] }, { point: [0, 600], bisector: [0, 1] }, [1, 1]).rule, 2);
+  it('names the Paley rule against a real CORA, and the translation an off-bisector hinge leaves', () => {
+    // A tibia bent 10° at C, 100 mm below a level plateau: proximal axis 3° medial of straight down (MPTA 87°), the
+    // distal one 7° the other way, and a level plafond at the normal LDTA. Built as in the CORA test above.
+    const K: Point = [0, 400], C: Point = [100 * Math.sin(3 * deg), 400 + 100 * Math.cos(3 * deg)];
+    const q: Point = [Math.sin(-7 * deg), Math.cos(-7 * deg)], A: Point = [C[0] + 300 * q[0], C[1] + 300 * q[1]];
+    // The plafond at the normal LDTA (89°) to the distal axis, pointing laterally (−x).
+    const turnBy = (v: Point, a: number): Point => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
+    const up: Point = [-q[0], -q[1]], L = [turnBy(up, 89 * deg), turnBy(up, -89 * deg)].find(v => v[0] < 0)!;
+    const input: LegInput = { side: 'R', mmPerPixel: [1, 1], lateral: [-1, 0], points: {
+      femoralHeadContour: [[-20, 0], [0, -20], [20, 0]], kneeCentre: [K], ankleCentre: [A],
+      tibialPlateauMedial: [[20, 410]], tibialPlateauLateral: [[-20, 410]],
+      plafondMedial: [[A[0] - 15 * L[0], A[1] - 15 * L[1]]], plafondLateral: [[A[0] + 15 * L[0], A[1] + 15 * L[1]]] } };
+    const leg = measureLeg(input), cora = coras(leg, [1, 1], [-1, 0]).tibia!;
+    assertClose(cora.magnitude, 10, 6);
+    // The translation left after turning the distal axis back onto the proximal one about a hinge, worked out here by
+    // turning the axis itself, independently of paleyRule.
+    const residual = (hinge: Point, degrees: number) => {
+      const p: Point = [Math.sin(3 * deg), Math.cos(3 * deg)];
+      const turn = (v: Point, a: number): Point => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
+      const sign = Math.abs(Math.atan2(turn(q, degrees * deg)[0], turn(q, degrees * deg)[1]) - 3 * deg) < 1e-9 ? 1 : -1;
+      const moved: Point = [hinge[0] + turn([A[0] - hinge[0], A[1] - hinge[1]], sign * degrees * deg)[0], hinge[1] + turn([A[0] - hinge[0], A[1] - hinge[1]], sign * degrees * deg)[1]];
+      return Math.abs((moved[0] - K[0]) * p[1] - (moved[1] - K[1]) * p[0]);
+    };
+    const cutAt = (y: number): Pick<Osteotomy, 'cut'> => ({ cut: [[C[0] + 25, y], [C[0] - 25, y]] });
+    // Hinge on the lateral cortex at the CORA's level, the cut through the CORA: rule 1, nothing left over.
+    const across = cora.bisector[0] < 0 ? cora.bisector : [-cora.bisector[0], -cora.bisector[1]] as Point;
+    const atCora: Point = [C[0] + 15 * across[0], C[1] + 15 * across[1]];
+    const one = paleyRule(plan(input, { ...cutAt(C[1]), hinge: atCora, degrees: 10 }), cora, [1, 1]);
+    assert.equal(one.rule, 1);
+    assertClose(residual(atCora, 10), 0, 6);
+    assertClose(one.translation, residual(atCora, 10), 1);
+    // Hinge and cut 80 mm further down the bone: rule 3, and the translation the turn really leaves, about 14 mm.
+    // 80 mm down the bone from the CORA: square to the transverse bisector.
+    const along: Point = [across[1], -across[0]]; // −across[0] > 0: distally
+    const low: Point = [C[0] + 80 * along[0], C[1] + 80 * along[1]];
+    const three = paleyRule(plan(input, { ...cutAt(low[1]), hinge: low, degrees: 10 }), cora, [1, 1]);
+    assert.equal(three.rule, 3);
+    assertClose(three.translation, residual(low, 10), 1);
+    assertClose(three.translation, 2 * 80 * Math.sin(5 * deg), 1);
+    // Hinge on the bisector at the CORA's level, cut lower: rule 2.
+    assert.equal(paleyRule(plan(input, { ...cutAt(C[1] + 40), hinge: atCora, degrees: 10 }), cora, [1, 1]).rule, 2);
   });
 });
 

@@ -122,6 +122,9 @@ async function main() {
     for (const key of ['MPTA', 'LDTA', 'JLCA', 'HKA']) near(planned[key], manifest.osteotomy.expected[key], ANGLE, `After HTO ${key}`);
     for (const key of ['MAD', 'limbLength']) near(planned[key], manifest.osteotomy.expected[key] * scale, LENGTH, `After HTO ${key}`);
     near(Number(await panel.getByTestId('deformity-wedge').getAttribute('data-wedge')), manifest.osteotomy.wedgeHeightMm * scale, LENGTH, 'Wedge height');
+    // The fixture's HTO is Paley's rule 1: cut through the CORA, hinge on the lateral cortex at its level.
+    assert.equal(await panel.getByTestId('deformity-rule').getAttribute('data-rule'), '1');
+    near(Number(await panel.getByTestId('deformity-rule').getAttribute('data-translation')), 0, 0.5, 'Translation left by the HTO');
     const fragment = page.getByTestId('deformity-fragment');
     assert.equal(await fragment.count(), 1, 'The fragment is drawn as a layer.');
     await page.waitForTimeout(300);

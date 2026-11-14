@@ -127,9 +127,10 @@ export function solveAngle(input: LegInput, before: Leg, osteotomy: Osteotomy, t
 
 /**
  * Where the cut and hinge lie against the CORA (Paley's rules): rule 1, the cut through the CORA with the hinge on the
- * bisector, corrects without translation; rule 2, the hinge on the bisector away from the CORA, adds the translation
- * that keeps the axes in line; rule 3, the hinge off the bisector, leaves a translation deformity of 2 d tan(θ/2),
- * d the hinge's distance from the bisector (Barksfield 2015). Within 5 mm counts as on.
+ * transverse bisector, corrects without translation; rule 2, the hinge on the bisector with the cut away from the CORA,
+ * angulates and translates at the cut and keeps the axes in line; rule 3, the hinge off the bisector, leaves the axes
+ * apart by 2 d sin(θ/2), d the hinge's distance from the bisector: turning about it instead of about a point of the
+ * bisector moves the fragment by (I - R)·d. Within 5 mm counts as on.
  */
 export function paleyRule(osteotomy: Osteotomy, cora: { point: Point; bisector: Point }, mm: LegInput['mmPerPixel']): { rule: 1 | 2 | 3; offset: number; translation: number } {
   const hinge = toPlane(osteotomy.hinge, mm), corePoint = toPlane(cora.point, mm);
@@ -137,7 +138,7 @@ export function paleyRule(osteotomy: Osteotomy, cora: { point: Point; bisector: 
   const offset = Math.abs(cross(sub(hinge, corePoint), bisector));
   const a = toPlane(osteotomy.cut[0], mm), b = toPlane(osteotomy.cut[1], mm), cut = unit(sub(b, a));
   const fromCut = cut ? Math.abs(cross(sub(corePoint, a), cut)) : Infinity;
-  const translation = 2 * offset * Math.tan(osteotomy.degrees / 2 * Math.PI / 180);
+  const translation = 2 * offset * Math.sin(osteotomy.degrees / 2 * Math.PI / 180);
   return { rule: offset > 5 ? 3 : fromCut > 5 ? 2 : 1, offset, translation };
 }
 

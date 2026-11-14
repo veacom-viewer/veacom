@@ -372,7 +372,7 @@ export function DeformityPanel({ volume, slice, onClose, headingRef, onCalibrate
           {t('deformity.wedgeHeight', { height: view.simulation.wedgeHeight.toFixed(1), unit: leg.unit })}
           {view.simulation.lengthChange !== null ? ` · ${t('deformity.lengthChange', { change: `${view.simulation.lengthChange >= 0 ? '+' : ''}${view.simulation.lengthChange.toFixed(1)}`, unit: leg.unit })}` : ''}
           {leg.unit === 'mm' && tag ? ` · ${tag}` : ''}</p>}
-        {view.rule && <p className="deformity-fit">{t('deformity.rule', { rule: view.rule.rule })}{view.rule.rule === 3 ? ` · ${t('deformity.ruleTranslation', { offset: view.rule.offset.toFixed(1), translation: view.rule.translation.toFixed(1), unit: leg.unit })}` : ''}</p>}
+        {view.rule && <p className="deformity-fit" data-testid="deformity-rule" data-rule={view.rule.rule} data-translation={view.rule.translation}>{t('deformity.rule', { rule: view.rule.rule })}{view.rule.rule === 3 ? ` · ${t('deformity.ruleTranslation', { offset: view.rule.offset.toFixed(1), translation: view.rule.translation.toFixed(1), unit: leg.unit })}` : ''}</p>}
         <div className="deformity-actions"><button type="button" className="text-button" data-action="deformity-cut-remove" onClick={() => changePlan(current => ({ ...current, osteotomy: null }))}>{t('deformity.removeCut')}</button></div>
       </div>}
     </div>
