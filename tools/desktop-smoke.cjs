@@ -157,6 +157,18 @@ async function main() {
     assert.equal(await saved(), 'tr');
     check('Turkish by default; the language switch updates the interface and is saved');
 
+    // Feedback stands with the language and the version at the right end of the status bar, and keeps its place while the
+    // state on the left changes length.
+    const feedbackBox = () => page.getByTestId('feedback-open').boundingBox();
+    const feedback = await feedbackBox(), language = await page.getByTestId('tool-language').boundingBox(), cine = await page.locator('.status-play').boundingBox();
+    assert(feedback.x > cine.x + cine.width, 'Feedback is to the right of the cine controls.');
+    assert(language.x - (feedback.x + feedback.width) <= 16, 'Feedback stands next to the language.');
+    const stateText = await page.evaluate(() => { const status = document.querySelector('[data-testid="status-text"]'), text = status.textContent; status.textContent = `${text} ${text} ${text}`; return text; });
+    const withLongerState = await feedbackBox();
+    await page.evaluate(text => { document.querySelector('[data-testid="status-text"]').textContent = text; }, stateText);
+    assert.equal(withLongerState.x, feedback.x, 'A longer state text leaves Feedback where it is.');
+    check('Feedback stands with the language at the right end of the status bar and keeps its place');
+
     // Usage timings: a fresh profile is asked once (a strip, not a modal); the answer is saved, and the
     // settings switch turns sharing on and off (off deletes the local copy).
     const preferences = async () => { try { return JSON.parse(await fs.readFile(path.join(userData, 'preferences.json'), 'utf8')); } catch { return {}; } };
