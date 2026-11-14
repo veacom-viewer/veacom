@@ -106,6 +106,20 @@ describe('the alignment of a leg', () => {
     assertClose(unsided.limbLength.value, 800, 9);
   });
 
+  it('measures aLDFA from the shaft and condyles before the hip, knee or ankle is placed', () => {
+    const input: LegInput = { side: 'R', mmPerPixel: [1, 1], lateral: [-1, 0], points: {
+      femoralShaftProximal: [[0, 100]], femoralShaftDistal: [[0, 350]],
+      femoralCondyleMedial: [[20, 410]], femoralCondyleLateral: [[-20, 410]],
+    } };
+    assert.equal(measureLeg(input).values.aLDFA.value, 90);
+    const tilted: LegInput['points'] = { ...input.points, femoralShaftProximal: [[-25, 100]] };
+    assertClose(measureLeg({ ...input, points: tilted }).values.aLDFA.value, Math.atan2(250, 25) / deg, 9);
+    assert.deepEqual(measureLeg({ ...input, lateral: null }).values.aLDFA.missing, { reason: 'side' });
+    const parallel = measureLeg({ ...input, lateral: [0, 1] }).values.aLDFA;
+    assert.equal(parallel.value, null);
+    assert.deepEqual(parallel.missing, { reason: 'parallel' });
+  });
+
   it('gives lengths in pixels without a calibration, and no verdict on the MAD', () => {
     const input = straight();
     input.points = { ...input.points, ankleCentre: [[40, 800]] };

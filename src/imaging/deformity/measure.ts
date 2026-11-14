@@ -97,10 +97,10 @@ export function measureLeg(input: LegInput): Leg {
   const lateral = imageLateral && distal ? acrossAxis(distal, imageLateral) : null;
   const lateralMissing: Missing = !imageLateral ? { reason: 'side' } : !distal ? { reason: 'axis' } : { reason: 'parallel' };
   /** A joint line as a direction pointing lateral. */
-  const lateralWards = (line: [Point, Point] | null) => {
-    if (!line || !lateral) return null;
+  const lateralWards = (line: [Point, Point] | null, towards = lateral) => {
+    if (!line || !towards) return null;
     const d = sub(line[1], line[0]);
-    return dot(d, lateral) >= 0 ? d : scale(d, -1);
+    return dot(d, towards) >= 0 ? d : scale(d, -1);
   };
   const needs = (...names: Array<[LandmarkName, unknown]>): Missing | undefined => {
     const absent = names.filter(([, value]) => value === null || value === undefined).map(([name]) => name);
@@ -108,17 +108,20 @@ export function measureLeg(input: LegInput): Leg {
     return unplaced.length ? { landmarks: unplaced } : absent.length ? { together: absent } : undefined;
   };
   const values = {} as Record<Value['key'], Value>;
-  const angle = (key: ValueKey, missing: Missing | undefined, compute: () => number | null, sided = true) => {
-    const value = missing || (sided && !lateral) ? null : compute();
-    values[key] = { key, value, unit: '°', ...(missing ? { missing } : sided && !lateral ? { missing: lateralMissing } : value === null ? { missing: { reason: 'parallel' } } : {}),
+  const angle = (key: ValueKey, landmarks: Missing | undefined, compute: () => number | null, direction: Missing | null = lateral ? null : lateralMissing) => {
+    const missing = landmarks ?? direction;
+    const value = missing ? null : compute();
+    values[key] = { key, value, unit: '°', ...(missing ? { missing } : value === null ? { missing: { reason: 'parallel' } } : {}),
       ...(value !== null ? { verdict: verdict(key, value) } : {}) };
   };
   const femurAxis = H && K ? sub(H, K) : null; // pointing proximally
   const tibiaAxis = K && A ? sub(A, K) : null; // pointing distally
-  angle('mLPFA', needs(['femoralHeadContour', H], ['kneeCentre', K], ['greaterTrochanterTip', GT]), () => angleBetween(sub(K!, H!), sub(GT!, H!)), false);
+  const shaftAxis = femoralShaft && unit(sub(femoralShaft[0], femoralShaft[1]));
+  const shaftLateral = shaftAxis && imageLateral ? acrossAxis(shaftAxis, imageLateral) : null;
+  angle('mLPFA', needs(['femoralHeadContour', H], ['kneeCentre', K], ['greaterTrochanterTip', GT]), () => angleBetween(sub(K!, H!), sub(GT!, H!)), null);
   angle('mLDFA', needs(['femoralHeadContour', H], ['kneeCentre', K], ['femoralCondyleMedial', condyles], ['femoralCondyleLateral', condyles]), () => angleBetween(femurAxis!, lateralWards(condyles)!));
   angle('aLDFA', needs(['femoralShaftProximal', femoralShaft], ['femoralShaftDistal', femoralShaft], ['femoralCondyleMedial', condyles], ['femoralCondyleLateral', condyles]),
-    () => angleBetween(sub(femoralShaft![0], femoralShaft![1]), lateralWards(condyles)!));
+    () => angleBetween(shaftAxis!, lateralWards(condyles, shaftLateral)!), shaftLateral ? null : { reason: imageLateral ? 'parallel' : 'side' });
   angle('MPTA', needs(['kneeCentre', K], ['ankleCentre', A], ['tibialPlateauMedial', plateau], ['tibialPlateauLateral', plateau]), () => angleBetween(tibiaAxis!, scale(lateralWards(plateau)!, -1)));
   angle('LDTA', needs(['kneeCentre', K], ['ankleCentre', A], ['plafondMedial', plafond], ['plafondLateral', plafond]), () => angleBetween(scale(tibiaAxis!, -1), lateralWards(plafond)!));
   // Positive when the joint lines converge medially: the tibial line turned from the femoral one so that its lateral
@@ -131,7 +134,7 @@ export function measureLeg(input: LegInput): Leg {
     ? Math.abs(dot(sub(midpoint(...plateau), midpoint(...condyles)), lateral))
     : jointMissing ?? (input.mmPerPixel ? lateralMissing : { reason: 'calibration' });
   angle('AMA', needs(['femoralHeadContour', H], ['kneeCentre', K], ['femoralShaftProximal', femoralShaft], ['femoralShaftDistal', femoralShaft]),
-    () => { const a = angleBetween(femurAxis!, sub(femoralShaft![0], femoralShaft![1])); return a === null ? null : Math.min(a, 180 - a); }, false);
+    () => { const a = angleBetween(femurAxis!, sub(femoralShaft![0], femoralShaft![1])); return a === null ? null : Math.min(a, 180 - a); }, null);
   // The knee centre's distance from the hip–ankle line, positive when the line passes medial to it (varus).
   const madMissing = needs(['femoralHeadContour', H], ['kneeCentre', K], ['ankleCentre', A]);
   const mad = !madMissing && lateral ? offsetFrom(K!, H!, sub(A!, H!), lateral) : null;
