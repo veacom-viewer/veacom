@@ -6,6 +6,7 @@ import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProject
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
+import { projectionEdgeLabels, projectionLine } from '../imaging/radiograph';
 import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
@@ -863,7 +864,8 @@ export function Viewport(props: ViewportProps) {
   const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
   const normalAxis = frame.normal.reduce((best, value, axis) => Math.abs(value) > Math.abs(frame.normal[best]) ? axis : best, 0);
   const location = displayedSeries.orientationKnown === true && displayedSeries.positionKnown !== false ? frame.center[normalAxis] : null;
-  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t);
+  // A projection film names its side and what its millimetres stand for there instead (imaging/radiograph.ts).
+  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t) || projectionLine(displayedSeries);
   const scanner = scannerLines(props.volume.series);
   const bottomRight = props.showOverlay === false ? [] : [...scanner, ...(props.fusion ? [
     fusionLine(props.fusion.volume.series, props.hidePatientData === true, t),
@@ -925,7 +927,7 @@ export function Viewport(props: ViewportProps) {
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
-    : { left: '', right: '', top: '', bottom: '' };
+    : projectionEdgeLabels(displayedSeries, mapping) ?? { left: '', right: '', top: '', bottom: '' };
   const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
     const theirs = getPlaneFrame(reference.series, reference.view);
     const segment = referenceSegment(frame, theirs);

@@ -26,7 +26,7 @@ const COLUMNS = Math.round(WIDTH_MM / OBJECT_MM), ROWS = Math.round(HEIGHT_MM / 
 const BALL_MM = 25;
 
 /** The spacing tags of each variant, and what the viewer must make of them. `mmPerPixel` is the spacing a measurement
- * uses, `state` the calibration it names (src/imaging/projection.ts). */
+ * uses, `state` the calibration it names (src/imaging/radiograph.ts). */
 const VARIANTS = {
   'ps-only': { description: 'Pixel Spacing only', tags: { ps: OBJECT_MM }, state: 'unstated', mmPerPixel: OBJECT_MM },
   'ips-only': { description: 'Imager Pixel Spacing only', tags: { ips: DETECTOR_MM }, state: 'detector', mmPerPixel: DETECTOR_MM },

@@ -26,6 +26,25 @@ export interface FrameMetadata {
   voiFunction?: VoiFunction;
   /** A gamma camera frame: which detector took it, in which view, energy window and phase. */
   nm?: NmFrame;
+  /** A projection radiograph: the spacing measurements use and what it means, its side and orientation. */
+  projection?: Projection;
+}
+/** What the engine read of a projection radiograph's calibration, side and orientation (native/src/projection.rs). */
+export interface Projection {
+  /** What the spacing measurements use stands for (PS3.3 10.7.1.1): Pixel Spacing that was corrected or calibrated,
+   * Imager Pixel Spacing divided by the Estimated Radiographic Magnification Factor, Imager Pixel Spacing at the
+   * detector, Pixel Spacing that does not say, or none. */
+  basis: 'calibrated' | 'magnification' | 'detector' | 'unstated' | 'none';
+  /** Row then column spacing in mm that measurements use. */
+  spacing?: [number, number];
+  pixelSpacing?: [number, number]; imagerPixelSpacing?: [number, number];
+  magnification?: number; calibrationType?: string; calibrationDescription?: string;
+  sourceDetector?: number; sourcePatient?: number;
+  /** Patient Orientation (0020,0020): the patient directions of the rows and the columns, such as L and F. */
+  patientOrientation?: [string, string];
+  /** R, L, B (both) or U (unpaired), from the frame, the image or the series. */
+  laterality?: string;
+  bodyPart?: string; viewPosition?: string;
 }
 /** What a gamma camera (NM) frame is, from its file's frame vectors. The view (ANT, POST, RAO, LAO, RPO, LPO, R LAT,
  * L LAT) comes from the detector's View Code Sequence; detector, energy window and phase are given only where the file
@@ -81,6 +100,8 @@ export interface Series {
   /** The SUV the reader chose for PET values (Units panel); body weight when unset. */
   suvNormalization?: SuvNormalization;
   sourceFramesOnly?: boolean;
+  /** From a projection frame (sourceFrameSeries); FrameMetadata carries it per frame. */
+  projection?: Projection;
   /** A phase of a series the engine parted, in order; one gate of a gated SPECT carries `gate` (kind `timeSlot`). */
   phase?: { kind: string; value: string; label: string; order: number; gate?: Gate };
   patientAge?: number; patientSex?: string;

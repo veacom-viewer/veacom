@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
-import type { Annotation, PixelArray, Volume } from '../model';
-import { annotationSourceIndex, annotationSummary, formatRoiStatistics } from './annotations';
+import type { Annotation, PixelArray, Series, Volume } from '../model';
+import { annotationSourceIndex, annotationSummary, formatRoiStatistics, withCalibration } from './annotations';
 import { sourceFrameSeries, worldToIndex } from './geometry';
 import { measureSourceRegion } from './nativeMeasurements';
 import { requestSourceRoi } from './roiStatisticsService';
@@ -13,6 +13,8 @@ interface SummaryEntry {
   listeners: Set<() => void>;
   annotation?: Annotation;
   volume?: Volume;
+  /** The series the region is measured on: a projection film's names its calibration after the area. */
+  frame?: Series;
   cancel?: () => void;
   cancelTimer?: ReturnType<typeof setTimeout>;
   generation: number;
@@ -47,7 +49,7 @@ function createEntry(annotation: Annotation, volume: Volume, locale: Locale): Su
     annotation.sourceSopInstanceUid, annotation.sourceFrameNumber, frameIndex, volume.sourceFrameIndex, volume.series.id, volume.series.uid, volume.series.engineGeneration, volume.series.sourceRevision,
     metadata?.sopInstanceUid, metadata?.sourceFrameNumber, frame.origin, frame.direction, frame.spacing, frame.dimensions,
     frame.paddingRange, frame.paddingIsNaN, frame.pixelType, frame.spacingKnown, frame.measurementScale, frame.measurementUnits, frame.modality, frame.valueUnit, frame.suvFactor,
-    frame.sulFactor, frame.suvBsaFactor, frame.suvNormalization]);
+    frame.sulFactor, frame.suvBsaFactor, frame.suvNormalization, frame.projection?.basis, frame.projection?.magnification]);
   let entries = cache.get(volume.data);
   if (!entries) { entries = new Map(); cache.set(volume.data, entries); }
   let entry = entries.get(key);
@@ -56,7 +58,7 @@ function createEntry(annotation: Annotation, volume: Volume, locale: Locale): Su
       const idle = [...entries].filter(([, value]) => value.listeners.size === 0).sort((a, b) => a[1].touched - b[1].touched).at(0);
       if (idle) { idle[1].cancel?.(); entries.delete(idle[0]); }
     }
-    entry = { text: t('annotation.calculating'), state: 'idle', listeners: new Set(), annotation, volume, generation: 0, touched: performance.now() };
+    entry = { text: t('annotation.calculating'), state: 'idle', listeners: new Set(), annotation, volume, frame, generation: 0, touched: performance.now() };
     entries.set(key, entry);
   }
   entry.touched = performance.now();
@@ -75,7 +77,7 @@ function start(entry: SummaryEntry): void {
     request.promise.then(stats => {
       if (generation !== entry.generation) return;
       entry.cancel = undefined;
-      try { entry.text = stats ? formatRoiStatistics(stats) : t('annotation.noRoiSamples'); entry.state = 'ready'; }
+      try { entry.text = stats ? (entry.frame ? withCalibration(formatRoiStatistics(stats), entry.frame, stats.spatialUnit) : formatRoiStatistics(stats)) : t('annotation.noRoiSamples'); entry.state = 'ready'; }
       catch { entry.state = 'error'; entry.text = t('annotation.failed'); }
       for (const listener of entry.listeners) listener();
     }, () => {
