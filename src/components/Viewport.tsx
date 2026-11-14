@@ -569,13 +569,9 @@ export function Viewport(props: ViewportProps) {
         gesture.current = hit.part === 'label' ? usage.begin('annotation-label', kind) : hit.part === 'body' ? usage.begin('annotation-move', kind) : usage.begin('annotation-handle', kind);
         return;
       }
-      // A press beside a selected measurement on this slice only lets it go; drawing starts with the next press (or at
-      // once on another slice, where the selected one is not shown).
-      if (selected) {
-        const onScreen = hitTargets.some(target => target.annotation.id === selected);
-        setSelected(null);
-        if (onScreen && annotationTools.has(mode)) return;
-      }
+      // A press beside the selected measurement lets it go and goes on with the tool, so the next measurement starts with
+      // this press: a reader who measures again does not spend a press letting the last one go.
+      if (selected) setSelected(null);
     }
     if (mode === 'none') return;
     if (event.detail > 1 && clickTools.has(mode)) return;
