@@ -8,7 +8,7 @@
 // is in pixels: angles then assume square pixels, which is said beside them, and lengths are in px.
 import { CONTOUR_MINIMUM, type LandmarkName, PAIRS } from './landmarks';
 import { NORMALS, type ValueKey, verdict, type Verdict } from './normals';
-import { add, angleBetween, along, dot, fitCircle, intersect, length, midpoint, offsetFrom, type Point, scale, signedAngle, sub, unit } from './plane';
+import { acrossAxis, add, angleBetween, along, dot, fitCircle, intersect, length, midpoint, offsetFrom, type Point, scale, signedAngle, sub, unit } from './plane';
 
 export type Side = 'R' | 'L';
 export type Landmarks = Partial<Record<LandmarkName, readonly Point[]>>;
@@ -94,7 +94,7 @@ export function measureLeg(input: LegInput): Leg {
   // The leg runs distally from the hip to the ankle; its lateral side is the film's, kept square to that.
   const distal = H && A ? unit(sub(A, H)) : K && A ? unit(sub(A, K)) : H && K ? unit(sub(K, H)) : null;
   const imageLateral = input.lateral ? unit(toPlane(input.lateral)) : null;
-  const lateral = imageLateral && distal ? unit(sub(imageLateral, scale(distal, dot(imageLateral, distal)))) : null;
+  const lateral = imageLateral && distal ? acrossAxis(distal, imageLateral) : null;
   const lateralMissing: Missing = !imageLateral ? { reason: 'side' } : !distal ? { reason: 'axis' } : { reason: 'parallel' };
   /** A joint line as a direction pointing lateral. */
   const lateralWards = (line: [Point, Point] | null) => {

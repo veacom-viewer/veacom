@@ -17,6 +17,10 @@ export function unit(a: Point): Point | null {
   const size = length(a);
   return size > 1e-12 && Number.isFinite(size) ? [a[0] / size, a[1] / size] : null;
 }
+/** The unit direction across a unit axis towards the indicated side, or null if the directions are parallel. */
+export function acrossAxis(axis: Point, side: Point): Point | null {
+  return unit(sub(side, scale(axis, dot(side, axis))));
+}
 export function rotate(v: Point, degrees: number): Point {
   const c = Math.cos(degrees * DEGREE), s = Math.sin(degrees * DEGREE);
   return [v[0] * c - v[1] * s, v[0] * s + v[1] * c];

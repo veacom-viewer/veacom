@@ -151,6 +151,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     }
     if (current.points.length < 2) return null;
     const [a, b] = current.points;
+    if (a[0] === b[0] && a[1] === b[1]) return null;
     return { world: Math.hypot((b[0] - a[0]) * sx, (b[1] - a[1]) * sy), pixels: distance(a, b), residual: 0 };
   };
   const fit = markerFit(marker);

@@ -345,6 +345,12 @@ async function main() {
 
     // The ruler: two marks 200 mm apart at the bones' depth calibrate the same film.
     await panel.locator('[data-action="deformity-ruler"]').click();
+    await settle();
+    await click(manifest.ruler.from); await click(manifest.ruler.from);
+    await page.waitForFunction(() => document.querySelector('[data-action="deformity-ruler"]').getAttribute('aria-pressed') === 'false');
+    assert.equal(await panel.getByTestId('deformity-marker-fit').count(), 0);
+    assert.equal(await panel.locator('[data-action="deformity-calibrate"]').isDisabled(), true, 'Coincident ruler marks cannot set a scale.');
+    await panel.locator('[data-action="deformity-ruler"]').click();
     await click(manifest.ruler.from); await click(manifest.ruler.to);
     await panel.locator('[data-action="deformity-known-mm"]').fill(String(manifest.ruler.lengthMm));
     near(Number(await panel.getByTestId('deformity-marker-fit').getAttribute('data-mm-per-pixel')), manifest.objectMm, 0.0005, 'Ruler mm per pixel');

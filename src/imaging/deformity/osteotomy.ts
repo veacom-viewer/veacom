@@ -4,7 +4,7 @@
 // with it and the leg is measured again (measure.ts); the renderer draws the fragment as a layer (DeformityOverlay).
 import { CONTOUR_MINIMUM, type LandmarkName } from './landmarks';
 import { type LegInput, type Leg, type Landmarks, measureLeg, toImage, toPlane } from './measure';
-import { add, applyRigid, bisect, cross, distance, dot, length, type Point, type Rigid, scale, sub, unit, rotate } from './plane';
+import { acrossAxis, add, applyRigid, bisect, cross, distance, dot, length, type Point, type Rigid, scale, sub, unit, rotate } from './plane';
 
 export interface Osteotomy {
   bone: 'femur' | 'tibia';
@@ -48,9 +48,10 @@ export function fragmentMotion(osteotomy: Osteotomy, leg: Leg, input: Pick<LegIn
   const axis = boneAxis(osteotomy.bone, leg, input.mmPerPixel);
   const lateralImage = input.lateral ? unit(toPlane(input.lateral, input.mmPerPixel)) : null;
   if (!axis || !lateralImage) return null;
-  const lateral = unit(sub(lateralImage, scale(axis, dot(lateralImage, axis)))) ?? lateralImage;
+  const lateral = acrossAxis(axis, lateralImage);
+  if (!lateral) return null;
   // Valgus turns the distal end laterally.
-  const valgus = Math.sign(cross(axis, lateral)) || 1;
+  const valgus = Math.sign(cross(axis, lateral));
   const degrees = (osteotomy.direction === 'valgus' ? 1 : -1) * valgus * osteotomy.degrees;
   const shift = add(add(scale(lateral, osteotomy.shiftLateral), scale(axis, osteotomy.shiftDistal)), scale(axis, osteotomy.lengthen));
   return { pivot: toPlane(osteotomy.hinge, input.mmPerPixel), degrees, shift };

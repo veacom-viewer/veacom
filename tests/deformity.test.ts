@@ -261,6 +261,12 @@ describe('a simulated osteotomy', () => {
     assertClose(result.lengthChange, Math.hypot(5, 812) - 800, 9);
   });
 
+  it('withholds a simulated correction when the bone runs along the film lateral', () => {
+    const input = straight();
+    input.points = { ...input.points, ankleCentre: [[100, 400]] };
+    assert.equal(simulate(input, measureLeg(input), plan(input, { shiftLateral: 5 })), null);
+  });
+
   it('moves only the landmarks inside the fragment', () => {
     const input = straight(), osteotomy = plan(input);
     const moved = movedLandmarks(input.points, osteotomy, { pivot: [0, 0], degrees: 0, shift: [7, 0] }, [1, 1], [0, 1]);
