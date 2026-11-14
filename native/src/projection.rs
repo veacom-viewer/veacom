@@ -115,8 +115,13 @@ pub fn read(obj: &InMemDicomObject, frame: usize, modality: &str) -> Option<Proj
     let pixel_spacing = frame_value(obj, frame, Tag(0x0028, 0x9110), |v| {
         spacing(v, Tag(0x0028, 0x0030))
     });
-    let imager_pixel_spacing = spacing(obj, Tag(0x0018, 0x1164));
+    // An enhanced XA or XRF keeps it per frame, in the X-Ray Frame Pixel Data Properties Sequence (C.8.19.6.4).
+    let imager_pixel_spacing = frame_value(obj, frame, Tag(0x0028, 0x9443), |group| {
+        spacing(group, Tag(0x0018, 0x1164))
+    });
     let calibration_type = bounded(text(obj, Tag(0x0028, 0x0a02)).to_ascii_uppercase(), 16);
+    // Only the two enumerated values (PS3.3 10.7.1.3) say the spacing was calibrated; other text is kept, claiming nothing.
+    let calibrated_type = matches!(calibration_type.as_str(), "GEOMETRY" | "FIDUCIAL");
     let projection = PROJECTION_MODALITIES.contains(&modality)
         || imager_pixel_spacing.is_some()
         || !calibration_type.is_empty();
@@ -137,9 +142,7 @@ pub fn read(obj: &InMemDicomObject, frame: usize, modality: &str) -> Option<Proj
         _ => false,
     };
     let (basis, used) = match (pixel_spacing, imager_pixel_spacing) {
-        (Some(pixel), _) if corrected || !calibration_type.is_empty() => {
-            (Basis::Calibrated, Some(pixel))
-        }
+        (Some(pixel), _) if corrected || calibrated_type => (Basis::Calibrated, Some(pixel)),
         (Some(pixel), None) => (Basis::Unstated, Some(pixel)),
         // Pixel Spacing equal to Imager Pixel Spacing measured in its millimetres before this module: it keeps them,
         // now named the detector plane, and the factor is not applied on top until the owner decides it should be.
@@ -309,6 +312,73 @@ mod tests {
             )
             .0,
             Basis::Calibrated
+        );
+    }
+
+    #[test]
+    fn a_calibration_type_outside_the_enumerated_values_claims_no_calibration() {
+        let projection = read(
+            &film("DX", &[(PS, VR::DS, "0.3\\0.3"), (TYPE, VR::CS, "UNKNOWN")]),
+            0,
+            "DX",
+        )
+        .unwrap();
+        assert_eq!(
+            (projection.basis, projection.spacing),
+            (Basis::Unstated, Some([0.3, 0.3]))
+        );
+        assert_eq!(projection.calibration_type, "UNKNOWN", "The text is kept.");
+        // With Imager Pixel Spacing equal to Pixel Spacing it stays the detector plane; differing, it is calibrated.
+        let equal = [
+            (PS, VR::DS, "0.33\\0.33"),
+            (IPS, VR::DS, "0.33\\0.33"),
+            (TYPE, VR::CS, "OTHER"),
+        ];
+        assert_eq!(basis("DX", &equal).0, Basis::Detector);
+        let differing = [
+            (PS, VR::DS, "0.3\\0.3"),
+            (IPS, VR::DS, "0.33\\0.33"),
+            (TYPE, VR::CS, "OTHER"),
+        ];
+        assert_eq!(basis("DX", &differing).0, Basis::Calibrated);
+    }
+
+    #[test]
+    fn imager_pixel_spacing_is_read_per_frame_in_an_enhanced_film() {
+        use dicom_core::{Length, value::DataSetSequence};
+        let sequence = |tag: Tag, items: Vec<InMemDicomObject>| {
+            DataElement::new(tag, VR::SQ, DataSetSequence::new(items, Length::UNDEFINED))
+        };
+        // X-Ray Frame Pixel Data Properties holding Imager Pixel Spacing, as a frame's functional group.
+        let group = |value: &str| {
+            let mut properties = InMemDicomObject::new_empty();
+            properties.put(DataElement::new(
+                IPS,
+                VR::DS,
+                PrimitiveValue::Strs(value.split('\\').map(str::to_owned).collect()),
+            ));
+            let mut item = InMemDicomObject::new_empty();
+            item.put(sequence(Tag(0x0028, 0x9443), vec![properties]));
+            item
+        };
+        // Shared: 0.2 mm. The first frame's own group lacks it; the second frame has its own 0.4 mm.
+        let mut obj = film("XA", &[]);
+        obj.put(sequence(Tag(0x5200, 0x9229), vec![group("0.2\\0.2")]));
+        obj.put(sequence(
+            Tag(0x5200, 0x9230),
+            vec![InMemDicomObject::new_empty(), group("0.4\\0.4")],
+        ));
+        let at = |frame| read(&obj, frame, "XA").unwrap();
+        assert_eq!(
+            (at(0).basis, at(0).spacing),
+            (Basis::Detector, Some([0.2, 0.2]))
+        );
+        assert_eq!(at(1).spacing, Some([0.4, 0.4]));
+        assert_eq!(at(1).imager_pixel_spacing, Some([0.4, 0.4]));
+        // A classic film keeps it at the top level.
+        assert_eq!(
+            basis("XA", &[(IPS, VR::DS, "0.3\\0.3")]),
+            (Basis::Detector, Some([0.3, 0.3]))
         );
     }
 

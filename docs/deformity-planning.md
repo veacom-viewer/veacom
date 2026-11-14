@@ -18,7 +18,7 @@ PS3.3 10.7.1.1 and C.8.11.4 give, and the engine says which with each frame:
 
 | Tags | Spacing used | Named |
 | --- | --- | --- |
-| Pixel Spacing that differs from Imager Pixel Spacing, or a Pixel Spacing Calibration Type | Pixel Spacing | "Calibrated for magnification (GEOMETRY)", "Calibrated on an object (FIDUCIAL)" or "Calibrated, method not stated"; after a length "calibrated" |
+| Pixel Spacing that differs from Imager Pixel Spacing, or a Pixel Spacing Calibration Type of GEOMETRY or FIDUCIAL (other text is kept and claims nothing) | Pixel Spacing | "Calibrated for magnification (GEOMETRY)", "Calibrated on an object (FIDUCIAL)" or "Calibrated, method not stated"; after a length "calibrated" |
 | Imager Pixel Spacing alone, with an Estimated Radiographic Magnification Factor of at least 1 | Imager Pixel Spacing ÷ ERMF | "Detector ÷ ERMF 1.10: table depth"; "ERMF ×1.10" |
 | Imager Pixel Spacing alone, or equal to Pixel Spacing (with or without an ERMF) | Imager Pixel Spacing | "Detector plane, not corrected"; "detector plane" |
 | Pixel Spacing alone | Pixel Spacing | "Pixel Spacing: correction not stated"; "calibration not stated" |
