@@ -125,6 +125,16 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
   return { film: withPlan(film, { ...plan, osteotomy }), placing: null };
 }
 
+/** Where a drag of a handle began: the film (filmKey), its active plan, and the pointer. */
+export interface DragContext { key: string; plan: string; pointer: number }
+/** What a pointer move does to a drag: moves the point while it is on the film and plan it began on, with the same
+ * pointer; another pointer is ignored; a drag whose film or plan changed under it (paged, or another plan) stops,
+ * rather than writing a point measured on one film into another. */
+export function dragContinues(held: DragContext, now: DragContext): 'move' | 'ignore' | 'stop' {
+  if (now.pointer !== held.pointer) return 'ignore';
+  return now.key === held.key && now.plan === held.plan ? 'move' : 'stop';
+}
+
 /** What a handle on the film moves. */
 export type Handle = { kind: 'landmark'; name: LandmarkName; index: number } | { kind: 'marker'; index: number }
   | { kind: 'cut'; index: 0 | 1 } | { kind: 'hinge' } | { kind: 'fragment'; index: number };

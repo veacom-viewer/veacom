@@ -14,7 +14,7 @@ import { moved } from '../imaging/deformity/osteotomy';
 import { add, fitCircle, rotate, scale, sub, unit, type Point } from '../imaging/deformity/plane';
 import { toImage, toPlane } from '../imaging/deformity/measure';
 import { deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
-import { fragmentView, moveHandle, movedView, pixelToScreen, place, planView, worldToPixel, type Handle, type PlanView } from '../ui/deformityPlan';
+import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle } from '../usage/tracker';
 
@@ -27,7 +27,7 @@ interface Props { volume: Volume; view: ViewState; size: [number, number]; mappi
 /** The film this pane shows and its plans, when the kit is open and the pane shows one acquired frame. */
 function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, FilmPlans | undefined>>): { film: FilmPlans; frame: Series; key: string } | null {
   if (!usesSourceFrames(volume.series, view)) return null;
-  const slice = Math.round(view.slice), key = filmKey(volume.series.id, slice), film = films[key];
+  const slice = Math.round(view.slice), key = filmKey(volume.series, slice), film = films[key];
   return film ? { film, frame: sourceFrameSeries(volume.series, slice), key } : null;
 }
 
@@ -89,7 +89,7 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
 export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const { t } = useTranslation();
   const state = useDeformity();
-  const drag = useRef<{ handle: Handle; key: string; frame: Series; moved: boolean; gesture: GestureHandle } | null>(null);
+  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }) | null>(null);
   const found = state.open ? shown(volume, view, state.films) : null;
   if (!found) return null;
   const { film, frame, key } = found;
@@ -107,11 +107,16 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     if (event.button !== 0 || placing) return;
     event.stopPropagation(); event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { handle, key, frame, moved: false, gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
+    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
   };
+  const end = (held: NonNullable<typeof drag.current>) => { drag.current = null; held.gesture.end({ result: held.moved ? 'ok' : 'cancel' }); };
   const follow = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held) return;
+    // A drag moves the point it took, on the film and plan it took it on: paged to another film or plan, it stops.
+    const now = dragContinues(held, { key, plan: film.active, pointer: event.pointerId });
+    if (now === 'ignore') return;
+    if (now === 'stop') { end(held); event.currentTarget.releasePointerCapture(event.pointerId); return; }
     const point = pixelAt(local(event));
     // One Undo step for the whole drag: the state before it is remembered on the first move.
     deformity.change(held.key, current => moveHandle(current, held.handle, point), !held.moved);
@@ -119,11 +124,11 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   };
   const release = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
-    if (!held) return;
-    drag.current = null; event.currentTarget.releasePointerCapture(event.pointerId);
-    held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
+    if (!held || held.pointer !== event.pointerId) return;
+    end(held);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
-  const handleProps = (handle: Handle) => ({ onPointerDown: grab(handle), onPointerMove: follow, onPointerUp: release, onPointerCancel: release, style: { pointerEvents: placing ? 'none' : 'all', cursor: 'move' } as const });
+  const handleProps = (handle: Handle) => ({ onPointerDown: grab(handle), onPointerMove: follow, onPointerUp: release, onPointerCancel: release, onLostPointerCapture: release, style: { pointerEvents: placing ? 'none' : 'all', cursor: 'move' } as const });
   const placeHere = (event: ReactPointerEvent<SVGRectElement>) => {
     if (event.button !== 0 || !placing) return;
     event.stopPropagation(); event.preventDefault();

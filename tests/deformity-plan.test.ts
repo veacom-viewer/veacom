@@ -4,7 +4,7 @@ import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
-import { imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, worldToPixel } from '../src/ui/deformityPlan';
+import { dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, worldToPixel } from '../src/ui/deformityPlan';
 import { lateralOnImage } from '../src/imaging/deformity/measure';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
 import { reportHeader } from '../src/ui/deformityReport';
@@ -74,12 +74,30 @@ describe('the patient\'s right, answered on screen', () => {
 
 /** A film's plans as the store makes them, for the right leg only. */
 function film(): FilmPlans {
-  return deformity.ensure('dx', 0, ['R'], { sopInstanceUid: '2.25.1.1', frameNumber: 1 });
+  return deformity.ensure(series, 0, ['R']);
 }
+
+describe('the plans of a film', () => {
+  it('stay with their image when a re-import reorders the series\' frames', () => {
+    // Two films of one series; a re-import puts a new one first, so the first film is now the second frame.
+    const meta = (uid: string) => ({ ...series.frameMetadata![0], sopInstanceUid: uid });
+    const two: Series = { ...series, dimensions: [400, 1000, 2], frameMetadata: [meta('2.25.1.1'), meta('2.25.1.2')] };
+    const key = filmKey(two, 0);
+    deformity.ensure(two, 0, ['R']);
+    deformity.change(key, current => place(current, { film: key, kind: 'landmark', name: 'kneeCentre' }, [200, 500], frame).film);
+    const reordered: Series = { ...two, dimensions: [400, 1000, 3], frameMetadata: [meta('2.25.1.9'), meta('2.25.1.2'), meta('2.25.1.1')] };
+    assert.equal(filmKey(reordered, 2), key, 'The first film\'s plans follow it to its new index.');
+    assert.equal(deformity.get().films[filmKey(reordered, 0)], undefined, 'The new film at index 0 has none of them.');
+    assert.equal(deformity.ensure(reordered, 0, ['R']).plans[0].points.kneeCentre, undefined);
+    assert.deepEqual(deformity.get().films[filmKey(reordered, 2)]?.plans[0].points.kneeCentre, [[200, 500]]);
+    // A frame without a SOP Instance UID is kept by its index.
+    assert.equal(filmKey({ id: 'dx', frameMetadata: undefined }, 1), 'dx:#1');
+  });
+});
 
 describe('placing and moving landmarks', () => {
   it('asks for the landmarks in order, the head\'s outline taking three points', () => {
-    let current = film(), placing = { film: filmKey('dx', 0), kind: 'landmark' as const, name: nextLandmark(current.plans[0])! };
+    let current = film(), placing = { film: filmKey(series, 0), kind: 'landmark' as const, name: nextLandmark(current.plans[0])! };
     assert.equal(placing.name, 'femoralHeadContour');
     const points: Point[] = [[100, 100], [120, 80], [140, 100], [150, 110], [200, 400]];
     const asked: string[] = [];
@@ -96,11 +114,19 @@ describe('placing and moving landmarks', () => {
     assert.deepEqual(moved.plans[0].provenance.greaterTrochanterTip, ['moved']);
   });
 
+  it('moves a dragged point only on the film and plan the drag began on, with its pointer', () => {
+    const held = { key: 'dx:a:1', plan: 'plan-1', pointer: 7 };
+    assert.equal(dragContinues(held, { ...held }), 'move');
+    assert.equal(dragContinues(held, { ...held, pointer: 8 }), 'ignore', 'Another pointer does not move it.');
+    assert.equal(dragContinues(held, { ...held, key: 'dx:b:1' }), 'stop', 'Paged to another film, the drag stops.');
+    assert.equal(dragContinues(held, { ...held, plan: 'plan-2' }), 'stop', 'On another plan, the drag stops.');
+  });
+
   it('makes each change one Undo step, and a drag one step for all its moves', () => {
     film();
     let remembered = 0;
     deformity.connectUndo(() => { remembered++; });
-    const key = filmKey('dx', 0), handle = { kind: 'landmark' as const, name: 'kneeCentre' as const, index: 0 };
+    const key = filmKey(series, 0), handle = { kind: 'landmark' as const, name: 'kneeCentre' as const, index: 0 };
     deformity.change(key, current => place(current, { film: key, kind: 'landmark', name: 'kneeCentre' }, [200, 500], frame).film);
     const before = deformity.snapshot();
     for (const [index, point] of ([[201, 500], [202, 501], [203, 502]] as Point[]).entries()) deformity.change(key, current => moveHandle(current, handle, point), index === 0);
@@ -113,7 +139,7 @@ describe('placing and moving landmarks', () => {
 
 describe('the plan file', () => {
   const planned = () => {
-    const key = filmKey('dx', 0);
+    const key = filmKey(series, 0);
     film();
     for (const [name, point] of [['kneeCentre', [200, 500]], ['ankleCentre', [205, 900]]] as const) deformity.change(key, current => place(current, { film: key, kind: 'landmark', name }, point, frame).film);
     return deformity.get().films[key]!;

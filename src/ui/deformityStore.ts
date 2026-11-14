@@ -8,6 +8,7 @@ import type { LandmarkName } from '../imaging/deformity/landmarks';
 import type { Landmarks, Side } from '../imaging/deformity/measure';
 import type { Osteotomy } from '../imaging/deformity/osteotomy';
 import type { Point } from '../imaging/deformity/plane';
+import type { Series } from '../model';
 
 /** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
 export interface LegPlan {
@@ -18,13 +19,13 @@ export interface LegPlan {
 }
 
 /** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it
- * calibrates the series is the series' own state (App's measurement scale, radiograph.ts), not the plan's: Undo of a plan
- * step never changes a calibration. */
+ * calibrates the film is the film's own state (App's film calibrations, radiograph.ts withFilmCalibrations), not the
+ * plan's: Undo of a plan step never changes a calibration. */
 export interface Marker { method: 'ball' | 'ruler'; points: Point[]; knownMm: number; depthConfirmed: boolean }
 
 export interface FilmPlans {
-  /** The pane's film: the series and its frame, with the frame's SOP Instance UID and frame number, which a saved plan
-   * is matched by (as a hash). */
+  /** The pane's film: the series and its frame (the index when the plans were made), with the frame's SOP Instance UID
+   * and frame number, which the plans are kept by (filmKey) and a saved plan is matched by (as a hash). */
   seriesId: string; frame: number; sopInstanceUid: string; frameNumber: number;
   plans: LegPlan[]; active: string;
   /** The reader's answer when the film has no Patient Orientation: which side of the image the patient's right is on. */
@@ -44,7 +45,15 @@ export interface DeformityState {
   simulate: boolean;
 }
 
-export const filmKey = (seriesId: string, frame: number) => `${seriesId}:${frame}`;
+/**
+ * The key a film's plans are kept by: the series and the image's own identity, its SOP Instance UID and frame number,
+ * so that the plans stay with that image when a re-import adds or reorders the series' frames (as measurements do).
+ * The frame's index only for an image without a SOP Instance UID.
+ */
+export function filmKey(series: Pick<Series, 'id' | 'frameMetadata'>, frame: number): string {
+  const metadata = series.frameMetadata?.[frame];
+  return metadata?.sopInstanceUid ? `${series.id}:${metadata.sopInstanceUid}:${metadata.sourceFrameNumber ?? 1}` : `${series.id}:#${frame}`;
+}
 
 let state: DeformityState = { open: false, films: {}, placing: null, simulate: true };
 const listeners = new Set<() => void>();
@@ -62,11 +71,12 @@ export const deformity = {
   setPlacing(placing: Placing | null) { set({ ...state, placing }); },
   setSimulate(simulate: boolean) { set({ ...state, simulate }); },
   /** The film's plans, made with one plan per side the film shows when it has none yet (not an undo step). */
-  ensure(seriesId: string, frame: number, sides: Side[], identity: { sopInstanceUid: string; frameNumber: number }): FilmPlans {
-    const key = filmKey(seriesId, frame), existing = state.films[key];
+  ensure(series: Pick<Series, 'id' | 'uid' | 'frameMetadata'>, frame: number, sides: Side[]): FilmPlans {
+    const key = filmKey(series, frame), existing = state.films[key];
     if (existing) return existing;
-    const plans = sides.map(side => newPlan(side));
-    const film: FilmPlans = { seriesId, frame, ...identity, plans, active: plans[0].id, marker: null };
+    const plans = sides.map(side => newPlan(side)), metadata = series.frameMetadata?.[frame];
+    const film: FilmPlans = { seriesId: series.id, frame, sopInstanceUid: metadata?.sopInstanceUid ?? series.uid, frameNumber: metadata?.sourceFrameNumber ?? 1,
+      plans, active: plans[0].id, marker: null };
     set({ ...state, films: { ...state.films, [key]: film } });
     return film;
   },

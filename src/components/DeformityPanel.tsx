@@ -99,7 +99,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const { t, locale } = useTranslation();
   const state = useDeformity();
   const series = volume.series, frameIndex = Math.round(slice), frame = sourceFrameSeries(series, frameIndex);
-  const key = filmKey(series.id, frameIndex), film = state.films[key];
+  const key = filmKey(series, frameIndex), film = state.films[key];
   const projection = projectionOf(frame);
   const [bone, setBone] = useState<Osteotomy['bone']>('tibia');
   const [status, setStatus] = useState<string | null>(null);
@@ -107,8 +107,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const fileInput = useRef<HTMLInputElement>(null);
   useEffect(() => { deformity.setOpen(true); return () => deformity.setOpen(false); }, []);
   useEffect(() => {
-    const metadata = series.frameMetadata?.[frameIndex];
-    deformity.ensure(series.id, frameIndex, sidesOf(projection?.laterality), { sopInstanceUid: metadata?.sopInstanceUid ?? series.uid, frameNumber: metadata?.sourceFrameNumber ?? 1 });
+    deformity.ensure(series, frameIndex, sidesOf(projection?.laterality));
     // Undo past the film's first step removes it from the store: it is made again, empty.
   }, [series.id, series.uid, series.frameMetadata, frameIndex, projection?.laterality, Boolean(film)]);
   // Esc stops placing points wherever focus is (the pane included); the next Esc in the panel closes it.
@@ -204,10 +203,21 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       // Captured at the report's own resolution (pictureSize), so the drawing is sharp whatever the screen.
       const header = reportHeader(series, frame, hidePatientData, t), bounds = element.getBoundingClientRect();
       const outputSize = pictureSize(bounds, view.simulation ? 2 : 1, header.length);
-      const pictures = [{ caption: t('deformity.report.now'), canvas: await captureViewportCanvas(element, { hidePatientData, outputSize }) }];
+      // The pictures must show the film and plan the tables are made from: a pane paged or given another series while
+      // they are drawn (captureViewportCanvas checks the slice and series), or a plan changed, stops the report.
+      const planned = deformity.get().films[key];
+      const capture = async () => {
+        const canvas = await captureViewportCanvas(element, { hidePatientData, outputSize }, { slice: frameIndex, seriesId: series.id }).catch((error: unknown) => {
+          const code = (error as { messageKey?: string } | null)?.messageKey;
+          throw code === 'video.sliceMissing' || code === 'video.paneChanged' ? REPORT_CHANGED : error;
+        });
+        if (deformity.get().films[key] !== planned) throw REPORT_CHANGED;
+        return canvas;
+      };
+      const pictures = [{ caption: t('deformity.report.now'), canvas: await capture() }];
       if (view.simulation) {
         deformity.setSimulate(true); await frames(3);
-        pictures.push({ caption: t('deformity.report.planned'), canvas: await captureViewportCanvas(element, { hidePatientData, outputSize }) });
+        pictures.push({ caption: t('deformity.report.planned'), canvas: await capture() });
       }
       const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name, leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t), normalText(name) || undefined]) },
         { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey)]) },
@@ -226,7 +236,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         footer: [view.simulation ? t('deformity.report.simulated') : '', t('deformity.report.footer', { version: window.veacom?.getVersion() ?? '', date: new Date().toLocaleString(locale) })].filter(Boolean) });
       const where = await save('veacom-deformity-report.png', await pngBytes(canvas));
       setStatus(where ? t('deformity.reportSaved', { file: where.split(/[\\/]/).pop() ?? where }) : null);
-    } catch (error) { setStatus(t('deformity.failed', { reason: error instanceof Error ? error.message : String(error) })); }
+    } catch (error) { setStatus(error === REPORT_CHANGED ? t('deformity.reportChanged') : t('deformity.failed', { reason: error instanceof Error ? error.message : String(error) })); }
     finally { deformity.setSimulate(simulated); setBusy(false); }
   };
 
@@ -402,6 +412,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     </footer>
   </section>;
 }
+
+/** Thrown when the pane or the plan changed while the report's pictures were drawn. */
+const REPORT_CHANGED = new Error('The film or the plan changed while the report was drawn.');
 
 function coraText(view: PlanView, bone: 'femur' | 'tibia', t: Translator): string {
   const cora = view.cora[bone], leg = view.leg;
