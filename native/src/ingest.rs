@@ -73,7 +73,7 @@ fn frame_group(obj: &InMemDicomObject, frame: usize, shared: bool) -> Option<&In
     .get(if shared { 0 } else { frame })
 }
 
-fn frame_value<T>(
+pub(crate) fn frame_value<T>(
     obj: &InMemDicomObject,
     frame: usize,
     sequence: Tag,
@@ -99,7 +99,7 @@ fn first_number(obj: &InMemDicomObject, tag: Tag) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-fn nonempty_text(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
+pub(crate) fn nonempty_text(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
     let value = text(obj, tag);
     (!value.is_empty()).then_some(value)
 }
@@ -1069,6 +1069,7 @@ fn frame_metadata(
         voi_lut: None,
         voi_function: None,
         nm: None,
+        projection: None,
     }
 }
 
@@ -1898,6 +1899,12 @@ fn read_frames_budget(
                 None
             }
         });
+        // A projection radiograph measures with the spacing the DICOM rules give (projection.rs), named with it.
+        let projection = crate::projection::read(&obj, index, &modality);
+        let pixel_spacing = match &projection {
+            Some(projection) => projection.spacing,
+            None => pixel_spacing,
+        };
         let slice_thickness = frame_value(&obj, index, Tag(0x0028, 0x9110), |v| {
             number(v, Tag(0x0018, 0x0050))
         });
@@ -1982,6 +1989,16 @@ fn read_frames_budget(
         let mut warnings = crate::message::Notes::from(pet_warnings.clone());
         if modality == "PT" && !lut_suv_compatible && suv_factor.is_some() {
             warnings.push(note!("series.suvLutUnits", "SUV conversion is unavailable because Modality LUT output units differ from the PET calibration units"));
+        }
+        if let Some(value) = projection
+            .as_ref()
+            .and_then(|projection| projection.ignored_magnification.clone())
+        {
+            warnings.push(note!(
+                "projection.badMagnification",
+                "Estimated Radiographic Magnification Factor {value} is not a magnification and was left out",
+                value = value
+            ));
         }
         // A gated SPECT's gate is its frame's time: each gate becomes a phase of its own, in the file's order.
         let gate = camera.as_ref().and_then(|camera| camera.gate(index));
@@ -2169,6 +2186,7 @@ fn read_frames_budget(
         metadata.padding_is_nan = padding_is_nan;
         metadata.voi_function = voi_function;
         metadata.nm = camera.as_ref().and_then(|camera| camera.frame(index));
+        metadata.projection = projection;
         metadata.sop_instance_uid = text(&obj, Tag(0x0008, 0x0018));
         metadata.source_frame_number = (frames > 1).then_some(index as u32 + 1);
         if segmentation.is_some() {
@@ -5539,6 +5557,117 @@ mod tests {
     }
     fn import_dir(dir: &crate::test_dir::TempDir) -> Imported {
         import(&[dir.path().to_string_lossy().into_owned()]).unwrap()
+    }
+    /// A one-frame DX of its own series, with these spacing and orientation tags (text values).
+    fn radiograph(series: u32, tags: &[(Tag, VR, &str)]) -> InMemDicomObject {
+        let mut obj = metadata_object(1);
+        for tag in [
+            Tag(0x0028, 0x0030),
+            Tag(0x0020, 0x0037),
+            Tag(0x0018, 0x0050),
+            Tag(0x0028, 0x0008),
+        ] {
+            obj.remove_element(tag);
+        }
+        obj.put(DataElement::new(
+            Tag(0x0008, 0x0016),
+            VR::UI,
+            "1.2.840.10008.5.1.4.1.1.1.1",
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0008, 0x0018),
+            VR::UI,
+            format!("2.25.7710.{series}"),
+        ));
+        obj.put(DataElement::new(Tag(0x0008, 0x0060), VR::CS, "DX"));
+        obj.put(DataElement::new(
+            Tag(0x0020, 0x000e),
+            VR::UI,
+            format!("2.25.7711.{series}"),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0020, 0x0011),
+            VR::IS,
+            series.to_string(),
+        ));
+        for (tag, vr, value) in tags {
+            obj.put(DataElement::new(*tag, *vr, *value));
+        }
+        obj
+    }
+    #[test]
+    fn a_radiograph_measures_with_the_spacing_the_dicom_rules_give_and_names_it() {
+        let ips = (Tag(0x0018, 0x1164), VR::DS, "0.33\\0.33");
+        let dir = write_slices(vec![
+            radiograph(
+                1,
+                &[
+                    ips,
+                    (Tag(0x0020, 0x0020), VR::CS, "L\\F"),
+                    (Tag(0x0020, 0x0062), VR::CS, "B"),
+                ],
+            ),
+            radiograph(2, &[ips, (Tag(0x0018, 0x1114), VR::DS, "1.1")]),
+            radiograph(3, &[ips, (Tag(0x0018, 0x1114), VR::DS, "0.5")]),
+            radiograph(
+                4,
+                &[
+                    (Tag(0x0028, 0x0030), VR::DS, "0.3\\0.3"),
+                    ips,
+                    (Tag(0x0028, 0x0a02), VR::CS, "FIDUCIAL"),
+                ],
+            ),
+            radiograph(5, &[]),
+        ]);
+        let imported = import_dir(&dir);
+        let mut sources: Vec<_> = imported.sources.iter().map(|source| &source.info).collect();
+        sources.sort_by_key(|info| info.series_number);
+        let codes = |info: &Series| {
+            info.warnings
+                .iter()
+                .map(|note| note.code)
+                .collect::<Vec<_>>()
+        };
+        let basis = |info: &Series| info.frame_metadata[0].projection.as_ref().map(|p| p.basis);
+        let detector = sources[0];
+        assert!(detector.spacing_known);
+        assert_eq!(&detector.spacing[..2], &[0.33, 0.33]);
+        assert_eq!(basis(detector), Some(crate::projection::Basis::Detector));
+        let projection = detector.frame_metadata[0].projection.as_ref().unwrap();
+        assert_eq!(
+            (
+                projection.patient_orientation.clone(),
+                projection.laterality.as_str()
+            ),
+            (vec!["L".to_owned(), "F".to_owned()], "B")
+        );
+        assert!(!codes(detector).contains(&"series.noPixelSpacing"));
+        let corrected = sources[1];
+        assert_eq!(
+            basis(corrected),
+            Some(crate::projection::Basis::Magnification)
+        );
+        assert!(
+            (corrected.spacing[0] - 0.3).abs() < 1e-12
+                && (corrected.spacing[1] - 0.3).abs() < 1e-12
+        );
+        // A factor below one is no magnification: left out, and said.
+        let ignored = sources[2];
+        assert_eq!(basis(ignored), Some(crate::projection::Basis::Detector));
+        assert!(
+            codes(ignored).contains(&"projection.badMagnification"),
+            "{:?}",
+            codes(ignored)
+        );
+        assert_eq!(
+            basis(sources[3]),
+            Some(crate::projection::Basis::Calibrated)
+        );
+        assert_eq!(&sources[3].spacing[..2], &[0.3, 0.3]);
+        let pixels = sources[4];
+        assert!(!pixels.spacing_known);
+        assert_eq!(basis(pixels), Some(crate::projection::Basis::None));
+        assert!(codes(pixels).contains(&"series.noPixelSpacing"));
     }
     fn phase(source: &SourceSeries) -> &PhaseIdentity {
         source.info.phase.as_ref().expect("series has no phase")

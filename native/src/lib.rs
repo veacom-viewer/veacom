@@ -40,6 +40,7 @@ pub mod parallel;
 pub mod patient;
 pub mod pictures;
 pub mod progress;
+pub mod projection;
 pub mod random;
 pub mod rle_guard;
 pub mod sampling;

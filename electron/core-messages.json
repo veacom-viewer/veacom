@@ -28,6 +28,7 @@
 
     "series.ordinaryImage": "Resim dosyası, DICOM değil: fiziksel aralık ve hasta geometrisi yok.",
     "series.noPixelSpacing": "Fiziksel ölçüm yapılamaz: Pixel Spacing yok.",
+    "projection.badMagnification": "Estimated Radiographic Magnification Factor {value} bir büyütme değeri değil; kullanılmadı.",
     "series.tooManyVoiLuts": "VOI LUT uygulanmadı: kareler 16'dan fazla farklı tablo taşıyor.",
     "series.suvNotCalibrated": "SUV hesaplanamıyor: PET değerleri Bq/ml ya da SUV olarak kalibre değil.",
     "series.suvIncomplete": "SUV hesaplanamıyor: ağırlık, doz, bozunma düzeltmesi ya da enjeksiyon zamanı eksik veya tutarsız.",
