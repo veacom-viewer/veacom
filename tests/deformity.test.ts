@@ -138,9 +138,9 @@ describe('the malalignment test and the CORA', () => {
   it('names where a varus knee comes from', () => {
     const input = straight();
     input.points = { ...input.points, ankleCentre: [[40, 800]] };
-    const steps = malalignmentTest(measureLeg(input), input.points, input.mmPerPixel, input.lateral);
+    const steps = malalignmentTest(measureLeg(input));
     assert.deepEqual(steps.map(step => [step.step, step.result]), [['mad', 'varus'], ['femur', 'normal'], ['tibia', 'normal'], ['joint', 'varus'], ['subluxation', 'normal']]);
-    const pixels = malalignmentTest(measureLeg({ ...input, mmPerPixel: null }), input.points, null, input.lateral);
+    const pixels = malalignmentTest(measureLeg({ ...input, mmPerPixel: null }));
     assert.equal(pixels[0].result, 'unassessable');
     assert.deepEqual(pixels[4].missing, { reason: 'calibration' });
   });
@@ -177,10 +177,26 @@ describe('the malalignment test and the CORA', () => {
       femoralHeadContour: [at(-20), at(0, 20), at(20)], kneeCentre: [at(400)], ankleCentre: [at(800)],
       femoralCondyleMedial: [at(400, -20)], femoralCondyleLateral: [at(400, 20)],
       tibialPlateauMedial: [at(408, -20)], tibialPlateauLateral: [at(408, 20)] } };
-    const subluxation = (points: LegInput['points']) => malalignmentTest(measureLeg({ ...input, points }), points, [1, 1], [-1, 0]).at(-1)!.result;
+    const subluxation = (points: LegInput['points']) => malalignmentTest(measureLeg({ ...input, points })).at(-1)!.result;
     assert.equal(subluxation(input.points), 'normal');
     // Shifted 4 mm across the leg, it is.
     assert.equal(subluxation({ ...input.points, tibialPlateauMedial: [at(408, -16)], tibialPlateauLateral: [at(408, 24)] }), 'subluxed');
+  });
+
+  it('withholds subluxation until the landmarks define a transverse direction', () => {
+    const input = straight();
+    const joints: LegInput['points'] = {
+      femoralCondyleMedial: [[20, 410]], femoralCondyleLateral: [[-20, 410]],
+      tibialPlateauMedial: [[30, 415]], tibialPlateauLateral: [[-10, 415]],
+    };
+    const step = (points: LegInput['points']) => malalignmentTest(measureLeg({ ...input, points })).at(-1);
+    const noAxis = { step: 'subluxation', result: 'unassessable', missing: { reason: 'axis' } };
+    assert.deepEqual(step(joints), noAxis);
+    assert.deepEqual(step({ ...joints, kneeCentre: [[0, 400]], ankleCentre: [[0, 400]] }), noAxis);
+    assert.deepEqual(step({ ...joints, kneeCentre: [[0, 400]], ankleCentre: [[100, 400]] }),
+      { step: 'subluxation', result: 'unassessable', missing: { reason: 'parallel' } });
+    assert.deepEqual(step({ ...joints, kneeCentre: [[0, 400]], ankleCentre: [[0, 800]] }),
+      { step: 'subluxation', result: 'subluxed' });
   });
 
   it('gives no line, and says why, for a pair placed on one point', () => {
@@ -189,6 +205,7 @@ describe('the malalignment test and the CORA', () => {
     input.points = { ...input.points, femoralCondyleMedial: [[0, 410]], femoralCondyleLateral: [[0.2, 410]] };
     const leg = measureLeg(input);
     assert.deepEqual(leg.together, ['femoralCondyleMedial', 'femoralCondyleLateral']);
+    assert.deepEqual(malalignmentTest(leg).at(-1)?.missing, { together: leg.together });
     for (const key of ['mLDFA', 'aLDFA', 'JLCA'] as const) {
       assert.equal(leg.values[key].value, null, key);
       assert.deepEqual(leg.values[key].missing, { together: ['femoralCondyleMedial', 'femoralCondyleLateral'] }, key);

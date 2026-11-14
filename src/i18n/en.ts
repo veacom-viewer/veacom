@@ -568,6 +568,7 @@ export const en = {
   'deformity.needsSide': 'Needs the patient\'s right',
   'deformity.together': '{names}: on one point, so no line',
   'deformity.needsCalibration': 'Needs a calibration',
+  'deformity.needsLimbAxis': 'Place two distinct centres from the hip, knee or ankle to define the leg axis.',
   'deformity.parallel': 'Lines are parallel',
   'deformity.needsLandmarks': 'Place the hip, knee and ankle first.',
   'deformity.squarePixels': 'Without a calibration, angles assume square pixels.',

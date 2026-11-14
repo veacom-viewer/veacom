@@ -69,7 +69,8 @@ export function missingText(missing: Missing | undefined, t: Translator): string
   if (!missing) return '';
   if ('landmarks' in missing) return t('deformity.needs', { names: missing.landmarks.map(name => t(LANDMARK_TEXT[name].name)).join(', ') });
   if ('together' in missing) return t('deformity.together', { names: missing.together.map(name => t(LANDMARK_TEXT[name].name)).join(', ') });
-  return t(missing.reason === 'side' ? 'deformity.needsSide' : missing.reason === 'calibration' ? 'deformity.needsCalibration' : 'deformity.parallel');
+  const labels = { side: 'deformity.needsSide', axis: 'deformity.needsLimbAxis', calibration: 'deformity.needsCalibration', parallel: 'deformity.parallel' } as const;
+  return t(labels[missing.reason]);
 }
 
 async function save(name: string, data: ArrayBuffer | string): Promise<string | null> {

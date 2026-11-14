@@ -35,7 +35,7 @@ export function planView(film: FilmPlans, series: Series, plan: LegPlan = active
   const osteotomy = plan.osteotomy;
   const simulation = osteotomy ? simulate(input, leg, osteotomy) : null;
   const bone = osteotomy ? cora[osteotomy.bone] : null;
-  return { film, plan, mm, lateral, askRight, input, leg, cora, steps: malalignmentTest(leg, plan.points, mm, lateral), simulation,
+  return { film, plan, mm, lateral, askRight, input, leg, cora, steps: malalignmentTest(leg), simulation,
     rule: osteotomy && bone ? paleyRule(osteotomy, bone, mm) : null };
 }
 

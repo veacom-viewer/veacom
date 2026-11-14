@@ -571,6 +571,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.together': '{names}: aynı noktada, çizgi yok',
   'deformity.needsSide': 'Hastanın sağı gerekli',
   'deformity.needsCalibration': 'Kalibrasyon gerekli',
+  'deformity.needsLimbAxis': 'Bacak eksenini tanımlamak için kalça, diz veya ayak bileği merkezlerinden ikisini ayrı noktalara yerleştirin.',
   'deformity.parallel': 'Çizgiler paralel',
   'deformity.needsLandmarks': 'Önce kalça, diz ve ayak bileğini işaretleyin.',
   'deformity.squarePixels': 'Kalibrasyon yokken açılar kare piksel varsayar.',

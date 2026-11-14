@@ -10,47 +10,28 @@
 // hinged on it
 // correct without translation (Paley's rules 1 and 2).
 import type { LandmarkName } from './landmarks';
-import { type Leg, type Landmarks, type Missing, toPlane, toImage } from './measure';
+import { type Leg, type Missing, toPlane, toImage } from './measure';
 import { CORA_ANGLES } from './normals';
-import { angleBetween, along, dot, intersect, midpoint, type Point, rotate, scale, sub, unit } from './plane';
+import { angleBetween, along, dot, intersect, type Point, rotate, scale, sub, unit } from './plane';
 
 export type StepResult = 'normal' | 'varus' | 'valgus' | 'subluxed' | 'unassessable';
 export interface Step { step: 'mad' | 'femur' | 'tibia' | 'joint' | 'subluxation'; result: StepResult; missing?: Missing }
 
 /** The five steps of the malalignment test. Subluxation: the femoral and tibial joint midpoints, across the leg. */
-export function malalignmentTest(leg: Leg, points: Landmarks, mmPerPixel: readonly [number, number] | null, lateral: Point | null): Step[] {
+export function malalignmentTest(leg: Leg): Step[] {
   const v = leg.values;
   const graded = (step: Step['step'], value: number | null, missing: Missing | undefined, low: number, high: number, below: StepResult, above: StepResult): Step =>
     value === null ? { step, result: 'unassessable', missing: missing ?? { reason: 'parallel' } }
       : { step, result: value < low ? below : value > high ? above : 'normal' };
-  const steps: Step[] = [
+  return [
     v.MAD.unit === 'mm' ? graded('mad', v.MAD.value, v.MAD.missing, 1, 15, 'valgus', 'varus') : { step: 'mad', result: 'unassessable', missing: v.MAD.missing ?? { reason: 'calibration' } },
     graded('femur', v.mLDFA.value, v.mLDFA.missing, 85, 90, 'valgus', 'varus'),
     graded('tibia', v.MPTA.value, v.MPTA.missing, 85, 90, 'varus', 'valgus'),
     graded('joint', v.JLCA.value, v.JLCA.missing, -2, 2, 'valgus', 'varus'),
+    typeof leg.jointOffsetMm === 'number'
+      ? { step: 'subluxation', result: leg.jointOffsetMm > 3 ? 'subluxed' : 'normal' }
+      : { step: 'subluxation', result: 'unassessable', missing: leg.jointOffsetMm },
   ];
-  const names: LandmarkName[] = ['femoralCondyleMedial', 'femoralCondyleLateral', 'tibialPlateauMedial', 'tibialPlateauLateral'];
-  const absent = names.filter(name => !points[name]?.length);
-  if (absent.length) steps.push({ step: 'subluxation', result: 'unassessable', missing: { landmarks: absent } });
-  else if (!mmPerPixel) steps.push({ step: 'subluxation', result: 'unassessable', missing: { reason: 'calibration' } });
-  else if (!lateral) steps.push({ step: 'subluxation', result: 'unassessable', missing: { reason: 'side' } });
-  else {
-    const plane = (name: LandmarkName) => toPlane(points[name]![0], mmPerPixel);
-    const femoral = midpoint(plane('femoralCondyleMedial'), plane('femoralCondyleLateral')), tibial = midpoint(plane('tibialPlateauMedial'), plane('tibialPlateauLateral'));
-    // Across the leg: the film's lateral made square to the leg's axis, as measureLeg does, so that the joint's own
-    // height along an oblique leg does not count as a shift.
-    const film = unit(toPlane(lateral, mmPerPixel))!, axis = legAxis(leg, mmPerPixel);
-    const across = (axis && unit(sub(film, scale(axis, dot(film, axis))))) ?? film;
-    steps.push({ step: 'subluxation', result: Math.abs(dot(sub(tibial, femoral), across)) > 3 ? 'subluxed' : 'normal' });
-  }
-  return steps;
-}
-
-/** The leg's axis, distally, in the measurement plane: hip to ankle, else knee to ankle, else hip to knee. */
-function legAxis(leg: Leg, mmPerPixel: readonly [number, number] | null): Point | null {
-  const plane = (p: Point | null | undefined) => p ? toPlane(p, mmPerPixel) : null;
-  const H = plane(leg.hip?.centre), K = plane(leg.knee), A = plane(leg.ankle);
-  return H && A ? unit(sub(A, H)) : K && A ? unit(sub(A, K)) : H && K ? unit(sub(K, H)) : null;
 }
 
 /** What a bone's CORA needs that the plan does not have: its landmarks (placed apart), then the patient's right. */

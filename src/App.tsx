@@ -633,7 +633,8 @@ export default function App() {
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
   // The film the active pane shows, with its calibration (a ball or ruler holds for one film), for the inspector.
-  const shownFilm = activeVolume && usesSourceFrames(activeVolume.series, activeDisplayView) ? sourceFrameSeries(activeVolume.series, activeDisplayView.slice) : activeSeries;
+  const shownFilm = activeVolume && usesSourceFrames(activeVolume.series, activeDisplayView)
+    ? sourceFrameSeries(activeVolume.series, activeDisplayView.slice) : activeVolume?.series ?? activeSeries;
   const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
