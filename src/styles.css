@@ -195,6 +195,11 @@
   position: absolute; top: 12px; left: 50%; transform: translateX(-50%); max-width: calc(100% - 24px); padding: 4px 10px; pointer-events: none;
   border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--label-chip); color: var(--text-strong); font-size: var(--text-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+/* A caliper under way: its next point in full (wrapped, not cut), then what its set-up changed, with Undo. */
+.viewport-caliper { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 6px; width: max-content; max-width: calc(100% - 24px); pointer-events: none; }
+.viewport-caliper > .viewport-hint { position: static; transform: none; max-width: 100%; white-space: normal; text-align: center; }
+.caliper-setup { display: flex; align-items: center; gap: 10px; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--label-chip); color: var(--text-strong); font-size: var(--text-sm); pointer-events: auto; }
+.caliper-setup button { padding: 0; border: 0; background: none; color: var(--accent); font: inherit; text-decoration: underline; cursor: pointer; }
 .annotation-prompt {
   position: absolute; z-index: 7; display: grid; gap: 6px; padding: 10px;
   border: 1px solid var(--line-strong); border-radius: 8px; background: var(--bg-menu); box-shadow: var(--shadow-popover);

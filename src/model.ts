@@ -10,6 +10,11 @@ export type Tool = 'scroll' | 'window' | 'pan' | 'zoom' | 'rotate' | 'none' | 'l
 export type ReferenceRole = 'liver' | 'bloodPool';
 /** A Deauville score the reader confirmed: 1–5, or X (new uptake unlikely to be lymphoma). */
 export type DeauvilleScore = 1 | 2 | 3 | 4 | 5 | 'X';
+/** What a CLOSE caliper measures (src/imaging/calipers.ts): olfactory fossa depth with the Gera angle, the anterior
+ * ethmoidal artery's distance below the skull base, sphenoid pneumatisation against the sella lines, septal deviation. */
+export type CaliperKind = 'keros' | 'aea' | 'sella' | 'septum';
+/** A measurement drawn for a checklist item and side: its kind, and the plane's up and normal when it was drawn. */
+export interface CaliperTag { kind: CaliperKind; item: string; side: 'right' | 'left' | 'both'; up: Vec3; normal: Vec3 }
 export interface FrameMetadata {
   origin: Vec3; direction: number[]; spacing: Vec3;
   windowCenter?: number; windowWidth?: number;
@@ -167,6 +172,8 @@ export interface Annotation {
   threshold?: 'max41' | 'suv2.5';
   priorLesionId?: string;
   regionSeeds?: number[];
+  /** A length or angle drawn as a CLOSE caliper: what it measures for the pre-operative checklist. */
+  caliper?: CaliperTag;
 }
 export type WheelAction = 'scroll' | 'zoom' | 'rotate' | 'none';
 export interface ViewState {
@@ -221,6 +228,9 @@ export interface ViewportProps {
   onRotateReference?: (id: string, oblique: [number, number]) => void;
   /** Shown in the accessible name when several panes are open, so they can be told apart. */
   paneNumber?: number;
+  /** A CLOSE caliper under way in this pane: what to click, point by point (`key` names the caliper), and what setting
+   * the pane up for it changed, with its Undo. */
+  caliper?: { key: string; prompts: readonly string[]; setUp?: { text: string; onUndo: () => void } };
 }
 export interface VolumeViewProps {
   volume: Volume; crosshair: Vec3 | null;
@@ -320,6 +330,8 @@ export interface DesktopBridge {
   exportFolder?: () => Promise<string>;
   /** Text onto the system clipboard. */
   copyText?: (text: string) => Promise<void>;
+  /** The system print dialog for the page; false when the reader cancels it. */
+  printPage?: () => Promise<boolean>;
   /** A picture onto the system clipboard: its opaque RGBA pixels, rows from the top. */
   copyImage?: (picture: { width: number; height: number; pixels: ArrayBuffer }) => Promise<void>;
   chooseExportFolder?: () => Promise<string | null>;

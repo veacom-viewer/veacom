@@ -18,7 +18,10 @@ import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, caliperView, onCaliperPlane, snapCaliper } from './imaging/calipers';
+import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
+import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -44,7 +47,7 @@ import { LesionTable } from './components/LesionTable';
 import { PetReportCopy } from './components/PetReportCopy';
 import { priorLesions } from './imaging/priorLesions';
 import { useAnnotationSummary } from './imaging/useAnnotationSummary';
-import type { Annotation, FusionSettings, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewState, Volume, WheelAction } from './model';
+import type { Annotation, CaliperKind, FusionSettings, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, Volume, WheelAction } from './model';
 import { chooseLocale, errorMessage, LOCALES, t, type MessageKey, type MessageParams } from './i18n';
 import { useTranslation } from './i18n/react';
 import { warningTexts } from './i18n/core';
@@ -110,6 +113,7 @@ type Notice = { message: string; kind: 'error' | 'info'; key?: MessageKey; param
 type Graphics = { renderer: string; software: boolean; webgl?: string };
 
 const EMPTY_ANNOTATIONS: Annotation[] = [];
+const samePoints = (a: readonly Vec3[], b: readonly Vec3[]) => a.length === b.length && a.every((point, i) => point.every((value, axis) => value === b[i][axis]));
 const EMPTY_REFERENCES: { id: string; series: Series; view: ViewState }[] = [];
 const TOOLS: readonly Tool[] = ['scroll', 'window', 'pan', 'zoom', 'rotate', 'none', 'length', 'angle', 'cobb', 'rectangle', 'ellipse', 'polygon', 'polyline', 'probe', 'arrow', 'text', 'crosshair', 'sphere'];
 const WHEEL_ACTIONS: readonly WheelAction[] = ['scroll', 'zoom', 'rotate', 'none'];
@@ -262,13 +266,17 @@ const PALETTE_SWATCHES = { gray: 'linear-gradient(90deg, #000, #fff)', hot: 'lin
 /** A pane dragged by its grip onto another: the two swap places. */
 const PANE_DRAG = 'application/x-veacom-pane';
 
+/** A CLOSE caliper asked for from the checklist; `setUp`: the pane it turned to its plane or bone window, what that pane
+ * says about it with Undo, and every pane's view before (a linked pane can move with it). */
+type CaliperRequest = { kind: CaliperKind; item: string; side: Side; study: string;
+  setUp?: { slotId: string; text: string; views: Array<{ id: string; seriesId: string | null; view: ViewState }> } };
 /** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
  * rearranged. A sticky one stays until the reader's next action instead of a few seconds. */
 type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
   onUndo?: () => void; undoAction?: 'pair' | 'arrangement'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
 
 function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references,
-  onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast }: {
+  onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
   slot: Slot; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
   annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
   interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
@@ -284,6 +292,8 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
   onClose: (id: string) => void; onMaximize: (id: string) => void; onCyclePlane: (id: string) => void;
   /** Set while this pane is maximized: back to the layout it came from. */
   onRestore?: () => void;
+  /** A CLOSE caliper under way here: what to click next. */
+  caliper?: ViewportProps['caliper'];
 }) {
   const { t } = useTranslation();
   const activate = () => onActivate(slot.id);
@@ -327,7 +337,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
         mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
-        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} />
+        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} caliper={caliper} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
       {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
@@ -417,7 +427,40 @@ export default function App() {
   const toolRef = useRef(tool);
   // The left button's tool before a measuring tool was taken up: putting that down returns to it.
   const navigationTool = useRef<Tool>('window');
+  // The CLOSE caliper the checklist asked for: the next measurement drawn on that study measures this item and side
+  // (imaging/calipers.ts). The left button gets back the tool it had when the caliper ends.
+  const [caliper, setCaliper] = useState<CaliperRequest | null>(null);
+  const caliperRef = useRef(caliper);
+  const caliperPrevious = useRef<{ tool: Tool; left?: Tool } | null>(null);
+  const forgetCaliper = () => { caliperRef.current = null; caliperPrevious.current = null; setCaliper(null); };
+  /** Ends the caliper under way: the left button gets back the tool it had. */
+  const stopCaliper = () => {
+    const previous = caliperPrevious.current;
+    forgetCaliper();
+    if (!previous) return;
+    updateTool(previous.tool);
+    setSettings(current => {
+      const mouseBindings = { ...current.mouseBindings };
+      if (previous.left) mouseBindings.left = previous.left; else delete mouseBindings.left;
+      return { ...current, mouseBindings };
+    });
+  };
+  /** Starts a caliper for an item and side of a study's checklist: the left button places its points, and focus goes
+   * to the image. */
+  const measureWith = (request: CaliperRequest) => {
+    if (!caliperPrevious.current) caliperPrevious.current = { tool: toolRef.current, left: settingsRef.current.mouseBindings.left };
+    caliperRef.current = request; setCaliper(request);
+    updateTool(CALIPERS[request.kind].tool);
+    setSettings(current => {
+      if (!current.mouseBindings.left) return current;
+      const mouseBindings = { ...current.mouseBindings }; delete mouseBindings.left;
+      return { ...current, mouseBindings };
+    });
+    focusImage();
+  };
   const setTool = (next: Tool) => {
+    // Another tool chosen ends a caliper under way.
+    if (caliperRef.current) forgetCaliper();
     if (!MEASURE_TOOLS.includes(next)) navigationTool.current = next;
     updateTool(next);
     setSettings(current => {
@@ -637,7 +680,32 @@ export default function App() {
   // A CT's assessment button opens the pre-op checklist instead (the assessment is for MR).
   const opensChecklist = activeSeries?.modality === 'CT';
   const checklistShown = checklistOpen && opensChecklist;
+  // A caliper ends with its checklist: when the checklist closes or the active pane leaves its study.
+  const caliperStudy = activeSeries ? studyKey(activeSeries) : null;
+  useEffect(() => { if (caliperRef.current && (!checklistShown || caliperRef.current.study !== caliperStudy)) stopCaliper(); }, [checklistShown, caliperStudy]);
   const canReconstruct = Boolean(activeVolume?.series.canReconstruct && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && activeSeries && !loadingIds.has(activeSeries.id) && !loadErrors[activeSeries.id]);
+  /** Where a caliper measures and what that pane needs first (calipers.caliperView): the active pane, or another pane of
+   * its series already on the caliper's plane, so the three-plane MPR keeps its planes; or why it cannot measure. */
+  const caliperPlan = (kind: CaliperKind): { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey } => {
+    if (!activeVolume) return { blocked: 'caliper.needsImage' };
+    const refused = caliperRefusal(activeVolume.series);
+    if (refused) return { blocked: refused };
+    if (caliperMmScale(activeVolume.series) === null) return { blocked: 'caliper.needsSpacing' };
+    if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'caliper.loading' };
+    // A new plane goes through the point picked in this series' frame, else through the middle of the pane's plane.
+    const origin = crosshairSeriesId ? seriesById.get(crosshairSeriesId) : undefined;
+    const at = crosshair && origin && shareFrame(activeVolume.series, origin) ? crosshair : getPlaneFrame(activeVolume.series, activeDisplayView).center;
+    const own = caliperView(kind, activeVolume.series, activeDisplayView, at, canReconstruct);
+    if (own === null || ('patch' in own && !own.plane)) return { slotId: activeSlot.id, setUp: own };
+    for (const slot of slots) {
+      const volume = slot.id !== activeSlot.id && slot.seriesId === activeSlot.seriesId ? volumeForSlot(slot) : undefined;
+      const theirs = volume ? caliperView(kind, volume.series, renderedView(volume, slot.view), at, false) : undefined;
+      if (theirs === null || (theirs && 'patch' in theirs)) return { slotId: slot.id, setUp: theirs };
+    }
+    return 'blocked' in own ? own : { slotId: activeSlot.id, setUp: own };
+  };
+  /** Why a caliper cannot measure from the active pane now (the checklist disables its button and says why), or null. */
+  const caliperBlocked = (kind: CaliperKind): MessageKey | null => { const plan = caliperPlan(kind); return 'blocked' in plan ? plan.blocked : null; };
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
   const petSeries = series.filter(fusesAsOverlay);
@@ -761,6 +829,52 @@ export default function App() {
     if (closed) requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-testid="${closed}"]`) ?? document.querySelector<HTMLElement>('[data-testid="tool-more"]'))?.focus());
   }, [show3d, showAssessment, checklistOpen]);
 
+  /** A checklist note for the slice of `view`, as the slice counter numbers it, with its tilt. */
+  const noteAt = (seriesId: string, series: Series, view: Pick<ViewState, 'plane' | 'slice' | 'mode' | 'oblique'>): SliceNote => {
+    const count = sliceCount(series, view), slice = Math.round(view.slice);
+    const shown = pagesBackwards(series, view) ? count - slice : slice + 1;
+    // A tilted plane is named with its tilt, and "go to" tilts the pane back to it.
+    const tilted = (view.mode ?? 'source') === 'mpr' && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number], tilt: obliqueAngle(series, view) } : {};
+    return { seriesId, slice, shown: `${shown}/${count}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
+  };
+  /** A measurement just drawn while a caliper is under way on its study: its points moved onto bone and the drawing
+   * tagged as that caliper, which then ends. */
+  const caliperDrawn = (seriesId: string, next: Annotation[]): { list: Annotation[]; drawn?: string } => {
+    const request = caliperRef.current, volume = displayVolumesRef.current.get(seriesId);
+    // What is drawn on another series of the study that a caliper refuses (an MR, a CT scout) stays a plain measurement,
+    // and the caliper waits.
+    if (!request || !volume || studyKey(volume.series) !== request.study || caliperRefusal(volume.series)) return { list: next };
+    const before = annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS;
+    const added = next.filter(annotation => !before.some(old => old.id === annotation.id));
+    if (added.length !== 1 || added[0].type !== CALIPERS[request.kind].tool || added[0].caliper) return { list: next };
+    const fresh = added[0], axes = planeAxes(volume.series, { plane: fresh.plane, mode: fresh.mode, oblique: fresh.oblique });
+    // The plane's own up (its v points down the image) and normal, whatever the image's turn on screen.
+    const up = scale(axes.v, -1), normal = axes.normal;
+    const tagged: Annotation = { ...fresh, points: snapCaliper(request.kind, volume, fresh.points, up, normal),
+      caliper: { kind: request.kind, item: request.item, side: request.side, up, normal } };
+    stopCaliper();
+    return { list: next.map(annotation => annotation === fresh ? tagged : annotation), drawn: tagged.id };
+  };
+  /** Records in its study's checklist each caliper drawing of the series that is new (`drawn`) or whose points changed
+   * since its record, or every recorded one when the series' scale changed (`rescaled`: the series at its new scale),
+   * records whose drawings were deleted too. A drawing whose record was replaced or cleared stays out. */
+  const recordCalipers = (seriesId: string, list: Annotation[], drawn?: string, rescaled?: Series) => {
+    // The shown series, with any calibration: a series with measurements keeps its volume (publishVolumes).
+    const series = rescaled ?? displayVolumesRef.current.get(seriesId)?.series;
+    if (!series) return;
+    const study = studyKey(series);
+    for (const annotation of list) {
+      const tag = annotation.caliper;
+      if (!tag) continue;
+      const recorded = caliperRecorded(study, tag.item, annotation.id)?.caliper;
+      if (annotation.id !== drawn && (!recorded || (!rescaled && samePoints(recorded.points, annotation.points)))) continue;
+      const result = caliperResult(tag, annotation.points, caliperMmScale(series));
+      const view = viewOfAnnotation(annotation, annotationSourceIndex(annotation, series));
+      keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view), caliper: caliperNote(annotation.id, tag, annotation.points, result) });
+    }
+    const kept = rescaled && keptChecklist(study);
+    if (kept) keepChecklist(study, remeasureRecords(kept, seriesId, new Set(list.map(annotation => annotation.id)), caliperMmScale(series)));
+  };
   const remember = () => {
     history.current.past.push({ slots: slotsRef.current, annotations: annotationRef.current });
     if (history.current.past.length > 30) history.current.past.shift();
@@ -775,6 +889,8 @@ export default function App() {
       return saved ? { ...slot, view: saved.view } : slot;
     }));
     setAnnotations(snapshot.annotations); setHistoryCount([history.current.past.length, history.current.future.length]);
+    // A caliper's edit undone measures again; one whose drawing is undone keeps its record in the checklist.
+    for (const [seriesId, list] of Object.entries(snapshot.annotations)) recordCalipers(seriesId, list);
   };
 
   const publishVolumes = (candidate: Map<string, Volume>) => {
@@ -1378,8 +1494,52 @@ export default function App() {
     for (const [generation, group] of byEngine) void removeSeries(group, generation).catch(() => {});
   };
   const changeAnnotations = (seriesId: string, next: Annotation[]) => {
-    const named = seriesRef.current.find(item => item.id === seriesId)?.modality === 'PT' ? nameLesions(next) : next;
+    const { list, drawn } = caliperDrawn(seriesId, next);
+    const named = seriesRef.current.find(item => item.id === seriesId)?.modality === 'PT' ? nameLesions(list) : list;
     remember(); setAnnotations(current => ({ ...current, [seriesId]: clearEditedScores(current[seriesId] ?? [], named) }));
+    recordCalipers(seriesId, named, drawn);
+  };
+  /** Starts the caliper for an item and side from the checklist, or stops it when it is the one under way. Its pane is
+   * set up first: turned to the caliper's plane and the bone window where it is not, which the pane says with Undo. */
+  const startCaliper = (request: CaliperRequest) => {
+    const current = caliperRef.current;
+    if (current?.item === request.item && current.side === request.side && current.study === request.study) { stopCaliper(); return; }
+    const plan = caliperPlan(request.kind), slot = 'blocked' in plan ? undefined : slotsRef.current.find(item => item.id === plan.slotId);
+    if ('blocked' in plan || !slot) return;
+    if (slot.id !== activeIdRef.current) activateSlot(slot.id);
+    const setUp = plan.setUp;
+    if (!setUp) { measureWith(request); return; }
+    const views = slotsRef.current.map(({ id, seriesId, view }) => ({ id, seriesId, view }));
+    updateView(slot.id, setUp.patch);
+    const coronal = CALIPERS[request.kind].plane === 'coronal';
+    const key = !setUp.plane ? 'caliper.setUpBone' : coronal ? (setUp.window ? 'caliper.setUpCoronalBone' : 'caliper.setUpCoronal') : setUp.window ? 'caliper.setUpSagittalBone' : 'caliper.setUpSagittal';
+    measureWith({ ...request, setUp: { slotId: slot.id, views, text: t(key, { name: caliperName(request.kind, locale) }) } });
+  };
+  /** The set-up note's Undo: the caliper ended and the panes' views exactly as they were, as undo puts them back (a merge
+   * would keep what the set-up added, such as reconstructed planes over acquired slices, or a manual window). */
+  const undoCaliperSetUp = () => {
+    const setUp = caliperRef.current?.setUp;
+    stopCaliper();
+    if (setUp) setSlots(current => current.map(slot => {
+      const saved = setUp.views.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
+      return saved ? { ...slot, view: saved.view } : slot;
+    }));
+    focusImage();
+  };
+  /** What a caliper under way asks for in a pane: its points in turn, or the plane it needs; and, until its first point,
+   * what its set-up changed there, with Undo. */
+  const caliperPane = (volume: Volume, view: ViewState, slotId: string): ViewportProps['caliper'] => {
+    if (!caliper || studyKey(volume.series) !== caliper.study) return undefined;
+    const spec = CALIPERS[caliper.kind], shown = renderedView(volume, view), axes = planeAxes(volume.series, shown);
+    const key = `${caliper.kind}:${caliper.item}:${caliper.side}`;
+    const setUp = caliper.setUp?.slotId === slotId ? { text: caliper.setUp.text, onUndo: undoCaliperSetUp } : undefined;
+    const refused = caliperRefusal(volume.series);
+    if (refused) return { key, setUp, prompts: [t(refused)] };
+    if (isProjection(volume.series, shown) || !onCaliperPlane(caliper.kind, scale(axes.v, -1), axes.normal)) return { key, setUp, prompts: [t(spec.plane === 'coronal' ? 'caliper.needsCoronal' : 'caliper.needsSagittal')] };
+    const name = caliperName(caliper.kind, locale), side = caliper.side === 'both' ? '' : t(caliper.side === 'right' ? 'caliper.right' : 'caliper.left');
+    // Without HU the points are not moved onto bone; the hint says so.
+    const noSnap = volume.series.valueUnit === 'HU' ? '' : ` · ${t('caliper.noSnap')}`;
+    return { key, setUp, prompts: spec.prompts.map((prompt, index) => `${t(side ? 'caliper.hint' : 'caliper.hintMidline', { name, side, prompt: t(prompt), step: index + 1, count: spec.prompts.length })}${noSnap}`) };
   };
   const matchPriorLesion = (seriesId: string, id: string, priorLesionId: string | undefined) => {
     const items = annotationRef.current[seriesId] ?? [];
@@ -1768,13 +1928,20 @@ export default function App() {
     if (bounds) setVolumeViewportSize([bounds.width, bounds.height]);
     setShow3d(true);
   };
+  /** Sets or removes a series' calibration. Its caliper records measure again at the new scale, as its drawings' labels
+   * do: the checklist, its answers, the report and the theatre card follow the scale on screen. */
+  const setCalibration = (seriesId: string, factor: number | undefined) => {
+    setCalibrationScales(current => { const next = { ...current }; if (factor === undefined) delete next[seriesId]; else next[seriesId] = factor; return next; });
+    const series = displayVolumesRef.current.get(seriesId)?.series;
+    if (series) recordCalipers(seriesId, annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, undefined, { ...series, measurementScale: factor });
+  };
   const applyCalibration = () => {
     if (!activeSeries) return;
     const line = activeAnnotations.find(annotation => annotation.id === calibrationLine) ?? activeAnnotations.find(annotation => annotation.type === 'length');
     const length = line?.points.length === 2 ? distanceMm(line.points[0], line.points[1]) : null;
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
-    setCalibrationScales(current => ({ ...current, [activeSeries.id]: known / length }));
+    setCalibration(activeSeries.id, known / length);
     setSettings(current => ({ ...current, measurementUnits: 'auto' }));
     say('notice.calibrated', 'info', undefined, true);
   };
@@ -1812,6 +1979,8 @@ export default function App() {
     // The assessment holds typed input, so Esc closes it only from inside the panel; the checklist too, as it sits
     // in the same place (its answers stay). Both can be open, so each answers only Esc from inside itself.
     if (event.key === 'Escape') {
+      // A caliper under way is the innermost layer: Esc ends it (a drawing half done is cancelled by the image first).
+      if (caliperRef.current && !show3d && !field) { stopCaliper(); return; }
       // 3D closes from its sliders, lists and buttons; in a number or text field Esc stays with the field.
       if (show3d) { if (!target.matches('textarea, [contenteditable="true"], input:not([type="range"], [type="checkbox"], [type="radio"], [type="button"])')) setShow3d(false); }
       else if (field) return;
@@ -2329,26 +2498,30 @@ export default function App() {
               onActivate={activateSlot} onViewChange={updateView} onAnnotationsChange={changeAnnotations} onCrosshairChange={changeCrosshair}
               onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
               onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlane : undefined} clickPicksPoint={show3d}
-              toast={paneToast?.slotId === slot.id && paneToast.seriesId === slot.seriesId ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes} />;
+              toast={paneToast?.slotId === slot.id && paneToast.seriesId === slot.seriesId ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes}
+              caliper={slot.id === activeId && volume ? caliperPane(volume, slot.view, slot.id) : undefined} />;
           })}
         </div>}
       </main>
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
-      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
+      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries} hidePatient={settings.hidePatientData}
+        /* Undo brought caliper records back: each series of the study measures them again at its scale now (a calibration
+           may have changed since), from their drawings, which may have moved, or from their own points where the drawing is
+           gone. Drawings keep their series loaded (publishVolumes), so a series whose volume left the cache has records
+           only, and its metadata and calibration are all they need. */
+        onRestored={() => { for (const item of seriesRef.current) if (studyKey(item) === studyKey(activeSeries)) recordCalipers(item.id, annotationRef.current[item.id] ?? EMPTY_ANNOTATIONS, undefined,
+          displayVolumesRef.current.get(item.id)?.series ?? { ...item, measurementScale: calibrationScales[item.id] }); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
-        onNote={() => {
-          if (!activeVolume || !activeSlot.seriesId) return null;
-          const view = activeSlot.view, count = sliceCount(activeVolume.series, view), slice = Math.round(view.slice);
-          const shown = pagesBackwards(activeVolume.series, view) ? count - slice : slice + 1;
-          // A tilted plane is named with its tilt, and "go to" tilts the pane back to it.
-          const tilted = (view.mode ?? 'source') === 'mpr' && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number], tilt: obliqueAngle(activeVolume.series, view) } : {};
-          return { seriesId: activeSlot.seriesId, slice, shown: `${shown}/${count}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
-        }}
+        onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view) : null}
+        onMeasure={(item, side, kind) => startCaliper({ kind, item, side, study: studyKey(activeSeries) })}
+        measuring={caliper && caliper.study === studyKey(activeSeries) ? caliper : null} measureBlocked={caliperBlocked}
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
-          updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage(); }} /></Suspense></div>}
+          updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage();
+          // A measured side picks its caliper drawing too, once it is on screen.
+          if (note.caliper) document.querySelector('.viewport-cell.is-active [data-testid="dicom-viewport"]')?.dispatchEvent(new CustomEvent(PICK_MEASUREMENT, { detail: note.caliper.annotationId })); }} /></Suspense></div>}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
       <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} onError={showTagError}>
         {inspectorShown && <>
@@ -2404,7 +2577,7 @@ export default function App() {
               usage.touch('marks');
             }}>
               <span className="annotation-number"><Icon size={14} aria-hidden="true" />{index + 1}</span>
-              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: sourceIndex + 1 }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: annotation.slice + 1 })}</small></span></button>
+              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{annotation.caliper ? caliperName(annotation.caliper.kind, locale) : toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: sourceIndex + 1 }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: annotation.slice + 1 })}</small></span></button>
               <button data-action="measurement-delete" type="button" className="icon-button danger-hover" aria-label={t('inspector.deleteMeasurement', { number: index + 1 })} data-tooltip={t('inspector.deleteMeasurement', { number: index + 1 })} onClick={() => { if (!activeSeries) return; changeAnnotations(activeSeries.id, activeAnnotations.filter(item => item.id !== annotation.id)); focusSoon(neighbour ? `[data-annotation-row="${neighbour}"] .annotation-main` : '[data-testid="findings-add"]'); }}><X size={15} /></button>
               {sphere && activeSeries && <SphereDetails annotation={annotation} annotations={activeAnnotations} volume={activeVolume} onChange={next => changeAnnotations(activeSeries.id, next)} />}</li>;
           })}</ol>
@@ -2453,7 +2626,7 @@ export default function App() {
             <p className="field-help">{t('inspector.calibrationHelp')}</p>
             <label className="stacked-field">{t('inspector.referenceLine')}<select data-action="calibration-line" aria-label={t('inspector.calibrationLine')} value={activeAnnotations.some(annotation => annotation.id === calibrationLine) ? calibrationLine : activeAnnotations.find(annotation => annotation.type === 'length')?.id ?? ''} onChange={event => setCalibrationLine(event.target.value)}><option value="">{t('inspector.chooseLength')}</option>{activeAnnotations.filter(annotation => annotation.type === 'length').map((annotation, index) => <option key={annotation.id} value={annotation.id}>{t('inspector.lengthNumber', { number: index + 1 })}</option>)}</select></label>
             <label className="stacked-field">{t('inspector.knownLength')}<input data-action="calibration-length" type="number" min={0.001} step="any" value={calibrationLength} onChange={event => setCalibrationLength(event.target.value)} /></label>
-            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !activeAnnotations.some(annotation => annotation.type === 'length')} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibrationScales(current => { const next = { ...current }; delete next[activeSeries.id]; return next; })}>{t('inspector.removeCalibration')}</button>}</div>
+            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !activeAnnotations.some(annotation => annotation.type === 'length')} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibration(activeSeries.id, undefined)}>{t('inspector.removeCalibration')}</button>}</div>
             {activeSeries && calibrationScales[activeSeries.id] && <p className="calibration-status" role="status">{t('inspector.manualScale', { scale: calibrationScales[activeSeries.id].toPrecision(4) })}</p>}
             <label className="stacked-field">{t('inspector.petValues')}<select data-action="pet-values" value={settings.suvNormalization} onChange={event => setSettings(current => ({ ...current, suvNormalization: event.target.value as SuvNormalization }))}><option value="bw">{t('inspector.suvBw')}</option><option value="lbm">{t('inspector.suvLbm')}</option><option value="bsa">{t('inspector.suvBsa')}</option></select></label>
             <p className="field-help">{t('inspector.petValuesHelp')}</p>

@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import type { Annotation, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
+import type { Annotation, CaliperKind, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
 import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
@@ -140,6 +140,22 @@ function labelLayout(annotation: Annotation, points: readonly Vec3[], mapping: S
   return { lines, width, height, ...placeLabelBeside(shape, { width, height }, mapping, hard, soft, screen[screen.length - 1]) };
 }
 
+/** A caliper's reference lines on screen (imaging/calipers.ts), dashed: the Gera angle's other arm, the cribriform plate
+ * carried on past the lamella's foot; or the sella lines through the tuberculum and the dorsum, square to the line
+ * joining them, reaching past the sinus wall. */
+function caliperGuides(kind: CaliperKind, points: readonly Point2[]): string {
+  if (points.length < 3 || (kind !== 'keros' && kind !== 'sella')) return '';
+  const [a, b, c] = points, dx = b[0] - a[0], dy = b[1] - a[1], run = Math.hypot(dx, dy);
+  if (run < 1e-6) return '';
+  if (kind === 'keros') {
+    const reach = Math.hypot(c[0] - b[0], c[1] - b[1]);
+    return `M${b[0]},${b[1]}l${dx / run * reach},${dy / run * reach}`;
+  }
+  const depth = ((c[0] - a[0]) * -dy + (c[1] - a[1]) * dx) / run, sign = depth < 0 ? -1 : 1, reach = Math.abs(depth) + 24;
+  const nx = -dy / run * sign * reach, ny = dx / run * sign * reach;
+  return `M${a[0]},${a[1]}l${nx},${ny}M${b[0]},${b[1]}l${nx},${ny}`;
+}
+
 /** Sent to a viewport's element with an annotation id, when that measurement is chosen in the inspector's list. */
 export const PICK_MEASUREMENT = 'veacom:pick-measurement';
 const GLOW = [{ filter: 'drop-shadow(0 0 0 #fff)' }, { filter: 'drop-shadow(0 0 5px #fff)' }, { filter: 'drop-shadow(0 0 0 #fff)' }];
@@ -177,6 +193,10 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
     shape = <><polyline {...common} points={pointString(points.slice(0, 2))} />{points.length > 2 && <polyline {...common} points={pointString(points.slice(2))} />}</>;
   } else if (annotation.type === 'probe' || annotation.type === 'text') {
     shape = <><circle {...common} cx={points[0][0]} cy={points[0][1]} r={4} /><path {...common} d={`M${points[0][0] - 8},${points[0][1]}h16 M${points[0][0]},${points[0][1] - 8}v16`} /></>;
+  } else if (annotation.caliper?.kind === 'sella' && points.length >= 3) {
+    // The tuberculum–dorsum line, and a cross on the sinus wall.
+    const [x, y] = points[2];
+    shape = <><polyline {...common} points={pointString(points.slice(0, 2))} /><path {...common} d={`M${x - 6},${y}h12M${x},${y - 6}v12`} /></>;
   } else {
     shape = <polyline {...common} points={pointString(points)} />;
   }
@@ -185,7 +205,8 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
     const [a, b] = points, angle = Math.atan2(a[1] - b[1], a[0] - b[0]);
     arrow = <polyline {...common} points={`${a[0] - 12 * Math.cos(angle - 0.45)},${a[1] - 12 * Math.sin(angle - 0.45)} ${a} ${a[0] - 12 * Math.cos(angle + 0.45)},${a[1] - 12 * Math.sin(angle + 0.45)}`} />;
   }
-  return <>{shape}{arrow}</>;
+  const guides = annotation.caliper ? caliperGuides(annotation.caliper.kind, points) : '';
+  return <>{shape}{arrow}{guides && <path {...common} d={guides} strokeDasharray="5 4" />}</>;
   };
   const lines = layout?.lines ?? [], chipWidth = layout?.width ?? 0, chipHeight = layout?.height ?? 0;
   const labelX = (layout?.x ?? 0) + LABEL_PADDING, labelY = (layout?.y ?? 0) + 13;
@@ -244,6 +265,8 @@ export function Viewport(props: ViewportProps) {
   const draftLive = useRef<Annotation | null>(null);
   const [draft, setDraft] = useState<Annotation | null>(null);
   const [draftHint, setDraftHint] = useState<'viewport.clickEnd' | 'viewport.traceRegion' | 'viewport.clickPoints' | null>(null);
+  // How many points of a caliper are placed: its hint asks for the next one.
+  const [caliperStep, setCaliperStep] = useState(0);
   const [overlayView, setOverlayView] = useState(() => renderedView(props.volume, props.view));
   // Down the page is towards the feet on an axial stack (see paging.ts): wheel, drags and keys step this way.
   const backwards = pagesBackwards(props.volume.series, { plane: props.view.plane, mode: props.view.mode, oblique: props.view.oblique });
@@ -289,7 +312,8 @@ export function Viewport(props: ViewportProps) {
     editing.current = null; editLive.current = null; setEdited(null);
     construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null;
     draftLive.current = null; pendingCrosshair.current = null;
-    setDraft(null); setTextPrompt(null); setSelected(null);
+    // The hints follow at once: the paint that sets them may not come before the next caliper asks for its first point.
+    setDraft(null); setDraftHint(null); setCaliperStep(0); setTextPrompt(null); setSelected(null);
   };
   const syncInteractionContext = (volume: ViewportProps['volume'], view: ViewState) => {
     const next = interactionContext(volume, view), previous = context.current;
@@ -338,6 +362,7 @@ export function Viewport(props: ViewportProps) {
       updateReadout();
       setDraft(draftLive.current);
       setDraftHint(twoClick.current ? 'viewport.clickEnd' : construction.current.length ? (constructionTool.current === 'polygon' ? 'viewport.traceRegion' : 'viewport.clickPoints') : null);
+      setCaliperStep(twoClick.current || (drag.current && annotationTools.has(drag.current.mode)) ? 1 : construction.current.length);
       setEdited(editLive.current);
       if (pendingPatch.current) { const patch = pendingPatch.current; pendingPatch.current = null; current.onViewChange(patch); }
       if (pendingCrosshair.current) { const point = pendingCrosshair.current; pendingCrosshair.current = null; current.onCrosshairChange(point); }
@@ -376,7 +401,7 @@ export function Viewport(props: ViewportProps) {
   };
   // A PET is read inverted (imaging/quantity.ts petLook): reset brings that back, not plain grey.
   const reset = () => changeView({ zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: latest.current.volume.series.modality === 'PT', oblique: [0, 0] });
-  const discardDraft = () => { construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null; draftLive.current = null; setDraft(null); };
+  const discardDraft = () => { construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null; draftLive.current = null; setDraft(null); setDraftHint(null); setCaliperStep(0); };
   /** Points of a two-point measurement from its start to `end` (rectangles and ellipses use the box corners). */
   const twoPointShape = (mode: Tool, startWorld: Vec3, end: Point2): Vec3[] => twoPointWorld(mappingNow(), mode, startWorld, end);
   /** Zoom about the pane centre, keeping the centred point where it is. */
@@ -433,9 +458,10 @@ export function Viewport(props: ViewportProps) {
       if (!sameView(liveView.current, next)) { liveView.current = next; queue(); }
     }
     if (previous.volume !== props.volume || previous.fusion !== props.fusion) queue();
-    // An undo, deletion or tool change invalidates a drag before its release can overwrite the change.
+    // An undo, deletion or tool change invalidates a drag before its release can overwrite the change; so does another
+    // caliper, whose points mean something else.
     const edit = editing.current;
-    if (previous.tool !== props.tool || (edit && previous.annotations !== props.annotations && !props.annotations.includes(edit.original))) cancelGesture();
+    if (previous.tool !== props.tool || previous.caliper?.key !== props.caliper?.key || (edit && previous.annotations !== props.annotations && !props.annotations.includes(edit.original))) cancelGesture();
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
   }, [props, queue, syncInteractionContext, cancelGesture]);
   const refreshReadout = useEffectEvent(updateReadout);
@@ -552,9 +578,10 @@ export function Viewport(props: ViewportProps) {
     }
     if ((annotationTools.has(mode) || mode === 'crosshair') && latest.current.volume.sourceFrameIndex !== undefined && latest.current.volume.sourceFrameIndex !== liveView.current.slice) return;
     // A press on a measurement (a handle, its label or its line) takes hold of it whatever the tool, as in VEAcom
-    // Next; not while one is drawn point by point or waits for its second click.
+    // Next; not while one is drawn point by point or waits for its second click, nor while a caliper asks for its
+    // points (another side's label may sit on them).
     const screenCurrent = samePlacement(overlayView, renderedView(props.volume, liveView.current));
-    if (button === 'left' && screenCurrent && !construction.current.length && !twoClick.current && !latest.current.hideMeasurements
+    if (button === 'left' && screenCurrent && !construction.current.length && !twoClick.current && !latest.current.hideMeasurements && !latest.current.caliper
       && (latest.current.volume.sourceFrameIndex === undefined || latest.current.volume.sourceFrameIndex === liveView.current.slice)) {
       const hit = hitAnnotation(hitTargets, selected, start);
       if (hit) {
@@ -1025,7 +1052,14 @@ export function Viewport(props: ViewportProps) {
       </g>}
     </svg>
     {readoutLines > 0 && <ValueReadout ref={readout} right={dimensions[0] - 14} bottom={dimensions[1] - 40} width={lowerWidth} fontFamily={fontFamily} />}
-    {!props.hideMeasurements && draft && draftHint && <div className="viewport-hint" data-export-exclude>{t(draftHint)}</div>}
+    {/* Under the top corner lines (18 px down, 16 px apart), so patient identity and the orientation letter stay readable. */}
+    {props.caliper ? <div className="viewport-caliper" data-export-exclude style={{ top: Math.max(topLeft.length, topRight.length) ? 18 + Math.max(topLeft.length, topRight.length) * 16 + 4 : 12 }}>
+      <div className="viewport-hint" data-testid="caliper-hint">{props.caliper.prompts[Math.min(caliperStep, props.caliper.prompts.length - 1)]}</div>
+      {/* What setting the pane up for the caliper changed, with Undo, until the first point is placed. */}
+      {props.caliper.setUp && caliperStep === 0 && <div className="caliper-setup" role="status" data-testid="caliper-setup"><span>{props.caliper.setUp.text}</span>
+        <button type="button" data-action="caliper-view-undo" onClick={props.caliper.setUp.onUndo}>{t('pair.undo')}</button></div>}
+    </div>
+      : !props.hideMeasurements && draft && draftHint && <div className="viewport-hint" data-export-exclude>{t(draftHint)}</div>}
     {error && <div role="alert" className="viewport-render-error">{error}</div>}
     {textPrompt && (() => {
       // The note form opens next to the clicked point, kept inside the pane.

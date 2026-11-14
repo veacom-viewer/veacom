@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('veacom', {
   beginImages: (name, here) => invoke('images:begin', name, here),
   exportFolder: () => invoke('export:folder'),
   copyText: text => invoke('clipboard:write', text),
+  printPage: () => invoke('print:page'),
   copyImage: picture => invoke('clipboard:write-image', picture),
   chooseExportFolder: () => invoke('export:chooseFolder'),
   revealExport: target => invoke('export:reveal', target),
