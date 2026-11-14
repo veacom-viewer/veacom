@@ -172,6 +172,11 @@ The kit is page code and runs the same in the desktop app and the browser build;
 engine, native or WebAssembly. Drawing uses the shared WebGL2 renderer, so it draws where the viewer draws, including
 software rendering (llvmpipe on Linux CI, WARP on Windows): the fragment is one more draw of the film per frame.
 
+A film taller or wider than the GPU's 2D texture limit (16,384 pixels on most GPUs, WARP and llvmpipe; 8,192 on
+SwiftShader) is drawn in tiles, never downsampled: each tile's texture holds at most the limit, with 64 pixels more
+around the part it draws for sampling that reads beyond a pixel, and the tiles give exactly the pixels one texture
+would (`tests/source-renderer.browser.mjs`). Before, such a film failed to draw with the limit named.
+
 ## Not done yet
 
 - DICOM SR (TID 1500) for the plan, GSPS, Secondary Capture and an Encapsulated PDF report: the plan is a JSON file and

@@ -35,6 +35,24 @@ export function verifySourceGpu(nativeColors = []){
    const sent=mainUploads(before);record(`${kind} uploads only selected frame with exact GPU format`,sent.length===1&&sent[0].target==='2d'&&sent[0].internalFormat===format&&sent[0].bytes===4*(kind==='float64'?4:Ctor.BYTES_PER_ELEMENT),{uploads:summary(sent)});
    record(`${kind} original source values remain unchanged`,data.slice(4,8).every(n=>n===(kind==='float32'?Math.fround(value):value)));
   });
+  // A frame over the 2D limit is drawn in tiles that give exactly the pixels of one texture (sliceRenderer frameTiles).
+  for(const [label,components]of [['scalar',1],['RGB',3]])attempt(`Tiled ${label} frame matches one texture`,()=>{
+   const w=300,h=260,data=components===3?new Uint8Array(w*h*3):new Uint16Array(w*h);
+   for(let y=0;y<h;y++)for(let x=0;x<w;x++){const v=(x*7+y*13)%4096;if(components===3)data.set([x%256,y%256,(x+y)%256],(y*w+x)*3);else data[y*w+x]=v}
+   const volume=vol(`tiled-${label}`,data,{dimensions:[w,h,1],pixelType:components===3?'uint8':'uint16',components,canReconstruct:false,modality:'DX'});
+   for(const view of [{zoom:1},{zoom:1.7,rotation:30,pan:[13,-7]},{flipX:true,zoom:.8},{rotation:90,flipY:true,zoom:2.3,pan:[-40,25]}]){
+    const settled={...baseView,windowCenter:2048,windowWidth:4096,...view},whole=canvas(w,h),tiled=canvas(w,h);
+    renderer.render(whole,volume,settled);
+    renderer.limitTexturesForTesting(200);
+    const before=uploads.length;
+    try{renderer.render(tiled,volume,settled)}finally{renderer.limitTexturesForTesting(null)}
+    const a=whole.getContext('2d').getImageData(0,0,w,h).data,b=tiled.getContext('2d').getImageData(0,0,w,h).data;
+    let different=0;for(let i=0;i<a.length;i++)if(a[i]!==b[i])different++;
+    const sent=mainUploads(before);
+    // The tiles are uploaded at the first view and reused after it.
+    record(`Tiled ${label} ${JSON.stringify(view)}: every pixel as one texture, in tiles of at most 200`,different===0&&(view.rotation!==undefined||view.flipX!==undefined||sent.length>1)&&sent.every(u=>u.width<=200&&u.height<=200),{different,tiles:sent.length});
+   }
+  });
   attempt('No acquired-frame interpolation',()=>{
    const data=new Uint8Array([0,100,200,250,120,120,120,120,240,240,240,240]),volume=vol('nearest-source',data,{dimensions:[2,2,3],pixelType:'uint8'}),c=canvas(4);
    renderer.render(c,volume,baseView);checkPixel('Zoomed source image keeps nearest original intensity',c,1,1,[0,0,0,255]);
@@ -154,10 +172,13 @@ export function verifySourceGpu(nativeColors = []){
    renderer.render(c,volume,{...baseView,mode:'mpr',slice:0,oblique:[90,0]});checkPixel('Oblique first slice is physical Y2',c,0,0,[200,200,200,255]);
    renderer.render(c,volume,{...baseView,mode:'mpr',slice:1,oblique:[90,0]});checkPixel('Oblique next slice advances to physical Y1',c,0,0,[100,100,100,255]);
   });
-  attempt('Over-limit source image rejects without downsampling',()=>{
-   const volume=vol('too-wide',new Uint8Array(max2D+1),{dimensions:[max2D+1,1,1],pixelType:'uint8',canReconstruct:false});let error='';
-   try{renderer.render(canvas(1),volume,baseView)}catch(caught){error=String(caught.message)}
-   record('True 2D hardware limit is explicit',error.includes(String(max2D)),{error});
+  // Over the GPU's own 2D limit a source image is drawn in tiles, never downsampled (sliceRenderer frameTiles).
+  attempt('Over-limit source image is drawn in tiles without downsampling',()=>{
+   const data=new Uint8Array(max2D+1);for(let i=0;i<data.length;i++)data[i]=i%251;
+   const volume=vol('too-wide',data,{dimensions:[max2D+1,1,1],pixelType:'uint8',canReconstruct:false}),c=canvas(max2D+1,1),before=uploads.length;
+   renderer.render(c,volume,{...baseView,windowCenter:128,windowWidth:256});
+   for(const x of [0,max2D-1,max2D]){const grey=Math.round(Math.max(0,Math.min(1,(data[x]-127.5)/255+.5))*255);checkPixel(`Over-limit image pixel ${x}`,c,x,0,[grey,grey,grey,255])}
+   const sent=mainUploads(before);record('Over-limit image uploads tiles within the 2D limit',sent.length>1&&sent.every(u=>u.width<=max2D&&u.height<=max2D),{uploads:summary(sent)});
   });
  }finally{gl.texImage2D=original2;gl.texImage3D=original3}
  return {passed:results.every(r=>r.passed),renderer:renderer.info,hardwareLimits:{max2D,max3D},checks:results.length,metadataUploads:summary(uploads.filter(upload=>upload.internalFormat===gl.RGBA32F)),failures:results.filter(r=>!r.passed),results};
