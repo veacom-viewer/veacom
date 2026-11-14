@@ -28,6 +28,18 @@ export interface FrameMetadata {
   nm?: NmFrame;
   /** A projection radiograph: the spacing measurements use and what it means, its side and orientation. */
   projection?: Projection;
+  /** A ball or ruler calibration the reader set on this film alone (radiograph.ts withFilmCalibrations), and its scale. */
+  measurementScale?: number; manualCalibration?: ManualCalibration;
+}
+/** A scale the reader set from a known object on a film (the planning panel's ball or ruler). */
+export interface ManualCalibration {
+  method: 'ball' | 'ruler';
+  /** The object's size in mm: the ball's diameter or the ruler's length between the two marks. */
+  knownMm: number;
+  /** The film's measurement scale it gave (mm per coordinate unit). */
+  scale: number;
+  /** The reader confirmed the ball lay at the bones' depth. */
+  depthConfirmed?: boolean;
 }
 /** What the engine read of a projection radiograph's calibration, side and orientation (native/src/projection.rs). */
 export interface Projection {
@@ -96,6 +108,8 @@ export interface Series {
   paddingRange?: [number, number];
   paddingIsNaN?: boolean;
   measurementScale?: number;
+  /** The ball or ruler behind measurementScale, on a film calibrated by itself (FrameMetadata, sourceFrameSeries). */
+  manualCalibration?: ManualCalibration;
   measurementUnits?: 'auto' | 'px';
   /** The SUV the reader chose for PET values (Units panel); body weight when unset. */
   suvNormalization?: SuvNormalization;

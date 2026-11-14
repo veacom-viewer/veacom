@@ -1,32 +1,37 @@
 // Projection radiographs (CR, DX and the others whose detector records Imager Pixel Spacing): what the spacing their
 // measurements use stands for, the side the film shows, and its orientation letters from Patient Orientation. The
 // engine chose the spacing by PS3.3 10.7.1.1 (native/src/projection.rs); here it is named beside every value.
-import type { Projection, Series, Vec3 } from '../model';
+import type { ManualCalibration, Projection, Series, Vec3 } from '../model';
 import { orientationLabel, type ScreenMapping } from './geometry';
 import { t } from '../i18n';
 
 /** What a measurement's millimetres stand for. `patient` is a cross-section's own Pixel Spacing, named nowhere. */
 export type CalibrationState = 'calibrated' | 'magnification' | 'detector' | 'unstated' | 'manual' | 'pixels' | 'patient';
 
-/** A scale the reader set from a known object on the film (the planning panel's ball or ruler). */
-export interface ManualCalibration {
-  method: 'ball' | 'ruler';
-  /** The object's size in mm: the ball's diameter or the ruler's length between the two marks. */
-  knownMm: number;
-  /** The series' measurement scale it gave (mm per coordinate unit), to tell it from a later known-length scale. */
-  scale: number;
-  /** The reader confirmed the ball lay at the bones' depth. */
-  depthConfirmed?: boolean;
+export type { ManualCalibration };
+/** The ball or ruler calibrations set on a series' films, by frame index (App keeps them while the viewer is open). */
+export type FilmCalibrations = Readonly<Partial<Record<number, ManualCalibration>>>;
+
+/**
+ * The series with each calibrated film's scale on that film alone. A ball or ruler stands at one film's magnification,
+ * so it is carried by the frame's metadata: the film (sourceFrameSeries) measures with it and names it, and the
+ * series' other films keep their own spacing, or the series' known-length scale.
+ */
+export function withFilmCalibrations(series: Series, films: FilmCalibrations | undefined): Series {
+  if (!films || !Object.keys(films).length) return series;
+  if (!series.frameMetadata?.length) {
+    const only = series.dimensions[2] === 1 ? films[0] : undefined;
+    return only ? { ...series, measurementScale: only.scale, manualCalibration: only } : series;
+  }
+  return { ...series, frameMetadata: series.frameMetadata.map((metadata, index) => {
+    const film = films[index];
+    return film ? { ...metadata, measurementScale: film.scale, manualCalibration: film } : metadata;
+  }) };
 }
 
-// Kept by series while the viewer is open, beside the scale the inspector holds (App's calibration scales).
-const manual = new Map<string, ManualCalibration>();
-export function recordManualCalibration(seriesId: string, calibration: ManualCalibration | null): void {
-  if (calibration) manual.set(seriesId, calibration); else manual.delete(seriesId);
-}
-/** The known object behind the series' current scale, if that scale came from one. */
+/** The known object behind the film's current scale, if that scale came from one. */
 export function manualCalibration(series: Series): ManualCalibration | null {
-  const recorded = manual.get(series.id), scale = series.measurementScale;
+  const recorded = series.manualCalibration, scale = series.measurementScale;
   return recorded && scale !== undefined && Math.abs(recorded.scale - scale) <= 1e-12 * Math.max(1, scale) ? recorded : null;
 }
 

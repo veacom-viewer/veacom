@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { ViewState, Volume } from '../model';
 import { sourceFrameSeries } from '../imaging/geometry';
-import { calibrationTag, calibrationText, isProjectionFilm, manualCalibration, projectionOf, recordManualCalibration, sideText } from '../imaging/radiograph';
+import { calibrationTag, calibrationText, isProjectionFilm, manualCalibration, projectionOf, sideText, type ManualCalibration } from '../imaging/radiograph';
 import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARK_TEXT, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
 import type { Missing, Side, Value } from '../imaging/deformity/measure';
 import { NORMALS, type ValueKey } from '../imaging/deformity/normals';
@@ -86,8 +86,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   view: Pick<ViewState, 'rotation' | 'flipX'>;
   onClose: () => void;
   headingRef?: (heading: HTMLHeadingElement | null) => void;
-  /** Sets the series' measurement scale (mm per coordinate unit), or removes it. */
-  onCalibrate: (seriesId: string, scale: number | null) => void;
+  /** Sets the film's ball or ruler calibration (its scale in mm per coordinate unit), or removes it. */
+  onCalibrate: (seriesId: string, frame: number, calibration: ManualCalibration | null) => void;
   /** The viewer's Undo and Redo, which take back plan steps as they take back measurements. */
   onUndo: (redo: boolean) => void; history: [number, number];
   hidePatientData: boolean;
@@ -132,7 +132,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     if (placing) deformity.setPlacing(null); else onClose();
   };
 
-  // Calibration from the ball or ruler the reader marked: the series' scale, so every measurement on it follows.
+  // Calibration from the ball or ruler the reader marked: the film's scale, so every measurement on it follows. The
+  // series' other films keep theirs: the object stands at this film's magnification only.
   const marker = film.marker;
   const markerFit = (current: Marker | null) => {
     if (!current) return null;
@@ -158,11 +159,10 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     const measured = markerFit(current);
     if (!measured || !(measured.world > 0)) return;
     const scale = current.knownMm / measured.world;
-    recordManualCalibration(series.id, { method: current.method, knownMm: current.knownMm, scale, depthConfirmed: current.depthConfirmed });
-    onCalibrate(series.id, scale);
+    onCalibrate(series.id, frameIndex, { method: current.method, knownMm: current.knownMm, scale, depthConfirmed: current.depthConfirmed });
   };
-  const removeCalibration = () => { recordManualCalibration(series.id, null); onCalibrate(series.id, null); };
-  // The marker calibrates the series while the series' scale is the one it gives.
+  const removeCalibration = () => onCalibrate(series.id, frameIndex, null);
+  // The marker calibrates the film while the film's scale is the one it gives.
   const applied = Boolean(known && fit && marker && known.method === marker.method && Math.abs(known.scale - marker.knownMm / fit.world) <= 1e-9 * known.scale);
   const imager = projection?.imagerPixelSpacing;
   const mmPerPixel = fit && marker ? marker.knownMm / fit.pixels : null;
@@ -280,7 +280,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             {marker.method === 'ball' && fit.residual > 0.5 ? ` · ${t('deformity.fitResidual', { residual: fit.residual.toFixed(1) })}` : ''}</p>}
           {marker.method === 'ball' && <label className="deformity-check"><input type="checkbox" data-action="deformity-ball-depth" checked={marker.depthConfirmed}
             onChange={event => { const confirmed = event.target.checked; change(current => ({ ...current, marker: current.marker && { ...current.marker, depthConfirmed: confirmed } }));
-              const recorded = manualCalibration(frame); if (recorded) recordManualCalibration(series.id, { ...recorded, depthConfirmed: confirmed }); }} />{t('deformity.depth')}</label>}
+              if (known) onCalibrate(series.id, frameIndex, { ...known, depthConfirmed: confirmed }); }} />{t('deformity.depth')}</label>}
           <div className="deformity-actions">
             <button type="button" className="secondary-button compact" data-action="deformity-calibrate" disabled={!fit || applied} onClick={() => applyMarker(marker)}>{t('deformity.apply')}</button>
             {known && <button type="button" className="text-button" data-action="deformity-calibration-remove" onClick={removeCalibration}>{t('deformity.removeCalibration')}</button>}

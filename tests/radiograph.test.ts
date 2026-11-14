@@ -3,7 +3,7 @@ import { afterEach, describe, it } from 'node:test';
 import type { Annotation, Projection, Series } from '../src/model';
 import { annotationSummary } from '../src/imaging/annotations';
 import { screenMapping, sourceFrameSeries } from '../src/imaging/geometry';
-import { calibrationState, calibrationTag, calibrationText, manualCalibration, millimetresPerPixel, projectionEdgeLabels, projectionLine, recordManualCalibration, sideText } from '../src/imaging/radiograph';
+import { calibrationState, calibrationTag, calibrationText, manualCalibration, millimetresPerPixel, projectionEdgeLabels, projectionLine, sideText, withFilmCalibrations, type ManualCalibration } from '../src/imaging/radiograph';
 import { setLocale } from '../src/i18n';
 
 // A one-frame DX of 100 × 300 pixels, as the engine lists it: its frame carries the projection facts
@@ -33,7 +33,7 @@ const cases: Array<{ name: string; projection: Projection | undefined; state: st
   { name: 'no spacing', projection: { basis: 'none' }, state: 'pixels', tag: '', text: 'Pixels only', mm: null },
 ];
 
-afterEach(() => { setLocale('en'); recordManualCalibration('dx', null); });
+afterEach(() => { setLocale('en'); });
 
 describe('the calibration of a projection film', () => {
   for (const item of cases) {
@@ -67,24 +67,51 @@ describe('the calibration of a projection film', () => {
     assert.match(area, / · detector plane$/);
   });
 
-  it('names a ball or ruler scale only while it is the series\' scale', () => {
+  it('names a ball or ruler scale only while it is the film\'s scale', () => {
     const scaled = { ...film(detector), measurementScale: 1 / 1.1 };
     assert.equal(calibrationState(scaled), 'manual');
     assert.equal(calibrationTag(scaled), 'scale set by hand');
-    recordManualCalibration('dx', { method: 'ball', knownMm: 25, scale: 1 / 1.1 });
-    assert.equal(calibrationTag(scaled), 'ball 25.0 mm');
-    assert.equal(calibrationText(scaled), 'Ball 25.0 mm · ball depth not confirmed');
-    recordManualCalibration('dx', { method: 'ball', knownMm: 25, scale: 1 / 1.1, depthConfirmed: true });
-    assert.equal(calibrationText(scaled), 'Ball 25.0 mm');
-    const mm = millimetresPerPixel(scaled)!;
+    const ball: ManualCalibration = { method: 'ball', knownMm: 25, scale: 1 / 1.1 };
+    const calibrated = (calibration: ManualCalibration) => sourceFrameSeries(withFilmCalibrations(film(detector), { 0: calibration }), 0);
+    assert.equal(calibrationState(calibrated(ball)), 'manual');
+    assert.equal(calibrationTag(calibrated(ball)), 'ball 25.0 mm');
+    assert.equal(calibrationText(calibrated(ball)), 'Ball 25.0 mm · ball depth not confirmed');
+    assert.equal(calibrationText(calibrated({ ...ball, depthConfirmed: true })), 'Ball 25.0 mm');
+    const mm = millimetresPerPixel(calibrated(ball))!;
     assert.ok(Math.abs(mm[0] - 0.3) < 1e-12 && Math.abs(mm[1] - 0.3) < 1e-12);
     // A known-length calibration made later replaces the scale: the ball is no longer named.
-    assert.equal(manualCalibration({ ...scaled, measurementScale: 0.95 }), null);
-    assert.equal(calibrationTag({ ...scaled, measurementScale: 0.95 }), 'scale set by hand');
-    recordManualCalibration('dx', { method: 'ruler', knownMm: 200, scale: 1 / 1.1 });
-    assert.equal(calibrationTag(scaled), 'ruler 200.0 mm');
+    assert.equal(manualCalibration({ ...calibrated(ball), measurementScale: 0.95 }), null);
+    assert.equal(calibrationTag({ ...calibrated(ball), measurementScale: 0.95 }), 'scale set by hand');
+    assert.equal(calibrationTag(calibrated({ method: 'ruler', knownMm: 200, scale: 1 / 1.1 })), 'ruler 200.0 mm');
+    // A film with only one frame and no frame list takes it on the series.
+    const bare = withFilmCalibrations({ ...film(detector), frameMetadata: undefined }, { 0: ball });
+    assert.equal(manualCalibration(bare), ball);
     // The reader's choice of pixels wins.
-    assert.equal(calibrationState({ ...scaled, measurementUnits: 'px' }), 'pixels');
+    assert.equal(calibrationState({ ...calibrated(ball), measurementUnits: 'px' }), 'pixels');
+  });
+
+  it('keeps a ball or ruler on the film it was measured on, not on the series\' other films', () => {
+    // One CR series of two films, such as the AP long leg with a ball and a repeat: the ball is on the first only.
+    const one = film(detector).frameMetadata![0];
+    const series = film(detector, { dimensions: [100, 300, 2], frameMetadata: [one, { ...one }] });
+    const decorated = withFilmCalibrations(series, { 0: { method: 'ball', knownMm: 25, scale: 1 / 1.1, depthConfirmed: true } });
+    const [first, second] = [sourceFrameSeries(decorated, 0), sourceFrameSeries(decorated, 1)];
+    assert.equal(calibrationText(first), 'Ball 25.0 mm');
+    assert.equal(calibrationState(second), 'detector');
+    assert.equal(calibrationTag(second), 'detector plane');
+    assert.equal(calibrationText(second), 'Detector plane, not corrected');
+    assert.deepEqual(millimetresPerPixel(second), [0.33, 0.33]);
+    // A length on each film: 100 pixels at 0.33 mm, divided by the ball's 1.1 on its own film only.
+    const volume = { series: decorated, data: new Uint16Array(100 * 300 * 2) };
+    const length = (frame: number): Annotation => ({ id: `l${frame}`, type: 'length', points: [[0, 0, 0], [0, 33, 0]], plane: 'axial', slice: frame, mode: 'source', sourceFrame: frame });
+    assert.equal(annotationSummary(length(0), volume), '30.0 mm · ball 25.0 mm');
+    assert.equal(annotationSummary(length(1), volume), '33.0 mm · detector plane');
+    // The series' known-length scale stays on the films without a ball of their own; the ball outranks it on its film.
+    const both = withFilmCalibrations({ ...series, measurementScale: 0.95 }, { 0: { method: 'ball', knownMm: 25, scale: 1 / 1.1 } });
+    assert.equal(calibrationTag(sourceFrameSeries(both, 0)), 'ball 25.0 mm');
+    assert.equal(calibrationTag(sourceFrameSeries(both, 1)), 'scale set by hand');
+    // No calibration: the series as it was.
+    assert.equal(withFilmCalibrations(series, {}), series);
   });
 
   it('gives the side from the laterality, and says when it is not recorded', () => {

@@ -41,7 +41,7 @@ on a projection film carries its calibration after the number.
 
 ### Manual calibration
 
-In the plan, Ball and Ruler calibrate the series on an object on the film:
+In the plan, Ball and Ruler calibrate the film on an object on it:
 
 - **Ball**: three or more points on the ball's edge (up to eight), a circle fitted to them (Kåsa, refined on the geometric
   distance), and its diameter: 25.0 mm, 25.4 mm (1 inch), 30.0 mm or typed. The panel gives the diameter in pixels, the
@@ -51,11 +51,13 @@ In the plan, Ball and Ruler calibrate the series on an object on the film:
 - **Ruler**: two marks and the length between them. A ruler is assumed at the bones' depth like the ball: one lying on
   the detector needs its own factor, which the kit does not supply.
 
-Calibrate sets the series' measurement scale, the one the Units panel's known-length calibration sets, so every
-measurement on the film uses it and names it ("ball 25.0 mm"). It is announced like any calibration. Remove takes it
-away. Like the Units panel's, it is not an Undo step: ⌘Z takes back the marker's points, never the calibration. A
-known-length calibration made later replaces it and is named as a scale set by hand. A plan saved on a ball or ruler
-calibration calibrates the film again when it is opened.
+Calibrate sets the film's measurement scale, so every measurement on that film uses it and names it ("ball 25.0 mm").
+It holds for that film only (series and frame): the object stands at that film's magnification, so the series' other
+films, such as a repeat or a lateral, keep their own spacing and name it. On its film it outranks the Units panel's
+known-length scale, which is the series'. It is announced like any calibration. Remove takes it away. Like the Units
+panel's, it is not an Undo step: ⌘Z takes back the marker's points, never the calibration. A known-length calibration
+made later sets the whole series' scale, replaces the films' ball and ruler calibrations, and is named as a scale set by
+hand. A plan saved on a ball or ruler calibration calibrates the film again when it is opened.
 
 ## Opening the plan
 

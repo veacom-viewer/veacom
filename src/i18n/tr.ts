@@ -178,6 +178,7 @@ export const tr: Record<keyof typeof en, string> = {
   'notice.couldNotLoad': '{description} yüklenemedi: {error}',
   'notice.calibrationInvalid': 'Sıfırdan büyük bir mesafe ölçümü seçin ve çizginin gerçek uzunluğunu milimetre olarak girin.',
   'notice.calibrated': 'Bu seri için ölçek kalibre edildi. Özgün pikseller ve hasta koordinatları değişmedi.',
+  'notice.calibratedFilm': 'Bu film için ölçek kalibre edildi. Özgün pikseller ve hasta koordinatları değişmedi.',
   'notice.dismiss': 'Bildirimi kapat',
   'notice.fusionNoSuv': 'Füzyon: {pet} + {ct}. Bu PET\'te SUV yok; renk skalası PET\'in kendi değerlerine göre.',
   'notice.fusionSourceOnly': 'Bu GPU yalnızca özgün kesitleri gösterebildiği için füzyon kullanılamıyor.',

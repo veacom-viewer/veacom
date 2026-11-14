@@ -175,6 +175,7 @@ export const en = {
   'notice.couldNotLoad': 'Could not load {description}: {error}',
   'notice.calibrationInvalid': 'Choose a nonzero length measurement and enter its known length in millimetres.',
   'notice.calibrated': 'Measurement scale calibrated for this series. Source pixels and patient geometry are unchanged.',
+  'notice.calibratedFilm': 'Measurement scale calibrated for this film. Source pixels and patient geometry are unchanged.',
   'notice.dismiss': 'Dismiss notification',
   'notice.fusionNoSuv': 'Fusion: {pet} + {ct}. This PET has no SUV; the colour scale follows its own values.',
   'notice.fusionSourceOnly': 'Fusion is unavailable when this GPU can display only source frames.',
