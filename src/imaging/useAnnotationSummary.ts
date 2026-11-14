@@ -6,6 +6,7 @@ import { measureSourceRegion } from './nativeMeasurements';
 import { requestSourceRoi } from './roiStatisticsService';
 import { t, type Locale } from '../i18n';
 import { useLocale } from '../i18n/react';
+import { calibrationTag } from './radiograph';
 
 interface SummaryEntry {
   text: string;
@@ -49,7 +50,7 @@ function createEntry(annotation: Annotation, volume: Volume, locale: Locale): Su
     annotation.sourceSopInstanceUid, annotation.sourceFrameNumber, frameIndex, volume.sourceFrameIndex, volume.series.id, volume.series.uid, volume.series.engineGeneration, volume.series.sourceRevision,
     metadata?.sopInstanceUid, metadata?.sourceFrameNumber, frame.origin, frame.direction, frame.spacing, frame.dimensions,
     frame.paddingRange, frame.paddingIsNaN, frame.pixelType, frame.spacingKnown, frame.measurementScale, frame.measurementUnits, frame.modality, frame.valueUnit, frame.suvFactor,
-    frame.sulFactor, frame.suvBsaFactor, frame.suvNormalization, frame.projection?.basis, frame.projection?.magnification]);
+    frame.sulFactor, frame.suvBsaFactor, frame.suvNormalization, calibrationTag(frame)]);
   let entries = cache.get(volume.data);
   if (!entries) { entries = new Map(); cache.set(volume.data, entries); }
   let entry = entries.get(key);

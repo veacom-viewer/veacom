@@ -13,7 +13,7 @@ import { topLeftLines, topRightLines } from './overlayCorners';
 export function reportHeader(series: Series, frame: Series, hidePatient: boolean, translate = translateDefault): string[] {
   const left = topLeftLines(series, hidePatient, translate).map(line => line.text).join(' · ');
   const right = topRightLines(series, hidePatient, undefined, translate).map(line => line.text).join(' · ');
-  return [left, right, `${sideText(frame)} · ${calibrationText(frame)}`].filter(Boolean);
+  return [left, right, `${sideText(frame)} · ${calibrationText(frame, 'auto')}`].filter(Boolean);
 }
 
 export interface ReportSection { title: string; rows: Array<[string, string, string?]> }

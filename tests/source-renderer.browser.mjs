@@ -36,10 +36,10 @@ export function verifySourceGpu(nativeColors = []){
    record(`${kind} original source values remain unchanged`,data.slice(4,8).every(n=>n===(kind==='float32'?Math.fround(value):value)));
   });
   // A frame over the 2D limit is drawn in tiles that give exactly the pixels of one texture (sliceRenderer frameTiles).
-  for(const [label,components]of [['scalar',1],['RGB',3]])attempt(`Tiled ${label} frame matches one texture`,()=>{
-   const w=300,h=260,data=components===3?new Uint8Array(w*h*3):new Uint16Array(w*h);
+  for(const [label,components]of [['scalar',1],['float64',1],['RGB',3]])attempt(`Tiled ${label} frame matches one texture`,()=>{
+   const w=300,h=260,data=components===3?new Uint8Array(w*h*3):label==='float64'?new Float64Array(w*h):new Uint16Array(w*h);
    for(let y=0;y<h;y++)for(let x=0;x<w;x++){const v=(x*7+y*13)%4096;if(components===3)data.set([x%256,y%256,(x+y)%256],(y*w+x)*3);else data[y*w+x]=v}
-   const volume=vol(`tiled-${label}`,data,{dimensions:[w,h,1],pixelType:components===3?'uint8':'uint16',components,canReconstruct:false,modality:'DX'});
+   const volume=vol(`tiled-${label}`,data,{dimensions:[w,h,1],pixelType:components===3?'uint8':label==='float64'?'float64':'uint16',components,canReconstruct:false,modality:'DX',...(label==='float64'?{paddingRange:[128,147]}:{})});
    for(const view of [{zoom:1},{zoom:1.7,rotation:30,pan:[13,-7]},{flipX:true,zoom:.8},{rotation:90,flipY:true,zoom:2.3,pan:[-40,25]}]){
     const settled={...baseView,windowCenter:2048,windowWidth:4096,...view},whole=canvas(w,h),tiled=canvas(w,h);
     renderer.render(whole,volume,settled);
@@ -49,6 +49,7 @@ export function verifySourceGpu(nativeColors = []){
     const a=whole.getContext('2d').getImageData(0,0,w,h).data,b=tiled.getContext('2d').getImageData(0,0,w,h).data;
     let different=0;for(let i=0;i<a.length;i++)if(a[i]!==b[i])different++;
     const sent=mainUploads(before);
+    if(label==='float64' && view.zoom===1) record('Float64 conversion buffer holds only its tile',sent.length>1&&sent.every(tile=>tile.bytes===4*tile.width*tile.height),{uploads:summary(sent)});
     // The tiles are uploaded at the first view and reused after it.
     record(`Tiled ${label} ${JSON.stringify(view)}: every pixel as one texture, in tiles of at most 200`,different===0&&(view.rotation!==undefined||view.flipX!==undefined||sent.length>1)&&sent.every(u=>u.width<=200&&u.height<=200),{different,tiles:sent.length});
    }
@@ -175,9 +176,13 @@ export function verifySourceGpu(nativeColors = []){
   // Over the GPU's own 2D limit a source image is drawn in tiles, never downsampled (sliceRenderer frameTiles).
   attempt('Over-limit source image is drawn in tiles without downsampling',()=>{
    const data=new Uint8Array(max2D+1);for(let i=0;i<data.length;i++)data[i]=i%251;
-   const volume=vol('too-wide',data,{dimensions:[max2D+1,1,1],pixelType:'uint8',canReconstruct:false}),c=canvas(max2D+1,1),before=uploads.length;
-   renderer.render(c,volume,{...baseView,windowCenter:128,windowWidth:256});
-   for(const x of [0,max2D-1,max2D]){const grey=Math.round(Math.max(0,Math.min(1,(data[x]-127.5)/255+.5))*255);checkPixel(`Over-limit image pixel ${x}`,c,x,0,[grey,grey,grey,255])}
+   const volume=vol('too-wide',data,{dimensions:[data.length,1,1],pixelType:'uint8',canReconstruct:false});
+   renderer.canvas.width=Math.min(64,gl.getParameter(gl.MAX_VIEWPORT_DIMS)[0]);renderer.canvas.height=1;
+   const width=gl.drawingBufferWidth,c=canvas(width,1),before=uploads.length;
+   for(const left of [0,data.length-width]){
+    renderer.render(c,volume,{...baseView,zoom:data.length/width,pan:[(data.length-width)/2-left,0]});
+    for(const x of [0,width-2,width-1]){const grey=data[left+x];checkPixel(`Over-limit image pixel ${left+x}`,c,x,0,[grey,grey,grey,255])}
+   }
    const sent=mainUploads(before);record('Over-limit image uploads tiles within the 2D limit',sent.length>1&&sent.every(u=>u.width<=max2D&&u.height<=max2D),{uploads:summary(sent)});
   });
  }finally{gl.texImage2D=original2;gl.texImage3D=original3}

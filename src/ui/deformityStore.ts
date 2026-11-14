@@ -9,6 +9,7 @@ import type { Landmarks, Side } from '../imaging/deformity/measure';
 import type { Osteotomy } from '../imaging/deformity/osteotomy';
 import type { Point } from '../imaging/deformity/plane';
 import type { Series } from '../model';
+import { filmKey } from '../imaging/radiograph';
 
 /** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
 export interface LegPlan {
@@ -45,19 +46,12 @@ export interface DeformityState {
   simulate: boolean;
 }
 
-/**
- * The key a film's plans are kept by: the series and the image's own identity, its SOP Instance UID and frame number,
- * so that the plans stay with that image when a re-import adds or reorders the series' frames (as measurements do).
- * The frame's index only for an image without a SOP Instance UID.
- */
-export function filmKey(series: Pick<Series, 'id' | 'frameMetadata'>, frame: number): string {
-  const metadata = series.frameMetadata?.[frame];
-  return metadata?.sopInstanceUid ? `${series.id}:${metadata.sopInstanceUid}:${metadata.sourceFrameNumber ?? 1}` : `${series.id}:#${frame}`;
-}
+export { filmKey };
+export interface FilmSelection { seriesId: string; key: string }
 
 let state: DeformityState = { open: false, films: {}, placing: null, simulate: true };
 const listeners = new Set<() => void>();
-let rememberHook: (() => void) | null = null;
+let rememberHook: ((calibration?: FilmSelection) => void) | null = null;
 let counter = 0;
 
 function set(next: DeformityState) { state = next; for (const listener of [...listeners]) listener(); }
@@ -66,7 +60,7 @@ export const deformity = {
   get: () => state,
   subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   /** App's Undo: called before each change the reader makes. */
-  connectUndo(remember: (() => void) | null) { rememberHook = remember; },
+  connectUndo(remember: typeof rememberHook) { rememberHook = remember; },
   setOpen(open: boolean) { if (state.open !== open) set({ ...state, open, placing: open ? state.placing : null }); },
   setPlacing(placing: Placing | null) { set({ ...state, placing }); },
   setSimulate(simulate: boolean) { set({ ...state, simulate }); },
@@ -75,18 +69,18 @@ export const deformity = {
     const key = filmKey(series, frame), existing = state.films[key];
     if (existing) return existing;
     const plans = sides.map(side => newPlan(side)), metadata = series.frameMetadata?.[frame];
-    const film: FilmPlans = { seriesId: series.id, frame, sopInstanceUid: metadata?.sopInstanceUid ?? series.uid, frameNumber: metadata?.sourceFrameNumber ?? 1,
+    const film: FilmPlans = { seriesId: series.id, frame, sopInstanceUid: metadata?.sopInstanceUid ?? '', frameNumber: metadata?.sourceFrameNumber ?? 1,
       plans, active: plans[0].id, marker: null };
     set({ ...state, films: { ...state.films, [key]: film } });
     return film;
   },
   /** A change by the reader: remembered for Undo first unless `remember` is false (the moves of one drag). */
-  change(key: string, update: (film: FilmPlans) => FilmPlans, remember = true) {
+  change(key: string, update: (film: FilmPlans) => FilmPlans, remember: boolean | 'calibration' = true) {
     const film = state.films[key];
     if (!film) return;
     const next = update(film);
     if (next === film) return;
-    if (remember) rememberHook?.();
+    if (remember) rememberHook?.(remember === 'calibration' ? { seriesId: film.seriesId, key } : undefined);
     set({ ...state, films: { ...state.films, [key]: next } });
     // The usage timings count that the plan changed, never what changed (telemetry/TELEMETRY.md).
     usage.touch('marks');

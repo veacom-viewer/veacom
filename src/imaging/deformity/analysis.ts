@@ -65,6 +65,8 @@ export function coraNeeds(leg: Leg, lateral: Point | null, bone: 'femur' | 'tibi
     : [[leg.tibialLine, 'tibialPlateauMedial', 'tibialPlateauLateral'], [leg.plafondLine, 'plafondMedial', 'plafondLateral']];
   for (const [line, medial, lateralName] of lines) if (!line) (leg.together.includes(medial) ? together : absent).push(medial, lateralName);
   if (absent.length) return { landmarks: absent };
+  if (leg.hip && leg.ankle && leg.hip.centre[0] === leg.ankle[0] && leg.hip.centre[1] === leg.ankle[1]) together.push('femoralHeadContour', 'ankleCentre');
+  if (bone === 'femur' && leg.hip && leg.trochanter && leg.hip.centre[0] === leg.trochanter[0] && leg.hip.centre[1] === leg.trochanter[1]) together.push('femoralHeadContour', 'greaterTrochanterTip');
   if (together.length) return { together };
   return lateral ? undefined : { reason: 'side' };
 }

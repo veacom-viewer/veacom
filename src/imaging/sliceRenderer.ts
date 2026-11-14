@@ -417,16 +417,21 @@ class SharedSliceRenderer {
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
       let displayData = sourceData;
       if (sourceData instanceof Float64Array) {
-        const copy = new Float32Array(sourceData.length);
-        for (let frame = 0; frame < (sourceFrame === undefined ? series.dimensions[2] : 1); frame++) {
+        const depth = sourceFrame === undefined ? series.dimensions[2] : 1;
+        const copy = new Float32Array(texels);
+        let output = 0;
+        for (let frame = 0; frame < depth; frame++) {
           const range = series.frameMetadata?.[sourceFrame ?? frame]?.paddingRange ?? series.paddingRange;
           if (range && !range.every(Number.isFinite)) throw new Error('Invalid pixel padding range.');
           const low = range ? Math.min(...range) : NaN, high = range ? Math.max(...range) : NaN;
-          for (let i = frame * frameLength; i < (frame + 1) * frameLength; i++) {
-            const value = sourceData[i];
-            copy[i] = range && value >= low && value <= high ? NaN : value;
-            if (Number.isFinite(value) && !Number.isFinite(copy[i]) && !(range && value >= low && value <= high)) {
-              throw new Error(t('gpu.float64Range'));
+          for (let row = 0; row < tileHeight; row++) {
+            const start = frame * frameLength + (row + (tiled?.y ?? 0)) * series.dimensions[0] + (tiled?.x ?? 0);
+            for (let i = start; i < start + tileWidth; i++) {
+              const value = sourceData[i];
+              const padding = value >= low && value <= high;
+              const displayed = padding ? NaN : Math.fround(value);
+              if (!padding && Number.isFinite(value) && !Number.isFinite(displayed)) throw new Error(t('gpu.float64Range'));
+              copy[output++] = displayed;
             }
           }
         }
@@ -444,7 +449,7 @@ class SharedSliceRenderer {
           : kind === 'uint8' ? [gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE]
             : kind === 'rgb8' ? [gl.RGB8, gl.RGB, gl.UNSIGNED_BYTE] : [gl.R32F, gl.RED, gl.FLOAT];
       if (sourceFrame === undefined) gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData);
-      else if (tiled) {
+      else if (tiled && !(sourceData instanceof Float64Array)) {
         // A tile is read from the frame in place: rows of the whole frame, from the tile's corner.
         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, series.dimensions[0]); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, tiled.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, tiled.y);
         try { gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData); }

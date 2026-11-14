@@ -90,8 +90,8 @@ describe('the plans of a film', () => {
     assert.equal(deformity.get().films[filmKey(reordered, 0)], undefined, 'The new film at index 0 has none of them.');
     assert.equal(deformity.ensure(reordered, 0, ['R']).plans[0].points.kneeCentre, undefined);
     assert.deepEqual(deformity.get().films[filmKey(reordered, 2)]?.plans[0].points.kneeCentre, [[200, 500]]);
-    // A frame without a SOP Instance UID is kept by its index.
-    assert.equal(filmKey({ id: 'dx', frameMetadata: undefined }, 1), 'dx:#1');
+    const unidentified = { id: 'dx', sourceRevision: 1 };
+    assert.notEqual(filmKey(unidentified, 1), filmKey({ ...unidentified, sourceRevision: 2 }, 1));
   });
 });
 
@@ -155,6 +155,25 @@ describe('the plan file', () => {
     assert.deepEqual(knee, { name: 'kneeCentre', points: [[200, 500]], confidence: 'manual', provenance: ['placed'], spacing: 'detector', side: 'R', software: 'unknown', suggestionShown: false });
     assert.doesNotMatch(JSON.stringify(file), /2\.25\.1|SYNTHETIC|Synthetic/);
     assertClose(file.plans[0].values.tibiaLength.value, Math.hypot(5, 400) * 0.33, 9);
+  });
+
+  it('restores the applied scale and its source independently of later marker edits and display units', async () => {
+    const current = { ...planned(), marker: { method: 'ruler' as const, knownMm: 30, points: [[0, 0], [0, 100]] as Point[], depthConfirmed: false } };
+    const applied = { method: 'ruler' as const, knownMm: 25, scale: 0.25 / 0.33, depthConfirmed: false };
+    const calibrated = { ...frame, measurementUnits: 'px' as const, measurementScale: applied.scale, manualCalibration: applied };
+    const file = await planFile(current, calibrated);
+    assert.deepEqual(file.calibration.mmPerPixel, [0.25, 0.25]);
+    const result = await parsePlanFile(JSON.stringify(file), current, frame);
+    assert.ok(!('error' in result));
+    assert.deepEqual(result.calibration, applied);
+    assert.equal(result.marker?.knownMm, 30);
+    assertClose(file.plans[0].values.tibiaLength.value, Math.hypot(5, 400) * 0.25, 9);
+    delete file.calibration.appliedMarker;
+    const legacy = await parsePlanFile(JSON.stringify(file), current, frame);
+    assert.ok(!('error' in legacy));
+    assert.deepEqual(legacy.calibration, { method: 'scale', scale: applied.scale });
+    file.calibration.mmPerPixel = [0.25, 1];
+    assert.deepEqual(await parsePlanFile(JSON.stringify(file), current, frame), { error: 'content' });
   });
 
   it('opens its own file, and refuses another film\'s, a broken or hostile one', async () => {

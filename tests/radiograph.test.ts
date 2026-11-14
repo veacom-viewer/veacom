@@ -3,7 +3,7 @@ import { afterEach, describe, it } from 'node:test';
 import type { Annotation, Projection, Series } from '../src/model';
 import { annotationSummary } from '../src/imaging/annotations';
 import { screenMapping, sourceFrameSeries } from '../src/imaging/geometry';
-import { calibrationState, calibrationTag, calibrationText, manualCalibration, millimetresPerPixel, projectionEdgeLabels, projectionLine, sideText, withFilmCalibrations, type ManualCalibration } from '../src/imaging/radiograph';
+import { calibrationState, calibrationTag, calibrationText, filmKey, manualCalibration, millimetresPerPixel, pixelSpacingText, projectionEdgeLabels, projectionLine, sideText, withFilmCalibrations, type ManualCalibration } from '../src/imaging/radiograph';
 import { setLocale } from '../src/i18n';
 
 // A one-frame DX of 100 × 300 pixels, as the engine lists it: its frame carries the projection facts
@@ -23,6 +23,7 @@ function film(projection: Projection | undefined, extra: Partial<Series> = {}): 
 const detector: Projection = { basis: 'detector', spacing: [0.33, 0.33], imagerPixelSpacing: [0.33, 0.33], patientOrientation: ['L', 'F'], laterality: 'B' };
 // Every combination of spacing tags the engine tells apart, by the basis it gives (native/src/projection.rs tests).
 const cases: Array<{ name: string; projection: Projection | undefined; state: string; tag: string; text: string; mm: [number, number] | null }> = [
+  { name: 'Nominal Scanned Pixel Spacing', projection: { basis: 'scanned', spacing: [0.33, 0.33] }, state: 'scanned', tag: 'scanned film', text: 'Nominal spacing on the scanned film', mm: [0.33, 0.33] },
   { name: 'Pixel Spacing only', projection: { basis: 'unstated', spacing: [0.3, 0.3], pixelSpacing: [0.3, 0.3] }, state: 'unstated', tag: 'calibration not stated', text: 'Pixel Spacing: correction not stated', mm: [0.3, 0.3] },
   { name: 'Imager Pixel Spacing only', projection: detector, state: 'detector', tag: 'detector plane', text: 'Detector plane, not corrected', mm: [0.33, 0.33] },
   { name: 'Imager Pixel Spacing and ERMF', projection: { basis: 'magnification', spacing: [0.3, 0.3], imagerPixelSpacing: [0.33, 0.33], magnification: 1.1 }, state: 'magnification', tag: 'ERMF ×1.10', text: 'Detector ÷ ERMF 1.10: table depth', mm: [0.3, 0.3] },
@@ -72,7 +73,8 @@ describe('the calibration of a projection film', () => {
     assert.equal(calibrationState(scaled), 'manual');
     assert.equal(calibrationTag(scaled), 'scale set by hand');
     const ball: ManualCalibration = { method: 'ball', knownMm: 25, scale: 1 / 1.1 };
-    const calibrated = (calibration: ManualCalibration) => sourceFrameSeries(withFilmCalibrations(film(detector), { 0: calibration }), 0);
+    const source = film(detector);
+    const calibrated = (calibration: ManualCalibration) => sourceFrameSeries(withFilmCalibrations(source, { [filmKey(source, 0)]: calibration }), 0);
     assert.equal(calibrationState(calibrated(ball)), 'manual');
     assert.equal(calibrationTag(calibrated(ball)), 'ball 25.0 mm');
     assert.equal(calibrationText(calibrated(ball)), 'Ball 25.0 mm · ball depth not confirmed');
@@ -84,7 +86,8 @@ describe('the calibration of a projection film', () => {
     assert.equal(calibrationTag({ ...calibrated(ball), measurementScale: 0.95 }), 'scale set by hand');
     assert.equal(calibrationTag(calibrated({ method: 'ruler', knownMm: 200, scale: 1 / 1.1 })), 'ruler 200.0 mm');
     // A film with only one frame and no frame list takes it on the series.
-    const bare = withFilmCalibrations({ ...film(detector), frameMetadata: undefined }, { 0: ball });
+    const noMetadata = { ...source, frameMetadata: undefined };
+    const bare = withFilmCalibrations(noMetadata, { [filmKey(noMetadata, 0)]: ball });
     assert.equal(manualCalibration(bare), ball);
     // The reader's choice of pixels wins.
     assert.equal(calibrationState({ ...calibrated(ball), measurementUnits: 'px' }), 'pixels');
@@ -92,9 +95,11 @@ describe('the calibration of a projection film', () => {
 
   it('keeps a ball or ruler on the film it was measured on, not on the series\' other films', () => {
     // One CR series of two films, such as the AP long leg with a ball and a repeat: the ball is on the first only.
-    const one = film(detector).frameMetadata![0];
-    const series = film(detector, { dimensions: [100, 300, 2], frameMetadata: [one, { ...one }] });
-    const decorated = withFilmCalibrations(series, { 0: { method: 'ball', knownMm: 25, scale: 1 / 1.1, depthConfirmed: true } });
+    const one = { ...film(detector).frameMetadata![0], sopInstanceUid: '2.25.1', sourceFrameNumber: 1 };
+    const two = { ...one, sourceFrameNumber: 2 };
+    const series = film(detector, { dimensions: [100, 300, 2], frameMetadata: [one, two] });
+    const films = { [filmKey(series, 0)]: { method: 'ball' as const, knownMm: 25, scale: 1 / 1.1, depthConfirmed: true } };
+    const decorated = withFilmCalibrations(series, films);
     const [first, second] = [sourceFrameSeries(decorated, 0), sourceFrameSeries(decorated, 1)];
     assert.equal(calibrationText(first), 'Ball 25.0 mm');
     assert.equal(calibrationState(second), 'detector');
@@ -111,11 +116,23 @@ describe('the calibration of a projection film', () => {
     assert.match(annotationSummary(box(0), volume), /^900\.0 mm² .* · ball 25\.0 mm$/);
     assert.match(annotationSummary(box(1), volume), /^1089\.0 mm² .* · detector plane$/);
     // The series' known-length scale stays on the films without a ball of their own; the ball outranks it on its film.
-    const both = withFilmCalibrations({ ...series, measurementScale: 0.95 }, { 0: { method: 'ball', knownMm: 25, scale: 1 / 1.1 } });
+    const both = withFilmCalibrations({ ...series, measurementScale: 0.95 }, films);
     assert.equal(calibrationTag(sourceFrameSeries(both, 0)), 'ball 25.0 mm');
     assert.equal(calibrationTag(sourceFrameSeries(both, 1)), 'scale set by hand');
     // No calibration: the series as it was.
     assert.equal(withFilmCalibrations(series, {}), series);
+    const reordered = withFilmCalibrations({ ...series, frameMetadata: [two, one] }, films);
+    assert.equal(pixelSpacingText(sourceFrameSeries(reordered, 0)), '0.33 × 0.33 mm · detector plane');
+    assert.equal(pixelSpacingText(sourceFrameSeries(reordered, 1)), '0.30 × 0.30 mm · ball 25.0 mm');
+  });
+
+  it('shows a manual scale in the inspector on a film without DICOM spacing', () => {
+    const source = film({ basis: 'none' });
+    assert.equal(pixelSpacingText(source), 'Not calibrated');
+    const decorated = withFilmCalibrations(source, { [filmKey(source, 0)]: { method: 'ruler', knownMm: 100, scale: 0.25 } });
+    const shown = sourceFrameSeries(decorated, 0);
+    assert.equal(pixelSpacingText(shown), '0.25 × 0.25 mm · ruler 100.0 mm');
+    assert.equal(pixelSpacingText({ ...shown, measurementUnits: 'px' }), '0.25 × 0.25 mm · ruler 100.0 mm');
   });
 
   it('gives the side from the laterality, and says when it is not recorded', () => {
@@ -143,5 +160,11 @@ describe('orientation letters from Patient Orientation', () => {
     assert.equal(projectionEdgeLabels(series, mapping(series)), null);
     const oriented = film(detector, { orientationKnown: true });
     assert.equal(projectionEdgeLabels(oriented, mapping(oriented)), null);
+  });
+  it('preserves the primary DICOM direction and leaves ambiguous oblique edges blank', () => {
+    const series = sourceFrameSeries(film({ ...detector, patientOrientation: ['A', 'FR'] }), 0);
+    assert.deepEqual(projectionEdgeLabels(series, mapping(series)), { left: 'P', right: 'A', top: 'SL', bottom: 'IR' });
+    assert.deepEqual(projectionEdgeLabels(series, mapping(series, { rotation: 90 })), { left: 'IR', right: 'SL', top: 'P', bottom: 'A' });
+    assert.deepEqual(projectionEdgeLabels(series, mapping(series, { rotation: 30 })), { left: '', right: '', top: '', bottom: '' });
   });
 });

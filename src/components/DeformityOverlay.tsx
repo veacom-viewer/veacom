@@ -91,6 +91,11 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const state = useDeformity();
   const drag = useRef<(DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }) | null>(null);
   const found = state.open ? shown(volume, view, state.films) : null;
+  useLayoutEffect(() => () => {
+    const held = drag.current;
+    drag.current = null;
+    held?.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
+  }, [found?.key, found?.film.active]);
   if (!found) return null;
   const { film, frame, key } = found;
   const plan = planView(film, frame);
@@ -104,7 +109,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const pixelAt = (point: [number, number]) => worldToPixel(frame, screenToWorld(mapping, point[0], point[1]));
   const placing = state.placing?.film === key ? state.placing : null;
   const grab = (handle: Handle) => (event: ReactPointerEvent<SVGElement>) => {
-    if (event.button !== 0 || placing) return;
+    if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
@@ -116,7 +121,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     // A drag moves the point it took, on the film and plan it took it on: paged to another film or plan, it stops.
     const now = dragContinues(held, { key, plan: film.active, pointer: event.pointerId });
     if (now === 'ignore') return;
-    if (now === 'stop') { end(held); event.currentTarget.releasePointerCapture(event.pointerId); return; }
+    if (now === 'stop') { end(held); return; }
     const point = pixelAt(local(event));
     // One Undo step for the whole drag: the state before it is remembered on the first move.
     deformity.change(held.key, current => moveHandle(current, held.handle, point), !held.moved);

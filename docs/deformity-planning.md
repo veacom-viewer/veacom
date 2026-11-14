@@ -22,6 +22,7 @@ PS3.3 10.7.1.1 and C.8.11.4 give, and the engine says which with each frame:
 | Imager Pixel Spacing alone, with an Estimated Radiographic Magnification Factor of at least 1 | Imager Pixel Spacing ÷ ERMF | "Detector ÷ ERMF 1.10: table depth"; "ERMF ×1.10" |
 | Imager Pixel Spacing alone, or equal to Pixel Spacing (with or without an ERMF) | Imager Pixel Spacing | "Detector plane, not corrected"; "detector plane" |
 | Pixel Spacing alone | Pixel Spacing | "Pixel Spacing: correction not stated"; "calibration not stated" |
+| Nominal Scanned Pixel Spacing, alone or equal to Pixel Spacing | Spacing on the scanned film | "Nominal spacing on the scanned film" |
 | None | pixels | "Pixels only"; lengths in px |
 
 - Imager Pixel Spacing is at the detector's front plane and is never adjusted for magnification (C.8.11.4): lengths
@@ -31,7 +32,7 @@ PS3.3 10.7.1.1 and C.8.11.4 give, and the engine says which with each frame:
   those films measured in pixels only before. Pixel Spacing equal to Imager Pixel Spacing keeps its own millimetres, as
   before, now named the detector plane: applying the factor there too would change existing numbers, which waits for
   the owner. A factor below 1 or not a number is left out with a note.
-- Pixel Spacing alone on a radiograph cannot say whether it was corrected (10.7.1.1): it is used and says so.
+- Pixel Spacing that differs from Nominal Scanned Pixel Spacing also indicates correction (10.7.1.1). Pixel Spacing alone leaves correction unknown.
 - CT, MR, PET and the other cross-sections keep their Pixel Spacing; their labels do not change.
 
 The pane names the film's side and calibration bottom left ("Both sides · Detector plane, not corrected"). The side
@@ -56,10 +57,11 @@ It holds for that film only (series and frame): the object stands at that film's
 films, such as a repeat or a lateral, keep their own spacing and name it. On its film it outranks the Units panel's
 known-length scale, which is the series'. It is announced like any calibration, and the inspector's pixel spacing
 names it for the film shown. The plan's Remove takes it away; the Units panel's Remove takes away only the series'
-scale. Like the Units panel's, it is not an Undo step: ⌘Z takes back the marker's points, never the calibration. A
+scale. Editing a landmark or marker and undoing that edit leaves the applied scale in place. A
 known-length calibration made later sets the whole series' scale, replaces the films' ball and ruler calibrations, and
-is named as a scale set by hand. A plan saved on a ball or ruler calibration calibrates the film again when it is
-opened.
+is named as a scale set by hand. Opening a plan restores its saved spacing independently of the editable marker.
+Undo and Redo of Open restore that film's plan and calibration together. Changing the viewer's display units keeps the
+plan in its physical units. Plan files require the film's SOP Instance UID.
 
 ## Opening the plan
 

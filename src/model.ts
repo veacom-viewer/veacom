@@ -46,10 +46,10 @@ export interface Projection {
   /** What the spacing measurements use stands for (PS3.3 10.7.1.1): Pixel Spacing that was corrected or calibrated,
    * Imager Pixel Spacing divided by the Estimated Radiographic Magnification Factor, Imager Pixel Spacing at the
    * detector, Pixel Spacing that does not say, or none. */
-  basis: 'calibrated' | 'magnification' | 'detector' | 'unstated' | 'none';
+  basis: 'calibrated' | 'magnification' | 'detector' | 'scanned' | 'unstated' | 'none';
   /** Row then column spacing in mm that measurements use. */
   spacing?: [number, number];
-  pixelSpacing?: [number, number]; imagerPixelSpacing?: [number, number];
+  pixelSpacing?: [number, number]; imagerPixelSpacing?: [number, number]; nominalScannedPixelSpacing?: [number, number];
   magnification?: number; calibrationType?: string; calibrationDescription?: string;
   sourceDetector?: number; sourcePatient?: number;
   /** Patient Orientation (0020,0020): the patient directions of the rows and the columns, such as L and F. */

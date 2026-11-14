@@ -328,6 +328,10 @@ async function main() {
     near((await values('.deformity-values:not(.deformity-compare)')).femurLength, right.expected.femurLength, LENGTH, 'Ball-calibrated femur length');
     assert.match(await panel.locator('tr[data-value-key="femurLength"]').textContent(), /ball 25\.0 mm/);
     await shot('4-ball-calibration');
+    const ballPlan = path.join(output, 'ball-plan.json');
+    await desktop.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, ballPlan);
+    await panel.locator('[data-action="deformity-save"]').click();
+    await page.waitForFunction(() => document.querySelector('[data-testid="deformity-status"]')?.textContent.includes('ball-plan.json'));
     // ⌘Z takes back plan steps, never the calibration: it stays until Remove.
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
     await page.keyboard.press(undoKeys);
@@ -350,6 +354,30 @@ async function main() {
     assert.match(await panel.locator('tr[data-value-key="femurLength"]').textContent(), /ruler 200\.0 mm/);
     await shot('4b-ruler-calibration');
     check('A ruler\'s marks 200 mm apart calibrate the film; the femur measures 440 mm, named "ruler 200.0 mm"');
+
+    // Give the ruler a different scale, then open the ball plan. Undo and Redo must switch both the marker and scale.
+    await panel.locator('[data-action="deformity-known-mm"]').fill('100');
+    await panel.locator('[data-action="deformity-calibrate"]').click();
+    const readLength = async () => (await values('.deformity-values:not(.deformity-compare)')).femurLength;
+    await page.waitForFunction(() => /Ruler 100\.0 mm/.test(document.querySelector('[data-testid="deformity-calibration"]')?.textContent));
+    near(await readLength(), right.expected.femurLength / 2, LENGTH, '100 mm ruler');
+    await panel.locator('[data-action="deformity-open-file"]').setInputFiles(ballPlan);
+    await page.waitForFunction(() => /Ball 25\.0 mm/.test(document.querySelector('[data-testid="deformity-calibration"]')?.textContent));
+    near(await readLength(), right.expected.femurLength, LENGTH, 'Opened ball scale');
+    await panel.locator('[data-action="deformity-undo"]').click();
+    await page.waitForFunction(() => /Ruler 100\.0 mm/.test(document.querySelector('[data-testid="deformity-calibration"]')?.textContent));
+    near(await readLength(), right.expected.femurLength / 2, LENGTH, 'Undo restored the ruler scale');
+    await panel.locator('[data-action="deformity-redo"]').click();
+    await page.waitForFunction(() => /Ball 25\.0 mm/.test(document.querySelector('[data-testid="deformity-calibration"]')?.textContent));
+    near(await readLength(), right.expected.femurLength, LENGTH, 'Redo restored the ball scale');
+    check('Open, Undo and Redo restore the measurements and calibration together');
+
+    await panel.locator('[data-action="deformity-report"]').evaluate(button => {
+      button.click();
+      requestAnimationFrame(() => document.querySelector('[data-action="deformity-plan-add"]').click());
+    });
+    await page.waitForFunction(() => /plan changed/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent));
+    check('A plan edit during capture stops the report');
 
     // 6. The mirrored film (Patient Orientation R\F): the same angles, the same names.
     await open(manifest.series.mirrored.description);

@@ -2,7 +2,8 @@
 // and the labelled landmarks a landmark model can later learn from. It names no patient: the film is known by a
 // SHA-256 of its SOP Instance UID and its frame. Opened files are untrusted: every field is checked before use.
 import type { Series } from '../model';
-import { calibrationState, millimetresPerPixel, projectionOf, type CalibrationState } from '../imaging/radiograph';
+import { calibrationState, manualCalibration, millimetresPerPixel, projectionOf, type CalibrationState, type FilmCalibration } from '../imaging/radiograph';
+import { t } from '../i18n';
 import { CONTOUR_MAXIMUM, isContour, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
 import type { Osteotomy } from '../imaging/deformity/osteotomy';
 import type { Point } from '../imaging/deformity/plane';
@@ -14,7 +15,7 @@ export const PLAN_VERSION = 1;
 /** The kernel's version: a change to what a value means (src/imaging/deformity) raises it. */
 export const KERNEL_VERSION = 1;
 const MAX_BYTES = 2_000_000;
-const MAX_PLANS = 16;
+export const MAX_PLANS = 16;
 
 /** One landmark as a training label: where it is, what it is, and how far it can be trusted. */
 export interface LandmarkLabel {
@@ -43,7 +44,8 @@ export interface PlanFile {
     /** The reader's answer when the film records no Patient Orientation. */
     patientRight?: 'left' | 'right' };
   calibration: { state: CalibrationState; mmPerPixel: [number, number] | null; pixelSpacing?: [number, number]; imagerPixelSpacing?: [number, number];
-    magnification?: number; calibrationType?: string; marker: Marker | null };
+    nominalScannedPixelSpacing?: [number, number]; magnification?: number; calibrationType?: string; marker: Marker | null;
+    appliedMarker?: { method: Marker['method']; knownMm: number; depthConfirmed?: boolean } };
   active: number;
   plans: Array<{ name: string; side: 'R' | 'L'; landmarks: LandmarkLabel[]; osteotomy: Osteotomy | null;
     /** The values as measured when saved, for reading the file without VEAcom; ignored when it is opened. */
@@ -59,7 +61,8 @@ const software = () => (typeof window !== 'undefined' && window.veacom?.getVersi
 
 /** The plan file of a film. `frame` is the film's frame series (sourceFrameSeries). */
 export async function planFile(film: FilmPlans, frame: Series, now = new Date()): Promise<PlanFile> {
-  const projection = projectionOf(frame), state = calibrationState(frame), version = software();
+  if (!film.sopInstanceUid) throw new Error(t('deformity.noFilmIdentity'));
+  const projection = projectionOf(frame), state = calibrationState(frame, 'auto'), version = software(), applied = manualCalibration(frame);
   return {
     schema: PLAN_SCHEMA, version: PLAN_VERSION, software: { name: 'VEAcom', version, kernel: KERNEL_VERSION }, savedAt: now.toISOString(),
     coordinates: 'dicom-image-relative',
@@ -67,8 +70,10 @@ export async function planFile(film: FilmPlans, frame: Series, now = new Date())
       ...(projection?.patientOrientation ? { patientOrientation: projection.patientOrientation } : {}), ...(projection?.laterality ? { laterality: projection.laterality } : {}),
       ...(film.patientRight ? { patientRight: film.patientRight } : {}) },
     calibration: { state, mmPerPixel: millimetresPerPixel(frame), ...(projection?.pixelSpacing ? { pixelSpacing: projection.pixelSpacing } : {}),
+      ...(projection?.nominalScannedPixelSpacing ? { nominalScannedPixelSpacing: projection.nominalScannedPixelSpacing } : {}),
       ...(projection?.imagerPixelSpacing ? { imagerPixelSpacing: projection.imagerPixelSpacing } : {}), ...(projection?.magnification ? { magnification: projection.magnification } : {}),
-      ...(projection?.calibrationType ? { calibrationType: projection.calibrationType } : {}), marker: film.marker },
+      ...(projection?.calibrationType ? { calibrationType: projection.calibrationType } : {}), marker: film.marker,
+      ...(applied ? { appliedMarker: { method: applied.method, knownMm: applied.knownMm, depthConfirmed: applied.depthConfirmed } } : {}) },
     active: Math.max(0, film.plans.findIndex(plan => plan.id === film.active)),
     plans: film.plans.map(plan => {
       const view = planView(film, frame, plan);
@@ -88,14 +93,14 @@ const finite = (value: unknown): value is number => typeof value === 'number' &&
 
 /** Reads a plan file for this film: its plans and marker, or why it cannot be used. Points must lie within the film
  * or half its size around it; text is bounded; unknown fields are ignored. */
-export async function parsePlanFile(text: string, film: FilmPlans, frame: Series): Promise<{ plans: LegPlan[]; active: number; marker: Marker | null; calibrated: boolean; patientRight?: 'left' | 'right' } | { error: ParseError }> {
+export async function parsePlanFile(text: string, film: FilmPlans, frame: Series): Promise<{ plans: LegPlan[]; active: number; marker: Marker | null; calibration: FilmCalibration; patientRight?: 'left' | 'right' } | { error: ParseError }> {
   if (text.length > MAX_BYTES) return { error: 'size' };
   let value: unknown;
   try { value = JSON.parse(text); } catch { return { error: 'json' }; }
   if (!isObject(value) || value.schema !== PLAN_SCHEMA) return { error: 'schema' };
   if (value.version !== PLAN_VERSION) return { error: 'version' };
   const recorded = value.film;
-  if (!isObject(recorded) || recorded.sopInstanceSha256 !== await sha256(film.sopInstanceUid) || recorded.frame !== film.frameNumber
+  if (!film.sopInstanceUid || !isObject(recorded) || recorded.sopInstanceSha256 !== await sha256(film.sopInstanceUid) || recorded.frame !== film.frameNumber
     || recorded.columns !== frame.dimensions[0] || recorded.rows !== frame.dimensions[1]) return { error: 'film' };
   const [columns, rows] = frame.dimensions;
   const point = (p: unknown): Point | null => Array.isArray(p) && p.length === 2 && finite(p[0]) && finite(p[1])
@@ -143,9 +148,24 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
   if (value.active !== undefined && !(Number.isInteger(value.active) && (value.active as number) >= 0 && (value.active as number) < plans.length)) return { error: 'content' };
   const active = (value.active as number | undefined) ?? 0;
   const right = isObject(recorded) && (recorded.patientRight === 'left' || recorded.patientRight === 'right') ? recorded.patientRight : undefined;
-  // A plan saved on a ball or ruler calibration calibrates the film again on its marker.
-  const calibrated = marker !== null && isObject(value.calibration) && value.calibration.state === 'manual';
-  return { plans, active, marker, calibrated, ...(right ? { patientRight: right } : {}) };
+  const saved = value.calibration;
+  if (!isObject(saved)) return { error: 'content' };
+  let calibration: FilmCalibration = { method: 'dicom' };
+  if (saved.state === 'manual') {
+    // A version 1 file always records the applied spacing. Older files lack appliedMarker, so only the scale is known.
+    const mm = saved.mmPerPixel;
+    if (!Array.isArray(mm) || mm.length !== 2 || !finite(mm[0]) || !finite(mm[1]) || mm[0] <= 0 || mm[1] <= 0) return { error: 'content' };
+    const scale = mm[0] / frame.spacing[0], yScale = mm[1] / frame.spacing[1];
+    if (!finite(scale) || !finite(yScale) || scale <= 0 || yScale <= 0 || Math.abs(scale - yScale) > 1e-9 * scale) return { error: 'content' };
+    const applied = saved.appliedMarker;
+    if (applied === undefined) calibration = { method: 'scale', scale };
+    else {
+      if (!isObject(applied) || (applied.method !== 'ball' && applied.method !== 'ruler') ||
+        !finite(applied.knownMm) || applied.knownMm <= 0 || applied.knownMm > 2000) return { error: 'content' };
+      calibration = { method: applied.method, knownMm: applied.knownMm, depthConfirmed: applied.depthConfirmed === true, scale };
+    }
+  } else if (typeof saved.state !== 'string' || !['detector', 'scanned', 'calibrated', 'unstated', 'magnification', 'pixels', 'patient'].includes(saved.state)) return { error: 'content' };
+  return { plans, active, marker, calibration, ...(right ? { patientRight: right } : {}) };
 }
 
 export { activePlan };
