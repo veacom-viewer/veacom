@@ -816,6 +816,17 @@ async function main() {
     ];
     await size(900, 640); await settle();
     assert.deepEqual(await unreachable(), [], 'Controls cut off at 900 × 640.');
+    // The More arrow follows the last tool still shown on the left, where the folded tools come from, not the right-hand
+    // tools at the window's edge; those keep their place at the right.
+    const moreAt = await page.evaluate(() => {
+      const bar = document.querySelector('.toolbar[role="toolbar"]:not(.toolbar-second)'), children = [...bar.children], spacer = bar.querySelector('.toolbar-spacer');
+      const left = children.slice(0, children.indexOf(spacer)).filter(element => element.matches('[data-toolbar-item]')).at(-1).getBoundingClientRect();
+      const more = bar.querySelector('[data-testid="tool-more"]').getBoundingClientRect(), right = [...bar.querySelectorAll('[data-toolbar-item]')].at(-1).getBoundingClientRect();
+      return { gap: Math.round(more.left - left.right), rightGap: Math.round(bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight) - right.right) };
+    });
+    assert.ok(moreAt.gap >= 0 && moreAt.gap <= 16, `The More arrow is ${moreAt.gap} px past the last tool on the left.`);
+    assert.ok(Math.abs(moreAt.rightGap) <= 2, `The right-hand tools end ${moreAt.rightGap} px short of the toolbar's right edge.`);
+    check('More arrow right after the last tool on the left; the right-hand tools at the right edge', moreAt);
     const dialogsAt900 = await dialogsClear();
     // At this width the assessment button sits in the More row. On a CT it is the checklist's button there too: it
     // opens and closes the checklist (never the MR assessment), and closing hands focus back to it, or to More once the
