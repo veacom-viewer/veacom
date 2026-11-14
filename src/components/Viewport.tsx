@@ -31,6 +31,7 @@ import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle, type InputKind } from '../usage/tracker';
 import { ValueReadout, type ReadoutSetter } from './ValueReadout';
+import { PlanDrawing, PlanLayers } from './DeformityOverlay';
 
 type Point2 = [number, number];
 interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean; }
@@ -965,6 +966,8 @@ export function Viewport(props: ViewportProps) {
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
     <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
+    <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
       {/* Segmentation masks (from main, #3) sit on the image, under every line, measurement and overlay text. */}
       {segmentationFrames.length > 0 && <g data-testid="segmentation-overlay" pointerEvents="none">
@@ -996,6 +999,7 @@ export function Viewport(props: ViewportProps) {
       {shownAnnotations.map((annotation, index) => <AnnotationDrawing key={annotation.id} annotation={annotation} shown={shown[index].points} dashed={shown[index].dashed}
         handles={!projected} mapping={mapping} layout={labelLayouts[index]} selected={selected === annotation.id} />)}
       {!props.hideMeasurements && draft && <AnnotationDrawing annotation={draft} shown={draftShown} mapping={mapping} layout={draftLayout} selected={false} />}
+      <PlanDrawing volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
       {/* Overlay text last: laterality and patient identification stay on top of everything else. */}
       {props.showOverlay !== false && <g data-testid="patient-overlay" data-patient-corners fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         {topLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16} data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}

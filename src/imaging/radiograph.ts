@@ -33,6 +33,16 @@ export function manualCalibration(series: Series): ManualCalibration | null {
 export const projectionOf = (series: Series): Projection | undefined => series.projection ?? series.frameMetadata?.[0]?.projection;
 export const isProjectionFilm = (series: Series) => projectionOf(series) !== undefined;
 
+/** A standing long-leg film, which the assessment button opens the deformity plan on: a DX or CR whose Body Part
+ * Examined names the leg, or whose image is at least twice as tall as it is wide. A doubtful one opens all the same,
+ * with a caution in the panel (feasibility study, step S0: a caution, never a block). */
+export function isLongLegFilm(series: Series): boolean {
+  if (series.modality !== 'DX' && series.modality !== 'CR') return false;
+  if (/^(LEG|LOWER ?LIMB|LOWEXM|LOWER ?EXTREMITY)$/i.test(projectionOf(series)?.bodyPart?.trim() ?? '')) return true;
+  const [width, height] = series.dimensions, [across, down] = series.spacing;
+  return height * down >= 2 * width * across;
+}
+
 export function calibrationState(series: Series): CalibrationState {
   if (series.measurementUnits === 'px') return 'pixels';
   const scale = series.measurementScale;
@@ -116,7 +126,7 @@ function letterDirection(value: string): Vec3 {
  * whose image orientation is unknown: an image with Image Orientation (Patient) is labelled from it as before. */
 export function projectionEdgeLabels(series: Series, mapping: ScreenMapping): { left: string; right: string; top: string; bottom: string } | null {
   const orientation = projectionOf(series)?.patientOrientation;
-  if (series.orientationKnown === true || !orientation || orientation.length !== 2) return null;
+  if (series.orientationKnown === true || !orientation) return null;
   const rows = letterDirection(orientation[0]), columns = letterDirection(orientation[1]);
   const d = series.direction, across: Vec3 = [d[0], d[3], d[6]], down: Vec3 = [d[1], d[4], d[7]];
   const patient = (screen: Vec3): Vec3 => {

@@ -19,6 +19,8 @@ import { CineSpeed } from './components/CineSpeed';
 import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { isLongLegFilm } from './imaging/radiograph';
+import { deformity } from './ui/deformityStore';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -76,6 +78,7 @@ const FeedbackDialog = lazy(() => import('./components/FeedbackDialog').then(mod
 const VolumeView = lazy(() => import('./components/VolumeView').then(module => ({ default: module.VolumeView })));
 const PreopChecklist = lazy(() => import('./components/PreopChecklist').then(module => ({ default: module.PreopChecklist })));
 const AssessmentPanel = lazy(() => import('./components/AssessmentPanel').then(module => ({ default: module.AssessmentPanel })));
+const DeformityPanel = lazy(() => import('./components/DeformityPanel').then(module => ({ default: module.DeformityPanel })));
 
 type Panel = 'measurements' | 'display' | 'tags' | null;
 /** `unfused`: this pane never shows the fusion (the plain CT beside the fused one); a new series or the fusion button in it clears it. */
@@ -99,7 +102,7 @@ function readOpenSections(): Set<DisplaySection> {
   } catch { /* Storage may be disabled by the host. */ }
   return new Set(['window', 'color', 'orientation']);
 }
-type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]> };
+type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]>; plans?: ReturnType<typeof deformity.snapshot> };
 // A notice built from a message key is shown in the current language, and the key is its test hook.
 type Notice = { message: string; kind: 'error' | 'info'; key?: MessageKey; params?: MessageParams; code?: string;
   /** Engine warnings, translated again when the language changes. */
@@ -637,6 +640,9 @@ export default function App() {
   // A CT's assessment button opens the pre-op checklist instead (the assessment is for MR).
   const opensChecklist = activeSeries?.modality === 'CT';
   const checklistShown = checklistOpen && opensChecklist;
+  // On a standing long-leg DX or CR it opens the deformity plan (docs/deformity-planning.md), in the same place.
+  const opensDeformity = !opensChecklist && Boolean(activeSeries && isLongLegFilm(activeSeries));
+  const deformityShown = checklistOpen && opensDeformity && Boolean(activeVolume);
   const canReconstruct = Boolean(activeVolume?.series.canReconstruct && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && activeSeries && !loadingIds.has(activeSeries.id) && !loadErrors[activeSeries.id]);
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
@@ -762,20 +768,23 @@ export default function App() {
   }, [show3d, showAssessment, checklistOpen]);
 
   const remember = () => {
-    history.current.past.push({ slots: slotsRef.current, annotations: annotationRef.current });
+    history.current.past.push({ slots: slotsRef.current, annotations: annotationRef.current, plans: deformity.snapshot() });
     if (history.current.past.length > 30) history.current.past.shift();
     history.current.future = []; setHistoryCount([history.current.past.length, 0]);
   };
   const undo = (redo = false) => {
     const from = redo ? history.current.future : history.current.past, to = redo ? history.current.past : history.current.future;
     const snapshot = from.pop(); if (!snapshot) return;
-    to.push({ slots: slotsRef.current, annotations: annotationRef.current });
+    to.push({ slots: slotsRef.current, annotations: annotationRef.current, plans: deformity.snapshot() });
     setSlots(current => current.map(slot => {
       const saved = snapshot.slots.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
       return saved ? { ...slot, view: saved.view } : slot;
     }));
-    setAnnotations(snapshot.annotations); setHistoryCount([history.current.past.length, history.current.future.length]);
+    setAnnotations(snapshot.annotations); deformity.restore(snapshot.plans); setHistoryCount([history.current.past.length, history.current.future.length]);
   };
+  // A deformity plan's steps are Undo steps too (src/ui/deformityStore.ts). `remember` reads only refs, so the first one
+  // serves for the window's life.
+  useEffect(() => { deformity.connectUndo(remember); return () => deformity.connectUndo(null); }, []);
 
   const publishVolumes = (candidate: Map<string, Volume>) => {
     const pinned = new Set([...pending.current.keys(), ...requestedPins.current, ...assessmentPinnedIds.current]);
@@ -2228,7 +2237,7 @@ export default function App() {
     { id: 'orientation', group: 'image', priority: 6, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<Glyph name="mirror" />} label={t('toolbar.orientation')} testId="tool-orientation" popup="menu" indicator expanded={menu === 'orientation'} disabled={noImage} onClick={() => toggleMenu('orientation')} />
       {menu === 'orientation' && <Menu label={t('toolbar.orientation')} onClose={closeMenu}>{orientationItems()}</Menu>}</div> },
-    { id: 'assessment', group: 'image', priority: 2, node: opensChecklist ? <ToolButton icon={<Stethoscope size={18} />} label={t('checklist.title')} testId="tool-assessment" active={checklistOpen} onClick={toggleChecklist} />
+    { id: 'assessment', group: 'image', priority: 2, node: opensChecklist || opensDeformity ? <ToolButton icon={<Stethoscope size={18} />} label={t(opensDeformity ? 'deformity.title' : 'checklist.title')} testId="tool-assessment" active={checklistOpen} onClick={toggleChecklist} />
       : <ToolButton icon={<Stethoscope size={18} />} label={showAssessment && !assessmentShown ? t('toolbar.assessmentBehind') : t('toolbar.assessment')} testId="tool-assessment" active={assessmentShown} className={showAssessment && !assessmentShown ? 'is-behind' : ''} disabled={!activeVolume || !ASSESSMENT_AVAILABLE} why={ASSESSMENT_AVAILABLE ? undefined : t('toolbar.assessmentSoon')} onClick={() => {
         // Shows or hides the assessment; only its own Close button (or Esc inside it) ends it and discards its input.
         if (!showAssessment) void openAssessment();
@@ -2349,6 +2358,13 @@ export default function App() {
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
           updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage(); }} /></Suspense></div>}
+      {deformityShown && activeVolume && <div className="assessment-overlay"><Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice}
+        onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
+        viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
+        onCalibrate={(id, scale) => {
+          setCalibrationScales(current => { const next = { ...current }; if (scale) next[id] = scale; else delete next[id]; return next; });
+          if (scale) { setSettings(current => ({ ...current, measurementUnits: 'auto' })); say('notice.calibrated', 'info', undefined, true); }
+        }} /></Suspense></div>}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
       <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} onError={showTagError}>
         {inspectorShown && <>

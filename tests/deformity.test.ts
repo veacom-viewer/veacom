@@ -47,16 +47,16 @@ describe('the alignment of a leg', () => {
   it('measures each angle as Paley defines it', () => {
     const leg = measureLeg(straight());
     const v = leg.values;
-    assertClose(v.mLPFA.value!, 90, 9); // H (0,0), K straight below, GT level and lateral
-    assertClose(v.mLDFA.value!, 90, 9); // condyles level, axis vertical
-    assertClose(v.aLDFA.value!, Math.acos(25 / Math.hypot(25, 250)) / deg, 9); // shaft (−25, −250) against (−1, 0): 84.29°
-    assertClose(v.AMA.value!, Math.atan(25 / 250) / deg, 9); // 5.71°
-    assertClose(v.MPTA.value!, 90 + Math.atan(2 / 40) / deg, 9); // medial plateau 2 mm higher: 92.86°
-    assertClose(v.LDTA.value!, 90, 9);
-    assertClose(v.JLCA.value!, Math.atan(2 / 40) / deg, 9); // lateral end lower: converging medially, positive
-    assertClose(v.HKA.value!, 0, 9); assertClose(v.MAD.value!, 0, 9);
-    assertClose(v.WBL.value!, 50, 9); // x = 0 is halfway along the plateau
-    assertClose(v.femurLength.value!, 400, 9); assertClose(v.tibiaLength.value!, 400, 9); assertClose(v.limbLength.value!, 800, 9);
+    assertClose(v.mLPFA.value, 90, 9); // H (0,0), K straight below, GT level and lateral
+    assertClose(v.mLDFA.value, 90, 9); // condyles level, axis vertical
+    assertClose(v.aLDFA.value, Math.acos(25 / Math.hypot(25, 250)) / deg, 9); // shaft (−25, −250) against (−1, 0): 84.29°
+    assertClose(v.AMA.value, Math.atan(25 / 250) / deg, 9); // 5.71°
+    assertClose(v.MPTA.value, 90 + Math.atan(2 / 40) / deg, 9); // medial plateau 2 mm higher: 92.86°
+    assertClose(v.LDTA.value, 90, 9);
+    assertClose(v.JLCA.value, Math.atan(2 / 40) / deg, 9); // lateral end lower: converging medially, positive
+    assertClose(v.HKA.value, 0, 9); assertClose(v.MAD.value, 0, 9);
+    assertClose(v.WBL.value, 50, 9); // x = 0 is halfway along the plateau
+    assertClose(v.femurLength.value, 400, 9); assertClose(v.tibiaLength.value, 400, 9); assertClose(v.limbLength.value, 800, 9);
     assert.equal(v.MPTA.verdict, 'high');
     assert.equal(v.mLDFA.verdict, 'normal');
     assert.deepEqual(leg.swapped, []);
@@ -66,22 +66,22 @@ describe('the alignment of a leg', () => {
     const input = straight();
     input.points = { ...input.points, ankleCentre: [[40, 800]] };
     const v = measureLeg(input).values;
-    assertClose(v.HKA.value!, Math.atan(40 / 400) / deg, 9); // 5.71° varus
-    assertClose(v.MAD.value!, 40 * 400 / Math.hypot(40, 800), 9); // |H→A × H→K| / |H→A| = 19.98 mm medial
+    assertClose(v.HKA.value, Math.atan(40 / 400) / deg, 9); // 5.71° varus
+    assertClose(v.MAD.value, 40 * 400 / Math.hypot(40, 800), 9); // |H→A × H→K| / |H→A| = 19.98 mm medial
     assert.equal(v.MAD.verdict, 'high');
     // The tibial axis (40, 400) against the medial plateau (40, −2).
-    assertClose(v.MPTA.value!, Math.acos((40 * 40 - 400 * 2) / (Math.hypot(40, 400) * Math.hypot(40, 2))) / deg, 9);
+    assertClose(v.MPTA.value, Math.acos((40 * 40 - 400 * 2) / (Math.hypot(40, 400) * Math.hypot(40, 2))) / deg, 9);
   });
 
   it('keeps every angle and its sign on a mirrored film, and for the left leg', () => {
     const input = straight();
     const mirror = (p: readonly Point[]) => p.map(([x, y]) => [-x, y] as Point);
-    const mirrored: LegInput = { ...input, lateral: [1, 0], points: Object.fromEntries(Object.entries(input.points).map(([name, points]) => [name, mirror(points!)])) };
+    const mirrored: LegInput = { ...input, lateral: [1, 0], points: Object.fromEntries(Object.entries(input.points).map(([name, points]) => [name, mirror(points)])) };
     const a = measureLeg(input).values, b = measureLeg(mirrored).values;
-    for (const key of ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL'] as const) assertClose(b[key].value!, a[key].value!, 9, key);
+    for (const key of ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL'] as const) assertClose(b[key].value, a[key].value!, 9, key);
     // The left leg on the same film as the mirrored right one.
     const left = measureLeg({ ...mirrored, side: 'L' }).values;
-    assertClose(left.JLCA.value!, a.JLCA.value!, 9);
+    assertClose(left.JLCA.value, a.JLCA.value!, 9);
   });
 
   it('measures in millimetres on pixels that are not square', () => {
@@ -89,9 +89,9 @@ describe('the alignment of a leg', () => {
     const v = measureLeg({ side: 'R', mmPerPixel: [0.2, 0.4], lateral: [-1, 0], points: {
       femoralHeadContour: [[-100, -1000], [0, -1050], [100, -1000]], kneeCentre: [[0, 0]], ankleCentre: [[100, 1000]] } }).values;
     const hip = fitCircle([[-20, -400], [0, -420], [20, -400]])!.centre; // the same outline in mm
-    assertClose(v.HKA.value!, (Math.atan(20 / 400) + Math.atan(-hip[0] / -hip[1])) / deg, 9);
+    assertClose(v.HKA.value, (Math.atan(20 / 400) + Math.atan(-hip[0] / -hip[1])) / deg, 9);
     assert.equal(v.femurLength.unit, 'mm');
-    assertClose(v.tibiaLength.value!, Math.hypot(20, 400), 9);
+    assertClose(v.tibiaLength.value, Math.hypot(20, 400), 9);
   });
 
   it('says what is missing, and needs the side for every sided value', () => {
@@ -102,8 +102,8 @@ describe('the alignment of a leg', () => {
     assert.deepEqual(unsided.MPTA.missing, { reason: 'side' });
     assert.equal(unsided.MAD.value, null);
     // mLPFA and the lengths need no side.
-    assertClose(unsided.mLPFA.value!, 90, 9);
-    assertClose(unsided.limbLength.value!, 800, 9);
+    assertClose(unsided.mLPFA.value, 90, 9);
+    assertClose(unsided.limbLength.value, 800, 9);
   });
 
   it('gives lengths in pixels without a calibration, and no verdict on the MAD', () => {
@@ -120,7 +120,7 @@ describe('the alignment of a leg', () => {
     const leg = measureLeg(input);
     assert.deepEqual(leg.swapped, ['femoralCondyleMedial', 'femoralCondyleLateral']);
     // The angle still uses the film's side, so it does not turn into its supplement.
-    assertClose(leg.values.mLDFA.value!, 90, 9);
+    assertClose(leg.values.mLDFA.value, 90, 9);
   });
 
   it('takes the lateral side from Patient Orientation, or from the reader', () => {
@@ -197,7 +197,7 @@ describe('a simulated osteotomy', () => {
     const input = straight(), before = measureLeg(input);
     const result = simulate(input, before, plan(input, { degrees: 0, shiftLateral: 5, shiftDistal: 2, lengthen: 10 }))!;
     assert.deepEqual(result.leg.ankle, [-5, 812]);
-    assertClose(result.lengthChange!, Math.hypot(5, 812) - 800, 9);
+    assertClose(result.lengthChange, Math.hypot(5, 812) - 800, 9);
   });
 
   it('moves only the landmarks inside the fragment', () => {
@@ -216,8 +216,8 @@ describe('a simulated osteotomy', () => {
       const solved = solveAngle(input, before, osteotomy, target)!;
       assert.equal(solved.direction, 'valgus');
       const after = simulate(input, before, { ...osteotomy, ...solved })!.leg.values;
-      if (target.kind === 'mad') assertClose(after.MAD.value!, 0, 6);
-      else assertClose(after.WBL.value!, 62.5, 6);
+      if (target.kind === 'mad') assertClose(after.MAD.value, 0, 6);
+      else assertClose(after.WBL.value, 62.5, 6);
     }
   });
 

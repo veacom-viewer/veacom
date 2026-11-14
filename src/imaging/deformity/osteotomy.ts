@@ -116,7 +116,7 @@ export function solveAngle(input: LegInput, before: Leg, osteotomy: Osteotomy, t
     const motion = fragmentMotion(trial, before, input);
     if (!motion) return NaN;
     const ankle = applyRigid(motion, toPlane(before.ankle!, mm));
-    return offsetFrom(point!, H, sub(ankle, H), L) ?? NaN;
+    return offsetFrom(point, H, sub(ankle, H), L) ?? NaN;
   };
   const signed = bisect(at, -45, 45);
   return signed === null ? null : { degrees: Math.abs(signed), direction: signed >= 0 ? 'valgus' : 'varus' };
