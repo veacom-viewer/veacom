@@ -83,6 +83,7 @@ type Slot = { id: string; seriesId: string | null; view: ViewState; unfused?: bo
 type MouseButton = 'left' | 'middle' | 'right';
 type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showReferences: boolean;
   showOverlay: boolean; hidePatientData: boolean; hideMeasurements: boolean; showScale: boolean;
+  /** The value under the pointer is written on the image: off unless the reader asks for it. */ showPointerValue: boolean;
   mouseBindings: Partial<Record<MouseButton, Tool>>; wheelAction: WheelAction; wheelSensitivity: number; reverseWheel: boolean; measurementUnits: 'auto' | 'px';
   /** The SUV PET values are given in: body weight, lean body mass (SUL) or body surface area. */ suvNormalization: SuvNormalization;
   /** Single-character shortcuts (W, S, L, 0, M, +, −…) can be turned off (WCAG 2.1.4). */ singleKeys: boolean;
@@ -181,7 +182,7 @@ const focusImage = () => focusSoon('.viewport-cell.is-active [data-testid="dicom
 
 function readSettings(): Settings {
   const defaults: Settings = { linked: true, panel: null, showCrosshair: true, showReferences: true,
-    showOverlay: true, hidePatientData: false, hideMeasurements: false, showScale: false,
+    showOverlay: true, hidePatientData: false, hideMeasurements: false, showScale: false, showPointerValue: false,
     mouseBindings: { middle: 'pan', right: 'zoom' }, wheelAction: 'scroll', wheelSensitivity: 1, reverseWheel: false, measurementUnits: 'auto',
     suvNormalization: 'bw', singleKeys: true, cineFps: 10 };
   try {
@@ -192,7 +193,7 @@ function readSettings(): Settings {
       panel: ['measurements', 'display', 'tags', null].includes(stored.panel) ? stored.panel : defaults.panel,
       showCrosshair: stored.showCrosshair !== false,
       showReferences: stored.showReferences !== false,
-      showOverlay: stored.showOverlay !== false, hidePatientData: stored.hidePatientData === true, hideMeasurements: stored.hideMeasurements === true, showScale: stored.showScale === true,
+      showOverlay: stored.showOverlay !== false, hidePatientData: stored.hidePatientData === true, hideMeasurements: stored.hideMeasurements === true, showScale: stored.showScale === true, showPointerValue: stored.showPointerValue === true,
       mouseBindings: Object.fromEntries((['left', 'middle', 'right'] as const).flatMap(button => {
         const binding = stored.mouseBindings?.[button] ?? defaults.mouseBindings[button];
         return isTool(binding) ? [[button, binding]] : [];
@@ -326,6 +327,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
+        showPointerValue={interaction.showPointerValue}
         mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
         showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
@@ -2113,7 +2115,8 @@ export default function App() {
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
-    { key: 'showScale', label: t('toolbar.showScale'), shortcut: undefined, shown: settings.showScale }] as const;
+    { key: 'showScale', label: t('toolbar.showScale'), shortcut: undefined, shown: settings.showScale },
+    { key: 'showPointerValue', label: t('toolbar.pointerValue'), shortcut: undefined, shown: settings.showPointerValue }] as const;
   const overlayItems = <>{overlayOptions.map(option => <MenuItem action="display-choice" key={option.key} kind="checkbox" checked={option.shown} shortcut={option.shortcut} onClick={() => setSettings(current => ({ ...current, [option.key]: !current[option.key] }))}>{option.label}</MenuItem>)}
     <MenuDivider /><MenuItem action="toolbar-show-tags" icon={<Tag size={16} />} shortcut={combo(mod, mod === '⌘' ? '⌥' : 'Alt', 'T')} onClick={() => act(() => showPanel('tags'))}>{t('toolbar.showTags')}</MenuItem></>;
   const orientationItems = () => <>
