@@ -303,7 +303,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         sections.push({ title: t('deformity.osteotomy'), rows: [
           [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t((view.simulation.wedge ?? o.wedge) === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
           [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`],
-          ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}`] as [string, string]),
+          ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}${inboard(name === 'WBL')}`] as [string, string]),
         ] });
       }
       const canvas = drawReport({ title: `${t('deformity.title')} · ${planName(film, plan.id, t)}`,
@@ -496,7 +496,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           <thead><tr><th scope="col" /><th scope="col">{t('deformity.before')}</th><th scope="col">{t('deformity.after')}</th></tr></thead>
           <tbody>{(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => <tr key={name} data-value-key={name} data-value={after[name].value ?? undefined}
             className={after[name].verdict && after[name].verdict !== 'normal' ? 'is-out' : ''}>
-            <th scope="row">{NAMED[name] ? t(NAMED[name]) : name}</th><td>{valueText(leg.values[name], '', t)}</td><td>{valueText(after[name], '', t)}</td></tr>)}</tbody>
+            <th scope="row">{NAMED[name] ? t(NAMED[name]) : name}</th>
+            {[leg.values[name], after[name]].map((value, index) => <td key={index}>{valueText(value, '', t)}
+              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution"> · {t('deformity.plateauInboardShort')}</span>}</td>)}</tr>)}</tbody>
         </table>}
         {view.simulation?.wedge && view.simulation.wedge !== osteotomy.wedge && <p className="deformity-caution" role="note" data-testid="deformity-wedge-mismatch">
           {t(view.simulation.wedge === 'opening' ? 'deformity.wedgeIsOpening' : 'deformity.wedgeIsClosing')}</p>}
