@@ -392,8 +392,8 @@ describe('landmark suggestions', () => {
     assert.deepEqual(foreign.plans[0].origin?.kneeCentre, { shown: true, model: other, unchecked: true });
     assert.deepEqual([foreign.plans[0].origin?.ankleCentre, foreign.plans[0].provenance.ankleCentre], [{ shown: true }, ['placed']]);
     // That model's unchecked knee centre, accepted as it was, marks every value, step and CORA measured from it, the
-    // ones that read the leg's axis through it included.
-    assert.deepEqual([...fromUnchecked(foreign.plans[0])].sort(), ['AMA', 'HKA', 'JLCA', 'LDTA', 'MAD', 'MPTA', 'coraFemur', 'coraTibia', 'femurLength',
+    // subluxation step, which measures across the leg's axis through it, included.
+    assert.deepEqual([...fromUnchecked(foreign.plans[0])].sort(), ['AMA', 'HKA', 'LDTA', 'MAD', 'MPTA', 'coraFemur', 'coraTibia', 'femurLength',
       'mLDFA', 'mLPFA', 'subluxation', 'tibiaLength']);
   });
 
@@ -434,8 +434,8 @@ describe('landmark suggestions', () => {
     for (const key of keys) assert.ok(complete(key), `${key} is measured on the full plan.`);
     for (const name of LANDMARKS) {
       const { [name]: _gone, ...rest } = full, without = measured(rest);
-      // JLCA and the subluxation step take their direction from any two of the hip, knee and ankle: no one of them is needed.
-      const axisOnly = (key: keyof typeof MEASURED_FROM) => (key === 'JLCA' || key === 'subluxation') && (LEG_AXIS as readonly string[]).includes(name);
+      // The subluxation step measures across the axis any two of the hip, knee and ankle give: no one of them is needed.
+      const axisOnly = (key: keyof typeof MEASURED_FROM) => key === 'subluxation' && (LEG_AXIS as readonly string[]).includes(name);
       for (const key of keys) assert.equal(without(key), axisOnly(key) || !MEASURED_FROM[key].includes(name), `${key} without ${name}`);
     }
   });

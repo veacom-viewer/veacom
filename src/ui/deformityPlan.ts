@@ -140,16 +140,17 @@ export function acceptSuggestions(film: FilmPlans, names?: LandmarkName[]): Film
  * model's channel for it on real films, and this reader did not move it. */
 export const uncheckedAsSuggested = (plan: LegPlan, name: LandmarkName) => Boolean(plan.origin?.[name]?.unchecked && plan.provenance[name]?.includes('accepted'));
 
-/** The landmarks each value, step and CORA is measured from (measure.ts, analysis.ts). JLCA's sign and the subluxation
- * step's direction across the leg follow the leg's axis, which any two of the hip, knee and ankle give: they count all
- * three (LEG_AXIS), though no single one of them is needed. */
+/** The landmarks each value, step and CORA is measured from (measure.ts, analysis.ts). The subluxation step measures
+ * across the leg's axis, which any two of the hip, knee and ankle give: it counts all three (LEG_AXIS), though no single
+ * one of them is needed. Where the axis only says which way is medial (JLCA's sign, a joint line's direction), it does
+ * not count. */
 const HEAD = 'femoralHeadContour', KNEE = 'kneeCentre', ANKLE = 'ankleCentre';
 export const LEG_AXIS = [HEAD, KNEE, ANKLE] as const;
 const CONDYLES = ['femoralCondyleMedial', 'femoralCondyleLateral'] as const, PLATEAU = ['tibialPlateauMedial', 'tibialPlateauLateral'] as const;
 const FEMORAL_SHAFT = ['femoralShaftProximal', 'femoralShaftDistal'] as const, PLAFOND = ['plafondMedial', 'plafondLateral'] as const;
 export const MEASURED_FROM: Record<Value['key'] | 'subluxation' | 'coraFemur' | 'coraTibia', readonly LandmarkName[]> = {
   mLPFA: [HEAD, KNEE, 'greaterTrochanterTip'], mLDFA: [HEAD, KNEE, ...CONDYLES], aLDFA: [...FEMORAL_SHAFT, ...CONDYLES],
-  MPTA: [KNEE, ANKLE, ...PLATEAU], LDTA: [KNEE, ANKLE, ...PLAFOND], JLCA: [...CONDYLES, ...PLATEAU, ...LEG_AXIS], AMA: [HEAD, KNEE, ...FEMORAL_SHAFT],
+  MPTA: [KNEE, ANKLE, ...PLATEAU], LDTA: [KNEE, ANKLE, ...PLAFOND], JLCA: [...CONDYLES, ...PLATEAU], AMA: [HEAD, KNEE, ...FEMORAL_SHAFT],
   HKA: [HEAD, KNEE, ANKLE], MAD: [HEAD, KNEE, ANKLE], WBL: [HEAD, ANKLE, ...PLATEAU],
   femurLength: [HEAD, KNEE], tibiaLength: [KNEE, ANKLE], limbLength: [HEAD, ANKLE], subluxation: [...CONDYLES, ...PLATEAU, ...LEG_AXIS],
   coraFemur: [HEAD, KNEE, ANKLE, 'greaterTrochanterTip', ...CONDYLES], coraTibia: [HEAD, KNEE, ANKLE, ...PLATEAU, ...PLAFOND],
