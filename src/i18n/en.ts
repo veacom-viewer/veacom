@@ -719,7 +719,7 @@ export const en = {
   'label.theFile': 'The file',
   'label.unreadable': 'it is not a file VEAcom can read, or it is larger than 2 MB',
   'label.notAPlan': 'The file beside this film named as its plan is not a VEAcom deformity plan, so it was not replaced.',
-  'label.sharedSeries': '{name} opened into the series of the film before it, so its plan cannot be told apart here. Label it from a folder of its own.',
+  'label.sharedSeries': '{name} opened into the series of an earlier film of this run, so its plan cannot be told apart here. Label it from a folder of its own.',
   'label.changedWhileRead': 'the film was planned while the file was read',
   'label.waitForCapture': 'Pictures or a video are being made from the pane. Wait for them to finish, or cancel them in the status bar, then go on.',
   'label.multiFrame': 'This file holds several frames, and a plan file holds one; label its frames from files of their own.',

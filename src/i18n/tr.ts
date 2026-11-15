@@ -722,7 +722,7 @@ export const tr: Record<keyof typeof en, string> = {
   'label.theFile': 'Dosya',
   'label.unreadable': 'VEAcom’un okuyabildiği bir dosya değil ya da 2 MB’tan büyük',
   'label.notAPlan': 'Bu grafinin yanında planı adını taşıyan dosya bir VEAcom deformite planı değil; üzerine yazılmadı.',
-  'label.sharedSeries': '{name} bir önceki grafinin serisine açıldı; planı burada ayırt edilemez. Kendi klasöründen işaretleyin.',
+  'label.sharedSeries': '{name} bu oturumdaki daha önceki bir grafinin serisine açıldı; planı burada ayırt edilemez. Kendi klasöründen işaretleyin.',
   'label.changedWhileRead': 'dosya okunurken grafi planlandı',
   'label.waitForCapture': 'Panodan resim ya da video yapılıyor. Bitmesini bekleyin ya da durum çubuğundan iptal edin, sonra devam edin.',
   'label.multiFrame': 'Bu dosyada birden çok kare var, plan dosyası ise tek kareyi tutar; karelerini ayrı dosyalardan işaretleyin.',

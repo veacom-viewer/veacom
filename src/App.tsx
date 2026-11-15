@@ -1106,21 +1106,25 @@ export default function App() {
   const goToFilm = async (index: number) => {
     const queue = labelQueue.get(), folder = queue.folder, bridge = window.veacom?.labelFolder;
     if (!folder || !bridge || index < 0 || index >= folder.films.length) return;
-    // Pictures or a video being made from the pane: the film shown must stay until they are done.
-    if (capturingRef.current) { labelQueue.say(t('label.waitForCapture')); return; }
+    // Pictures or a video being made from the pane: the film shown must stay until they are done. What was just saved
+    // is still said.
+    if (capturingRef.current) { labelQueue.say([labelQueue.get().status, t('label.waitForCapture')].filter(Boolean).join(' ')); return; }
     if (!labelQueue.begin()) return;
-    forgetHistory();
     // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run, and that run is left alone.
-    const same = () => labelQueue.get().folder?.token === folder.token;
+    const same = () => labelQueue.get().folder?.token === folder.token, capturing = () => capturingRef.current;
     // No `finally` here: the React Compiler leaves a component unmemoized when any function in it has one.
     let status: string | null | undefined;
     try {
-      const opened = await importStudies(await bridge.film(folder.token, index), 'folder');
+      const capabilities = await bridge.film(folder.token, index);
+      // Undo is cleared before the next film arrives, so no step back lands between two films.
+      forgetHistory();
+      const opened = await importStudies(capabilities, 'folder');
       if (same()) {
         const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
         // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
         const shared = labelQueue.shares(index, opened);
-        const before = queue.seriesIds.filter(id => !opened.includes(id));
+        // A capture started while the film imported keeps the film it is made from on the list.
+        const before = capturing() ? [] : queue.seriesIds.filter(id => !opened.includes(id));
         if (before.length) removeFromList(before, opened.length > 0);
         labelQueue.shown(index, shared ? [] : opened);
         forgetHistory();
