@@ -40,6 +40,7 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
     const index = queue.index, item = folder.films[index], series = volume.series, frameIndex = Math.round(slice);
     const frame = sourceFrameSeries(series, frameIndex), key = filmKey(series, frameIndex);
     const film = deformity.ensure(series, frameIndex, sidesFor(queue.sides, projectionOf(frame)?.laterality));
+    if (queue.held[index]) { labelQueue.loaded(index, queue.held[index]); return; }
     if (item.unreadable) { labelQueue.loaded(index, t('label.unreadable')); return; }
     if (item.plan === null) { labelQueue.loaded(index); return; }
     parsing.current = index;
@@ -50,7 +51,7 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
       const now = deformity.get().films[key];
       // Planned while the file was read: neither is put over the other, and Save waits rather than write over a plan the
       // reader never saw.
-      if (now !== film) { labelQueue.loaded(index, t('label.changedWhileRead')); return; }
+      if (now !== film) { labelQueue.hold(index, t('label.changedWhileRead')); return; }
       if (!film.plans.some(plan => Object.keys(plan.points).length)) {
         // The film as its file has it: no Undo step, as a film opened with its plan has nothing before it.
         deformity.change(key, current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, patientRight: result.patientRight }), false);
@@ -78,6 +79,7 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
   // Why Save and next waits, if it does.
   const why = queue.busy ? t('label.opening') : !shown || !planOpen ? t('label.notShown') : refused ? t('label.refused', { reason: refused })
     : queue.loaded?.index !== index ? t('label.opening') : null;
+  const noPlan = !longLeg && !queue.busy && shown, reason = Boolean(why) && !refused && !queue.busy && !noPlan;
   const go = (next: number) => { refocus.current = false; labelQueue.say(null); onGo(next); };
   const saveAndNext = async () => {
     const bridge = window.veacom?.labelFolder;
@@ -130,13 +132,13 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
     </div>
     {folder.writes === 'download' && <p className="label-queue-note" role="note">{t('label.downloads')}</p>}
     {refused && <p className="deformity-caution" role="status" id="label-refused" data-testid="label-refused">{t('label.refused', { reason: refused })}</p>}
-    {!longLeg && !queue.busy && shown && <p className="label-queue-note" role="note">{t('label.noPlan')}</p>}
-    {/* Why Save and next waits, as its description; the refusal above says it already. */}
-    {why && !refused && !queue.busy && <p className="label-queue-note" id="label-save-reason">{why}</p>}
+    {noPlan && <p className="label-queue-note" role="note" id="label-no-plan">{t('label.noPlan')}</p>}
+    {/* Why Save and next waits, as its description; the refusal or the note above says it already. */}
+    {reason && <p className="label-queue-note" id="label-save-reason">{why}</p>}
     <div className="label-queue-actions">
       <span className="label-queue-status" role="status" data-testid="label-status">{queue.busy ? t('label.opening') : queue.status ?? ''}</span>
       <button ref={save} type="button" className="primary-button compact" data-action="label-save-next" disabled={Boolean(why)}
-        aria-describedby={why && !refused && !queue.busy ? 'label-save-reason' : refused ? 'label-refused' : undefined} onClick={() => void saveAndNext()}>{t('label.saveNext')}</button>
+        aria-describedby={reason ? 'label-save-reason' : refused ? 'label-refused' : noPlan ? 'label-no-plan' : undefined} onClick={() => void saveAndNext()}>{t('label.saveNext')}</button>
     </div>
   </section>;
 }

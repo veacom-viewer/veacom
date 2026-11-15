@@ -188,6 +188,9 @@ describe('the labelling queue', () => {
     assert.equal(labelQueue.get().loaded, null, 'A film no longer shown is not marked loaded.');
     labelQueue.loaded(1, 'it belongs to another film');
     assert.deepEqual(labelQueue.get().loaded, { index: 1, refused: 'it belongs to another film' });
+    labelQueue.hold(1, 'planned while read');
+    labelQueue.shown(0, ['series-a']); labelQueue.shown(1, ['series-b']);
+    assert.deepEqual([labelQueue.get().loaded, labelQueue.get().held[1]], [null, 'planned while read'], 'Held for the run, to refuse again on the next visit.');
     labelQueue.saved(0, plan(false));
     assert.equal(planState(labelQueue.get().folder!.films[0]), 'saved');
     labelQueue.setSuggestions(false); labelQueue.setSides(['L']); labelQueue.setSides([]);

@@ -720,7 +720,7 @@ export const en = {
   'label.unreadable': 'it is not a file VEAcom can read, or it is larger than 2 MB',
   'label.notAPlan': 'The file beside this film named as its plan is not a VEAcom deformity plan, so it was not replaced.',
   'label.sharedSeries': '{name} opened into the series of the film before it, so its plan cannot be told apart here. Label it from a folder of its own.',
-  'label.changedWhileRead': 'the film\'s plan changed while the file was read; go to another film and back',
+  'label.changedWhileRead': 'the film was planned while the file was read',
   'label.empty': 'There are no DICOM films directly inside the chosen folder.',
   'label.invalidPlan': 'This is not a deformity plan, so it was not saved.',
   'label.planChanged': 'The plan file beside this film was changed or added outside VEAcom since the folder was opened, so it was not replaced. Open the folder again.',

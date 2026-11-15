@@ -30,6 +30,8 @@ export interface QueueState {
   seriesIds: string[];
   /** The film whose plan file has been put on it (or that had none to put); `refused`: the file did not open, and why. */
   loaded: { index: number; refused?: string } | null;
+  /** Films whose plan file stays refused for the rest of the run, and why (one planned while its file was read). */
+  held: Readonly<Record<number, string>>;
   /** A film is being opened or its plan written: the queue's buttons wait. */
   busy: boolean;
   /** Suggestions may be asked for on this run; off, the reader labels blind (suggestionShown stays false). */
@@ -39,7 +41,7 @@ export interface QueueState {
   status: string | null;
 }
 
-const EMPTY: QueueState = { folder: null, index: 0, seriesIds: [], loaded: null, busy: false, suggestions: true, sides: ['R', 'L'], status: null };
+const EMPTY: QueueState = { folder: null, index: 0, seriesIds: [], loaded: null, held: {}, busy: false, suggestions: true, sides: ['R', 'L'], status: null };
 let state = EMPTY;
 const listeners = new Set<() => void>();
 function set(patch: Partial<QueueState>) { state = { ...state, ...patch }; for (const listener of [...listeners]) listener(); }
@@ -48,7 +50,7 @@ export const labelQueue = {
   get: () => state,
   subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   /** A folder chosen: its films, none shown yet. The settings carry over from the last run. */
-  start(folder: LabelFolder) { set({ folder, index: 0, seriesIds: [], loaded: null, busy: false, status: null }); },
+  start(folder: LabelFolder) { set({ folder, index: 0, seriesIds: [], loaded: null, held: {}, busy: false, status: null }); },
   stop() { set({ ...EMPTY, suggestions: state.suggestions, sides: state.sides }); },
   /** Waits (true) while a film opens or a plan is written; refused (false) when the queue already waits. */
   begin(): boolean { if (state.busy || !state.folder) return false; set({ busy: true }); return true; },
@@ -57,6 +59,8 @@ export const labelQueue = {
   say(status: string | null) { set({ status }); },
   shown(index: number, seriesIds: string[]) { set({ index, seriesIds, loaded: null }); },
   loaded(index: number, refused?: string) { if (index === state.index) set({ loaded: { index, ...(refused ? { refused } : {}) } }); },
+  /** A film's plan file refused for the rest of the run. */
+  hold(index: number, reason: string) { set({ held: { ...state.held, [index]: reason } }); this.loaded(index, reason); },
   /** A plan written for a film: the list shows its new state. */
   saved(index: number, text: string) {
     if (!state.folder) return;
