@@ -187,9 +187,10 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     if (!('leg' in target) || !view.mm) return;
     const controller = new AbortController(), planId = plan.id, leg = target.leg, mm = view.mm;
     suggestRun.current = controller;
-    setStatus(null); setSuggesting({ received: 0 });
+    // "Downloading" shows only while bytes arrive: a kept model loads without it.
+    setStatus(null); setSuggesting({ received: null });
     try {
-      const graphs = await loadModel(received => { if (suggestRun.current === controller) setSuggesting({ received }); });
+      const graphs = await loadModel(received => { if (suggestRun.current === controller && received > 0) setSuggesting({ received }); });
       if (controller.signal.aborted) throw controller.signal.reason;
       setSuggesting({ received: null });
       const reply = await runModel({ pixels: framePixels(volume, frameIndex), columns: frame.dimensions[0], rows: frame.dimensions[1], mm: [mm[0], mm[1]],

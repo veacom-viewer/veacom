@@ -12,14 +12,14 @@ import type { ModelRef } from './deformityStore';
 import type { PlanView } from './deformityPlan';
 import { isPlaced } from './deformityPlan';
 
-export type ModelPart = keyof typeof manifest.files;
-export const MODEL_PARTS = Object.keys(manifest.files) as ModelPart[];
+type ModelPart = keyof typeof manifest.files;
+const MODEL_PARTS = Object.keys(manifest.files) as ModelPart[];
 export const MODEL_BYTES = MODEL_PARTS.reduce((sum, part) => sum + manifest.files[part].bytes, 0);
 export const MODEL: ModelRef = { model: manifest.name, sha256: { stageA: manifest.files.stageA.sha256, stageB: manifest.files.stageB.sha256 } };
 
 /** Why the button is off: the side is not known, the film is not upright, it has no millimetres, it is larger than the
  * model's canvas, it is in colour, or every suggested landmark is placed. */
-export type SuggestBlock = 'side' | 'upright' | 'spacing' | 'size' | 'colour' | 'placed';
+type SuggestBlock = 'side' | 'upright' | 'spacing' | 'size' | 'colour' | 'placed';
 
 /** The film's leg for the active plan, or why the model cannot run on it. The model was trained on upright greyscale
  * films with their pixel spacing, hips at the top: its rows must run across the patient and its columns towards the
@@ -60,6 +60,7 @@ export function loadModel(onProgress: (received: number) => void): Promise<Recor
     return [part, bytes] as const;
   })).then(parts => Object.fromEntries(parts) as Record<ModelPart, ArrayBuffer>);
   models = loading;
+  // A load that failed is not kept: the next press tries again. The caller gets the failure from `loading` itself.
   loading.catch(() => { if (models === loading) models = null; });
   return loading;
 }

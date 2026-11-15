@@ -17,6 +17,7 @@ function createLandmarkModel({ userData, fetchImpl = globalThis.fetch, notify = 
   const pending = new Map();
 
   async function kept(entry) {
+    // No kept file, or one that cannot be read or does not match: it is downloaded again.
     const bytes = await fs.readFile(path.join(folder, `${entry.sha256}.onnx`)).catch(() => null);
     return bytes && bytes.length === entry.bytes && sha256(bytes) === entry.sha256 ? bytes : null;
   }
@@ -63,7 +64,6 @@ function registerLandmarkModel({ handle, userData, getWindow }) {
   } });
   handle('landmarks:model', part => model.get(part));
   handle('landmarks:cancel', () => model.cancel());
-  return model;
 }
 
 module.exports = { createLandmarkModel, registerLandmarkModel };

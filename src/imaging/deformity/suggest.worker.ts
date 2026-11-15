@@ -20,7 +20,7 @@ export type SuggestReply = { id: number; ok: true; anchors: Anchors; channels: P
   timings: { window: number; stageA: number; crops: number; stageB: number } } | { id: number; ok: false; error: string };
 
 // The browser build requires Trusted Types in Workers too: onnxruntime starts its threads from its own script, on this site.
-(self as unknown as { trustedTypes?: { createPolicy(name: string, rules: object): unknown } }).trustedTypes?.createPolicy('default', { createScriptURL: ownScript });
+(globalThis as { trustedTypes?: { createPolicy(name: string, rules: object): unknown } }).trustedTypes?.createPolicy('default', { createScriptURL: ownScript });
 ort.env.wasm.wasmPaths = { mjs: runtimeScript, wasm: runtimeBinary };
 
 let sessions: Promise<{ a: ort.InferenceSession; b: ort.InferenceSession }> | null = null;

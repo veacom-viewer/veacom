@@ -30,7 +30,7 @@ export const CROPS = {
     'tibialSpineCentre', 'fibularHeadTip', 'patellaCentre'],
   ankle: ['ankleCentre', 'plafondMedial', 'plafondLateral'],
 } as const satisfies Record<string, readonly Channel[]>;
-export type CropKind = keyof typeof CROPS;
+type CropKind = keyof typeof CROPS;
 export const CROP_KINDS = Object.keys(CROPS) as CropKind[];
 
 /** The landmarks the kit suggests: those behind mLDFA, MPTA, JLCA, HKA and MAD, whose channels were checked against

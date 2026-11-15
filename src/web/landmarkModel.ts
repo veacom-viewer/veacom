@@ -37,6 +37,7 @@ export async function landmarkModel(part: Part, onProgress?: (received: number) 
     onProgress?.(received);
   }
   if (received !== entry.bytes) throw new Error('The model file is incomplete.');
+  // A cache that refuses the file (its quota, private browsing) costs only a download next time: the checked bytes are used now.
   await cache?.put(url, new Response(bytes.slice(0), { headers: { 'Content-Type': 'application/octet-stream' } })).catch(() => {});
   return bytes.buffer;
 }
