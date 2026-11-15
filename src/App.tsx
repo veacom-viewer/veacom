@@ -1108,22 +1108,24 @@ export default function App() {
     if (!folder || !bridge || index < 0 || index >= folder.films.length || !labelQueue.begin()) return;
     // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run, and that run is left alone.
     const same = () => labelQueue.get().folder?.token === folder.token;
+    // No `finally` here: the React Compiler leaves a component unmemoized when any function in it has one.
     let status: string | null | undefined;
     try {
       const opened = await importStudies(await bridge.film(folder.token, index), 'folder');
-      if (!same()) return;
-      const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
-      // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
-      const shared = opened.some(id => queue.seriesIds.includes(id));
-      const before = queue.seriesIds.filter(id => !opened.includes(id));
-      if (before.length) removeFromList(before, opened.length > 0);
-      labelQueue.shown(index, shared ? [] : opened);
-      forgetHistory();
-      if (opened.length) setChecklistOpen(true);
-      if (!opened.length) status = t('label.notOpened', { name });
-      else if (shared) status = t('label.sharedSeries', { name });
+      if (same()) {
+        const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
+        // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
+        const shared = opened.some(id => queue.seriesIds.includes(id));
+        const before = queue.seriesIds.filter(id => !opened.includes(id));
+        if (before.length) removeFromList(before, opened.length > 0);
+        labelQueue.shown(index, shared ? [] : opened);
+        forgetHistory();
+        if (opened.length) setChecklistOpen(true);
+        if (!opened.length) status = t('label.notOpened', { name });
+        else if (shared) status = t('label.sharedSeries', { name });
+      }
     } catch (error) { status = errorText(error); }
-    finally { if (same()) labelQueue.end(status); }
+    if (same()) labelQueue.end(status);
   };
   const startLabelling = async () => {
     setMenu(null);
@@ -1133,7 +1135,7 @@ export default function App() {
     try {
       const folder = await bridge.open();
       if (!folder) return;
-      if (!folder.films.length) { setNotice({ message: t('label.empty', { folder: folder.folder }), kind: 'info' }); return; }
+      if (!folder.films.length) { setNotice({ message: t('label.empty'), kind: 'info' }); return; }
       labelQueue.start(folder);
       forgetHistory();
       // The first film without a plan, so a run stopped halfway goes on where it was.

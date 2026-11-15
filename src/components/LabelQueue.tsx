@@ -48,7 +48,10 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
       if (labelQueue.get().index !== index) return;
       if ('error' in result) { labelQueue.loaded(index, t(`deformity.reason.${result.error}` as MessageKey)); return; }
       const now = deformity.get().films[key];
-      if (now === film && !film.plans.some(plan => Object.keys(plan.points).length)) {
+      // Planned while the file was read: neither is put over the other, and Save waits rather than write over a plan the
+      // reader never saw.
+      if (now !== film) { labelQueue.loaded(index, t('label.changedWhileRead')); return; }
+      if (!film.plans.some(plan => Object.keys(plan.points).length)) {
         // The film as its file has it: no Undo step, as a film opened with its plan has nothing before it.
         deformity.change(key, current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, patientRight: result.patientRight }), false);
         onCalibrate(series.id, key, result.calibration);
@@ -57,10 +60,13 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
     }, (error: unknown) => labelQueue.loaded(index, errorMessage(error))).finally(() => { if (parsing.current === index) parsing.current = null; });
   });
   useEffect(() => { load(); }, [folder, volume, slice, queue.busy, queue.index, queue.loaded, queue.seriesIds]);
-  // Save and next disables itself while the next film opens: focus comes back to it once the film is there.
+  // Save and next disables itself while the next film opens: focus comes back to it once that film's plan file is read,
+  // if focus was lost meanwhile (not where the reader has put it since).
   const save = useRef<HTMLButtonElement>(null), refocus = useRef(false);
   useEffect(() => {
-    if (refocus.current && !queue.busy && save.current && !save.current.disabled) { refocus.current = false; save.current.focus(); }
+    if (!refocus.current || queue.busy || queue.loaded?.index !== queue.index) return;
+    refocus.current = false;
+    if (save.current && !save.current.disabled && (document.activeElement === null || document.activeElement === document.body)) save.current.focus();
   });
   if (!folder) return null;
 
@@ -72,7 +78,7 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
   // Why Save and next waits, if it does.
   const why = queue.busy ? t('label.opening') : !shown || !planOpen ? t('label.notShown') : refused ? t('label.refused', { reason: refused })
     : queue.loaded?.index !== index ? t('label.opening') : null;
-  const go = (next: number) => { labelQueue.say(null); onGo(next); };
+  const go = (next: number) => { refocus.current = false; labelQueue.say(null); onGo(next); };
   const saveAndNext = async () => {
     const bridge = window.veacom?.labelFolder;
     if (why || !volume || !bridge) return;
@@ -123,13 +129,14 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
           onClick={() => labelQueue.setSides(option.sides)}>{t(option.label)}</button>)}</div>
     </div>
     {folder.writes === 'download' && <p className="label-queue-note" role="note">{t('label.downloads')}</p>}
-    {refused && <p className="deformity-caution" role="status" data-testid="label-refused">{t('label.refused', { reason: refused })}</p>}
+    {refused && <p className="deformity-caution" role="status" id="label-refused" data-testid="label-refused">{t('label.refused', { reason: refused })}</p>}
     {!longLeg && !queue.busy && shown && <p className="label-queue-note" role="note">{t('label.noPlan')}</p>}
+    {/* Why Save and next waits, as its description; the refusal above says it already. */}
+    {why && !refused && !queue.busy && <p className="label-queue-note" id="label-save-reason">{why}</p>}
     <div className="label-queue-actions">
-      {/* What was done, or why Save and next waits: visible, and the button's description. */}
-      <span className="label-queue-status" id="label-status" role="status" data-testid="label-status">{queue.busy ? t('label.opening') : queue.status ?? (refused ? '' : why ?? '')}</span>
-      <button ref={save} type="button" className="primary-button compact" data-action="label-save-next" disabled={Boolean(why)} aria-describedby="label-status"
-        onClick={() => void saveAndNext()}>{t('label.saveNext')}</button>
+      <span className="label-queue-status" role="status" data-testid="label-status">{queue.busy ? t('label.opening') : queue.status ?? ''}</span>
+      <button ref={save} type="button" className="primary-button compact" data-action="label-save-next" disabled={Boolean(why)}
+        aria-describedby={why && !refused && !queue.busy ? 'label-save-reason' : refused ? 'label-refused' : undefined} onClick={() => void saveAndNext()}>{t('label.saveNext')}</button>
     </div>
   </section>;
 }
