@@ -54,7 +54,9 @@ export function LabelQueue({ volume, slice, planOpen, longLeg, hidePatientData, 
       // Planned while the file was read: neither is put over the other, and Save waits rather than write over a plan the
       // reader never saw.
       if (now !== film) { labelQueue.hold(index, t('label.changedWhileRead')); return; }
-      if (!film.plans.some(plan => Object.keys(plan.points).length)) {
+      // On the film's first visit, unless the session planned it before the run: later, the reader's marker, side and
+      // calibration stay too, not only the points.
+      if (!(index in queue.visited) && !film.plans.some(plan => Object.keys(plan.points).length)) {
         // The film as its file has it: no Undo step, as a film opened with its plan has nothing before it.
         deformity.change(key, current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, patientRight: result.patientRight }), false);
         onCalibrate(series.id, key, result.calibration);

@@ -143,6 +143,23 @@ describe('a folder to label, in the browser', () => {
     assert.equal(await cancelled.open(), null);
   });
 
+  it('leaves out an entry it cannot read, and keeps a plan file it cannot read from being replaced', async () => {
+    const folder = memoryFolder('legs', { 'a.dcm': 'x', 'b.dcm': 'y', ['b.dcm' + PLAN_SUFFIX]: plan(false) });
+    const values = folder.values.bind(folder);
+    const locked = async function* () {
+      for await (const entry of values()) {
+        if (entry.kind === 'file' && entry.name === 'a.dcm') yield { ...entry, getFile: () => Promise.reject(new Error('locked')) };
+        else if (entry.kind === 'file' && entry.name.endsWith(PLAN_SUFFIX)) yield { ...entry, getFile: async () => Object.assign(await entry.getFile(), { text: () => Promise.reject(new Error('locked')) }) };
+        else yield entry;
+      }
+    };
+    const labels = createWebLabelFolder({ pick: async () => ({ ...folder, values: locked }), chooseFiles: async () => [], importFile: async () => [], download: () => {}, refused });
+    const opened = (await labels.open())!;
+    assert.deepEqual(opened.films, [{ name: 'b.dcm', plan: null, unreadable: true }]);
+    await assert.rejects(labels.write(opened.token, 0, plan(true)), /not a plan|changed/);
+    assert.equal(await isDicom(Object.assign(new File([dicom()], 'IM2'), { slice: () => ({ arrayBuffer: () => Promise.reject(new Error('gone')) }) })), false);
+  });
+
   it('reads the folder\'s own files through a folder input where it cannot write, and downloads each plan', async () => {
     const at = (relative: string, content: BlobPart) => Object.defineProperty(new File([content], relative.split('/').pop()!), 'webkitRelativePath', { value: relative });
     const downloads: Array<[string, string]> = [];
@@ -188,6 +205,9 @@ describe('the labelling queue', () => {
     assert.equal(labelQueue.get().loaded, null, 'A film no longer shown is not marked loaded.');
     labelQueue.loaded(1, 'it belongs to another film');
     assert.deepEqual(labelQueue.get().loaded, { index: 1, refused: 'it belongs to another film' });
+    assert.equal(1 in labelQueue.get().visited, false, 'A refused plan file is checked again on every visit.');
+    labelQueue.shown(1, ['series-b']); labelQueue.loaded(1);
+    assert.equal(1 in labelQueue.get().visited, true, 'Once put on the film, its file is only checked on later visits.');
     // A series opened for one film shares it when a later film opens into it again; the same film coming back does not.
     assert.equal(labelQueue.shares(0, ['series-b']), true);
     assert.equal(labelQueue.shares(1, ['series-b']), false);

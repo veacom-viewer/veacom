@@ -34,6 +34,9 @@ export interface QueueState {
   held: Readonly<Record<number, string>>;
   /** Each series opened in the run, by the film it opened for: a later film that opens into one shares it. */
   seen: Readonly<Record<string, number>>;
+  /** Films whose plan file has been put on them (or found none) in this run: on a later visit the film keeps what the
+   * reader has made of it since, and its file is only checked. */
+  visited: Readonly<Record<number, true>>;
   /** A film is being opened or its plan written: the queue's buttons wait. */
   busy: boolean;
   /** Suggestions may be asked for on this run; off, the reader labels blind (suggestionShown stays false). */
@@ -43,7 +46,7 @@ export interface QueueState {
   status: string | null;
 }
 
-const EMPTY: QueueState = { folder: null, index: 0, seriesIds: [], loaded: null, held: {}, seen: {}, busy: false, suggestions: true, sides: ['R', 'L'], status: null };
+const EMPTY: QueueState = { folder: null, index: 0, seriesIds: [], loaded: null, held: {}, seen: {}, visited: {}, busy: false, suggestions: true, sides: ['R', 'L'], status: null };
 let state = EMPTY;
 const listeners = new Set<() => void>();
 function set(patch: Partial<QueueState>) { state = { ...state, ...patch }; for (const listener of [...listeners]) listener(); }
@@ -52,7 +55,7 @@ export const labelQueue = {
   get: () => state,
   subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   /** A folder chosen: its films, none shown yet. The settings carry over from the last run. */
-  start(folder: LabelFolder) { set({ folder, index: 0, seriesIds: [], loaded: null, held: {}, seen: {}, busy: false, status: null }); },
+  start(folder: LabelFolder) { set({ folder, index: 0, seriesIds: [], loaded: null, held: {}, seen: {}, visited: {}, busy: false, status: null }); },
   stop() { set({ ...EMPTY, suggestions: state.suggestions, sides: state.sides }); },
   /** Waits (true) while a film opens or a plan is written; refused (false) when the queue already waits. */
   begin(): boolean { if (state.busy || !state.folder) return false; set({ busy: true }); return true; },
@@ -62,7 +65,9 @@ export const labelQueue = {
   shown(index: number, seriesIds: string[]) { set({ index, seriesIds, loaded: null, seen: { ...state.seen, ...Object.fromEntries(seriesIds.map(id => [id, index])) } }); },
   /** Whether any of these series was opened for another film of the run. */
   shares: (index: number, seriesIds: readonly string[]) => seriesIds.some(id => Object.hasOwn(state.seen, id) && state.seen[id] !== index),
-  loaded(index: number, refused?: string) { if (index === state.index) set({ loaded: { index, ...(refused ? { refused } : {}) } }); },
+  loaded(index: number, refused?: string) {
+    if (index === state.index) set({ loaded: { index, ...(refused ? { refused } : {}) }, ...(refused ? {} : { visited: { ...state.visited, [index]: true as const } }) });
+  },
   /** A film's plan file refused for the rest of the run. */
   hold(index: number, reason: string) { set({ held: { ...state.held, [index]: reason } }); this.loaded(index, reason); },
   /** A plan written for a film: the list shows its new state. */

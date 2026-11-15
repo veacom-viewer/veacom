@@ -19,7 +19,7 @@ import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type F
 import { acceptSuggestions, clearSuggestions, fromUnchecked, imageSideOnScreen, nextLandmark, planView, uncheckedAsSuggested, withSuggestions, type PlanView } from '../ui/deformityPlan';
 import { cancelModelDownload, framePixels, loadModel, MODEL, MODEL_BYTES, runModel, suggestionsFrom, suggestionTarget } from '../ui/landmarkSuggestions';
 import { MAX_PLANS, parsePlanFile, planFile } from '../ui/deformityFile';
-import { filmSides, sidesFor } from '../ui/labelQueue';
+import { filmSides, labelQueue, sidesFor } from '../ui/labelQueue';
 import { drawReport, pictureSize, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
 import { Download, FolderOpen, Images, Plus, Redo2, Undo2, X } from './icons';
@@ -216,6 +216,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
       // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
       if (deformity.get().simulate && liveView.simulation) { setStatus(t('deformity.suggestSimulated')); return; }
+      // Suggestions turned off for a folder's run while the model ran: none is put on its film.
+      const run = labelQueue.get();
+      if (run.folder && !run.suggestions && run.seriesIds.includes(series.id)) { setStatus(t('label.suggestionsOff')); return; }
       deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL, UNCHECKED));
       const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));

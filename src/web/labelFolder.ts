@@ -20,8 +20,9 @@ export interface FolderEntry { kind: 'directory'; name: string; values(): AsyncI
 export async function isDicom(file: File): Promise<boolean> {
   if (/\.dcm$/i.test(file.name)) return true;
   if (file.size < 132) return false;
-  const bytes = new Uint8Array(await file.slice(128, 132).arrayBuffer());
-  return String.fromCharCode(...bytes) === 'DICM';
+  // A file that cannot be read (gone, or locked by another program) is not a film the queue could import.
+  const bytes = await file.slice(128, 132).arrayBuffer().then(buffer => new Uint8Array(buffer), () => null);
+  return bytes !== null && String.fromCharCode(...bytes) === 'DICM';
 }
 
 /** The order a person would number films in: 2 before 10, letters without case. */
@@ -36,7 +37,9 @@ export async function listFilms(files: ReadonlyMap<string, File>): Promise<Array
     const file = files.get(name)!;
     if (!(await isDicom(file))) continue;
     const plan = files.get(`${name}${PLAN_SUFFIX}`);
-    films.push({ name, file, plan: plan && plan.size <= MAX_PLAN_BYTES ? await plan.text() : null, ...(plan && plan.size > MAX_PLAN_BYTES ? { unreadable: true as const } : {}) });
+    // One plan file that cannot be read is that film's state, never replaced, not a failure of the whole folder.
+    const text = plan && plan.size <= MAX_PLAN_BYTES ? await plan.text().catch(() => null) : null;
+    films.push({ name, file, plan: text, ...(plan && text === null ? { unreadable: true as const } : {}) });
   }
   return films;
 }
@@ -81,7 +84,11 @@ export function createLabelFolder({ pick, chooseFiles, importFile, download, ref
           throw error;
         }
         name = folder.name;
-        for await (const entry of folder.values()) if (entry.kind === 'file') files.set(entry.name, await entry.getFile());
+        for await (const entry of folder.values()) {
+          // An entry that cannot be read is left out; the folder's other films still open.
+          const file = entry.kind === 'file' ? await entry.getFile().catch(() => null) : null;
+          if (file) files.set(entry.name, file);
+        }
       } else {
         const chosen = await chooseFiles();
         if (!chosen.length) return null;
