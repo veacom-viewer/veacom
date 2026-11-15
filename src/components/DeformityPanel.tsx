@@ -31,6 +31,8 @@ const VALUE_ORDER: Array<Value['key']> = ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LD
 const NAMED: Partial<Record<Value['key'], MessageKey>> = { WBL: 'deformity.value.WBL', femurLength: 'deformity.value.femurLength', tibiaLength: 'deformity.value.tibiaLength', limbLength: 'deformity.value.limbLength' };
 const BALLS = [25, 25.4, 30];
 const CORA_KEY = { femur: 'coraFemur', tibia: 'coraTibia' } as const;
+/** The value each step of the malalignment test reads (analysis.ts malalignmentTest). */
+const STEP_KEY = { mad: 'MAD', femur: 'mLDFA', tibia: 'MPTA', joint: 'JLCA', subluxation: 'subluxation' } as const;
 
 /** The sides a film is planned for when it opens: the one its laterality names, else both. */
 const sidesOf = (laterality: string | undefined): Side[] => laterality === 'R' ? ['R'] : laterality === 'L' ? ['L'] : ['R', 'L'];
@@ -305,7 +307,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         ? [NAMED[name] ? t(NAMED[name]) : name, missingText(leg.values[name].missing, t), normalText(name) || undefined]
         : [NAMED[name] ? t(NAMED[name]) : name, valueText(leg.values[name], tag, t), normalText(name) || undefined, cautions(name === 'WBL', unchecked.has(name))]) },
         { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey), undefined,
-          cautions(step.step === 'subluxation' && step.result !== 'unassessable', false)]) },
+          step.result === 'unassessable' ? undefined : cautions(step.step === 'subluxation', unchecked.has(STEP_KEY[step.step]))]) },
         { title: t('deformity.cora'), rows: (['femur', 'tibia'] as const).map(boneName => [t(`deformity.bone.${boneName}` as MessageKey), coraText(view, boneName, t), undefined,
           cautions(false, Boolean(view.cora[boneName]) && unchecked.has(CORA_KEY[boneName]))]) }];
       if (view.simulation && plan.osteotomy) {
@@ -467,7 +469,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         <span>{t(`deformity.mat.${step.step}` as MessageKey)}</span>
         <strong className={step.result === 'normal' || step.result === 'unassessable' ? '' : 'is-out'}>{t(`deformity.result.${step.result}` as MessageKey)}</strong>
         {step.missing && <small>{missingText(step.missing, t)}</small>}
-        {plateauInboard && step.step === 'subluxation' && step.result !== 'unassessable' && <small className="deformity-caution">{t('deformity.plateauInboardShort')}</small>}</li>)}</ol>
+        {plateauInboard && step.step === 'subluxation' && step.result !== 'unassessable' && <small className="deformity-caution">{t('deformity.plateauInboardShort')}</small>}
+        {unchecked.has(STEP_KEY[step.step]) && step.result !== 'unassessable' && <small className="deformity-caution" data-unchecked-value>{t('deformity.uncheckedShort')}</small>}</li>)}</ol>
 
       <h3>{t('deformity.cora')}</h3>
       <dl className="deformity-cora">{(['femur', 'tibia'] as const).map(name => <div key={name} data-cora={name} data-magnitude={view.cora[name]?.magnitude}>

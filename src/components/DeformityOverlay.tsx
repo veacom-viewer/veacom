@@ -261,9 +261,10 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       }))}
     </g>}
     {chip(points.hip?.centre ?? null, v.mLPFA.value === null ? [] : [`mLPFA ${number(v.mLPFA.value)}°${unchecked('mLPFA')}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'hip')}
-    {chip(points.knee, [v.mLDFA.value !== null ? `mLDFA ${number(v.mLDFA.value)}°` : '', v.MPTA.value !== null ? `MPTA ${number(v.MPTA.value)}°` : '',
-      v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°` : '', v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
-    {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit}${Math.abs(v.MAD.value) < 0.05 ? '' : ` ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
+    {chip(points.knee, [v.mLDFA.value !== null ? `mLDFA ${number(v.mLDFA.value)}°${unchecked('mLDFA')}` : '', v.MPTA.value !== null ? `MPTA ${number(v.MPTA.value)}°${unchecked('MPTA')}` : '',
+      v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°${unchecked('JLCA')}` : '',
+      v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}${unchecked('HKA')}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
+    {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit}${Math.abs(v.MAD.value) < 0.05 ? '' : ` ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`}${unchecked('MAD')}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
     {chip(points.ankle, v.LDTA.value === null ? [] : [`LDTA ${number(v.LDTA.value)}°${unchecked('LDTA')}`], simulating ? COLOUR.corrected : COLOUR.axis, outward, 'ankle')}
   </g>;
 }

@@ -79,9 +79,10 @@ All 14 landmarks.
   - So mLPFA, aLDFA, AMA, LDTA and the CORA of each bone have no real-film number.
 - **How the kit says so.** An unchecked suggestion is a dashed diamond, not a ring. Its row says "suggested ·
   unchecked", and one line under the button names the six points and why. Accepted as it was, the row still says
-  "unchecked", and every value and CORA measured from it says "from an unchecked point" beside it, in the panel and in
-  the report, and "unchecked point" in its label on the image (the Paley rule says so in the panel), until the reader
-  moves that point or places it again. The tibial shaft points feed no value;
+  "unchecked", and every value, malalignment step and CORA measured from it says "from an unchecked point" beside it,
+  in the panel and in the report, and "unchecked point" in its label on the image (the Paley rule says so in the panel),
+  until the reader moves that point or places it again. A file from another model may mark any landmark unchecked; the
+  same rule then marks whatever is measured from it. The tibial shaft points feed no value;
   they draw the tibial anatomic axis.
 - **Saved,** the label's `confidence` names the model and says `unchecked` (docs/deformity-labels.md), so these labels
   are never mistaken for checked ones when the files are used for training.
