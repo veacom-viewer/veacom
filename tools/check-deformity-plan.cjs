@@ -472,7 +472,10 @@ async function main() {
     // mLPFA and LDTA on the image.
     for (const bone of ['femur', 'tibia']) {
       const cora = panel.locator(`[data-cora="${bone}"]`);
-      assert.equal(await cora.locator('[data-unchecked-value]').count(), await cora.getAttribute('data-magnitude') === null ? 0 : 1, `The ${bone}'s CORA is marked when it is found.`);
+      const magnitude = await cora.getAttribute('data-magnitude');
+      assert.equal(await cora.locator('[data-unchecked-value]').count(), magnitude === null ? 0 : 1, `The ${bone}'s CORA is marked when it is found.`);
+      // Drawn on the image from 1.5° (smaller is within the joints' normal variation), its label says so too.
+      if (Number(magnitude) >= 1.5) assert.match(await page.locator(`[data-plan-label="cora-${bone}"]`).textContent(), /unchecked point/);
     }
     for (const label of ['hip', 'ankle']) assert.match(await page.locator(`[data-plan-label="${label}"]`).textContent(), /unchecked point/);
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
