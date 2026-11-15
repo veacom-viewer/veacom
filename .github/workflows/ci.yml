@@ -274,6 +274,9 @@ jobs:
       - name: Software drawing reported
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-software-rendering.cjs "$STUDY/S01" "$EVIDENCE/software-rendering" --expect software
+      - name: TEMPORARY toolbar probe
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/probe-toolbar.cjs "$STUDY/S01" 60
       - name: Interface
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-interface.cjs "$STUDY/S01" "$EVIDENCE/interface"
