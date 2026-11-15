@@ -1105,7 +1105,11 @@ export default function App() {
   const forgetHistory = () => { history.current = { past: [], future: [] }; setHistoryCount([0, 0]); };
   const goToFilm = async (index: number) => {
     const queue = labelQueue.get(), folder = queue.folder, bridge = window.veacom?.labelFolder;
-    if (!folder || !bridge || index < 0 || index >= folder.films.length || !labelQueue.begin()) return;
+    if (!folder || !bridge || index < 0 || index >= folder.films.length) return;
+    // Pictures or a video being made from the pane: the film shown must stay until they are done.
+    if (capturingRef.current) { labelQueue.say(t('label.waitForCapture')); return; }
+    if (!labelQueue.begin()) return;
+    forgetHistory();
     // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run, and that run is left alone.
     const same = () => labelQueue.get().folder?.token === folder.token;
     // No `finally` here: the React Compiler leaves a component unmemoized when any function in it has one.
@@ -1115,7 +1119,7 @@ export default function App() {
       if (same()) {
         const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
         // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
-        const shared = opened.some(id => queue.seriesIds.includes(id));
+        const shared = labelQueue.shares(index, opened);
         const before = queue.seriesIds.filter(id => !opened.includes(id));
         if (before.length) removeFromList(before, opened.length > 0);
         labelQueue.shown(index, shared ? [] : opened);
@@ -1131,6 +1135,7 @@ export default function App() {
     setMenu(null);
     const bridge = window.veacom?.labelFolder;
     if (!bridge) { say('notice.desktopToOpen', 'info'); return; }
+    if (capturingRef.current) { setNotice({ message: t('label.waitForCapture'), kind: 'info' }); return; }
     usage.touch('dialog');
     try {
       const folder = await bridge.open();
