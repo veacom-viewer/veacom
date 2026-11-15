@@ -17,7 +17,7 @@ export type Provenance = 'placed' | 'accepted' | 'moved';
 export interface ModelRef { model: string; sha256: { stageA: string; stageB: string } }
 
 /** Where a landmark's points came from, beyond each point's provenance (LegPlan.origin). */
-export interface LandmarkOrigin { shown?: true; model?: ModelRef; unchecked?: true; construction?: 'hipCentreRing' }
+interface LandmarkOrigin { shown?: true; model?: ModelRef; unchecked?: true; construction?: 'hipCentreRing' }
 
 /** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
 export interface LegPlan {

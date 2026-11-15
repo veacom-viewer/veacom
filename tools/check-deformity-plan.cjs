@@ -435,7 +435,7 @@ async function main() {
     assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion]').count(), 8 + 13);
     assert.deepEqual(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion][data-unchecked]').evaluateAll(items => items.map(item => item.dataset.suggestion)), unchecked);
     assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-unchecked] polygon[stroke-dasharray]').count(), 6);
-    assert.match(await panel.getByTestId('deformity-unchecked-note').textContent(), /Unchecked: the trochanter, upper femoral shaft, tibial shafts and plafond/);
+    assert.match(await panel.locator('[data-unchecked-note]').textContent(), /Unchecked: the trochanter, upper femoral shaft, tibial shafts and plafond/);
     assert.equal((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Nothing is measured from a suggestion.');
     const suggestTimes = JSON.parse(await panel.getByTestId('deformity-suggest').getAttribute('data-suggest-times'));
     await shot('6-suggestions');
@@ -468,6 +468,13 @@ async function main() {
     const markedValues = await panel.locator('.deformity-values:not(.deformity-compare) tr').evaluateAll(items => items.filter(item => item.querySelector('[data-unchecked-value]')).map(item => item.dataset.valueKey));
     assert.deepEqual(markedValues, ['mLPFA', 'aLDFA', 'LDTA', 'AMA']);
     assert.match(await panel.locator('tr[data-value-key="LDTA"]').textContent(), /from an unchecked point/);
+    // The femur's CORA uses the trochanter and the tibia's the plafond: each one found says so, and so do the labels of
+    // mLPFA and LDTA on the image.
+    for (const bone of ['femur', 'tibia']) {
+      const cora = panel.locator(`[data-cora="${bone}"]`);
+      assert.equal(await cora.locator('[data-unchecked-value]').count(), await cora.getAttribute('data-magnitude') === null ? 0 : 1, `The ${bone}'s CORA is marked when it is found.`);
+    }
+    for (const label of ['hip', 'ankle']) assert.match(await page.locator(`[data-plan-label="${label}"]`).textContent(), /unchecked point/);
     await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
     await page.keyboard.press(undoKeys);
     await page.waitForFunction(() => document.querySelectorAll('.deformity-landmarks li[data-suggested]').length === 12, undefined, { timeout: 5_000 });

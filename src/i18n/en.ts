@@ -574,6 +574,7 @@ export const en = {
   'deformity.suggested': 'suggested',
   'deformity.unchecked': 'unchecked',
   'deformity.uncheckedShort': 'from an unchecked point',
+  'deformity.uncheckedChip': 'unchecked point',
   'deformity.accept': 'Accept',
   'deformity.acceptAll': 'Accept all',
   'deformity.clearSuggestions': 'Clear suggestions',

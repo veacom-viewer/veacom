@@ -50,8 +50,9 @@ graphs are seed 0.
 | Femoral shaft, lower | 0.40 mm across the shaft |
 
 The femoral shaft's error is across the shaft at the reader's own level, which BMPLE's reader put 76 to 87 % of the way
-from hip to knee (mean 83 %). VEAcom reads the point at 75 %, the level the model was trained to on synthetic films, on
-the same shaft.
+from hip to knee (mean 83 %, over the reader's hip, knee and shaft points of the 138 test legs). VEAcom reads the point
+at 75 %, where veacom-train's own inference (`stageb.infer_film`) puts the crop and where the synthetic films label it,
+on the same shaft.
 
 | Value | Error | Legs within 2° (MAD: 2 mm) |
 | --- | --- | --- |
@@ -79,7 +80,8 @@ All 14 landmarks.
 - **How the kit says so.** An unchecked suggestion is a dashed diamond, not a ring. Its row says "suggested ·
   unchecked", and one line under the button names the six points and why. Accepted as it was, the row still says
   "unchecked", and every value and CORA measured from it says "from an unchecked point" beside it, in the panel and in
-  the report (and the Paley rule, in the panel), until the reader moves that point or places it again. The tibial shaft points feed no value;
+  the report, and "unchecked point" in its label on the image (the Paley rule says so in the panel), until the reader
+  moves that point or places it again. The tibial shaft points feed no value;
   they draw the tibial anatomic axis.
 - **Saved,** the label's `confidence` names the model and says `unchecked` (docs/deformity-labels.md), so these labels
   are never mistaken for checked ones when the files are used for training.

@@ -577,6 +577,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.suggested': 'önerildi',
   'deformity.unchecked': 'kontrol edilmedi',
   'deformity.uncheckedShort': 'kontrol edilmemiş noktadan',
+  'deformity.uncheckedChip': 'kontrol edilmemiş nokta',
   'deformity.accept': 'Kabul et',
   'deformity.acceptAll': 'Tümünü kabul et',
   'deformity.clearSuggestions': 'Önerileri temizle',

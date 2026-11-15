@@ -223,7 +223,7 @@ describe('landmark suggestions', () => {
   const ring: Point[] = [0, 90, 180, 270].map(degrees => [100 + 30 * Math.cos(degrees * deg), 120 + 30 * Math.sin(degrees * deg)]);
   const points = { femoralHeadContour: ring, kneeCentre: [[200, 500]] as Point[], femoralCondyleMedial: [[230, 520]] as Point[], femoralCondyleLateral: [[170, 520]] as Point[],
     tibialPlateauMedial: [[228, 530]] as Point[], tibialPlateauLateral: [[172, 532]] as Point[], ankleCentre: [[205, 900]] as Point[] };
-  const suggested = () => { film(); deformity.change(key, current => withSuggestions(current, points, MODEL)); return deformity.get().films[key]!; };
+  const suggested = () => { film(); deformity.change(key, current => withSuggestions(current, points, MODEL, UNCHECKED)); return deformity.get().films[key]!; };
 
   it('are drawn apart and measured only once the reader accepts or moves them', () => {
     let current = suggested(), plan = current.plans[0];
@@ -272,14 +272,14 @@ describe('landmark suggestions', () => {
     assert.equal(current.plans[0].suggested, undefined);
     assert.deepEqual(current.plans[0].points.kneeCentre, [[199, 501]]);
     // Suggested again, only what is not placed is suggested.
-    assert.deepEqual(Object.keys(withSuggestions(current, points, MODEL).plans[0].suggested!.points).sort(),
+    assert.deepEqual(Object.keys(withSuggestions(current, points, MODEL, UNCHECKED).plans[0].suggested!.points).sort(),
       ['femoralCondyleLateral', 'femoralCondyleMedial', 'femoralHeadContour', 'tibialPlateauLateral', 'tibialPlateauMedial']);
   });
 
   it('stay marked as shown through Undo: a point placed after undoing them is labelled with a suggestion shown', async () => {
     film();
     const before = deformity.snapshot();
-    deformity.change(key, current => withSuggestions(current, points, MODEL));
+    deformity.change(key, current => withSuggestions(current, points, MODEL, UNCHECKED));
     deformity.restore(before);
     const undone = deformity.get().films[key]!.plans[0];
     assert.equal(undone.suggested, undefined, 'Undo takes the suggestions off the film.');
@@ -393,6 +393,28 @@ describe('landmark suggestions', () => {
     assert.deepEqual([foreign.plans[0].origin?.ankleCentre, foreign.plans[0].provenance.ankleCentre], [{ shown: true }, ['placed']]);
   });
 
+  it('forget a landmark\'s model once the reader places it by hand, and an unchecked suggestion once it is taken', async () => {
+    film();
+    const all = { ...points, plafondMedial: [[222, 895]] as Point[], plafondLateral: [[188, 897]] as Point[] };
+    deformity.change(key, current => withSuggestions(current, all, MODEL, UNCHECKED));
+    let current = deformity.get().films[key]!;
+    current = settleMoved(moveHandle(current, { kind: 'suggestion', name: 'plafondMedial', index: 0 }, [223, 894]), 'plafondMedial', 0);
+    assert.deepEqual(current.plans[0].suggested?.unchecked, ['plafondLateral']);
+    current = acceptSuggestions(current, ['plafondLateral']);
+    assert.equal(current.plans[0].suggested?.unchecked, undefined, 'No unchecked suggestion is left, so the panel\'s line about them goes.');
+    assert.ok(current.plans[0].suggested?.points.kneeCentre, 'The checked suggestions still wait.');
+    // A file may name the model for a point no suggestion of which was shown: placed by hand, the point is the reader's.
+    const file = structuredClone(await planFile(acceptSuggestions(current), frame));
+    for (const label of file.plans[0].landmarks) if (label.name === 'plafondMedial') label.suggestionShown = false;
+    const opened = await parsePlanFile(JSON.stringify(file), current, frame);
+    assert.ok(!('error' in opened));
+    assert.deepEqual(opened.plans[0].origin?.plafondMedial, { model: MODEL, unchecked: true });
+    const placed = place({ ...current, plans: opened.plans, active: opened.plans[0].id }, { film: key, kind: 'landmark', name: 'plafondMedial' }, [224, 893], frame).film;
+    assert.equal(placed.plans[0].origin?.plafondMedial, undefined);
+    const label = (await planFile(placed, frame)).plans[0].landmarks.find(item => item.name === 'plafondMedial')!;
+    assert.deepEqual([label.confidence, label.provenance, label.suggestionShown], ['manual', ['placed'], false]);
+  });
+
   it('name exactly the landmarks each value and CORA is measured from', () => {
     const current = film(), plan = current.plans[0];
     const full: Landmarks = { femoralHeadContour: [[70, 120], [100, 90], [130, 120], [100, 150]], greaterTrochanterTip: [[40, 150]],
@@ -428,7 +450,7 @@ describe('landmark suggestions', () => {
     assert.deepEqual(suggestionTarget(planView(current, colour), colour), { block: 'colour' });
     const tall = { ...frame, dimensions: [400, 5000, 1] as [number, number, number] };
     assert.deepEqual(suggestionTarget(planView(current, tall), tall), { block: 'size' });
-    const most = acceptSuggestions(withSuggestions(current, points, MODEL));
+    const most = acceptSuggestions(withSuggestions(current, points, MODEL, UNCHECKED));
     assert.deepEqual(suggestionTarget(planView(most, frame), frame), { leg: 'left' }, 'The trochanter, shafts and plafond are still to suggest.');
     const rest = Object.fromEntries(LANDMARKS.filter(name => !(name in points)).map((name, i) => [name, [[150 + i, 300 + 80 * i]] as Point[]]));
     const done = acceptSuggestions(withSuggestions(most, rest, MODEL, UNCHECKED));

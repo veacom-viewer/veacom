@@ -16,11 +16,12 @@ export function reportHeader(series: Series, frame: Series, hidePatient: boolean
   return [left, right, `${sideText(frame)} · ${calibrationText(frame, 'auto')}`].filter(Boolean);
 }
 
-export interface ReportSection { title: string; rows: Array<[string, string, string?]> }
+/** A row: its label, value and normal range, and a caution about the value, written under it. */
+export interface ReportSection { title: string; rows: Array<[string, string, string?, string?]> }
 export interface ReportContent { title: string; lines: string[]; pictures: Array<{ caption: string; canvas: HTMLCanvasElement }>; sections: ReportSection[]; footer: string[] }
 
 const PAGE = { width: 2480, height: 3508 }; // A4 at 300 dpi
-const MARGIN = 120, TEXT = '#111418', MUTED = '#4a5361', RULE = '#c9ced6';
+const MARGIN = 120, TEXT = '#111418', MUTED = '#4a5361', RULE = '#c9ced6', CAUTION = '#8a5300';
 
 /** Where the report's text starts below its header lines, and the box each of `count` pictures fits in. */
 const picturesTop = (lines: number) => MARGIN + 40 + 56 + 46 * lines + 16;
@@ -67,10 +68,12 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
     context.fillStyle = TEXT; context.font = font(38, 600); context.fillText(section.title, left, y); y += 18;
     context.strokeStyle = RULE; context.lineWidth = 2; context.beginPath(); context.moveTo(left, y); context.lineTo(left + width, y); context.stroke();
     y += 44;
-    for (const [label, value, normal] of section.rows) {
+    for (const [label, value, normal, caution] of section.rows) {
       context.font = font(31, 500); context.fillStyle = TEXT; context.fillText(label, left, y, width * 0.34);
       context.font = font(31); context.fillText(value, left + width * 0.36, y, width * 0.34);
       if (normal) { context.fillStyle = MUTED; context.font = font(27); context.fillText(normal, left + width * 0.72, y, width * 0.28); }
+      // A caution takes the line under the value, across the value and normal columns, so it is not squeezed.
+      if (caution) { y += 38; context.fillStyle = CAUTION; context.font = font(27); context.fillText(caution, left + width * 0.36, y, width * 0.64); }
       y += 44;
     }
     y += 24;

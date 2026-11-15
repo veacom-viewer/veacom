@@ -103,13 +103,14 @@ export function nextLandmark(plan: LegPlan, after?: LandmarkName): LandmarkName 
 function withoutSuggestion(plan: LegPlan, name: LandmarkName): LegPlan {
   if (!plan.suggested?.points[name]) return plan;
   const { [name]: _gone, ...points } = plan.suggested.points;
-  return { ...plan, suggested: Object.keys(points).length ? { ...plan.suggested, points } : undefined };
+  const unchecked = plan.suggested.unchecked?.filter(item => item !== name);
+  return { ...plan, suggested: Object.keys(points).length ? { model: plan.suggested.model, points, ...(unchecked?.length ? { unchecked } : {}) } : undefined };
 }
 
 /** The model's suggestions put on the active plan, for the landmarks it has not placed: they replace earlier ones,
  * and each suggested landmark is marked as shown (the plan file's suggestionShown). `unchecked` names the landmarks
  * whose model channels have no check on real films. */
-export function withSuggestions(film: FilmPlans, points: LegPlan['points'], model: ModelRef, unchecked: readonly LandmarkName[] = []): FilmPlans {
+export function withSuggestions(film: FilmPlans, points: LegPlan['points'], model: ModelRef, unchecked: readonly LandmarkName[]): FilmPlans {
   const plan = activePlan(film);
   const names = LANDMARKS.filter(name => points[name]?.length && !isPlaced(plan, name));
   if (!names.length) return film;
@@ -191,8 +192,10 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
     // A point placed by hand replaces the landmark's suggestion. The landmark keeps its model only while points the
     // model gave remain (an outline taking one more point), and stays marked as shown a suggestion.
     const shown = plan.origin?.[name]?.shown || plan.suggested?.points[name], kept = contour ? plan.origin?.[name] : undefined;
-    const origin = shown ? { ...plan.origin, [name]: { shown: true as const, ...(kept?.model ? { model: kept.model } : {}), ...(kept?.model && kept.unchecked ? { unchecked: true as const } : {}),
-      ...(kept?.construction ? { construction: kept.construction } : {}) } } : plan.origin;
+    const entry = { ...(shown ? { shown: true as const } : {}), ...(kept?.model ? { model: kept.model } : {}), ...(kept?.model && kept.unchecked ? { unchecked: true as const } : {}),
+      ...(kept?.construction ? { construction: kept.construction } : {}) };
+    const { [name]: _replaced, ...others } = plan.origin ?? {};
+    const origin = Object.keys(entry).length ? { ...others, [name]: entry } : others;
     const next = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: provenance }, origin }, name);
     // The head's outline takes points until it has three; clicked again later, it takes more.
     const stay = contour && points.length < CONTOUR_MINIMUM;

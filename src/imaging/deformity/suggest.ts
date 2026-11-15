@@ -38,7 +38,7 @@ export const CROP_KINDS = Object.keys(CROPS) as CropKind[];
 /** Where a shaft crop is centred: a fixed share of the way between two of stage A's anchors (stageb.SHAFT). Where a
  * shaft point lies along the bone is this definition, not something the model finds: it finds the middle between the
  * cortices on the crop's centre row. */
-const SHAFT_CROPS: Partial<Record<CropKind, readonly [keyof Anchors, keyof Anchors, number]>> = {
+const SHAFT_CROPS: Record<Exclude<CropKind, 'hip' | 'knee' | 'ankle'>, readonly [keyof Anchors, keyof Anchors, number]> = {
   femurProximal: ['hip', 'knee', 0.30], femurDistal: ['hip', 'knee', 0.75], tibiaProximal: ['knee', 'ankle', 0.25], tibiaDistal: ['knee', 'ankle', 0.80],
 };
 
@@ -170,7 +170,7 @@ export function cropCentre(kind: CropKind, leg: ImageLeg, anchors: Anchors, mm: 
   if (kind === 'hip') return [anchors.hip[0] + (leg === 'left' ? -1 : 1) * STAGE_B.hipLateralMm / mm[0], anchors.hip[1]];
   if (kind === 'knee') return anchors.knee;
   if (kind === 'ankle') return anchors.ankle;
-  const [from, to, share] = SHAFT_CROPS[kind]!, a = anchors[from], b = anchors[to];
+  const [from, to, share] = SHAFT_CROPS[kind], a = anchors[from], b = anchors[to];
   return [a[0] + share * (b[0] - a[0]), a[1] + share * (b[1] - a[1])];
 }
 
@@ -251,7 +251,7 @@ export function readStageB(coords: ArrayLike<number>, confidence: ArrayLike<numb
   kinds.forEach((kind, crop) => {
     for (const channel of CROPS[kind]) {
       const source = CHANNELS.indexOf(mirror ? mirroredChannel(channel) : channel), index = crop * CHANNELS.length + source;
-      const row = SHAFT_CROPS[kind] ? STAGE_B.size / 2 : coords[index * 2 + 1];
+      const row = kind in SHAFT_CROPS ? STAGE_B.size / 2 : coords[index * 2 + 1];
       out[channel] = { point: cropToFilm([coords[index * 2], row], centres[crop], mm, mirror), confidence: confidence[index] };
     }
   });
