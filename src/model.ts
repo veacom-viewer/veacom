@@ -302,8 +302,8 @@ export type BridgeFeature =
   | 'updates'
   /** Sending feedback to the team. */
   | 'feedback';
-/** A film of a folder being labelled, with the plan file beside it: its text, null when there is none, or `tooLarge`. */
-export interface LabelFilm { name: string; plan: string | null; tooLarge?: true }
+/** A film of a folder being labelled, with the plan file beside it: its text, null when there is none, or `unreadable`. */
+export interface LabelFilm { name: string; plan: string | null; unreadable?: true }
 /** A folder chosen for labelling: `writes` says where Save and next puts a plan, beside its film or as a download (a
  * browser that cannot write into a folder). */
 export interface LabelFolder { token: string; folder: string; films: LabelFilm[]; writes: 'beside' | 'download' }

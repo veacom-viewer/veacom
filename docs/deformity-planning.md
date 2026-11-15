@@ -208,6 +208,10 @@ memory while VEAcom is open. Nothing is written to disk unless the reader asks:
 - **Save and next**, while a folder is being labelled (below), writes the film's plan beside the film and opens the
   next one.
 
+Autosave waits for the approvals the CLOSE checklist records (docs/close-calipers.md, PR #31): the hospital's ethics
+committee, its KVKK legal basis and its data protection officer. The plan file has the shape that opt-in would store.
+No plan, landmark or value goes to the usage timings: they record only which control was used.
+
 ### Labelling a folder
 
 To label many films, such as a public dataset's, the Open menu's **Label a folder of long-leg films** opens them one
@@ -217,27 +221,27 @@ write beside the films; other browsers download each plan instead.
 - **The films** are the DICOM files directly inside the chosen folder (a Part 10 preamble, or a .dcm name), in the order
   a person would number them (2 before 10). Each has a state, read from the plan file beside it,
   `<film's file name>.veacom-plan.json`: no plan, plan saved, plan saved with suggestions shown (any landmark's
-  `suggestionShown`), or a plan file that cannot be read. The run starts at the first film without a plan, so a run
-  stopped halfway goes on where it was.
+  `suggestionShown`), plan saved with no landmark, or a plan file that cannot be read (not a version 1 plan, or over
+  2 MB). The run starts at the first film without a plan, so a run stopped halfway goes on where it was. With patient
+  data hidden, the folder's and the files' names are not shown: file names can name the patient.
 - **Above the plan**, the queue shows the film, Previous and Next, a list to go to any film, and two settings:
-  - **Suggestions** on or off. Off, Suggest landmarks cannot be pressed: the reader labels blind, and the labels say
-    so (`suggestionShown` false).
+  - **Suggestions** on or off. Off, Suggest landmarks cannot be pressed on the queue's films, so a film labelled with
+    them off records no suggestion shown (`suggestionShown` false).
   - **Legs**: right, left or both, for each film that has no plan yet (among those the film shows).
 - **Opening a film** imports it, opens the plan on it, and takes the film shown before off the list (its files are not
-  touched). The plan file beside it is put on it, unless this session has already planned the film. A plan file that
-  does not open (another film's, not a plan, too large) is never replaced: Save and next waits, and the queue says why.
-  A file that is not a long-leg film, or does not open as an image, leaves the queue there to go to another.
+  touched). Undo starts afresh on each film, so a step back never reaches another film's plan. The plan file beside the
+  film is read: if it opens, it is put on the film, unless this session has already planned the film; if it does not
+  open (another film's, not a plan, too large), it is never replaced, Save and next waits, and the queue says why. A file
+  that does not open as an image, or opens into the series of the film before it, is the queue's place with nothing to
+  save, so Next goes past it.
 - **Save and next** is the only control that writes. It writes the film's plans (docs/deformity-labels.md) beside the
   film, then opens the next. The desktop's main process keeps the folder's paths and writes only beside the folder's
   own films, given by their place in the list; in the browser the page writes through the folder handle it was given.
-  Either way it writes only over the plan file it read when the folder was opened (or wrote since): a file changed or
-  added meanwhile is left alone and the plan stays on the film. A write that fails does not move on.
+  Either way it writes only a deformity plan, only over the plan file it read when the folder was opened (or wrote
+  since), and only if that file is a deformity plan: a file changed or added meanwhile, or any other file, is left alone
+  and the plan stays on the film. A write that fails does not move on.
 - Nothing else is written: moving to another film keeps the plan in memory, as for any film, and autosave still waits
-  for the approvals below.
-
-Autosave waits for the approvals the CLOSE checklist records (docs/close-calipers.md, PR #31): the hospital's ethics
-committee, its KVKK legal basis and its data protection officer. The plan file has the shape that opt-in would store.
-No plan, landmark or value goes to the usage timings: they record only which control was used.
+  for the approvals above.
 
 ## Platforms
 

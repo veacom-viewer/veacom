@@ -552,9 +552,15 @@ async function main() {
       assert.deepEqual([kneeLabel.confidence, kneeLabel.suggestionShown, kneeLabel.points[0].map(Math.round)], ['manual', false, knee.map(Math.round)]);
       assert.match(await queue.getByTestId('label-status').textContent(), /Saved film 2\.dcm\.veacom-plan\.json beside the film/);
       assert(!(await page.evaluate(() => window.__VEACOM_TEST__.state())).series.some(item => item.id === film2), 'The film left is taken off the list.');
-      // Film 3's plan file did not open: it stays as it is, and Save and next waits.
+      // Film 3's plan file did not open: it stays as it is, and Save and next waits, also once the film is planned here.
+      // Undo starts afresh on each film: nothing reaches back into film 2's plan.
       await queue.getByTestId('label-refused').waitFor();
       assert.equal(await queue.locator('[data-action="label-save-next"]').isDisabled(), true);
+      assert.equal(await panel.locator('[data-action="deformity-undo"]').isDisabled(), true, 'Undo starts afresh on each film.');
+      await page.getByTestId('deformity-drawing').waitFor({ state: 'attached', timeout: 60_000 });
+      await settle();
+      await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-place"]').click();
+      await click(knee); await landed('kneeCentre', knee);
       await queue.locator('[data-action="label-next"]').click();
       await settled(3);
       await page.getByTestId('deformity-drawing').waitFor({ state: 'attached', timeout: 60_000 });
@@ -562,6 +568,11 @@ async function main() {
       await queue.locator('[data-action="label-save-next"]').click();
       await page.waitForFunction(() => /That was the last film/.test(document.querySelector('[data-testid="label-status"]')?.textContent ?? ''), undefined, { timeout: 30_000 });
       assert.deepEqual(JSON.parse(await fs.readFile(path.join(labelFolder, 'film 10.dcm.veacom-plan.json'), 'utf8')).plans.map(item => item.side), ['R']);
+      // Back on film 3, planned here, its plan file is still refused.
+      await queue.locator('[data-action="label-film"]').selectOption('2');
+      await settled(2);
+      await queue.getByTestId('label-refused').waitFor();
+      assert.equal(await queue.locator('[data-action="label-save-next"]').isDisabled(), true, 'A planned film never writes over a plan file that did not open.');
       // Film 1 opens with the plan beside it.
       await queue.locator('[data-action="label-film"]').selectOption('0');
       await settled(0);

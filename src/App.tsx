@@ -1098,24 +1098,32 @@ export default function App() {
   };
 
   // Labelling a folder of long-leg films (ui/labelQueue.ts): one film open at a time. The next opens before the one
-  // shown is taken off the list, so the plan stays open between them; a film that fails to open leaves the shown one.
+  // shown is taken off the list, so the plan stays open between them. A file that does not open as an image, or opens
+  // into the series of the film before, still becomes the queue's place, with nothing to save, so Next goes past it.
   const labelling = useLabelQueue();
+  /** Undo starts afresh on each film of a run: a step back never reaches into another film's plan. */
+  const forgetHistory = () => { history.current = { past: [], future: [] }; setHistoryCount([0, 0]); };
   const goToFilm = async (index: number) => {
     const queue = labelQueue.get(), folder = queue.folder, bridge = window.veacom?.labelFolder;
     if (!folder || !bridge || index < 0 || index >= folder.films.length || !labelQueue.begin()) return;
+    // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run, and that run is left alone.
+    const same = () => labelQueue.get().folder?.token === folder.token;
     let status: string | null | undefined;
     try {
       const opened = await importStudies(await bridge.film(folder.token, index), 'folder');
-      // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run.
-      if (labelQueue.get().folder?.token !== folder.token) return;
+      if (!same()) return;
+      const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
+      // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
+      const shared = opened.some(id => queue.seriesIds.includes(id));
       const before = queue.seriesIds.filter(id => !opened.includes(id));
       if (before.length) removeFromList(before, opened.length > 0);
-      // A file that did not open as an image is still the queue's place, so Next goes past it.
-      labelQueue.shown(index, opened);
+      labelQueue.shown(index, shared ? [] : opened);
+      forgetHistory();
       if (opened.length) setChecklistOpen(true);
-      else status = t('label.notOpened', { name: folder.films[index].name });
+      if (!opened.length) status = t('label.notOpened', { name });
+      else if (shared) status = t('label.sharedSeries', { name });
     } catch (error) { status = errorText(error); }
-    finally { labelQueue.end(status); }
+    finally { if (same()) labelQueue.end(status); }
   };
   const startLabelling = async () => {
     setMenu(null);
@@ -1127,8 +1135,9 @@ export default function App() {
       if (!folder) return;
       if (!folder.films.length) { setNotice({ message: t('label.empty', { folder: folder.folder }), kind: 'info' }); return; }
       labelQueue.start(folder);
+      forgetHistory();
       // The first film without a plan, so a run stopped halfway goes on where it was.
-      const next = folder.films.findIndex(film => film.plan === null && !film.tooLarge);
+      const next = folder.films.findIndex(film => film.plan === null && !film.unreadable);
       await goToFilm(next >= 0 ? next : 0);
     } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
   };
@@ -2442,10 +2451,11 @@ export default function App() {
         const plan = deformityShown && activeVolume ? <Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
           onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
           viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
-          labelling={labelling.folder ? { sides: labelling.sides, suggestions: labelling.suggestions } : undefined} onCalibrate={calibrateFilm} /></Suspense> : null;
+          labelling={labelling.folder && labelling.seriesIds.includes(activeVolume.series.id) ? { sides: labelling.sides, suggestions: labelling.suggestions } : undefined}
+          onCalibrate={calibrateFilm} /></Suspense> : null;
         // While a folder is being labelled, its queue stays above the plan, also on a film the plan cannot open.
         if (labelling.folder) return <div className="assessment-overlay"><div className="label-queue-column"><Suspense fallback={null}>
-          <LabelQueue volume={activeVolume ?? undefined} slice={activeDisplayView.slice} planOpen={Boolean(plan)} longLeg={opensDeformity} onGo={index => void goToFilm(index)} onCalibrate={calibrateFilm} /></Suspense>{plan}</div></div>;
+          <LabelQueue volume={activeVolume ?? undefined} slice={activeDisplayView.slice} planOpen={Boolean(plan)} longLeg={opensDeformity} hidePatientData={settings.hidePatientData} onGo={index => void goToFilm(index)} onCalibrate={calibrateFilm} /></Suspense>{plan}</div></div>;
         return plan && <div className="assessment-overlay">{plan}</div>;
       })()}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}

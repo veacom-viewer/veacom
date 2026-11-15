@@ -2,7 +2,8 @@
 // process does it (electron/label-folder.cjs): the DICOM files directly inside the folder, in the order a person would
 // number them, each with the plan file beside it. Where the browser lets a page write into a folder it chose (the File
 // System Access API: Chrome, Edge), Save and next writes the plan there, only over the plan file the page read for that
-// film (or none). Elsewhere the folder is read through a folder input, and each plan downloads for the reader to keep.
+// film (or none), and only if that is a deformity plan. Elsewhere the folder is read through a folder input, and each
+// plan downloads for the reader to keep.
 import type { LabelFilm, LabelFolder, LabelFolderBridge } from '../model';
 
 export const PLAN_SUFFIX = '.veacom-plan.json';
@@ -13,7 +14,7 @@ const MAX_FILMS = 5000;
 interface Writable { write(data: string): Promise<void>; close(): Promise<void> }
 export interface FileEntry { kind: 'file'; name: string; getFile(): Promise<File>; createWritable?(): Promise<Writable> }
 export interface FolderEntry { kind: 'directory'; name: string; values(): AsyncIterable<FileEntry | FolderEntry>;
-  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileEntry> }
+  getFileHandle(name: string, options?: { create?: boolean }): Promise<FileEntry>; removeEntry(name: string): Promise<void> }
 
 /** A DICOM file by its Part 10 preamble ("DICM" at byte 128, PS3.10 7.1), or by a .dcm name for files without one. */
 export async function isDicom(file: File): Promise<boolean> {
@@ -35,13 +36,21 @@ export async function listFilms(files: ReadonlyMap<string, File>): Promise<Array
     const file = files.get(name)!;
     if (!(await isDicom(file))) continue;
     const plan = files.get(`${name}${PLAN_SUFFIX}`);
-    films.push({ name, file, plan: plan && plan.size <= MAX_PLAN_BYTES ? await plan.text() : null, ...(plan && plan.size > MAX_PLAN_BYTES ? { tooLarge: true as const } : {}) });
+    films.push({ name, file, plan: plan && plan.size <= MAX_PLAN_BYTES ? await plan.text() : null, ...(plan && plan.size > MAX_PLAN_BYTES ? { unreadable: true as const } : {}) });
   }
   return films;
 }
 
 /** What the page was given for a film's plan file, to write over it only while it is still that. */
-const given = (film: LabelFilm) => film.tooLarge ? 'unreadable' : film.plan;
+const given = (film: LabelFilm) => film.unreadable ? 'unreadable' : film.plan;
+
+/** Whether text is a deformity plan file (src/ui/deformityFile.ts): its schema and a version. */
+function isPlan(text: string): boolean {
+  let value: unknown;
+  try { value = JSON.parse(text); } catch { return false; }
+  return typeof value === 'object' && value !== null && (value as { schema?: unknown }).schema === 'veacom.deformity-plan'
+    && Number.isInteger((value as { version?: unknown }).version);
+}
 
 interface Options {
   /** The browser's folder picker for reading and writing, where it has one. */
@@ -52,7 +61,7 @@ interface Options {
   importFile: (file: File) => Promise<string[]>;
   download: (name: string, text: string) => void;
   /** Messages the reader sees when a plan is not written. */
-  refused: { invalid: () => string; changed: (file: string) => string; expired: () => string };
+  refused: { invalid: () => string; changed: () => string; notAPlan: () => string; expired: () => string };
 }
 
 export function createLabelFolder({ pick, chooseFiles, importFile, download, refused }: Options): LabelFolderBridge {
@@ -84,27 +93,34 @@ export function createLabelFolder({ pick, chooseFiles, importFile, download, ref
       }
       const films = await listFilms(files), token = `label:${crypto.randomUUID()}`;
       folders.set(token, { folder, films });
-      return { token, folder: name, writes: folder ? 'beside' : 'download', films: films.map(({ name: film, plan, tooLarge }) => ({ name: film, plan, ...(tooLarge ? { tooLarge } : {}) })) };
+      return { token, folder: name, writes: folder ? 'beside' : 'download', films: films.map(({ name: film, plan, unreadable }) => ({ name: film, plan, ...(unreadable ? { unreadable } : {}) })) };
     },
     film(token, index) { return importFile(filmOf(token, index).film.file); },
     async write(token, index, text) {
       const { entry, film } = filmOf(token, index), target = `${film.name}${PLAN_SUFFIX}`;
-      if (typeof text !== 'string' || new Blob([text]).size > MAX_PLAN_BYTES) throw new Error(refused.invalid());
+      if (typeof text !== 'string' || new Blob([text]).size > MAX_PLAN_BYTES || !isPlan(text)) throw new Error(refused.invalid());
       if (!entry.folder) { download(target, text); film.plan = text; return target; }
-      // The file there must still be the one read when the folder was opened, or written since (or none).
+      // The file there must still be the one read when the folder was opened, or written since (or none), and a plan.
       const existing = await entry.folder.getFileHandle(target).then(handle => handle.getFile(), (error: Error) => {
         if (error.name === 'NotFoundError') return null;
         throw error;
       });
       const now = existing === null ? null : existing.size > MAX_PLAN_BYTES ? 'unreadable' : await existing.text();
-      if (given(film) === 'unreadable' || now !== given(film)) throw new Error(refused.changed(target));
+      if (now !== null && (now === 'unreadable' || !isPlan(now))) throw new Error(refused.notAPlan());
+      if (now !== given(film)) throw new Error(refused.changed());
       const handle = await entry.folder.getFileHandle(target, { create: true });
-      // The browser writes to a file of its own and puts it in place on close: a failed write leaves the old plan.
-      const writable = await handle.createWritable!();
-      await writable.write(text);
-      await writable.close();
+      // The browser writes to a file of its own and puts it in place on close: a failed write leaves the old plan, and a
+      // file this write made is taken away again.
+      try {
+        const writable = await handle.createWritable!();
+        await writable.write(text);
+        await writable.close();
+      } catch (error) {
+        if (existing === null) await entry.folder.removeEntry(target);
+        throw error;
+      }
       film.plan = text;
-      delete film.tooLarge;
+      delete film.unreadable;
       return target;
     },
   };

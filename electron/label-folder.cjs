@@ -2,7 +2,8 @@
 // chooses the folder in the system's dialog; main lists the DICOM files directly inside it and keeps their paths, so the
 // page names a film only by the folder's token and its place in the list. A plan is written only when the reader presses
 // Save and next, beside its film as `<film's file name>.veacom-plan.json`, and only over the plan file the page was given
-// for that film (or none): a file changed or added since is left alone.
+// for that film (or none), and only if that file is a deformity plan: a file changed or added since, or any other file,
+// is left alone.
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
@@ -40,12 +41,21 @@ async function listFilms(root) {
   return films;
 }
 
-/** The plan file at `file`: null when there is none, its size when too large to read, otherwise its text. */
+/** The plan file at `file`: null when there is none; `unreadable` when it is not a file, too large or cannot be read;
+ * otherwise its text. */
 async function readPlan(file) {
   const stat = await fs.lstat(file).catch(() => null);
   if (!stat) return null;
-  if (!stat.isFile() || stat.size > MAX_PLAN_BYTES) return { tooLarge: true };
-  return { text: await fs.readFile(file, 'utf8') };
+  if (!stat.isFile() || stat.size > MAX_PLAN_BYTES) return { unreadable: true };
+  const text = await fs.readFile(file, 'utf8').catch(() => null);
+  return text === null ? { unreadable: true } : { text };
+}
+
+/** Whether text is a deformity plan file (src/ui/deformityFile.ts): its schema and a version. */
+function isPlan(text) {
+  let value;
+  try { value = JSON.parse(text); } catch { return false; }
+  return Boolean(value) && value.schema === 'veacom.deformity-plan' && Number.isInteger(value.version);
 }
 
 /** The state of a plan file as the page was told it: `none`, or the hash of the text it was given. */
@@ -56,7 +66,7 @@ function createLabelFolder({ dialog, getWindow, authorize, t }) {
 
   function filmOf(token, index) {
     const folder = typeof token === 'string' ? folders.get(token) : undefined;
-    if (!folder || !Number.isInteger(index) || index < 0 || index >= folder.films.length) throw new Error('Choose the folder to label again.');
+    if (!folder || !Number.isInteger(index) || index < 0 || index >= folder.films.length) throw new Error(t('label.expired'));
     return folder.films[index];
   }
 
@@ -67,27 +77,28 @@ function createLabelFolder({ dialog, getWindow, authorize, t }) {
       const root = selected.filePaths[0], films = await listFilms(root), token = `label:${randomUUID()}`;
       folders.set(token, { root, films: films.map(film => ({ name: film.name, path: film.path, known: known(film.plan) })) });
       return { token, folder: path.basename(root), writes: 'beside',
-        films: films.map(film => ({ name: film.name, plan: film.plan?.text ?? null, ...(film.plan?.tooLarge ? { tooLarge: true } : {}) })) };
+        films: films.map(film => ({ name: film.name, plan: film.plan?.text ?? null, ...(film.plan?.unreadable ? { unreadable: true } : {}) })) };
     },
     /** An import capability for one film of the folder. */
     film(token, index) { return authorize([filmOf(token, index).path]); },
     /** Writes a film's plan beside it, and returns the file's name. */
     async write(token, index, text) {
       const film = filmOf(token, index);
-      if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_PLAN_BYTES) throw new Error(t('label.invalidPlan'));
-      let value;
-      try { value = JSON.parse(text); } catch { throw new Error(t('label.invalidPlan')); }
-      if (!value || value.schema !== 'veacom.deformity-plan' || !Number.isInteger(value.version)) throw new Error(t('label.invalidPlan'));
-      const target = `${film.path}${PLAN_SUFFIX}`;
-      // The file there must still be the one the page was given (or none): anything else is someone's and stays.
-      if (film.known === 'unreadable' || known(await readPlan(target)) !== film.known) throw new Error(t('label.planChanged', { file: path.basename(target) }));
-      // Written beside its place and renamed into it, so a half-written plan never replaces a whole one.
-      const partial = path.join(path.dirname(target), `.${path.basename(target)}.${process.pid}.part`);
+      if (typeof text !== 'string' || Buffer.byteLength(text) > MAX_PLAN_BYTES || !isPlan(text)) throw new Error(t('label.invalidPlan'));
+      const target = `${film.path}${PLAN_SUFFIX}`, now = await readPlan(target);
+      // The file there must still be the one the page was given (or none), and a plan: anything else is someone's and stays.
+      if (now !== null && (now.text === undefined || !isPlan(now.text))) throw new Error(t('label.notAPlan'));
+      if (known(now) !== film.known) throw new Error(t('label.planChanged'));
+      // Written beside its place under a name of its own and renamed into it, so a half-written plan never replaces a
+      // whole one.
+      const partial = path.join(path.dirname(target), `.${path.basename(target)}.${randomUUID()}.part`);
+      let written = false;
       try {
         await fs.writeFile(partial, text, { encoding: 'utf8', flag: 'wx' });
+        written = true;
         await fs.rename(partial, target);
       } catch (error) {
-        await fs.rm(partial, { force: true });
+        if (written) await fs.rm(partial, { force: true });
         throw error;
       }
       film.known = sha256(text);

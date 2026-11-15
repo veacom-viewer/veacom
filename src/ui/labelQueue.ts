@@ -5,21 +5,21 @@
 import { useSyncExternalStore } from 'react';
 import type { LabelFilm, LabelFolder } from '../model';
 import type { Side } from '../imaging/deformity/measure';
-import { PLAN_SCHEMA } from './deformityFile';
+import { PLAN_SCHEMA, PLAN_VERSION } from './deformityFile';
 
-/** A film's plan file: none, saved, saved with a suggestion of some landmark shown (suggestionShown), or one that cannot
- * be read as a plan. */
-export type PlanState = 'none' | 'saved' | 'shown' | 'unreadable';
+/** A film's plan file: none, saved, saved with a suggestion of some landmark shown (suggestionShown), saved with no
+ * landmark, or one that cannot be read as a plan of this version. */
+export type PlanState = 'none' | 'saved' | 'shown' | 'empty' | 'unreadable';
 
 export function planState(film: LabelFilm): PlanState {
-  if (film.tooLarge) return 'unreadable';
+  if (film.unreadable) return 'unreadable';
   if (film.plan === null) return 'none';
   let value: unknown;
   try { value = JSON.parse(film.plan); } catch { return 'unreadable'; }
-  if (!isObject(value) || value.schema !== PLAN_SCHEMA || !Array.isArray(value.plans)) return 'unreadable';
-  const plans: unknown[] = value.plans;
-  const shown = plans.some(plan => isObject(plan) && Array.isArray(plan.landmarks) && (plan.landmarks as unknown[]).some(label => isObject(label) && label.suggestionShown === true));
-  return shown ? 'shown' : 'saved';
+  if (!isObject(value) || value.schema !== PLAN_SCHEMA || value.version !== PLAN_VERSION || !Array.isArray(value.plans)) return 'unreadable';
+  const labels = (value.plans as unknown[]).flatMap(plan => isObject(plan) && Array.isArray(plan.landmarks) ? plan.landmarks as unknown[] : []);
+  if (!labels.length) return 'empty';
+  return labels.some(label => isObject(label) && label.suggestionShown === true) ? 'shown' : 'saved';
 }
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 

@@ -42,7 +42,7 @@ describe('a folder to label, on the desktop', () => {
     const { root } = await folder();
     const films = await listFilms(root);
     assert.deepEqual(films.map((film: { name: string }) => film.name), ['big.dcm', 'film 2', 'film 10.dcm']);
-    assert.deepEqual(films.map((film: { plan: unknown }) => film.plan), [{ tooLarge: true }, { text: plan(true) }, null]);
+    assert.deepEqual(films.map((film: { plan: unknown }) => film.plan), [{ unreadable: true }, { text: plan(true) }, null]);
   });
 
   it('gives the page a token, the folder\'s name and the films, and imports a film only by its place in the list', async () => {
@@ -51,11 +51,11 @@ describe('a folder to label, on the desktop', () => {
     assert.equal(opened.folder, path.basename(root));
     assert.equal(opened.writes, 'beside');
     assert.match(opened.token, /^label:[0-9a-f-]{36}$/);
-    assert.deepEqual(opened.films, [{ name: 'big.dcm', plan: null, tooLarge: true }, { name: 'film 2', plan: plan(true) }, { name: 'film 10.dcm', plan: null }]);
+    assert.deepEqual(opened.films, [{ name: 'big.dcm', plan: null, unreadable: true }, { name: 'film 2', plan: plan(true) }, { name: 'film 10.dcm', plan: null }]);
     assert.deepEqual(await labels.film(opened.token, 2), ['import:1']);
     assert.deepEqual(authorized, [[path.join(root, 'film 10.dcm')]]);
     for (const [token, index] of [['label:other', 0], [opened.token, 3], [opened.token, -1], [opened.token, 1.5], [opened.token, '0']]) {
-      assert.throws(() => labels.film(token, index), /Choose the folder to label again/);
+      assert.throws(() => labels.film(token, index), /label\.expired/);
     }
     const cancelled = createLabelFolder({ dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) }, getWindow: () => null, authorize: async () => [], t });
     assert.equal(await cancelled.open(), null);
@@ -69,13 +69,16 @@ describe('a folder to label, on the desktop', () => {
     }
     assert.equal(await labels.write(token, 2, plan(false)), 'film 10.dcm' + PLAN_SUFFIX);
     assert.equal(await readFile(path.join(root, 'film 10.dcm' + PLAN_SUFFIX), 'utf8'), plan(false));
-    // Written again over its own plan, then over one changed outside VEAcom: refused.
+    // Written again over its own plan; over a plan changed outside VEAcom, or over a file that is not a plan, refused.
     assert.equal(await labels.write(token, 2, plan(true)), 'film 10.dcm' + PLAN_SUFFIX);
-    await writeFile(path.join(root, 'film 10.dcm' + PLAN_SUFFIX), 'someone else\'s');
+    const other = JSON.stringify({ schema: 'veacom.deformity-plan', version: 1, plans: [] });
+    await writeFile(path.join(root, 'film 10.dcm' + PLAN_SUFFIX), other);
     await assert.rejects(labels.write(token, 2, plan(false)), /label\.planChanged/);
+    await writeFile(path.join(root, 'film 10.dcm' + PLAN_SUFFIX), 'someone else\'s');
+    await assert.rejects(labels.write(token, 2, plan(false)), /label\.notAPlan/);
     assert.equal(await readFile(path.join(root, 'film 10.dcm' + PLAN_SUFFIX), 'utf8'), 'someone else\'s');
     // A plan file too large to read is never replaced; the one given is replaced.
-    await assert.rejects(labels.write(token, 0, plan(false)), /label\.planChanged/);
+    await assert.rejects(labels.write(token, 0, plan(false)), /label\.notAPlan/);
     assert.equal(await labels.write(token, 1, plan(false)), 'film 2' + PLAN_SUFFIX);
     assert.ok(!(await readdir(root)).some(name => name.endsWith('.part')), 'No partial file is left.');
   });
@@ -86,15 +89,17 @@ function memoryFolder(name: string, files: Record<string, BlobPart>): FolderEntr
   const store = new Map(Object.entries(files));
   const entry = (file: string): FileEntry => ({ kind: 'file', name: file, getFile: async () => new File([store.get(file)!], file),
     createWritable: async () => { let text = ''; return { write: async (data: string) => { text += data; }, close: async () => { store.set(file, text); } }; } });
+  const inside: FolderEntry = { kind: 'directory', name: 'inside', values: async function* () { /* empty */ }, getFileHandle: () => Promise.reject(new Error('empty')), removeEntry: async () => {} };
   return { kind: 'directory', name, files: store,
-    async *values() { for (const file of store.keys()) yield entry(file); yield { kind: 'directory', name: 'inside', values: async function* () {}, getFileHandle: () => Promise.reject(new Error('empty')) }; },
+    async *values() { for (const file of store.keys()) yield entry(file); yield inside; },
+    removeEntry: async (file: string) => { store.delete(file); },
     getFileHandle: async (file: string, options?: { create?: boolean }) => {
       if (!store.has(file) && !options?.create) throw Object.assign(new Error('not found'), { name: 'NotFoundError' });
       if (!store.has(file)) store.set(file, '');
       return entry(file);
     } };
 }
-const refused = { invalid: () => 'invalid', changed: (file: string) => `changed ${file}`, expired: () => 'expired' };
+const refused = { invalid: () => 'invalid', changed: () => 'changed', notAPlan: () => 'not a plan', expired: () => 'expired' };
 
 describe('a folder to label, in the browser', () => {
   it('reads DICOM by its preamble or a .dcm name, in a person\'s order, with the plan files beside them', async () => {
@@ -105,7 +110,7 @@ describe('a folder to label, in the browser', () => {
     const files = new Map([['film 10.dcm', new File(['a'], 'film 10.dcm')], ['film 2.dcm', new File(['b'], 'film 2.dcm')], ['.dot.dcm', new File(['c'], '.dot.dcm')],
       ['film 2.dcm' + PLAN_SUFFIX, new File([plan(false)], 'p')], ['film 10.dcm' + PLAN_SUFFIX, new File([new Uint8Array(2_000_001)], 'q')]]);
     const films = await listWebFilms(files);
-    assert.deepEqual(films.map(film => [film.name, film.plan, film.tooLarge]), [['film 2.dcm', plan(false), undefined], ['film 10.dcm', null, true]]);
+    assert.deepEqual(films.map(film => [film.name, film.plan, film.unreadable]), [['film 2.dcm', plan(false), undefined], ['film 10.dcm', null, true]]);
   });
 
   it('writes beside the film where the browser lets it, never over a plan file changed since it was read', async () => {
@@ -120,8 +125,18 @@ describe('a folder to label, in the browser', () => {
     assert.equal(await labels.write(opened.token, 1, plan(false)), 'b.dcm' + PLAN_SUFFIX);
     assert.equal(folder.files.get('b.dcm' + PLAN_SUFFIX), plan(false));
     assert.equal(await labels.write(opened.token, 0, plan(false)), 'a.dcm' + PLAN_SUFFIX);
+    folder.files.set('a.dcm' + PLAN_SUFFIX, JSON.stringify({ schema: 'veacom.deformity-plan', version: 1, plans: [] }));
+    await assert.rejects(labels.write(opened.token, 0, plan(true)), /^Error: changed$/);
     folder.files.set('a.dcm' + PLAN_SUFFIX, 'edited elsewhere');
-    await assert.rejects(labels.write(opened.token, 0, plan(true)), /changed a\.dcm\.veacom-plan\.json/);
+    await assert.rejects(labels.write(opened.token, 0, plan(true)), /not a plan/);
+    await assert.rejects(labels.write(opened.token, 1, '{"schema":"veacom.deformity-plan"}'), /invalid/);
+    // A write that fails takes away the file it made, so the film is not left with an empty plan file.
+    const base = memoryFolder('legs', { 'c.dcm': dicom() });
+    const failing = { ...base, getFileHandle: async (file: string, options?: { create?: boolean }) => ({ ...(await base.getFileHandle(file, options)), createWritable: () => Promise.reject(new Error('disk full')) }) };
+    const broken = createWebLabelFolder({ pick: async () => failing, chooseFiles: async () => [], importFile: async () => [], download: () => {}, refused });
+    const brokenFolder = (await broken.open())!;
+    await assert.rejects(broken.write(brokenFolder.token, 0, plan(false)), /disk full/);
+    assert.deepEqual([...failing.files.keys()], ['c.dcm']);
     await assert.rejects(labels.write('label:none', 0, plan(true)), /expired/);
     assert.deepEqual(downloads, []);
     const cancelled = createWebLabelFolder({ pick: () => Promise.reject(Object.assign(new Error('no'), { name: 'AbortError' })), chooseFiles: async () => [], importFile: async () => [], download: () => {}, refused });
@@ -148,8 +163,10 @@ describe('the labelling queue', () => {
     assert.equal(planState({ name: 'a', plan: null }), 'none');
     assert.equal(planState({ name: 'a', plan: plan(false) }), 'saved');
     assert.equal(planState({ name: 'a', plan: plan(true) }), 'shown');
-    for (const text of ['{', '[]', JSON.stringify({ schema: 'other', plans: [] }), JSON.stringify({ schema: 'veacom.deformity-plan', plans: {} })]) assert.equal(planState({ name: 'a', plan: text }), 'unreadable', text);
-    assert.equal(planState({ name: 'a', plan: null, tooLarge: true }), 'unreadable');
+    assert.equal(planState({ name: 'a', plan: JSON.stringify({ schema: 'veacom.deformity-plan', version: 1, plans: [{ side: 'R', landmarks: [] }] }) }), 'empty');
+    for (const text of ['{', '[]', JSON.stringify({ schema: 'other', plans: [] }), JSON.stringify({ schema: 'veacom.deformity-plan', version: 1, plans: {} }),
+      JSON.stringify({ schema: 'veacom.deformity-plan', version: 2, plans: [] })]) assert.equal(planState({ name: 'a', plan: text }), 'unreadable', text);
+    assert.equal(planState({ name: 'a', plan: null, unreadable: true }), 'unreadable');
   });
 
   it('plans the run\'s legs among those a film shows', () => {

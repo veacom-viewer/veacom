@@ -479,7 +479,7 @@ export function createWebBridge(): DesktopBridge {
       chooseFiles: async () => (await chooseFiles('folder')).flat().map(item => item.file),
       importFile: async file => remember([[{ path: file.name, file }]]),
       download: (name, text) => download(name, new Blob([text], { type: 'application/json' })),
-      refused: { invalid: () => t('label.invalidPlan'), changed: file => t('label.planChanged', { file }), expired: () => t('label.expired') },
+      refused: { invalid: () => t('label.invalidPlan'), changed: () => t('label.planChanged'), notAPlan: () => t('label.notAPlan'), expired: () => t('label.expired') },
     }),
     async importFiles(files) {
       const drop = dropped;

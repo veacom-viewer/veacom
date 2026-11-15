@@ -13,5 +13,5 @@
 .label-queue-note { color: var(--text-tertiary); }
 .label-queue-actions { display: flex; align-items: center; gap: 8px; }
 .label-queue-status { flex: 1; min-width: 0; color: var(--text-secondary); }
-/* The run's settings show which is chosen, as the toolbar's quick tools do. */
-.label-queue-settings [role=radio][aria-checked=true] { background: var(--bg-pressed); border-color: var(--line-control); box-shadow: inset 0 -2px 0 var(--accent); color: var(--text-strong); }
+/* The run's settings show which is chosen, as the toolbar's segments do. */
+.label-queue-settings [role=radio][aria-checked=true] { background: var(--accent-solid); border-color: var(--accent-solid); color: var(--on-accent); }
