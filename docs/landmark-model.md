@@ -83,8 +83,9 @@ The button is off, with the reason on hover, unless:
 Each run suggests the active plan's leg: the leg on the patient's side of the image. A MONOCHROME1 film is inverted, so
 bone is bright as in training (checked: an inverted MONOCHROME1 copy of a BMPLE film gives the same values). Nothing is
 suggested when the model did not find two legs: the leg's hip, knee and ankle must come down the film in that order, and
-the image's left leg must lie left of its right leg. A BMPLE film with one leg blanked out gave no suggestions, so a
-film of one leg gets none. A point that falls off the film is not suggested. While the osteotomy's simulation shows,
+the image's left leg must lie left of its right leg, their hips more than 50 mm apart (two femoral heads lie a pelvis
+apart; closer, the model put both legs' points on one leg). A BMPLE film with one leg blanked out gave no suggestions;
+real films of one leg are not checked. A point that falls off the film is not suggested. While the osteotomy's simulation shows,
 suggestions are not drawn and cannot be accepted, and they never appear in pictures, reports or videos.
 
 The heatmap peak probability (stage B's confidence) is not used to hold points back: on BMPLE test it does not separate
