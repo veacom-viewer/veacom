@@ -289,9 +289,15 @@ differing without a type, none), and two more are mirrored (Patient Orientation 
 Its manifest gives every landmark in DICOM image-relative pixels and the values the angles imply, in closed form, before
 and after an 8° opening wedge HTO.
 
+`fixtures/fetch-mendeley-films.mjs` fetches two real standing long-leg films from Mendeley Data's High Tibial Osteotomy
+set (Przystalski et al., doi:10.17632/bpvj6xczm2.3, CC BY-NC 3.0), checks each against its pinned SHA-256, keeps it in
+`~/.cache/veacom-fixtures/mendeley` (`--cache=` for another folder) and wraps it as DX with the spacing read off its
+ruler: 49_0 shows both legs hip to ankle, 10_0 stops mid-tibia. They are never committed or kept as evidence.
+
 ```sh
 node tools/fixtures/make-longleg-study.mjs /tmp/longleg [--variants=ips-only,none]
-node tools/check-deformity-plan.cjs /tmp/longleg /tmp/deformity-plan
+node tools/fixtures/fetch-mendeley-films.mjs /tmp/mendeley
+node tools/check-deformity-plan.cjs /tmp/longleg /tmp/mendeley /tmp/deformity-plan
 ```
 
 `check-deformity-plan.cjs` opens the films in the desktop app and clicks every landmark where the plan's drawing puts
@@ -300,8 +306,9 @@ every angle of both legs to 0.1° and every length to 0.5 mm, the malalignment t
 measured again, its wedge height, and the fragment drawn moved (bone where the talus went, dimmed where it was); ⌘Z
 and redo; MAD 0 solved; the plan saved (through a stubbed save dialog), opened again with identical values, and the
 report saved as an A4 PNG; the ball calibrating the film without spacing to the true 440 mm femur; the mirrored film
-giving the same angles under the same names; and the film without Patient Orientation asking where the patient's
-right is before any medial or lateral value. CI runs it in the `screens` shard on llvmpipe.
+giving the same angles under the same names; the film without Patient Orientation asking where the patient's
+right is before any medial or lateral value; and Suggest landmarks, not sure and suggesting nothing on the drawing and
+on 10_0, and suggesting all 14 landmarks on 49_0. CI runs it in the `screens` shard on llvmpipe.
 
 ## Pictures
 

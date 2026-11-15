@@ -116,7 +116,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const operationGeneration = useRef(0);
   // A suggestion run: the model's download (bytes received) and then its run (null), with how long the last run took.
   const [suggesting, setSuggesting] = useState<{ received: number | null } | null>(null);
-  const [suggestTimes, setSuggestTimes] = useState<Record<string, number> | null>(null);
+  // The last run's timings and threads, and stage A's least peak for the leg it ran on.
+  const [suggestRunInfo, setSuggestRunInfo] = useState<Record<string, number> | null>(null);
   const suggestRun = useRef<AbortController | null>(null);
   useEffect(() => () => suggestRun.current?.abort(), []);
   // The film the pane shows now, for a run that ends after the reader paged or calibrated.
@@ -205,7 +206,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       const reply = await runModel({ pixels: framePixels(volume, frameIndex), columns: frame.dimensions[0], rows: frame.dimensions[1], mm: [mm[0], mm[1]],
         invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, leg, graphs, controller.signal);
       const total = reply.total;
-      setSuggestTimes({ total, ...reply.timings, threads: reply.threads });
+      setSuggestRunInfo({ total, ...reply.timings, threads: reply.threads, peak: reply.anchors[leg].peak });
       // The suggestions belong to the film, plan, leg and scale the model ran with: paged, switched or calibrated since,
       // they are not put on.
       const now = shownFilm.current, live = deformity.get().films[key], liveView = live && now.frame ? planView(live, now.frame) : null;
@@ -213,6 +214,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (now.key !== key || !live || !liveView || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg
         || liveView.mm?.[0] !== mm[0] || liveView.mm[1] !== mm[1]) { setStatus(t('deformity.suggestChanged')); return; }
       const found = suggestionsFrom(reply.anchors, leg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
+      if (found === 'unsure') { setStatus(t('deformity.suggestUnsure')); return; }
       if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
       // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
       if (deformity.get().simulate && liveView.simulation) { setStatus(t('deformity.suggestSimulated')); return; }
@@ -401,7 +403,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       </div>
 
       <h3>{t('deformity.landmarks')}</h3>
-      <div className="deformity-suggest" data-testid="deformity-suggest" data-suggest-times={suggestTimes ? JSON.stringify(suggestTimes) : undefined}>
+      <div className="deformity-suggest" data-testid="deformity-suggest" data-suggest-run={suggestRunInfo ? JSON.stringify(suggestRunInfo) : undefined}>
         <div className="deformity-actions">
           {suggesting ? <>
             <span className="deformity-hint" role="status" data-testid="deformity-suggest-progress">{suggesting.received === null ? t('deformity.suggestRunning')

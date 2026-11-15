@@ -35,10 +35,12 @@ export const CROPS = {
 type CropKind = keyof typeof CROPS;
 export const CROP_KINDS = Object.keys(CROPS) as CropKind[];
 
+type Joint = 'hip' | 'knee' | 'ankle';
+
 /** Where a shaft crop is centred: a fixed share of the way between two of stage A's anchors (stageb.SHAFT). Where a
  * shaft point lies along the bone is this definition, not something the model finds: it finds the middle between the
  * cortices on the crop's centre row. */
-const SHAFT_CROPS: Record<Exclude<CropKind, 'hip' | 'knee' | 'ankle'>, readonly [keyof Anchors, keyof Anchors, number]> = {
+const SHAFT_CROPS: Record<Exclude<CropKind, Joint>, readonly [Joint, Joint, number]> = {
   femurProximal: ['hip', 'knee', 0.30], femurDistal: ['hip', 'knee', 0.75], tibiaProximal: ['knee', 'ankle', 0.25], tibiaDistal: ['knee', 'ankle', 0.80],
 };
 
@@ -144,25 +146,32 @@ export function stageACanvas(film: Float32Array, columns: number, rows: number, 
 }
 
 /** Stage A's hip, knee and ankle of each leg in film pixels, from its heatmap logits (6 channels of `height` × `width`
- * cells): a softmax per channel, then the weighted mean of a 7 × 7-cell window at the peak (stagea.decode). */
+ * cells): a softmax per channel, then the weighted mean of a 7 × 7-cell window at the peak (stagea.decode). Each leg's
+ * `peak` is the least of its three channels' peak probabilities, the softmax's largest value. */
 export function decodeStageA(logits: ArrayLike<number>, height: number, width: number, scale: readonly [number, number]): Record<ImageLeg, Anchors> {
   const cells = height * width, r = STAGE_A.window, stride = STAGE_A.stride;
-  const points = Array.from({ length: 6 }, (_, channel) => {
+  const found = Array.from({ length: 6 }, (_, channel) => {
     const offset = channel * cells;
     let peak = 0, max = -Infinity;
     for (let i = 0; i < cells; i++) if (logits[offset + i] > max) { max = logits[offset + i]; peak = i; }
-    // The softmax's sum over the whole map; only the window's own weights are needed, and the shared factor cancels.
+    // The softmax's sum over the whole map, relative to its largest value: the peak's probability is its inverse. The
+    // window's mean needs only its own weights, as the shared factor cancels.
+    let total = 0;
+    for (let i = 0; i < cells; i++) total += Math.exp(logits[offset + i] - max);
     const py = Math.floor(peak / width), px = peak % width;
     let sum = 0, sx = 0, sy = 0;
     for (let y = Math.max(0, py - r); y < Math.min(height, py + r + 1); y++) for (let x = Math.max(0, px - r); x < Math.min(width, px + r + 1); x++) {
       const weight = Math.exp(logits[offset + y * width + x] - max);
       sum += weight; sx += weight * (x + 0.5); sy += weight * (y + 0.5);
     }
-    return [sx / sum * stride / scale[0], sy / sum * stride / scale[1]] as Point;
+    return { point: [sx / sum * stride / scale[0], sy / sum * stride / scale[1]] as Point, peak: 1 / total };
   });
-  return { left: { hip: points[0], knee: points[1], ankle: points[2] }, right: { hip: points[3], knee: points[4], ankle: points[5] } };
+  const leg = (first: number): Anchors => ({ hip: found[first].point, knee: found[first + 1].point, ankle: found[first + 2].point,
+    peak: Math.min(found[first].peak, found[first + 1].peak, found[first + 2].peak) });
+  return { left: leg(0), right: leg(3) };
 }
-export interface Anchors { hip: Point; knee: Point; ankle: Point }
+/** A leg's joints as stage A finds them, and how sure it is of the least sure of them (see `decodeStageA`). */
+export interface Anchors extends Record<Joint, Point> { peak: number }
 
 /** Where a crop is centred in film pixels: the knee and ankle at their anchors, the hip 22 mm lateral of its centre so the
  * trochanter is in the crop too, and a shaft crop its share of the way between two anchors (stageb.crop_centre). */

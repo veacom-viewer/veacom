@@ -561,6 +561,7 @@ export const en = {
   'deformity.suggestRunning': 'Finding the landmarks on this computer',
   'deformity.suggestDone': 'Landmarks suggested: {count}, in {seconds} s. Accept each one, or drag it into place.',
   'deformity.suggestNone': 'The model did not find this leg\'s hip, knee and ankle. Place them by hand.',
+  'deformity.suggestUnsure': 'The model is not sure of this leg\'s hip, knee and ankle, so it suggests nothing. Place them by hand.',
   'deformity.suggestFailed': 'No suggestions: {reason}',
   'deformity.suggestChecksum': 'the model\'s files do not match their checksums',
   'deformity.suggestUnavailable': 'this version cannot download the model',

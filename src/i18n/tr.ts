@@ -564,6 +564,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.suggestRunning': 'Noktalar bu bilgisayarda bulunuyor',
   'deformity.suggestDone': '{count} nokta {seconds} sn içinde önerildi. Her birini kabul edin ya da sürükleyip yerine koyun.',
   'deformity.suggestNone': 'Model bu bacağın kalça, diz ve ayak bileğini bulamadı. Elle işaretleyin.',
+  'deformity.suggestUnsure': 'Model bu bacağın kalça, diz ve ayak bileğinden emin değil, bu yüzden hiçbir şey önermiyor. Elle işaretleyin.',
   'deformity.suggestFailed': 'Öneri yok: {reason}',
   'deformity.suggestChecksum': 'modelin dosyaları sağlama değerleriyle uyuşmuyor',
   'deformity.suggestUnavailable': 'bu sürüm modeli indiremiyor',
