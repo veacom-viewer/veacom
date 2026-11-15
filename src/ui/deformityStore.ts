@@ -11,12 +11,22 @@ import type { Point } from '../imaging/deformity/plane';
 import type { Series } from '../model';
 import { filmKey } from '../imaging/radiograph';
 
+/** How a point came to be: placed by the reader, a model's suggestion the reader accepted, or either moved after. */
+export type Provenance = 'placed' | 'accepted' | 'moved';
+/** The landmark model a suggestion came from: its name and the SHA-256 of its two graphs (docs/landmark-model.md). */
+export interface ModelRef { model: string; sha256: { stageA: string; stageB: string } }
+
 /** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
 export interface LegPlan {
   id: string; name: string; side: Side;
   points: Landmarks;
-  provenance: Partial<Record<LandmarkName, Array<'placed' | 'moved'>>>;
+  provenance: Partial<Record<LandmarkName, Provenance[]>>;
   osteotomy: Osteotomy | null;
+  /** The model's suggestions the reader has not accepted or moved yet: drawn apart from the landmarks and never measured. */
+  suggested?: { model: ModelRef; points: Landmarks };
+  /** Per landmark: a suggestion of it has been on screen (`shown`), and the model its points came from while the reader
+   * keeps the points a suggestion gave (`model`). The plan file's confidence and suggestionShown. */
+  origin?: Partial<Record<LandmarkName, { shown: true; model?: ModelRef }>>;
 }
 
 /** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it

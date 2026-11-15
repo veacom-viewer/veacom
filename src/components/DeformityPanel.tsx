@@ -15,7 +15,8 @@ import { fitCircle, distance } from '../imaging/deformity/plane';
 import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
 import { coraNeeds } from '../imaging/deformity/analysis';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
-import { imageSideOnScreen, nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
+import { acceptSuggestions, clearSuggestions, imageSideOnScreen, nextLandmark, planView, withSuggestions, type PlanView } from '../ui/deformityPlan';
+import { cancelModelDownload, framePixels, loadModel, MODEL, MODEL_BYTES, runModel, suggestionsFrom, suggestionTarget } from '../ui/landmarkSuggestions';
 import { MAX_PLANS, parsePlanFile, planFile } from '../ui/deformityFile';
 import { drawReport, pictureSize, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
@@ -107,6 +108,11 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const operationGeneration = useRef(0);
+  // A suggestion run: the model's download (bytes received) and then its run (null), with how long the last run took.
+  const [suggesting, setSuggesting] = useState<{ received: number | null } | null>(null);
+  const [suggestTimes, setSuggestTimes] = useState<Record<string, number> | null>(null);
+  const suggestRun = useRef<AbortController | null>(null);
+  useEffect(() => () => suggestRun.current?.abort(), []);
   useLayoutEffect(() => {
     return () => { operationGeneration.current++; };
   }, [frame, film, hidePatientData, locale]);
@@ -173,6 +179,43 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const applied = Boolean(known && fit && marker && known.method === marker.method && Math.abs(known.scale - marker.knownMm / fit.world) <= 1e-9 * known.scale);
   const imager = projection?.imagerPixelSpacing;
   const mmPerPixel = fit && marker ? marker.knownMm / fit.pixels : null;
+
+  // Suggestions from the landmark model (ui/landmarkSuggestions.ts), only when the reader asks: never measured until
+  // the reader accepts or moves them.
+  const target = suggestionTarget(view, frame);
+  const suggest = async () => {
+    if (!('leg' in target) || !view.mm) return;
+    const controller = new AbortController(), planId = plan.id, leg = target.leg, mm = view.mm;
+    suggestRun.current = controller;
+    setStatus(null); setSuggesting({ received: 0 });
+    try {
+      const graphs = await loadModel(received => { if (suggestRun.current === controller) setSuggesting({ received }); });
+      if (controller.signal.aborted) throw controller.signal.reason;
+      setSuggesting({ received: null });
+      const reply = await runModel({ pixels: framePixels(volume, frameIndex), columns: frame.dimensions[0], rows: frame.dimensions[1], mm: [mm[0], mm[1]],
+        invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, leg, graphs, controller.signal);
+      const total = reply.total;
+      setSuggestTimes({ total, ...reply.timings, threads: reply.threads });
+      // The suggestions belong to the plan and leg the model ran for.
+      const live = deformity.get().films[key], again = live ? suggestionTarget(planView(live, frame), frame) : null;
+      if (!live || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg) { setStatus(t('deformity.suggestChanged')); return; }
+      const found = suggestionsFrom(reply.anchors, reply.channels, mm);
+      if (!found) { setStatus(t('deformity.suggestNone')); return; }
+      deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL));
+      const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
+      setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      setStatus(controller.signal.aborted ? t('deformity.suggestCancelled')
+        : t('deformity.suggestFailed', { reason: reason === 'checksum' ? t('deformity.suggestChecksum') : reason === 'unavailable' ? t('deformity.suggestUnavailable') : reason }));
+    } finally {
+      if (suggestRun.current === controller) { suggestRun.current = null; setSuggesting(null); }
+    }
+  };
+  const cancelSuggest = () => { cancelModelDownload(); suggestRun.current?.abort(); };
+  // The model's plateau points sit inboard of the rim (its training labels' convention): the plateau's width, and so
+  // WBL and the joint offset, are short while they stay where the model put them.
+  const plateauInboard = (['tibialPlateauMedial', 'tibialPlateauLateral'] as const).some(name => plan.origin?.[name]?.model && plan.provenance[name]?.includes('accepted'));
 
   // Saving, opening and the report: only when the reader asks.
   const saveFile = async () => {
@@ -320,16 +363,40 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       </div>
 
       <h3>{t('deformity.landmarks')}</h3>
+      <div className="deformity-suggest" data-testid="deformity-suggest" data-suggest-times={suggestTimes ? JSON.stringify(suggestTimes) : undefined}>
+        <div className="deformity-actions">
+          {suggesting ? <>
+            <span className="deformity-hint" role="status" data-testid="deformity-suggest-progress">{suggesting.received === null ? t('deformity.suggestRunning')
+              : t('deformity.suggestDownloading', { received: (suggesting.received / 1e6).toFixed(1), total: (MODEL_BYTES / 1e6).toFixed(1) })}</span>
+            <button type="button" className="secondary-button compact" data-action="deformity-suggest-cancel" onClick={cancelSuggest}>{t('deformity.suggestCancel')}</button>
+          </> : <button type="button" className="secondary-button compact" data-action="deformity-suggest" disabled={'block' in target}
+            data-tooltip={'block' in target ? t(`deformity.suggestBlock.${target.block}` as MessageKey) : undefined} onClick={() => void suggest()}>{t('deformity.suggest')}</button>}
+          {plan.suggested && !suggesting && <>
+            <button type="button" className="secondary-button compact" data-action="deformity-suggest-accept-all" onClick={() => change(current => acceptSuggestions(current))}>{t('deformity.acceptAll')}</button>
+            <button type="button" className="text-button" data-action="deformity-suggest-clear" onClick={() => change(clearSuggestions)}>{t('deformity.clearSuggestions')}</button>
+          </>}
+        </div>
+        <p className="deformity-note">{t('deformity.suggestTrained')}</p>
+        {plan.suggested && <p className="deformity-note">{t('deformity.suggestHeld')}</p>}
+      </div>
       {placing?.kind === 'landmark' && <p className="deformity-hint" role="status" data-testid="deformity-next" data-landmark={placing.name}>
         {t('deformity.next', { name: t(LANDMARK_TEXT[placing.name].name) })} {t(LANDMARK_TEXT[placing.name].hint)}
         {isContour(placing.name) && ` (${t('deformity.pointsCount', { count: placedCount(placing.name) })})`}</p>}
       <ol className="deformity-landmarks">
-        {LANDMARKS.map(name => <li key={name} className={placing?.kind === 'landmark' && placing.name === name ? 'is-current' : ''} data-landmark={name} data-placed={done(name) || undefined}>
-          <span className="deformity-mark" aria-hidden="true">{done(name) ? '●' : '○'}</span>
-          <span className="deformity-name">{t(LANDMARK_TEXT[name].name)}{isContour(name) && placedCount(name) ? ` · ${t('deformity.pointsCount', { count: placedCount(name) })}` : ''}</span>
-          <button type="button" className="text-button" data-action="deformity-place" disabled={isContour(name) && placedCount(name) >= CONTOUR_MAXIMUM}
-            onClick={() => startPlacing(name)}>{done(name) ? t(isContour(name) ? 'deformity.addPoint' : 'deformity.again') : t('deformity.place')}</button>
-        </li>)}
+        {LANDMARKS.map(name => {
+          const suggested = Boolean(plan.suggested?.points[name]);
+          return <li key={name} className={placing?.kind === 'landmark' && placing.name === name ? 'is-current' : ''} data-landmark={name} data-placed={done(name) || undefined}
+            data-suggested={suggested || undefined} data-origin={plan.origin?.[name]?.model ? 'model' : undefined}>
+            <span className="deformity-mark" aria-hidden="true">{done(name) ? '●' : suggested ? '◌' : '○'}</span>
+            <span className="deformity-name">{t(LANDMARK_TEXT[name].name)}{isContour(name) && placedCount(name) ? ` · ${t('deformity.pointsCount', { count: placedCount(name) })}` : ''}
+              {suggested && <span className="deformity-missing"> · {t('deformity.suggested')}</span>}</span>
+            <span className="deformity-row-actions">
+              {suggested && <button type="button" className="text-button" data-action="deformity-suggest-accept" onClick={() => change(current => acceptSuggestions(current, [name]))}>{t('deformity.accept')}</button>}
+              <button type="button" className="text-button" data-action="deformity-place" disabled={isContour(name) && placedCount(name) >= CONTOUR_MAXIMUM}
+                onClick={() => startPlacing(name)}>{done(name) ? t(isContour(name) ? 'deformity.addPoint' : 'deformity.again') : t('deformity.place')}</button>
+            </span>
+          </li>;
+        })}
       </ol>
       <div className="deformity-actions">
         {placing ? <button type="button" className="secondary-button compact" data-action="deformity-place-stop" onClick={() => deformity.setPlacing(null)}>{t('deformity.stop')}</button>
@@ -338,6 +405,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       {leg.swapped.length > 0 && <WarningBox title={t('deformity.swappedTitle')} dismissKey={`deformity-swapped:${plan.id}:${leg.swapped.join(',')}`} testId="deformity-swapped">
         <p>{t('deformity.swapped', { names: leg.swapped.map(name => t(LANDMARK_TEXT[name].name)).join(', ') })}</p></WarningBox>}
       {leg.headFitPoor && <p className="deformity-caution">{t('deformity.headFit')}</p>}
+      {plateauInboard && <p className="deformity-caution" role="note" data-testid="deformity-plateau-inboard">{t('deformity.plateauInboard')}</p>}
 
       <h3>{t('deformity.values')}</h3>
       <table className="deformity-values">

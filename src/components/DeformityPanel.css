@@ -30,6 +30,10 @@
 .deformity-landmarks li[data-placed] .deformity-mark { color: var(--accent); }
 .deformity-mark { color: var(--text-tertiary); text-align: center; }
 .deformity-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deformity-row-actions { display: flex; align-items: center; gap: var(--space-3); }
+.deformity-suggest { display: flex; flex-direction: column; }
+.deformity-body p.deformity-note { margin: 2px 0 4px; color: var(--text-tertiary); }
+.deformity-landmarks li[data-suggested] .deformity-mark { color: var(--text-secondary); }
 .deformity-values { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
 .deformity-values th, .deformity-values td { padding: 4px 4px; border-top: 1px solid var(--line-subtle); text-align: left; vertical-align: top; }
 .deformity-values thead th { color: var(--text-tertiary); font-weight: 500; border-top: 0; }

@@ -7,7 +7,7 @@ import { t } from '../i18n';
 import { CONTOUR_MAXIMUM, isContour, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
 import type { Osteotomy } from '../imaging/deformity/osteotomy';
 import type { Point } from '../imaging/deformity/plane';
-import { activePlan, newPlan, type FilmPlans, type LegPlan, type Marker } from './deformityStore';
+import { activePlan, newPlan, type FilmPlans, type LegPlan, type Marker, type ModelRef, type Provenance } from './deformityStore';
 import { planView } from './deformityPlan';
 
 export const PLAN_SCHEMA = 'veacom.deformity-plan';
@@ -22,17 +22,20 @@ export interface LandmarkLabel {
   name: LandmarkName | 'hipCentre';
   /** Image pixels, DICOM image-relative: (0, 0) is the top left corner of the top left pixel. */
   points: Array<[number, number]>;
-  /** Placed by hand for now; a model's suggestion will carry its own confidence. */
-  confidence: 'manual';
-  provenance: Array<'placed' | 'moved' | 'derived'>;
+  /** `manual` when the reader placed every point; otherwise the landmark model the points came from. */
+  confidence: 'manual' | ModelRef;
+  provenance: Array<Provenance | 'derived'>;
   /** What the film's millimetres stood for when the label was made (imaging/radiograph.ts). */
   spacing: CalibrationState;
   side: 'R' | 'L';
   software: string;
-  /** Whether a suggestion was on screen when the point was placed (never yet: there are no suggestions). */
-  suggestionShown: false;
+  /** Whether a suggestion of this landmark was on screen while its points were made (CLOSE checklist design, PR #31). */
+  suggestionShown: boolean;
   /** For a derived point: how it was made. */
   derivedFrom?: 'femoralHeadContour';
+  /** A femoral head outline from the model: its accepted points lie on a circle around the model's hip centre, not on
+   * the head's outline as the reader traced it (suggest.ts kitSuggestions). */
+  construction?: 'hipCentreRing';
 }
 
 export interface PlanFile {
@@ -77,8 +80,9 @@ export async function planFile(film: FilmPlans, frame: Series, now = new Date())
     active: Math.max(0, film.plans.findIndex(plan => plan.id === film.active)),
     plans: film.plans.map(plan => {
       const view = planView(film, frame, plan);
-      const label = (name: LandmarkLabel['name'], points: readonly Point[], provenance: LandmarkLabel['provenance']): LandmarkLabel => ({
-        name, points: points.map(p => [p[0], p[1]]), confidence: 'manual', provenance, spacing: state, side: plan.side, software: version, suggestionShown: false });
+      const label = (name: LandmarkLabel['name'], points: readonly Point[], provenance: LandmarkLabel['provenance'], origin = plan.origin?.[name === 'hipCentre' ? 'femoralHeadContour' : name]): LandmarkLabel => ({
+        name, points: points.map(p => [p[0], p[1]]), confidence: origin?.model ?? 'manual', provenance, spacing: state, side: plan.side, software: version,
+        suggestionShown: Boolean(origin?.shown), ...(name === 'femoralHeadContour' && origin?.model ? { construction: 'hipCentreRing' as const } : {}) });
       const landmarks = LANDMARKS.filter(name => plan.points[name]?.length).map(name => label(name, plan.points[name]!, plan.provenance[name] ?? plan.points[name]!.map(() => 'placed' as const)));
       if (view.leg.hip) landmarks.push({ ...label('hipCentre', [view.leg.hip.centre], ['derived']), derivedFrom: 'femoralHeadContour' });
       return { name: plan.name, side: plan.side, landmarks, osteotomy: plan.osteotomy,
@@ -111,6 +115,10 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
     return parsed.every(Boolean) ? parsed as Point[] : null;
   };
   const text64 = (s: unknown) => typeof s === 'string' ? s.slice(0, 64) : '';
+  const hash = (h: unknown) => typeof h === 'string' && /^[0-9a-f]{64}$/.test(h);
+  const model = (c: unknown): ModelRef | undefined => isObject(c) && typeof c.model === 'string' && c.model && isObject(c.sha256) && hash(c.sha256.stageA) && hash(c.sha256.stageB)
+    ? { model: text64(c.model), sha256: { stageA: c.sha256.stageA as string, stageB: c.sha256.stageB as string } } : undefined;
+  const PROVENANCE: readonly unknown[] = ['placed', 'accepted', 'moved'] satisfies Provenance[];
   if (!Array.isArray(value.plans) || !value.plans.length || value.plans.length > MAX_PLANS) return { error: 'content' };
   const plans: LegPlan[] = [];
   for (const entry of value.plans) {
@@ -122,8 +130,15 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
       if (!LANDMARKS.includes(name)) continue;
       const list = points(label.points, isContour(name) ? CONTOUR_MAXIMUM : 1);
       if (!list || !list.length) return { error: 'content' };
-      const provenance = Array.isArray(label.provenance) ? list.map((_, i) => label.provenance && (label.provenance as unknown[])[i] === 'moved' ? 'moved' as const : 'placed' as const) : list.map(() => 'placed' as const);
+      // A point counts as the model's only with the model named; anything unknown is the reader's.
+      const from = label.confidence === 'manual' ? undefined : model(label.confidence);
+      const provenance = list.map((_, i): Provenance => {
+        const given = Array.isArray(label.provenance) ? (label.provenance as unknown[])[i] : undefined;
+        return PROVENANCE.includes(given) && (given !== 'accepted' || from) ? given as Provenance : 'placed';
+      });
       plan.points = { ...plan.points, [name]: list }; plan.provenance = { ...plan.provenance, [name]: provenance };
+      const shown = label.suggestionShown === true;
+      if (shown || from) plan.origin = { ...plan.origin, [name]: { shown: true, ...(from ? { model: from } : {}) } };
     }
     const o = entry.osteotomy;
     if (isObject(o)) {

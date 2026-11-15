@@ -51,6 +51,13 @@ contextBridge.exposeInMainWorld('veacom', {
   },
   openExternal: url => invoke('links:open', url),
   saveFile: (suggestedName, data) => invoke('files:save', suggestedName, data),
+  landmarkModel: (part, onProgress) => {
+    const notify = (_event, from, received) => { if (from === part) onProgress?.(received); };
+    ipcRenderer.on('landmarks:progress', notify);
+    return invoke('landmarks:model', part).then(bytes => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+      .finally(() => ipcRenderer.removeListener('landmarks:progress', notify));
+  },
+  cancelLandmarkModel: () => invoke('landmarks:cancel'),
   exportDicom: (seriesId, options) => invoke('dicom:export', seriesId, options),
   sendFeedback: payload => invoke('feedback:send', payload),
   estimateExport: (seriesId, options) => invoke('dicom:estimate', seriesId, options),

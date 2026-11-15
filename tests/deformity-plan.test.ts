@@ -4,7 +4,8 @@ import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
-import { dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, worldToPixel } from '../src/ui/deformityPlan';
+import { acceptSuggestions, clearSuggestions, dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
+import { MODEL, suggestionsFrom, suggestionTarget } from '../src/ui/landmarkSuggestions';
 import { lateralOnImage } from '../src/imaging/deformity/measure';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
 import { reportHeader } from '../src/ui/deformityReport';
@@ -212,6 +213,113 @@ describe('the plan file', () => {
     assert.equal(view.askRight, false);
     assert.deepEqual(view.lateral, [-1, 0]);
     assertClose(view.leg.values.tibiaLength.value, Math.hypot(5, 400) * 0.33, 9);
+  });
+});
+
+describe('landmark suggestions', () => {
+  const key = filmKey(series, 0);
+  const ring: Point[] = [0, 90, 180, 270].map(degrees => [100 + 30 * Math.cos(degrees * deg), 120 + 30 * Math.sin(degrees * deg)]);
+  const points = { femoralHeadContour: ring, kneeCentre: [[200, 500]] as Point[], femoralCondyleMedial: [[230, 520]] as Point[], femoralCondyleLateral: [[170, 520]] as Point[],
+    tibialPlateauMedial: [[228, 530]] as Point[], tibialPlateauLateral: [[172, 532]] as Point[], ankleCentre: [[205, 900]] as Point[] };
+  const suggested = () => { film(); deformity.change(key, current => withSuggestions(current, points, MODEL)); return deformity.get().films[key]!; };
+
+  it('are drawn apart and measured only once the reader accepts or moves them', () => {
+    let current = suggested(), plan = current.plans[0];
+    assert.deepEqual(Object.keys(plan.suggested!.points).sort(), Object.keys(points).sort());
+    assert.deepEqual(plan.points, {}, 'A suggestion is not a landmark.');
+    assert.equal(planView(current, frame).leg.values.HKA.value, null, 'Nothing is measured from a suggestion.');
+    assert.equal(nextLandmark(plan), 'greaterTrochanterTip', 'Placing asks first for what has no suggestion.');
+    current = acceptSuggestions(current, ['kneeCentre']); plan = current.plans[0];
+    assert.deepEqual(plan.points.kneeCentre, [[200, 500]]);
+    assert.deepEqual(plan.provenance.kneeCentre, ['accepted']);
+    assert.deepEqual(plan.origin?.kneeCentre, { shown: true, model: MODEL });
+    assert.equal(plan.suggested?.points.kneeCentre, undefined);
+    // Moving one point of the suggested outline makes the outline the reader's: that point moved, the others accepted.
+    current = moveHandle(current, { kind: 'suggestion', name: 'femoralHeadContour', index: 1 }, [101, 152]);
+    current = moveHandle(current, { kind: 'suggestion', name: 'femoralHeadContour', index: 1 }, [101, 151]);
+    plan = current.plans[0];
+    assert.deepEqual(plan.provenance.femoralHeadContour, ['accepted', 'moved', 'accepted', 'accepted']);
+    assert.deepEqual(plan.points.femoralHeadContour?.[1], [101, 151]);
+    assert.equal(plan.origin?.femoralHeadContour?.model, MODEL);
+    current = acceptSuggestions(current); plan = current.plans[0];
+    assert.equal(plan.suggested, undefined);
+    assert.notEqual(planView(current, frame).leg.values.HKA.value, null);
+  });
+
+  it('give way to a point placed by hand, which stays marked as placed with a suggestion shown', () => {
+    let current = suggested();
+    current = place(current, { film: key, kind: 'landmark', name: 'ankleCentre' }, [210, 905], frame).film;
+    const plan = current.plans[0];
+    assert.deepEqual(plan.points.ankleCentre, [[210, 905]]);
+    assert.deepEqual(plan.provenance.ankleCentre, ['placed']);
+    assert.deepEqual(plan.origin?.ankleCentre, { shown: true });
+    assert.equal(plan.suggested?.points.ankleCentre, undefined);
+    // Placed again after accepting, a landmark is the reader's alone; cleared, the waiting suggestions go and the accepted stay.
+    current = place(acceptSuggestions(current, ['kneeCentre']), { film: key, kind: 'landmark', name: 'kneeCentre' }, [199, 501], frame).film;
+    assert.deepEqual(current.plans[0].origin?.kneeCentre, { shown: true });
+    current = clearSuggestions(current);
+    assert.equal(current.plans[0].suggested, undefined);
+    assert.deepEqual(current.plans[0].points.kneeCentre, [[199, 501]]);
+    // Suggested again, only what is not placed is suggested.
+    assert.deepEqual(Object.keys(withSuggestions(current, points, MODEL).plans[0].suggested!.points).sort(),
+      ['femoralCondyleLateral', 'femoralCondyleMedial', 'femoralHeadContour', 'tibialPlateauLateral', 'tibialPlateauMedial']);
+  });
+
+  it('are saved with the model and its hashes, accepted against moved, and opened again as they were', async () => {
+    let current = suggested();
+    current = acceptSuggestions(moveHandle(current, { kind: 'suggestion', name: 'tibialPlateauMedial', index: 0 }, [231, 529]));
+    current = place(current, { film: key, kind: 'landmark', name: 'plafondMedial' }, [225, 890], frame).film;
+    const file = await planFile(current, frame), labels = Object.fromEntries(file.plans[0].landmarks.map(label => [label.name, label]));
+    assert.deepEqual(labels.kneeCentre.confidence, { model: 'veacom-landmarks-r2', sha256: { stageA: MODEL.sha256.stageA, stageB: MODEL.sha256.stageB } });
+    assert.match(MODEL.sha256.stageA, /^[0-9a-f]{64}$/);
+    assert.deepEqual([labels.kneeCentre.provenance, labels.kneeCentre.suggestionShown], [['accepted'], true]);
+    assert.deepEqual([labels.tibialPlateauMedial.provenance, labels.tibialPlateauMedial.confidence], [['moved'], MODEL]);
+    assert.equal(labels.femoralHeadContour.construction, 'hipCentreRing');
+    assert.deepEqual([labels.hipCentre.confidence, labels.hipCentre.suggestionShown, labels.hipCentre.derivedFrom], [MODEL, true, 'femoralHeadContour']);
+    assert.deepEqual([labels.plafondMedial.confidence, labels.plafondMedial.provenance, labels.plafondMedial.suggestionShown], ['manual', ['placed'], false]);
+    const text = JSON.stringify(file), opened = await parsePlanFile(text, current, frame);
+    assert.ok(!('error' in opened));
+    assert.deepEqual(opened.plans[0].origin, current.plans[0].origin);
+    assert.deepEqual(opened.plans[0].provenance, current.plans[0].provenance);
+    // Saved again, the labels are the same: a model's point is never laundered into the reader's.
+    const reopened = await planFile({ ...current, plans: opened.plans, active: opened.plans[0].id }, frame);
+    assert.deepEqual(reopened.plans[0].landmarks, file.plans[0].landmarks);
+    // A point claimed as accepted with no model, or a model with a malformed hash, is the reader's.
+    const forged = structuredClone(JSON.parse(text));
+    for (const label of forged.plans[0].landmarks) if (label.name === 'kneeCentre') label.confidence = 'manual';
+    for (const label of forged.plans[0].landmarks) if (label.name === 'ankleCentre') label.confidence = { model: 'x', sha256: { stageA: 'zz', stageB: 'zz' } };
+    const read = await parsePlanFile(JSON.stringify(forged), current, frame);
+    assert.ok(!('error' in read));
+    assert.deepEqual(read.plans[0].provenance.kneeCentre, ['placed']);
+    assert.deepEqual(read.plans[0].origin?.kneeCentre, { shown: true });
+    assert.deepEqual(read.plans[0].provenance.ankleCentre, ['placed']);
+    assert.equal(read.plans[0].origin?.ankleCentre?.model, undefined);
+  });
+
+  it('run only on a film the model can read, for the leg on its side of the image', () => {
+    const current = film();
+    assert.deepEqual(suggestionTarget(planView(current, frame), frame), { leg: 'left' }, 'L\\F: the right leg is on the image\'s left.');
+    const mirrored = { ...frame, projection: { ...frame.projection!, patientOrientation: ['R', 'F'] as [string, string] } };
+    assert.deepEqual(suggestionTarget(planView(current, mirrored), mirrored), { leg: 'right' });
+    const upsideDown = { ...frame, projection: { ...frame.projection!, patientOrientation: ['L', 'H'] as [string, string] } };
+    assert.deepEqual(suggestionTarget(planView(current, upsideDown), upsideDown), { block: 'upright' });
+    const turned = { ...frame, projection: { ...frame.projection!, patientOrientation: ['F', 'R'] as [string, string] } };
+    assert.deepEqual(suggestionTarget(planView(current, turned), turned), { block: 'upright' });
+    const unoriented = { ...frame, projection: { ...frame.projection!, patientOrientation: undefined } };
+    assert.deepEqual(suggestionTarget(planView(current, unoriented), unoriented), { block: 'side' });
+    assert.deepEqual(suggestionTarget(planView({ ...current, patientRight: 'right' }, unoriented), unoriented), { leg: 'right' });
+    const colour = { ...frame, components: 3 as const };
+    assert.deepEqual(suggestionTarget(planView(current, colour), colour), { block: 'colour' });
+    const tall = { ...frame, dimensions: [400, 5000, 1] as [number, number, number] };
+    assert.deepEqual(suggestionTarget(planView(current, tall), tall), { block: 'size' });
+    const done = acceptSuggestions(withSuggestions(current, points, MODEL));
+    assert.deepEqual(suggestionTarget(planView(done, frame), frame), { block: 'placed' });
+  });
+
+  it('are kept only when the hip, knee and ankle come down the film in that order', () => {
+    const channels = { kneeCentre: { point: [200, 500] as Point, confidence: 0.06 } };
+    assert.deepEqual(Object.keys(suggestionsFrom({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, channels, [0.33, 0.33])!), ['kneeCentre']);
+    assert.equal(suggestionsFrom({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }, channels, [0.33, 0.33]), null);
   });
 });
 

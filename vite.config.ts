@@ -51,8 +51,14 @@ function importWindowFirstParty(): Plugin {
   };
 }
 
+/** onnxruntime-web's WebAssembly build that loads its runtime script and binary from URLs the landmark Worker gives
+ * (src/imaging/deformity/suggest.worker.ts), rather than the variant that inlines the script into whatever bundles it:
+ * its threads start from that script's own URL. */
+export const onnxRuntime = { find: /^onnxruntime-web\/wasm$/, replacement: path.join(import.meta.dirname, 'node_modules/onnxruntime-web/dist/ort.wasm.min.mjs') };
+
 export default defineConfig({
   plugins: [reactCompiler(), importWindowFirstParty()],
+  resolve: { alias: [onnxRuntime] },
   base: './', server: { host: '127.0.0.1', port: 5173, strictPort: true },
   // Electron's Chromium preloads modules itself: no polyfill code in either page.
   build: {
