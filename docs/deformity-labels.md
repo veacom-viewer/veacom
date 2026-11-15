@@ -34,6 +34,9 @@ flip, and they do not change when the calibration does.
       "landmarks": [
         { "name": "kneeCentre", "points": [[443.9, 1880.2]], "confidence": "manual", "provenance": ["placed"],
           "spacing": "detector", "side": "R", "software": "0.1.0-beta.3", "suggestionShown": false },
+        { "name": "ankleCentre", "points": [[461.2, 3390.4]],
+          "confidence": { "model": "veacom-landmarks-r2", "sha256": { "stageA": "51e9…1099", "stageB": "c0ad…cfdd" } },
+          "provenance": ["accepted"], "spacing": "detector", "side": "R", "software": "0.1.0-beta.3", "suggestionShown": true },
         { "name": "hipCentre", "points": [[307.0, 416.7]], "confidence": "manual", "provenance": ["derived"],
           "spacing": "detector", "side": "R", "software": "0.1.0-beta.3", "suggestionShown": false,
           "derivedFrom": "femoralHeadContour" }
@@ -69,12 +72,13 @@ The file holds no name, patient ID, birth date, accession number, institution, d
 | --- | --- |
 | `name` | One of the names in `src/imaging/deformity/landmarks.ts`, or `hipCentre`. A name is never reused for another point. |
 | `points` | One point; `femoralHeadContour` has 3 to 12, on the head's outline. |
-| `confidence` | `manual`: placed by the reader. A model's suggestion will carry its own confidence and model hash. |
-| `provenance` | Per point: `placed`, `moved` (dragged after placing) or `derived` (computed). |
+| `confidence` | `manual`: the reader placed every point. Otherwise the landmark model the points came from (docs/landmark-model.md): its name and the SHA-256 of its two graphs. A landmark keeps its model while a point the model gave remains; placed again by hand, it is `manual`. |
+| `provenance` | Per point: `placed` (by the reader), `accepted` (the model's suggestion, accepted as it was), `moved` (dragged after it was placed or suggested) or `derived` (computed). `accepted` comes only with a model. |
 | `spacing` | The calibration state when it was saved, as above. |
 | `side`, `software` | The leg and the VEAcom version, repeated on each label so a label stands on its own. |
-| `suggestionShown` | Whether a suggestion was on screen when the point was placed (CLOSE checklist design, PR #31): always false until there are suggestions. |
-| `derivedFrom` | For `hipCentre`: the fitted circle's centre of `femoralHeadContour`. |
+| `suggestionShown` | Whether the model's suggestion of this landmark has been on screen while its points were made (CLOSE checklist design, PR #31): true for an accepted or moved suggestion, and for a point placed by hand over one. A landmark the model does not suggest is always false. |
+| `derivedFrom` | For `hipCentre`: the fitted circle's centre of `femoralHeadContour`. Its confidence and `suggestionShown` are the outline's. |
+| `construction` | `hipCentreRing` on a `femoralHeadContour` from the model: its `accepted` points lie on a circle around the model's hip centre, not on the head's outline as a reader would trace it (docs/landmark-model.md). Its `moved` points are where the reader put them. Do not learn the outline from its accepted points. |
 
 | Name | Point |
 | --- | --- |
@@ -93,4 +97,6 @@ The file holds no name, patient ID, birth date, accession number, institution, d
 VEAcom treats an opened file as untrusted: at most 2 MB; the schema and version must match; the film's hash, frame,
 columns and rows must be the film on screen; every point must lie within the film or half its size around it; a
 contour has at most 12 points, an outline 32; an angle is within 45° and a shift within 200 mm; names are cut to 64
-characters; unknown landmarks and fields are left out. Anything else refuses the file and says why.
+characters; unknown landmarks and fields are left out. A model is read only with its name and two 64-digit hashes;
+otherwise the landmark is the reader's, and an `accepted` point without a model is `placed`. Anything else refuses the
+file and says why. Suggestions not yet accepted or moved are not labels and are not saved.

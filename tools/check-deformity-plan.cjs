@@ -4,7 +4,8 @@
 // each length to 0.5 mm against the generator's closed-form values, then the malalignment test, the tibial CORA, an
 // 8° opening wedge HTO measured again live and its fragment drawn moved, Undo and Redo, saving and opening the plan,
 // and the report. On the film without spacing it calibrates on the ball; on the mirrored film the angles keep their
-// names; on the film without Patient Orientation the kit asks where the patient's right is.
+// names; on the film without Patient Orientation the kit asks where the patient's right is. Last, Suggest landmarks
+// downloads the landmark model from its release and suggests the left leg's landmarks, which the reader accepts.
 // usage: node tools/check-deformity-plan.cjs LONGLEG_STUDY [OUTPUT_DIR] [-- app switches, e.g. --force-device-scale-factor=1]
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
@@ -411,6 +412,46 @@ async function main() {
       .catch(() => { throw new Error('Unflipped, the answer shows on the screen\'s left.'); });
     await shot('5-no-orientation');
     check('Without Patient Orientation the kit asks where the patient\'s right is before any medial or lateral value, and reads the answer through a flipped pane');
+
+    // 8. Suggestions (docs/landmark-model.md): the landmark model downloaded from the release on first use, run on the
+    // left leg (the image's right, so mirrored crops), drawn apart, measured only once accepted, one Undo step, and saved
+    // as the model's. The synthetic drawing is not a radiograph, so where the points land is not checked here.
+    await open(manifest.series['ips-equal'].description);
+    await panel.locator('[role="tab"]', { hasText: 'Left leg' }).click();
+    assert.match(await panel.getByTestId('deformity-suggest').textContent(), /Trained on adult films without hardware/);
+    await panel.locator('[data-action="deformity-suggest"]').click();
+    await page.waitForFunction(() => !document.querySelector('[data-testid="deformity-suggest-progress"]')
+      && /Suggested|No suggestions/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 240_000 });
+    assert.match(await panel.getByTestId('deformity-status').textContent(), /Suggested 7 landmarks/);
+    const suggestedRows = () => panel.locator('.deformity-landmarks li[data-suggested]').evaluateAll(items => items.map(item => item.dataset.landmark));
+    assert.deepEqual(await suggestedRows(), ['femoralHeadContour', 'kneeCentre', 'femoralCondyleMedial', 'femoralCondyleLateral', 'tibialPlateauMedial', 'tibialPlateauLateral', 'ankleCentre']);
+    assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion]').count(), 14);
+    assert.match(await panel.getByTestId('deformity-suggest').textContent(), /Not suggested: trochanter, shafts and plafond/);
+    assert.equal((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Nothing is measured from a suggestion.');
+    const suggestTimes = JSON.parse(await panel.getByTestId('deformity-suggest').getAttribute('data-suggest-times'));
+    await shot('6-suggestions');
+    await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-suggest-accept"]').click();
+    assert.equal(await panel.locator('[data-landmark="kneeCentre"]').getAttribute('data-origin'), 'model');
+    await panel.locator('[data-action="deformity-suggest-accept-all"]').click();
+    assert.notEqual((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Accepted, the suggestions are measured.');
+    await panel.getByTestId('deformity-plateau-inboard').waitFor();
+    await page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]').focus();
+    await page.keyboard.press(undoKeys);
+    await page.waitForFunction(() => document.querySelectorAll('.deformity-landmarks li[data-suggested]').length === 6, undefined, { timeout: 5_000 });
+    assert.equal((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Undo takes Accept all back.');
+    await page.keyboard.press(redoKeys);
+    await page.waitForFunction(() => !document.querySelector('.deformity-landmarks li[data-suggested]'), undefined, { timeout: 5_000 });
+    const suggestedPath = path.join(output, 'plan-suggested.json');
+    await desktop.evaluate(({ dialog }, file) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: file }); }, suggestedPath);
+    await panel.locator('[data-action="deformity-save"]').click();
+    await page.waitForFunction(() => /plan-suggested/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 10_000 });
+    const suggestedFile = JSON.parse(await fs.readFile(suggestedPath, 'utf8'));
+    const leftPlan = suggestedFile.plans.find(item => item.side === 'L'), labelOf = name => leftPlan.landmarks.find(item => item.name === name);
+    const modelFile = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'electron', 'landmark-model.json'), 'utf8'));
+    assert.deepEqual(labelOf('kneeCentre').confidence, { model: modelFile.name, sha256: { stageA: modelFile.files.stageA.sha256, stageB: modelFile.files.stageB.sha256 } });
+    assert.deepEqual([labelOf('kneeCentre').provenance, labelOf('kneeCentre').suggestionShown], [['accepted'], true]);
+    assert.equal(labelOf('femoralHeadContour').construction, 'hipCentreRing');
+    check('Suggest landmarks downloads the model, suggests the 7 checked landmarks of the left leg drawn apart and unmeasured; Accept and Accept all measure them, one Undo step, saved as the model\'s', suggestTimes);
 
     // The usage timings carry only control ids from the schema: no landmark, point, value or file.
     const schema = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'electron', 'usage-schema.json'), 'utf8'));

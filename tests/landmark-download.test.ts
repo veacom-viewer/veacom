@@ -7,11 +7,14 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 import manifest from '../electron/landmark-model.json';
 import { landmarkModel } from '../src/web/landmarkModel';
+import { framePixels, loadModel, runModel } from '../src/ui/landmarkSuggestions';
+import type { Volume } from '../src/model';
+import { restoreGlobals, stubGlobal } from './support';
 
 const require = createRequire(import.meta.url);
 const { createLandmarkModel } = require('../electron/landmark-model.cjs');
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
+afterEach(async () => { restoreGlobals(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
 /** Synthetic bytes standing for a graph, with a manifest entry made for them. */
 function graph(size = 4096) {
@@ -104,5 +107,68 @@ describe('the model\'s graphs in the browser', () => {
       const short = mock.fn(async () => new Response(bytes.subarray(1)));
       await assert.rejects(landmarkModel('stageB', undefined, { fetchImpl: short as unknown as typeof fetch, store: undefined, base }), /incomplete/);
     } finally { Object.assign(manifest.files.stageB, original); }
+  });
+});
+
+describe('the model in the page', () => {
+  it('hands the Worker a copy of the frame shown, never the volume\'s own buffer', () => {
+    const data = Uint16Array.from({ length: 2 * 3 * 2 }, (_, i) => i);
+    const volume = { series: { dimensions: [2, 3, 2] }, data } as unknown as Volume;
+    const second = framePixels(volume, 1);
+    assert.deepEqual([...second], [6, 7, 8, 9, 10, 11]);
+    assert.notEqual(second.buffer, data.buffer);
+    const partial = { ...volume, data: data.slice(6), sourceFrameIndex: 1 } as unknown as Volume;
+    assert.deepEqual([...framePixels(partial, 1)], [6, 7, 8, 9, 10, 11]);
+    assert.throws(() => framePixels(partial, 0), /not loaded/);
+  });
+
+  it('checks the graphs against their hashes, and keeps them for the session once checked', async () => {
+    const a = graph(64), b = graph(96), original = structuredClone(manifest.files);
+    Object.assign(manifest.files.stageA, a.entry); Object.assign(manifest.files.stageB, b.entry);
+    try {
+      let served = { stageA: Buffer.alloc(64), stageB: b.bytes };
+      const fetchPart = mock.fn(async (part: 'stageA' | 'stageB', onProgress?: (received: number) => void) => {
+        onProgress?.(served[part].length);
+        return new Uint8Array(served[part]).buffer;
+      });
+      stubGlobal('window', { veacom: { landmarkModel: fetchPart } });
+      const progress: number[] = [];
+      await assert.rejects(loadModel(received => progress.push(received)), /checksum/);
+      assert.equal(progress.at(-1), 64 + 96);
+      served = { stageA: a.bytes, stageB: b.bytes };
+      const loaded = await loadModel(() => {});
+      assert.deepEqual(Buffer.from(loaded.stageA), a.bytes);
+      await loadModel(() => {});
+      assert.equal(fetchPart.mock.callCount(), 4, 'Checked once, the graphs are not asked for again.');
+    } finally { Object.assign(manifest.files.stageA, original.stageA); Object.assign(manifest.files.stageB, original.stageB); }
+  });
+
+  it('runs in a Worker that gets the graphs once, and stops it when cancelled', async () => {
+    const workers: FakeWorker[] = [];
+    class FakeWorker {
+      messages: Array<{ id: number; models?: unknown }> = []; terminated = false;
+      onmessage: ((event: { data: unknown }) => void) | null = null; onerror: ((event: { message: string; preventDefault(): void }) => void) | null = null;
+      constructor() { workers.push(this); }
+      postMessage(message: { id: number; models?: unknown }) {
+        this.messages.push(message);
+        if (message.id % 2) queueMicrotask(() => this.onmessage?.({ data: { id: message.id, ok: true, anchors: {}, channels: {}, threads: 1, timings: {} } }));
+      }
+      terminate() { this.terminated = true; }
+    }
+    stubGlobal('Worker', FakeWorker);
+    const film = () => ({ pixels: new Uint16Array(4), columns: 2, rows: 2, mm: [0.3, 0.3] as [number, number], invert: false });
+    const graphs = { stageA: new ArrayBuffer(8), stageB: new ArrayBuffer(8) };
+    const first = await runModel(film(), 'left', graphs, new AbortController().signal);
+    assert.equal(first.ok, true); assert.ok(first.total >= 0);
+    // The second request goes unanswered until it is cancelled: the Worker is stopped and the next run starts another.
+    const controller = new AbortController(), waiting = runModel(film(), 'left', graphs, controller.signal);
+    controller.abort(new Error('cancelled'));
+    await assert.rejects(waiting, /cancelled/);
+    assert.equal(workers[0].terminated, true);
+    assert.ok(workers[0].messages[0].models && !workers[0].messages[1].models, 'The graphs go with the first request only.');
+    await runModel(film(), 'left', graphs, new AbortController().signal);
+    assert.equal(workers.length, 2);
+    assert.ok(workers[1].messages[0].models);
+    assert.equal(graphs.stageA.byteLength, 8, 'The checked graphs stay here for the next Worker.');
   });
 });
