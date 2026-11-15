@@ -14,8 +14,9 @@ import { NORMALS, type ValueKey } from '../imaging/deformity/normals';
 import { fitCircle, distance } from '../imaging/deformity/plane';
 import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
 import { coraNeeds } from '../imaging/deformity/analysis';
+import { UNCHECKED } from '../imaging/deformity/suggest';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
-import { acceptSuggestions, clearSuggestions, imageSideOnScreen, nextLandmark, planView, withSuggestions, type PlanView } from '../ui/deformityPlan';
+import { acceptSuggestions, clearSuggestions, fromUnchecked, imageSideOnScreen, nextLandmark, planView, uncheckedAsSuggested, withSuggestions, type PlanView } from '../ui/deformityPlan';
 import { cancelModelDownload, framePixels, loadModel, MODEL, MODEL_BYTES, runModel, suggestionsFrom, suggestionTarget } from '../ui/landmarkSuggestions';
 import { MAX_PLANS, parsePlanFile, planFile } from '../ui/deformityFile';
 import { drawReport, pictureSize, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
@@ -29,6 +30,7 @@ import './DeformityPanel.css';
 const VALUE_ORDER: Array<Value['key']> = ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LDTA', 'JLCA', 'AMA', 'HKA', 'MAD', 'WBL', 'femurLength', 'tibiaLength', 'limbLength'];
 const NAMED: Partial<Record<Value['key'], MessageKey>> = { WBL: 'deformity.value.WBL', femurLength: 'deformity.value.femurLength', tibiaLength: 'deformity.value.tibiaLength', limbLength: 'deformity.value.limbLength' };
 const BALLS = [25, 25.4, 30];
+const CORA_KEY = { femur: 'coraFemur', tibia: 'coraTibia' } as const;
 
 /** The sides a film is planned for when it opens: the one its laterality names, else both. */
 const sidesOf = (laterality: string | undefined): Side[] => laterality === 'R' ? ['R'] : laterality === 'L' ? ['L'] : ['R', 'L'];
@@ -210,7 +212,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
       // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
       if (deformity.get().simulate && liveView.simulation) { setStatus(t('deformity.suggestSimulated')); return; }
-      deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL));
+      deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL, UNCHECKED));
       const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
     } catch (error) {
@@ -227,6 +229,10 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   // The model's plateau points sit inboard of the rim (its training labels' convention): the plateau's width, and so
   // WBL and the joint offset, are short while they stay where the model put them.
   const plateauInboard = (['tibialPlateauMedial', 'tibialPlateauLateral'] as const).some(name => plan.origin?.[name]?.model && plan.provenance[name]?.includes('accepted'));
+  // Values measured from a landmark the model suggested with no real-film check, accepted as it was: marked beside them.
+  const unchecked = fromUnchecked(plan);
+  const uncheckedNote = (applies: boolean) => applies ? ` · ${t('deformity.uncheckedShort')}` : '';
+  const uncheckedShown = Boolean(plan.suggested?.unchecked?.length) || LANDMARKS.some(name => uncheckedAsSuggested(plan, name));
   // While the simulation shows, the film's fragment is drawn moved and suggestions are not drawn: none can be accepted.
   const simulated = state.simulate && Boolean(view.simulation);
   const fromModel = Boolean(plan.suggested) || LANDMARKS.some(name => plan.origin?.[name]?.model);
@@ -295,15 +301,15 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       // The report carries the plateau caution beside the values it affects, as the panel does.
       const inboard = (applies: boolean) => plateauInboard && applies ? ` · ${t('deformity.plateauInboardShort')}` : '';
       const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name,
-        leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t) + inboard(name === 'WBL'), normalText(name) || undefined]) },
+        leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t) + inboard(name === 'WBL') + uncheckedNote(unchecked.has(name)), normalText(name) || undefined]) },
         { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey) + inboard(step.step === 'subluxation' && step.result !== 'unassessable')]) },
-        { title: t('deformity.cora'), rows: (['femur', 'tibia'] as const).map(boneName => [t(`deformity.bone.${boneName}` as MessageKey), coraText(view, boneName, t)]) }];
+        { title: t('deformity.cora'), rows: (['femur', 'tibia'] as const).map(boneName => [t(`deformity.bone.${boneName}` as MessageKey), coraText(view, boneName, t) + uncheckedNote(Boolean(view.cora[boneName]) && unchecked.has(CORA_KEY[boneName]))]) }];
       if (view.simulation && plan.osteotomy) {
         const after = view.simulation.leg.values, o = plan.osteotomy;
         sections.push({ title: t('deformity.osteotomy'), rows: [
           [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t((view.simulation.wedge ?? o.wedge) === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
           [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`],
-          ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}${inboard(name === 'WBL')}`] as [string, string]),
+          ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}${inboard(name === 'WBL')}${uncheckedNote(unchecked.has(name))}`] as [string, string]),
         ] });
       }
       const canvas = drawReport({ title: `${t('deformity.title')} · ${planName(film, plan.id, t)}`,
@@ -397,7 +403,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         </div>
         {/* A caution while the model's points are on the plan; until then, what the button would do. */}
         <p className={fromModel ? 'deformity-caution' : 'deformity-note'} role="note">{t('deformity.suggestTrained')}</p>
-        {plan.suggested && <p className="deformity-note">{t('deformity.suggestHeld')}</p>}
+        {uncheckedShown && <p className="deformity-note" data-testid="deformity-unchecked-note">{t('deformity.suggestUnchecked')}</p>}
       </div>
       {placing?.kind === 'landmark' && <p className="deformity-hint" role="status" data-testid="deformity-next" data-landmark={placing.name}>
         {t('deformity.next', { name: t(LANDMARK_TEXT[placing.name].name) })} {t(LANDMARK_TEXT[placing.name].hint)}
@@ -405,11 +411,14 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       <ol className="deformity-landmarks">
         {LANDMARKS.map(name => {
           const suggested = Boolean(plan.suggested?.points[name]);
+          // Unchecked while it waits as the model's suggestion, and once accepted until the reader moves or places it.
+          const uncheckedRow = suggested ? Boolean(plan.suggested?.unchecked?.includes(name)) : uncheckedAsSuggested(plan, name);
           return <li key={name} className={placing?.kind === 'landmark' && placing.name === name ? 'is-current' : ''} data-landmark={name} data-placed={done(name) || undefined}
-            data-suggested={suggested || undefined} data-origin={plan.origin?.[name]?.model ? 'model' : undefined}>
+            data-suggested={suggested || undefined} data-origin={plan.origin?.[name]?.model ? 'model' : undefined} data-unchecked={uncheckedRow || undefined}>
             <span className="deformity-mark" aria-hidden="true">{done(name) ? '●' : suggested ? '◌' : '○'}</span>
             <span className="deformity-name">{t(LANDMARK_TEXT[name].name)}{isContour(name) && placedCount(name) ? ` · ${t('deformity.pointsCount', { count: placedCount(name) })}` : ''}
-              {suggested && <span className="deformity-missing"> · {t('deformity.suggested')}</span>}</span>
+              {suggested && <span className="deformity-missing"> · {t('deformity.suggested')}</span>}
+              {uncheckedRow && <span className="deformity-caution"> · {t('deformity.unchecked')}</span>}</span>
             <span className="deformity-row-actions">
               {suggested && <button type="button" className="text-button" data-action="deformity-suggest-accept" disabled={simulated}
                 aria-label={t('deformity.acceptNamed', { name: t(LANDMARK_TEXT[name].name) })} data-tooltip={simulated ? t('deformity.suggestSimulated') : undefined}
@@ -439,7 +448,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             <th scope="row" title={normal ? [normal.source, ...normal.others].join('\n') : undefined}>{NAMED[name] ? t(NAMED[name]) : name}</th>
             <td>{value.value === null ? <span className="deformity-missing">{missingText(value.missing, t)}</span> : valueText(value, tag, t)}
               {out && <span className="deformity-verdict"> · {t(value.verdict === 'high' ? 'deformity.high' : 'deformity.low')}</span>}
-              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution" data-testid="deformity-wbl-inboard"> · {t('deformity.plateauInboardShort')}</span>}</td>
+              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution" data-testid="deformity-wbl-inboard"> · {t('deformity.plateauInboardShort')}</span>}
+              {unchecked.has(name) && value.value !== null && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</td>
             <td>{normalText(name)}</td></tr>;
         })}</tbody>
       </table>
@@ -454,7 +464,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
 
       <h3>{t('deformity.cora')}</h3>
       <dl className="deformity-cora">{(['femur', 'tibia'] as const).map(name => <div key={name} data-cora={name} data-magnitude={view.cora[name]?.magnitude}>
-        <dt>{t(`deformity.bone.${name}` as MessageKey)}</dt><dd>{coraText(view, name, t)}</dd></div>)}</dl>
+        <dt>{t(`deformity.bone.${name}` as MessageKey)}</dt><dd>{coraText(view, name, t)}
+          {view.cora[name] && unchecked.has(CORA_KEY[name]) && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</dd></div>)}</dl>
 
       <h3>{t('deformity.osteotomy')}</h3>
       {!osteotomy ? <div className="deformity-osteotomy">
@@ -498,7 +509,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             className={after[name].verdict && after[name].verdict !== 'normal' ? 'is-out' : ''}>
             <th scope="row">{NAMED[name] ? t(NAMED[name]) : name}</th>
             {[leg.values[name], after[name]].map((value, index) => <td key={index}>{valueText(value, '', t)}
-              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution"> · {t('deformity.plateauInboardShort')}</span>}</td>)}</tr>)}</tbody>
+              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution"> · {t('deformity.plateauInboardShort')}</span>}
+              {unchecked.has(name) && value.value !== null && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</td>)}</tr>)}</tbody>
         </table>}
         {view.simulation?.wedge && view.simulation.wedge !== osteotomy.wedge && <p className="deformity-caution" role="note" data-testid="deformity-wedge-mismatch">
           {t(view.simulation.wedge === 'opening' ? 'deformity.wedgeIsOpening' : 'deformity.wedgeIsClosing')}</p>}
@@ -506,7 +518,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           {t('deformity.wedgeHeight', { height: view.simulation.wedgeHeight.toFixed(1), unit: leg.unit })}
           {view.simulation.lengthChange !== null ? ` · ${t('deformity.lengthChange', { change: `${view.simulation.lengthChange >= 0 ? '+' : ''}${view.simulation.lengthChange.toFixed(1)}`, unit: leg.unit })}` : ''}
           {leg.unit === 'mm' && tag ? ` · ${tag}` : ''}</p>}
-        {view.rule && <p className="deformity-fit" data-testid="deformity-rule" data-rule={view.rule.rule} data-translation={view.rule.translation}>{t('deformity.rule', { rule: view.rule.rule })}{view.rule.rule === 3 ? ` · ${t('deformity.ruleTranslation', { offset: view.rule.offset.toFixed(1), translation: view.rule.translation.toFixed(1), unit: leg.unit })}` : ''}</p>}
+        {view.rule && <p className="deformity-fit" data-testid="deformity-rule" data-rule={view.rule.rule} data-translation={view.rule.translation}>{t('deformity.rule', { rule: view.rule.rule })}{view.rule.rule === 3 ? ` · ${t('deformity.ruleTranslation', { offset: view.rule.offset.toFixed(1), translation: view.rule.translation.toFixed(1), unit: leg.unit })}` : ''}
+          {unchecked.has(CORA_KEY[osteotomy.bone]) && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</p>}
         <div className="deformity-actions"><button type="button" className="text-button" data-action="deformity-cut-remove" onClick={() => changePlan(current => ({ ...current, osteotomy: null }))}>{t('deformity.removeCut')}</button></div>
       </div>}
     </div>

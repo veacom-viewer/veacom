@@ -16,18 +16,23 @@ export type Provenance = 'placed' | 'accepted' | 'moved';
 /** The landmark model a suggestion came from: its name and the SHA-256 of its two graphs (docs/landmark-model.md). */
 export interface ModelRef { model: string; sha256: { stageA: string; stageB: string } }
 
+/** Where a landmark's points came from, beyond each point's provenance (LegPlan.origin). */
+export interface LandmarkOrigin { shown?: true; model?: ModelRef; unchecked?: true; construction?: 'hipCentreRing' }
+
 /** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
 export interface LegPlan {
   id: string; name: string; side: Side;
   points: Landmarks;
   provenance: Partial<Record<LandmarkName, Provenance[]>>;
   osteotomy: Osteotomy | null;
-  /** The model's suggestions the reader has not accepted or moved yet: drawn apart from the landmarks and never measured. */
-  suggested?: { model: ModelRef; points: Landmarks };
+  /** The model's suggestions the reader has not accepted or moved yet: drawn apart from the landmarks and never measured.
+   * `unchecked`: the suggested landmarks whose model channels have no check on real films (suggest.ts UNCHECKED). */
+  suggested?: { model: ModelRef; points: Landmarks; unchecked?: LandmarkName[] };
   /** Per landmark: a suggestion of it has been on screen (`shown`), the model its points came from while the reader
-   * keeps the points a suggestion gave (`model`), and how the model made them (`construction`: the femoral head's ring
-   * around the model's hip centre). The plan file's suggestionShown, confidence and construction. */
-  origin?: Partial<Record<LandmarkName, { shown?: true; model?: ModelRef; construction?: 'hipCentreRing' }>>;
+   * keeps the points a suggestion gave (`model`), whether that model's channel was unchecked on real films
+   * (`unchecked`), and how the model made them (`construction`: the femoral head's ring around the model's hip centre).
+   * The plan file's suggestionShown, confidence and construction. */
+  origin?: Partial<Record<LandmarkName, LandmarkOrigin>>;
 }
 
 /** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it

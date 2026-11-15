@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
-import { canvasSize, CHANNELS, cropCentre, cropToFilm, decodeStageA, kitSuggestions, mirroredChannel, modelLeg, percentile, readStageB, roundHalfEven,
-  sampleCrop, stageACanvas, STAGE_B, SUGGESTED, windowed, windowRange, type ChannelPoint, type Channel } from '../src/imaging/deformity/suggest';
+import { canvasSize, CHANNELS, CROP_KINDS, cropCentre, cropToFilm, decodeStageA, kitSuggestions, mirroredChannel, modelLeg, percentile, readStageB, roundHalfEven,
+  sampleCrop, stageACanvas, STAGE_B, UNCHECKED, windowed, windowRange, type ChannelPoint, type Channel } from '../src/imaging/deformity/suggest';
+import { LANDMARKS } from '../src/imaging/deformity/landmarks';
 import { fitCircle, type Point } from '../src/imaging/deformity/plane';
 
 // A 37 × 61 synthetic film: a repeating ramp of 17 levels, and one bright outlier the percentiles leave out. The
@@ -70,11 +71,19 @@ describe('reading the model', () => {
     got.forEach((point, i) => { assertClose(point[0], expected(...peaks[i])[0], 6); assertClose(point[1], expected(...peaks[i])[1], 6); });
   });
 
-  it('centres the hip crop 22 mm lateral, and maps crop pixels back, mirrored for the right leg', () => {
+  it('centres the hip crop 22 mm lateral, the shaft crops along the anchors, and maps crop pixels back, mirrored for the right leg', () => {
     const anchors = { hip: [100, 50] as Point, knee: [110, 400] as Point, ankle: [115, 800] as Point }, mm = [0.2, 0.25] as const;
     assert.deepEqual(cropCentre('hip', 'left', anchors, mm), [100 - 110, 50]);
     assert.deepEqual(cropCentre('hip', 'right', anchors, mm), [100 + 110, 50]);
     assert.deepEqual(cropCentre('ankle', 'right', anchors, mm), [115, 800]);
+    // stageb.SHAFT: 30 % and 75 % of the way from hip to knee, 25 % and 80 % from knee to ankle, on either leg.
+    for (const leg of ['left', 'right'] as const) {
+      const [femurProximal, femurDistal, tibiaProximal, tibiaDistal] = (['femurProximal', 'femurDistal', 'tibiaProximal', 'tibiaDistal'] as const).map(kind => cropCentre(kind, leg, anchors, mm));
+      assertClose(femurProximal[0], 103, 9); assertClose(femurProximal[1], 155, 9);
+      assertClose(femurDistal[0], 107.5, 9); assertClose(femurDistal[1], 312.5, 9);
+      assertClose(tibiaProximal[0], 111.25, 9); assertClose(tibiaProximal[1], 500, 9);
+      assertClose(tibiaDistal[0], 114, 9); assertClose(tibiaDistal[1], 720, 9);
+    }
     assert.deepEqual(cropToFilm([160, 160], [50, 60], mm, false), [50, 60]);
     const [x, y] = cropToFilm([170, 140], [50, 60], mm, true);
     assertClose(x, 50 - 10 * STAGE_B.pitch / 0.2, 9); assertClose(y, 60 - 20 * STAGE_B.pitch / 0.25, 9);
@@ -84,19 +93,25 @@ describe('reading the model', () => {
     assert.equal(mirroredChannel('femoralHeadContour0'), 'femoralHeadContour7');
     assert.equal(mirroredChannel('femoralHeadContour5'), 'femoralHeadContour2');
     assert.equal(mirroredChannel('kneeCentre'), 'kneeCentre');
-    const crops = ['hip', 'knee', 'ankle'] as const, coords = new Float32Array(3 * CHANNELS.length * 2), confidence = new Float32Array(3 * CHANNELS.length);
+    const crops = CROP_KINDS, count = crops.length, coords = new Float32Array(count * CHANNELS.length * 2), confidence = new Float32Array(count * CHANNELS.length);
     // Each crop puts every channel at (crop index, channel index), so a reading says where it came from.
-    for (let crop = 0; crop < 3; crop++) for (let channel = 0; channel < CHANNELS.length; channel++) {
+    for (let crop = 0; crop < count; crop++) for (let channel = 0; channel < CHANNELS.length; channel++) {
       const index = crop * CHANNELS.length + channel;
       coords[index * 2] = 160 + crop; coords[index * 2 + 1] = 160 + channel; confidence[index] = channel / 100;
     }
-    const centres: Point[] = [[0, 0], [0, 0], [0, 0]], mm = [0.35, 0.35] as const;
+    const centres: Point[] = crops.map(() => [0, 0]), mm = [0.35, 0.35] as const;
     const left = readStageB(coords, confidence, crops, centres, mm, false), right = readStageB(coords, confidence, crops, centres, mm, true);
+    assert.deepEqual(crops, ['hip', 'knee', 'ankle', 'femurProximal', 'femurDistal', 'tibiaProximal', 'tibiaDistal']);
     assert.deepEqual(left.kneeCentre?.point, [1, CHANNELS.indexOf('kneeCentre')]);
     assert.deepEqual(left.femoralHeadContour1?.point, [0, CHANNELS.indexOf('femoralHeadContour1')]);
     assert.deepEqual(right.femoralHeadContour1?.point, [0, CHANNELS.indexOf('femoralHeadContour6')]);
     assert.deepEqual(right.ankleCentre?.point, [-2, CHANNELS.indexOf('ankleCentre')]);
-    assert.equal(left.tibialShaftDistal, undefined, 'No shaft crop is run.');
+    // A shaft point is the predicted x on the crop's centre row (stageb.infer_film), each from its own crop.
+    for (const [point, x] of [[left.femoralShaftProximal?.point, 3], [left.femoralShaftDistal?.point, 4], [right.tibialShaftDistal?.point, -6]] as const) {
+      assertClose(point![0], x, 9); assert.equal(point![1], 0);
+    }
+    assertClose(right.tibialShaftProximal!.confidence, CHANNELS.indexOf('tibialShaftProximal') / 100, 6);
+    assert.equal(Object.keys(left).length, CHANNELS.length);
   });
 
   it('names the leg by its place on the image, only on an upright film', () => {
@@ -116,7 +131,12 @@ describe('the kit\'s suggestions', () => {
     greaterTrochanterTip: { point: [40, 80], confidence: 0.04 }, plafondMedial: { point: [140, 1790], confidence: 0.05 },
   });
 
-  it('suggests only the landmarks checked on real films, with the head as a ring around the checked hip centre', () => {
+  it('marks as unchecked the landmarks BMPLE does not label, and only those', () => {
+    assert.deepEqual([...UNCHECKED], ['greaterTrochanterTip', 'femoralShaftProximal', 'tibialShaftProximal', 'tibialShaftDistal', 'plafondMedial', 'plafondLateral']);
+    assert.ok(UNCHECKED.every(name => LANDMARKS.includes(name)));
+  });
+
+  it('suggests each landmark its channels give, with the head as a ring around the checked hip centre', () => {
     // Pixels 0.2 mm wide and 0.25 mm high: the ring is round in millimetres, so its fitted centre is the hip centre.
     const mm = [0.2, 0.25] as const, hip: Point = [200, 150];
     const contour = [0, 40, 95, 140, 185, 230, 280, 320].map((degrees, i) => {
@@ -124,8 +144,8 @@ describe('the kit\'s suggestions', () => {
       return [hip[0] + r * Math.cos(a) / mm[0], hip[1] + r * Math.sin(a) / mm[1]] as Point;
     });
     const suggested = kitSuggestions(channels(hip, contour), mm);
-    assert.deepEqual(Object.keys(suggested).sort(), ['ankleCentre', 'femoralCondyleMedial', 'femoralHeadContour', 'kneeCentre', 'tibialPlateauLateral']);
-    assert.ok(Object.keys(suggested).every(name => (SUGGESTED as readonly string[]).includes(name)));
+    assert.deepEqual(Object.keys(suggested).sort(), ['ankleCentre', 'femoralCondyleMedial', 'femoralHeadContour', 'greaterTrochanterTip', 'kneeCentre', 'plafondMedial', 'tibialPlateauLateral']);
+    assert.deepEqual(suggested.plafondMedial, { points: [[140, 1790]], confidence: 0.05 });
     const ring = suggested.femoralHeadContour!.points, fitted = fitCircle(ring.map(p => [p[0] * mm[0], p[1] * mm[1]] as Point))!;
     assert.equal(ring.length, 8);
     assertClose(fitted.centre[0], hip[0] * mm[0], 9); assertClose(fitted.centre[1], hip[1] * mm[1], 9);

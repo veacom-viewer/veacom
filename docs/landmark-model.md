@@ -1,9 +1,10 @@
 # Landmark model
 
 Suggest landmarks, in the deformity plan (docs/deformity-planning.md), runs a landmark model on the film and suggests
-the points behind mLDFA, MPTA, JLCA, HKA and MAD. It is off until the reader presses the button, and the reader
-confirms every point: a suggestion is drawn apart from the landmarks and nothing is measured from it until the reader
-accepts or moves it. The model was trained and checked in veacom-train (`docs/synthetic.md` §7 and §8 there); this page
+all 14 of the kit's landmarks. Eight were checked against a reader on real films; the other six were not, and the kit
+says so wherever they or the values measured from them appear. It is off until the reader presses the button, and the
+reader confirms every point: a suggestion is drawn apart from the landmarks and nothing is measured from it until the
+reader accepts or moves it. The model was trained and checked in veacom-train (`docs/synthetic.md` §7 and §8 there); this page
 is its card.
 
 Code: `src/imaging/deformity/suggest.ts` (the input contract and decoding, ported from veacom-train's `stagea.py` and
@@ -23,7 +24,10 @@ The full hashes are in `electron/landmark-model.json`.
 - **Stage A** finds the hip, knee and ankle centres of both legs on the film resampled to 2 mm per pixel (a U-Net, 704 ×
   256 input).
 - **Stage B** finds 26 points on 320 × 320 crops at 0.35 mm per pixel around those centres (a small HRNet, 2.36 M
-  parameters). VEAcom runs only the hip, knee and ankle crops of the plan's leg.
+  parameters). VEAcom runs the seven crops of the plan's leg: the hip (centred 22 mm lateral of its centre), the knee,
+  the ankle, and two on each shaft, 30 % and 75 % of the way from hip to knee and 25 % and 80 % from knee to ankle. A
+  shaft point is the middle between the cortices on its crop's centre row: where it lies along the bone is that
+  definition, not something the model finds (veacom-train `stageb.py`).
 - **Training data.** BMPLE (leg): 190 standing long-leg radiographs of adults from two hospitals, labelled by one senior
   orthopaedic surgeon. Qingsong Yao, Zhen Huang, Ao Wang, Rongsheng Wang, Hanxue Zhang, Jiangji Wang and S. Kevin Zhou,
   *Structure-Guided Self-Supervised Matching for One-Shot Medical Landmark Detection*, arXiv:2203.01687. 100 films
@@ -43,6 +47,11 @@ graphs are seed 0.
 | Ankle centre | 1.19 mm |
 | Condyles, medial and lateral | 1.76 and 1.77 mm |
 | Plateau, medial and lateral | 2.39 and 1.87 mm |
+| Femoral shaft, lower | 0.40 mm across the shaft |
+
+The femoral shaft's error is across the shaft at the reader's own level, which BMPLE's reader put 76 to 87 % of the way
+from hip to knee (mean 83 %). VEAcom reads the point at 75 %, the level the model was trained to on synthetic films, on
+the same shaft.
 
 | Value | Error | Legs within 2° (MAD: 2 mm) |
 | --- | --- | --- |
@@ -54,12 +63,26 @@ graphs are seed 0.
 
 ## What is suggested
 
-| Suggested | Not suggested |
-| --- | --- |
-| Femoral head, knee centre, both condyles, both plateau edges, ankle centre | Greater trochanter, femoral and tibial shafts, plafond |
+All 14 landmarks.
 
-- The points not suggested have **no check on real films**: BMPLE does not label them. So mLPFA, aLDFA, AMA and LDTA have
-  no real-film number, and the panel says these points are not suggested. The reader places them as before.
+| Checked on real films (BMPLE test) | Unchecked |
+| --- | --- |
+| Femoral head, knee centre, both condyles, both plateau edges, femoral shaft lower, ankle centre | Greater trochanter, femoral shaft upper, tibial shaft upper and lower, plafond medial and lateral |
+
+- **Unchecked** points have no check against a reader on real films: BMPLE, the only real films the model learnt from,
+  does not label them, so the model learnt them from synthetic films alone (`suggest.ts` `UNCHECKED`).
+  - On veacom-train's held-out synthetic films (adult legs, not validation), the trochanter tip is 2.6 mm off, the
+    plafond's medial edge 2.2 mm, and the shaft points 0.1 mm across the shaft. The kit's mLPFA, aLDFA and LDTA from all
+    predicted points are 1.3°, 0.4° and 2.0° off there.
+  - On four real development films, checked by eye only, the plafond edges sit where a reader would put them.
+  - So mLPFA, aLDFA, AMA, LDTA and the CORA of each bone have no real-film number.
+- **How the kit says so.** An unchecked suggestion is a dashed diamond, not a ring. Its row says "suggested ·
+  unchecked", and one line under the button names the six points and why. Accepted as it was, the row still says
+  "unchecked", and every value and CORA measured from it says "from an unchecked point" beside it, in the panel and in
+  the report (and the Paley rule, in the panel), until the reader moves that point or places it again. The tibial shaft points feed no value;
+  they draw the tibial anatomic axis.
+- **Saved,** the label's `confidence` names the model and says `unchecked` (docs/deformity-labels.md), so these labels
+  are never mistaken for checked ones when the files are used for training.
 - **The femoral head.** The kit takes the hip centre as the circle fitted to the head's outline. The model's checked point
   is the hip centre itself; its outline points are unchecked. VEAcom suggests the outline as points on a circle around
   the checked centre, in the directions of the model's outline points and at their median distance, in millimetres. The
@@ -114,11 +137,13 @@ The files are assets of release v0.1.0-beta.3, next to its installers. The insta
 choose files by their exact names, so these two cannot be taken for an update. GitHub's release downloads send no
 cross-origin headers, so the page could not read them from GitHub directly.
 
-**Speed** on an Apple M4 Pro (BMPLE test film 1061, 2396 × 5628 pixels): in headless Chromium, from a local server with
-the site's headers, 0.22 s a run on 4 threads and 0.48 s the first time (the Worker and the graphs starting); in the
-desktop app, on one thread, 0.54 s and 0.79 s the first time. The first press also downloads the model's 18 MB (and, in
-the browser, the 14.8 MB runtime, which the progress does not count). Most of a run is the two graphs; windowing and
-cropping take about 0.1 s. Safari and Firefox are not checked yet.
+**Speed** on an Apple M4 Pro (BMPLE test film 1061, 2396 × 5628 pixels), all seven crops: in headless Chromium, from a
+local server with the site's headers, 0.54 s a run on 4 threads and 0.92 s the first time (the Worker and the graphs
+starting); in the desktop app, on one thread, 1.4 s and 1.8 s the first time. On one thread each crop takes about 0.12 s
+in onnxruntime-web's WebAssembly, run one at a time or together, so the four shaft crops add about 0.5 s there. The
+first press also downloads the model's 18 MB (and, in the browser, the 14.8 MB runtime, which the progress does not
+count). Most of a run is the two graphs; windowing and cropping take about 0.2 s. Safari and Firefox are not checked
+yet.
 
 **Port.** On six BMPLE test films the TypeScript port agrees with veacom-train's Python and onnxruntime: stage A to
-0.00001 mm, stage B within 0.1 mm.
+0.00001 mm, stage B within 0.1 mm on all seven crops, the four shaft points within 0.02 mm.

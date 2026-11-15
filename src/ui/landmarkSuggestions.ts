@@ -5,9 +5,9 @@
 import manifest from '../../electron/landmark-model.json';
 import type { PixelArray, Series, Volume } from '../model';
 import { projectionOf } from '../imaging/radiograph';
-import { canvasSize, kitSuggestions, modelLeg, SUGGESTED, type Anchors, type ImageLeg, type Suggestion } from '../imaging/deformity/suggest';
+import { canvasSize, kitSuggestions, modelLeg, type Anchors, type ImageLeg, type Suggestion } from '../imaging/deformity/suggest';
 import type { Point } from '../imaging/deformity/plane';
-import type { LandmarkName } from '../imaging/deformity/landmarks';
+import { LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
 import type { SuggestReply, SuggestRequest } from '../imaging/deformity/suggest.worker';
 import type { ModelRef } from './deformityStore';
 import type { PlanView } from './deformityPlan';
@@ -19,7 +19,7 @@ export const MODEL_BYTES = MODEL_PARTS.reduce((sum, part) => sum + manifest.file
 export const MODEL: ModelRef = { model: manifest.name, sha256: { stageA: manifest.files.stageA.sha256, stageB: manifest.files.stageB.sha256 } };
 
 /** Why the button is off: the side is not known, the film is not upright, it has no millimetres, it is larger than the
- * model's canvas, it is not greyscale (colour or a palette), or every suggested landmark is placed. */
+ * model's canvas, it is not greyscale (colour or a palette), or every landmark is placed. */
 type SuggestBlock = 'side' | 'upright' | 'spacing' | 'size' | 'colour' | 'placed';
 
 /** The film's leg for the active plan, or why the model cannot run on it. The model was trained on upright greyscale
@@ -32,7 +32,7 @@ export function suggestionTarget(view: PlanView, frame: Series): { leg: ImageLeg
   const orientation = projectionOf(frame)?.patientOrientation, leg = modelLeg(view.lateral);
   if (!leg || (orientation && !/F/.test(orientation[1]))) return { block: 'upright' };
   if (!canvasSize(frame.dimensions[0], frame.dimensions[1], view.mm).fits) return { block: 'size' };
-  if (SUGGESTED.every(name => isPlaced(view.plan, name))) return { block: 'placed' };
+  if (LANDMARKS.every(name => isPlaced(view.plan, name))) return { block: 'placed' };
   return { leg };
 }
 

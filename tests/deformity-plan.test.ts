@@ -3,10 +3,12 @@ import { afterEach, describe, it } from 'node:test';
 import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
-import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
-import { acceptSuggestions, clearSuggestions, dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, putBackSuggestion, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
+import { deformity, filmKey, withPlan, type FilmPlans } from '../src/ui/deformityStore';
+import { acceptSuggestions, clearSuggestions, dragContinues, fromUnchecked, imageSideOnScreen, MEASURED_FROM, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, putBackSuggestion, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
 import { MODEL, suggestionsFrom, suggestionTarget } from '../src/ui/landmarkSuggestions';
-import { lateralOnImage } from '../src/imaging/deformity/measure';
+import { lateralOnImage, type Landmarks } from '../src/imaging/deformity/measure';
+import { LANDMARKS } from '../src/imaging/deformity/landmarks';
+import { UNCHECKED } from '../src/imaging/deformity/suggest';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
 import { reportHeader } from '../src/ui/deformityReport';
 import type { Point } from '../src/imaging/deformity/plane';
@@ -333,6 +335,83 @@ describe('landmark suggestions', () => {
     assert.equal(read.plans[0].origin?.ankleCentre?.model, undefined);
   });
 
+  it('mark the model\'s unchecked landmarks, and the values measured from them while they stay as suggested', async () => {
+    film();
+    const all = { ...points, greaterTrochanterTip: [[60, 140]] as Point[], femoralShaftProximal: [[150, 300]] as Point[], femoralShaftDistal: [[185, 420]] as Point[],
+      plafondMedial: [[222, 895]] as Point[], plafondLateral: [[188, 897]] as Point[] };
+    deformity.change(key, current => withSuggestions(current, all, MODEL, UNCHECKED));
+    let current = deformity.get().films[key]!;
+    assert.deepEqual(current.plans[0].suggested?.unchecked, ['greaterTrochanterTip', 'femoralShaftProximal', 'plafondMedial', 'plafondLateral']);
+    assert.equal(fromUnchecked(current.plans[0]).size, 0, 'Nothing is measured from a suggestion, so nothing is marked yet.');
+    current = acceptSuggestions(current);
+    let plan = current.plans[0];
+    assert.deepEqual(plan.origin?.plafondMedial, { shown: true, model: MODEL, unchecked: true });
+    assert.deepEqual(plan.origin?.femoralShaftDistal, { shown: true, model: MODEL }, 'The lower femoral shaft is checked on real films.');
+    assert.deepEqual([...fromUnchecked(plan)].sort(), ['AMA', 'LDTA', 'aLDFA', 'coraFemur', 'coraTibia', 'mLPFA']);
+    // Moved, the plafond is the reader's point: LDTA and the tibia's CORA lose the mark, and the label keeps the model and
+    // that its channel is unchecked.
+    current = moveHandle(current, { kind: 'landmark', name: 'plafondMedial', index: 0 }, [223, 894]);
+    current = moveHandle(current, { kind: 'landmark', name: 'plafondLateral', index: 0 }, [187, 898]);
+    assert.deepEqual([...fromUnchecked(current.plans[0])].sort(), ['AMA', 'aLDFA', 'coraFemur', 'mLPFA']);
+    // Placed again by hand, the trochanter is the reader's alone.
+    current = place(current, { film: key, kind: 'landmark', name: 'greaterTrochanterTip' }, [61, 141], frame).film;
+    plan = current.plans[0];
+    assert.deepEqual(plan.origin?.greaterTrochanterTip, { shown: true });
+    assert.deepEqual([...fromUnchecked(plan)].sort(), ['AMA', 'aLDFA']);
+    // Saved, the model's confidence says its channel is unchecked; opened and saved again, the labels are the same.
+    const file = await planFile(current, frame), labels = Object.fromEntries(file.plans[0].landmarks.map(label => [label.name, label]));
+    assert.deepEqual([labels.femoralShaftProximal.confidence, labels.femoralShaftProximal.provenance], [{ ...MODEL, unchecked: true }, ['accepted']]);
+    assert.deepEqual([labels.plafondMedial.confidence, labels.plafondMedial.provenance], [{ ...MODEL, unchecked: true }, ['moved']]);
+    assert.deepEqual(labels.femoralShaftDistal.confidence, MODEL);
+    assert.deepEqual([labels.greaterTrochanterTip.confidence, labels.greaterTrochanterTip.suggestionShown], ['manual', true]);
+    assert.deepEqual(labels.hipCentre.confidence, MODEL, 'The hip centre is the model\'s checked channel.');
+    const text = JSON.stringify(file), opened = await parsePlanFile(text, current, frame);
+    assert.ok(!('error' in opened));
+    assert.deepEqual(opened.plans[0].origin, plan.origin);
+    assert.deepEqual((await planFile({ ...current, plans: opened.plans, active: opened.plans[0].id }, frame)).plans[0].landmarks, file.plans[0].landmarks);
+    const edited = (edit: (label: Record<string, unknown>) => void) => {
+      const copy = structuredClone(JSON.parse(text));
+      for (const label of copy.plans[0].landmarks) edit(label);
+      return parsePlanFile(JSON.stringify(copy), current, frame);
+    };
+    // A label of the model VEAcom ships keeps its channel's mark even when a file lost it (an older VEAcom drops fields it
+    // does not know when it saves a file again).
+    const dropped = await edited(label => { if (isModel(label.confidence)) delete label.confidence.unchecked; });
+    assert.ok(!('error' in dropped));
+    assert.equal(dropped.plans[0].origin?.femoralShaftProximal?.unchecked, true);
+    assert.equal(dropped.plans[0].origin?.femoralShaftDistal?.unchecked, undefined);
+    // Another model's label is unchecked only where its file says so; a point the file gives no model is the reader's.
+    const other = { model: 'other', sha256: { stageA: 'a'.repeat(64), stageB: 'b'.repeat(64) } };
+    const foreign = await edited(label => {
+      if (label.name === 'femoralShaftProximal') label.confidence = other;
+      if (label.name === 'kneeCentre') label.confidence = { ...other, unchecked: true };
+      if (label.name === 'ankleCentre') label.confidence = { model: 'x', sha256: { stageA: 'zz', stageB: 'zz' }, unchecked: true };
+    });
+    assert.ok(!('error' in foreign));
+    assert.deepEqual(foreign.plans[0].origin?.femoralShaftProximal, { shown: true, model: other });
+    assert.deepEqual(foreign.plans[0].origin?.kneeCentre, { shown: true, model: other, unchecked: true });
+    assert.deepEqual([foreign.plans[0].origin?.ankleCentre, foreign.plans[0].provenance.ankleCentre], [{ shown: true }, ['placed']]);
+  });
+
+  it('name exactly the landmarks each value and CORA is measured from', () => {
+    const current = film(), plan = current.plans[0];
+    const full: Landmarks = { femoralHeadContour: [[70, 120], [100, 90], [130, 120], [100, 150]], greaterTrochanterTip: [[40, 150]],
+      femoralShaftProximal: [[125, 260]], femoralShaftDistal: [[180, 420]], kneeCentre: [[200, 500]], femoralCondyleMedial: [[232, 518]],
+      femoralCondyleLateral: [[168, 522]], tibialPlateauMedial: [[228, 530]], tibialPlateauLateral: [[172, 532]], tibialShaftProximal: [[205, 600]],
+      tibialShaftDistal: [[207, 800]], plafondMedial: [[224, 893]], plafondLateral: [[188, 899]], ankleCentre: [[205, 900]] };
+    const measured = (points: Landmarks) => {
+      const view = planView(withPlan(current, { ...plan, points }), frame);
+      return (key: keyof typeof MEASURED_FROM) => key === 'coraFemur' ? view.cora.femur !== null : key === 'coraTibia' ? view.cora.tibia !== null
+        : key === 'subluxation' ? typeof view.leg.jointOffsetMm === 'number' : view.leg.values[key].value !== null;
+    };
+    const keys = Object.keys(MEASURED_FROM) as Array<keyof typeof MEASURED_FROM>, complete = measured(full);
+    for (const key of keys) assert.ok(complete(key), `${key} is measured on the full plan.`);
+    for (const name of LANDMARKS) {
+      const { [name]: _gone, ...rest } = full, without = measured(rest);
+      for (const key of keys) assert.equal(without(key), !MEASURED_FROM[key].includes(name), `${key} without ${name}`);
+    }
+  });
+
   it('run only on a film the model can read, for the leg on its side of the image', () => {
     const current = film();
     assert.deepEqual(suggestionTarget(planView(current, frame), frame), { leg: 'left' }, 'L\\F: the right leg is on the image\'s left.');
@@ -349,7 +428,10 @@ describe('landmark suggestions', () => {
     assert.deepEqual(suggestionTarget(planView(current, colour), colour), { block: 'colour' });
     const tall = { ...frame, dimensions: [400, 5000, 1] as [number, number, number] };
     assert.deepEqual(suggestionTarget(planView(current, tall), tall), { block: 'size' });
-    const done = acceptSuggestions(withSuggestions(current, points, MODEL));
+    const most = acceptSuggestions(withSuggestions(current, points, MODEL));
+    assert.deepEqual(suggestionTarget(planView(most, frame), frame), { leg: 'left' }, 'The trochanter, shafts and plafond are still to suggest.');
+    const rest = Object.fromEntries(LANDMARKS.filter(name => !(name in points)).map((name, i) => [name, [[150 + i, 300 + 80 * i]] as Point[]]));
+    const done = acceptSuggestions(withSuggestions(most, rest, MODEL, UNCHECKED));
     assert.deepEqual(suggestionTarget(planView(done, frame), frame), { block: 'placed' });
   });
 
@@ -368,6 +450,9 @@ describe('landmark suggestions', () => {
       {}, 'Every point off the film leaves nothing to suggest (the panel then says the model found nothing).');
   });
 });
+
+/** A label's confidence when it names a model. */
+const isModel = (value: unknown): value is { unchecked?: boolean } => typeof value === 'object' && value !== null;
 
 describe('the report header', () => {
   const named: Series = { ...series, patientName: 'DOE^JANE', patientId: 'ID-77', studyDate: '20000101', studyTime: '120000', description: 'Long leg standing',

@@ -5,7 +5,7 @@ import type { Series, Vec3, ViewState } from '../model';
 import { indexToWorld, screenMapping, sub, worldToIndex, worldToScreen, type ScreenMapping } from '../imaging/geometry';
 import { millimetresPerPixel, projectionOf } from '../imaging/radiograph';
 import { coras, malalignmentTest, type Cora, type Step } from '../imaging/deformity/analysis';
-import { lateralOnImage, measureLeg, type Leg, type LegInput } from '../imaging/deformity/measure';
+import { lateralOnImage, measureLeg, type Leg, type LegInput, type Value } from '../imaging/deformity/measure';
 import { fragmentFor, moved, paleyRule, simulate, type Osteotomy, type Simulation } from '../imaging/deformity/osteotomy';
 import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
 import type { Point } from '../imaging/deformity/plane';
@@ -107,14 +107,16 @@ function withoutSuggestion(plan: LegPlan, name: LandmarkName): LegPlan {
 }
 
 /** The model's suggestions put on the active plan, for the landmarks it has not placed: they replace earlier ones,
- * and each suggested landmark is marked as shown (the plan file's suggestionShown). */
-export function withSuggestions(film: FilmPlans, points: LegPlan['points'], model: ModelRef): FilmPlans {
+ * and each suggested landmark is marked as shown (the plan file's suggestionShown). `unchecked` names the landmarks
+ * whose model channels have no check on real films. */
+export function withSuggestions(film: FilmPlans, points: LegPlan['points'], model: ModelRef, unchecked: readonly LandmarkName[] = []): FilmPlans {
   const plan = activePlan(film);
   const names = LANDMARKS.filter(name => points[name]?.length && !isPlaced(plan, name));
   if (!names.length) return film;
   const origin = { ...plan.origin };
   for (const name of names) origin[name] = { ...origin[name], shown: true };
-  return withPlan(film, { ...plan, suggested: { model, points: Object.fromEntries(names.map(name => [name, points[name]])) }, origin });
+  const marked = names.filter(name => unchecked.includes(name));
+  return withPlan(film, { ...plan, suggested: { model, points: Object.fromEntries(names.map(name => [name, points[name]])), ...(marked.length ? { unchecked: marked } : {}) }, origin });
 }
 
 /** The reader accepts suggestions as they are (one landmark, or all): they become the plan's landmarks, from the model. */
@@ -127,9 +129,34 @@ export function acceptSuggestions(film: FilmPlans, names?: LandmarkName[]): Film
     if (!points) continue;
     plan = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: points.map(() => 'accepted' as const) },
       // The model's head is always the ring around its hip centre (suggest.ts kitSuggestions).
-      origin: { ...plan.origin, [name]: { shown: true, model: suggested.model, ...(name === 'femoralHeadContour' ? { construction: 'hipCentreRing' as const } : {}) } } }, name);
+      origin: { ...plan.origin, [name]: { shown: true, model: suggested.model, ...(suggested.unchecked?.includes(name) ? { unchecked: true as const } : {}),
+        ...(name === 'femoralHeadContour' ? { construction: 'hipCentreRing' as const } : {}) } } }, name);
   }
   return withPlan(film, plan);
+}
+
+/** Whether a landmark's points are the model's unchecked suggestion, accepted as it was: no reader has checked the
+ * model's channel for it on real films, and this reader did not move it. */
+export const uncheckedAsSuggested = (plan: LegPlan, name: LandmarkName) => Boolean(plan.origin?.[name]?.unchecked && plan.provenance[name]?.includes('accepted'));
+
+/** The landmarks each value, step and CORA is measured from (measure.ts, analysis.ts). JLCA's sign also follows the leg's
+ * axis, from any two of the hip, knee and ankle, which no single one of them decides. */
+const HEAD = 'femoralHeadContour', KNEE = 'kneeCentre', ANKLE = 'ankleCentre';
+const CONDYLES = ['femoralCondyleMedial', 'femoralCondyleLateral'] as const, PLATEAU = ['tibialPlateauMedial', 'tibialPlateauLateral'] as const;
+const FEMORAL_SHAFT = ['femoralShaftProximal', 'femoralShaftDistal'] as const, PLAFOND = ['plafondMedial', 'plafondLateral'] as const;
+export const MEASURED_FROM: Record<Value['key'] | 'subluxation' | 'coraFemur' | 'coraTibia', readonly LandmarkName[]> = {
+  mLPFA: [HEAD, KNEE, 'greaterTrochanterTip'], mLDFA: [HEAD, KNEE, ...CONDYLES], aLDFA: [...FEMORAL_SHAFT, ...CONDYLES],
+  MPTA: [KNEE, ANKLE, ...PLATEAU], LDTA: [KNEE, ANKLE, ...PLAFOND], JLCA: [...CONDYLES, ...PLATEAU], AMA: [HEAD, KNEE, ...FEMORAL_SHAFT],
+  HKA: [HEAD, KNEE, ANKLE], MAD: [HEAD, KNEE, ANKLE], WBL: [HEAD, ANKLE, ...PLATEAU],
+  femurLength: [HEAD, KNEE], tibiaLength: [KNEE, ANKLE], limbLength: [HEAD, ANKLE], subluxation: [...CONDYLES, ...PLATEAU],
+  coraFemur: [HEAD, KNEE, ANKLE, 'greaterTrochanterTip', ...CONDYLES], coraTibia: [HEAD, KNEE, ANKLE, ...PLATEAU, ...PLAFOND],
+};
+
+/** The values (and CORAs) measured from a landmark that is still the model's unchecked suggestion as it was: each is
+ * marked beside it, in the panel and the report, until the reader moves or places that landmark. */
+export function fromUnchecked(plan: LegPlan): Set<keyof typeof MEASURED_FROM> {
+  const keys = Object.keys(MEASURED_FROM) as Array<keyof typeof MEASURED_FROM>;
+  return new Set(keys.filter(key => MEASURED_FROM[key].some(name => uncheckedAsSuggested(plan, name))));
 }
 
 /** A dragged suggestion, let go: the reader's landmark, the dragged point moved and the landmark's other points (the
@@ -164,7 +191,8 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
     // A point placed by hand replaces the landmark's suggestion. The landmark keeps its model only while points the
     // model gave remain (an outline taking one more point), and stays marked as shown a suggestion.
     const shown = plan.origin?.[name]?.shown || plan.suggested?.points[name], kept = contour ? plan.origin?.[name] : undefined;
-    const origin = shown ? { ...plan.origin, [name]: { shown: true as const, ...(kept?.model ? { model: kept.model } : {}), ...(kept?.construction ? { construction: kept.construction } : {}) } } : plan.origin;
+    const origin = shown ? { ...plan.origin, [name]: { shown: true as const, ...(kept?.model ? { model: kept.model } : {}), ...(kept?.model && kept.unchecked ? { unchecked: true as const } : {}),
+      ...(kept?.construction ? { construction: kept.construction } : {}) } } : plan.origin;
     const next = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: provenance }, origin }, name);
     // The head's outline takes points until it has three; clicked again later, it takes more.
     const stay = contour && points.length < CONTOUR_MINIMUM;

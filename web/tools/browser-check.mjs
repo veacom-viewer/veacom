@@ -251,7 +251,7 @@ try {
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
       const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);
-      check(model.ok && model.channels === 22 && model.finite, `landmark model: ${JSON.stringify(model)}`);
+      check(model.ok && model.channels === 26 && model.finite, `landmark model: ${JSON.stringify(model)}`);
       check(model.threads === model.expected && model.kept === 2, `landmark model threads and cache: ${JSON.stringify(model)}`);
       await checkFilePicker(page);
       await page.evaluate(checkQueuedImports);

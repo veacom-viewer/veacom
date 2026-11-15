@@ -233,7 +233,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       </g>;
     }))}
     {/* The model's suggestions, until the reader accepts or moves them: a dashed ring with a cross and a question mark, so
-        they read apart from landmarks by shape as well as colour. Nothing is drawn or measured from them. */}
+        they read apart from landmarks by shape as well as colour, and a dashed diamond where the model's channel has no
+        check on real films. Nothing is drawn or measured from them. */}
     {/* Not in pictures, reports or videos: an unaccepted suggestion is not part of the plan. */}
     {!simulating && plan.plan.suggested && <g data-testid="deformity-suggestions" data-export-exclude>
       {(() => {
@@ -245,11 +246,13 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       })()}
       {LANDMARKS.flatMap(name => (plan.plan.suggested!.points[name] ?? []).map((p, index) => {
         // The head's outline points are smaller: eight of them sit close together on the circle.
-        const [x, y] = at(p), r = isContour(name) ? 4.5 : 7;
-        return <g key={`suggested-${name}-${index}`} data-suggestion={name}>
-          <circle cx={x} cy={y} r={r} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} />
+        const [x, y] = at(p), r = isContour(name) ? 4.5 : 7, unchecked = plan.plan.suggested!.unchecked?.includes(name);
+        const diamond = `${x},${y - 9} ${x + 9},${y} ${x},${y + 9} ${x - 9},${y}`;
+        return <g key={`suggested-${name}-${index}`} data-suggestion={name} data-unchecked={unchecked || undefined}>
+          {unchecked ? <polygon points={diamond} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} /> : <circle cx={x} cy={y} r={r} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} />}
           {!isContour(name) && <path d={`M${x - 3} ${y}h6M${x} ${y - 3}v6`} stroke={COLOUR.suggested} strokeWidth={1.2} />}
-          <circle cx={x} cy={y} r={r} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray={isContour(name) ? '2 2' : '3 2.5'} {...handleProps({ kind: 'suggestion', name, index })} />
+          {unchecked ? <polygon points={diamond} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray="2 3" {...handleProps({ kind: 'suggestion', name, index })} />
+            : <circle cx={x} cy={y} r={r} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray={isContour(name) ? '2 2' : '3 2.5'} {...handleProps({ kind: 'suggestion', name, index })} />}
           {(LANDMARK_MARK[name] || (isContour(name) && index === 0)) && <text x={x + 10 * outward} y={y - 8} textAnchor={outward > 0 ? 'start' : 'end'} fill={COLOUR.suggested} fontSize={11} fontWeight={600}
             stroke="#000" strokeWidth={2.5} paintOrder="stroke">{`${LANDMARK_MARK[name]}?`}</text>}
         </g>;
