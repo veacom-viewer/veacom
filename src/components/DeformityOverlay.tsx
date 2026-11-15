@@ -14,7 +14,7 @@ import { moved } from '../imaging/deformity/osteotomy';
 import { add, fitCircle, rotate, scale, sub, unit, type Point } from '../imaging/deformity/plane';
 import { toImage, toPlane } from '../imaging/deformity/measure';
 import { deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
-import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, settleMoved, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
+import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, putBackSuggestion, settleMoved, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle } from '../usage/tracker';
 
@@ -37,8 +37,8 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
 function finish(held: DragContext & { handle: Handle; moved: boolean; from?: Point; gesture: GestureHandle }, settle: boolean) {
   const handle = held.handle, from = held.from;
   if (held.moved && handle.kind === 'suggestion') {
-    deformity.change(held.key, current => current.active !== held.plan ? current
-      : settle ? settleMoved(current, handle.name, handle.index) : from ? moveHandle(current, handle, from) : current, false);
+    deformity.change(held.key, current => settle && current.active === held.plan ? settleMoved(current, handle.name, handle.index)
+      : from ? putBackSuggestion(current, held.plan, handle.name, handle.index, from) : current, false);
   }
   held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
 }

@@ -4,7 +4,7 @@ import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
-import { acceptSuggestions, clearSuggestions, dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
+import { acceptSuggestions, clearSuggestions, dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, putBackSuggestion, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
 import { MODEL, suggestionsFrom, suggestionTarget } from '../src/ui/landmarkSuggestions';
 import { lateralOnImage } from '../src/imaging/deformity/measure';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
@@ -240,6 +240,11 @@ describe('landmark suggestions', () => {
     current = moveHandle(current, { kind: 'suggestion', name: 'femoralHeadContour', index: 1 }, [101, 151]);
     assert.equal(current.plans[0].points.femoralHeadContour, undefined);
     assert.deepEqual(current.plans[0].suggested?.points.femoralHeadContour?.[1], [101, 151]);
+    // A drag that did not finish (cancelled, or the reader switched plans) puts the point back, on its own plan.
+    const other = { ...current, plans: [...current.plans, { ...current.plans[0], id: 'plan-other' }], active: 'plan-other' };
+    const putBack = putBackSuggestion(other, current.plans[0].id, 'femoralHeadContour', 1, ring[1]);
+    assert.deepEqual(putBack.plans[0].suggested?.points.femoralHeadContour?.[1], ring[1]);
+    assert.deepEqual(putBack.plans[1].suggested?.points.femoralHeadContour?.[1], [101, 151], 'The other plan is left alone.');
     current = settleMoved(current, 'femoralHeadContour', 1);
     plan = current.plans[0];
     assert.deepEqual(plan.provenance.femoralHeadContour, ['accepted', 'moved', 'accepted', 'accepted']);

@@ -141,6 +141,13 @@ export function settleMoved(film: FilmPlans, name: LandmarkName, index: number):
   return withPlan(accepted, { ...plan, provenance: { ...plan.provenance, [name]: provenance } });
 }
 
+/** A suggested point put back on plan `planId` (active or not), as a drag that did not finish leaves it. */
+export function putBackSuggestion(film: FilmPlans, planId: string, name: LandmarkName, index: number, point: Point): FilmPlans {
+  const plan = film.plans.find(item => item.id === planId), suggested = plan?.suggested, points = suggested?.points[name];
+  if (!plan || !suggested || !points || index >= points.length) return film;
+  return withPlan(film, { ...plan, suggested: { ...suggested, points: { ...suggested.points, [name]: points.map((p, i) => i === index ? point : p) } } });
+}
+
 /** The suggestions taken off the active plan; landmarks already accepted stay. */
 export function clearSuggestions(film: FilmPlans): FilmPlans {
   const plan = activePlan(film);
