@@ -104,9 +104,10 @@ tell children, fixators or implants apart.
 
 - A suggestion is a dashed ring with a cross and a question mark ("K?", "A?"), and the row says "suggested". No axis,
   line or value comes from it.
-- Accept takes one landmark as it is; Accept all takes every suggestion; dragging a suggestion moves it and makes it the
-  landmark (for the head, that point moved and the others accepted). Place on a suggested row places the point by hand
-  instead. Clear suggestions removes the ones left. Each of these is one Undo step.
+- Accept takes one landmark as it is; Accept all takes every suggestion. Dragging a suggestion (3 px or more) moves it,
+  and letting go makes it the landmark, moved (for the head, that point moved and the others accepted). Place on a
+  suggested row places the point by hand instead. Clear suggestions removes the ones left. Each of these is one Undo
+  step.
 - The first press downloads the model once (18 MB), with progress and Cancel; a run takes about half a second.
 - The plan file records which points came from the model, accepted or moved, and whether a suggestion was shown
   (docs/deformity-labels.md).

@@ -73,15 +73,19 @@ graphs are seed 0.
 
 The button is off, with the reason on hover, unless:
 
-- the film is greyscale and has a pixel spacing or a calibration (the model works in millimetres; it never assumes one);
+- the film is greyscale (MONOCHROME1 or MONOCHROME2) and has a pixel spacing or a calibration (the model works in
+  millimetres; it never assumes one);
 - the patient's right is known (Patient Orientation, or the reader's answer), and the film is upright: its rows run
   across the patient and its columns towards the feet, as the model was trained;
 - the film fits stage A's canvas, 512 × 1408 mm (a standard 14 × 51 inch long-leg film does);
 - a landmark the model suggests is still unplaced.
 
 Each run suggests the active plan's leg: the leg on the patient's side of the image. A MONOCHROME1 film is inverted, so
-bone is bright as in training. When stage A's hip, knee and ankle are not in that order down the film, the model did not
-find the leg (a film of one leg, or not a long-leg film) and nothing is suggested.
+bone is bright as in training (checked: an inverted MONOCHROME1 copy of a BMPLE film gives the same values). Nothing is
+suggested when the model did not find two legs: the leg's hip, knee and ankle must come down the film in that order, and
+the image's left leg must lie left of its right leg. A BMPLE film with one leg blanked out gave no suggestions, so a
+film of one leg gets none. A point that falls off the film is not suggested. While the osteotomy's simulation shows,
+suggestions are not drawn and cannot be accepted, and they never appear in pictures, reports or videos.
 
 The heatmap peak probability (stage B's confidence) is not used to hold points back: on BMPLE test it does not separate
 good points from bad. The largest errors, 12 to 20 mm, had peaks of 0.06 to 0.07, as high as most correct points.
@@ -102,7 +106,7 @@ only request is for the model's two files, the first time.
 
 | | Files from | Kept in | Runtime |
 | --- | --- | --- | --- |
-| Browser | `models/` on the site itself, which CI fills from the release and checks against the hashes (`web/site/prepare.mjs`); the browser checks each file's integrity as it arrives | Cache Storage | onnxruntime-web 1.31.1, WebAssembly with SIMD, on 4 threads where the page is cross-origin isolated (viewer.veacom.app is), one otherwise |
+| Browser | `models/` on the site itself, which CI fills from the release and checks against the hashes (`web/site/prepare.mjs`); the page checks each file's hash before keeping it | Cache Storage | onnxruntime-web 1.31.1, WebAssembly with SIMD, on 4 threads where the page is cross-origin isolated (viewer.veacom.app is), one otherwise |
 | Desktop | the release, through GitHub's release download path and file hosts only (as updates are) | `userData/landmark-model`, checked again before use | the same, on one thread |
 
 The files are assets of release v0.1.0-beta.3, next to its installers. The installer scripts and the update check

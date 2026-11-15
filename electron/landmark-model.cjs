@@ -33,12 +33,18 @@ function createLandmarkModel({ userData, fetchImpl = globalThis.fetch, notify = 
       notify(part, received);
     }
     const bytes = Buffer.concat(chunks);
-    if (bytes.length !== entry.bytes || sha256(bytes) !== entry.sha256) throw new Error('The model file does not match its checksum.');
-    await fs.mkdir(folder, { recursive: true });
-    // Written beside its place and renamed into it, so a half-written file is never kept.
+    if (bytes.length !== entry.bytes || sha256(bytes) !== entry.sha256) throw new Error('checksum');
+    // Written beside its place and renamed into it, so a half-written file is never kept. A folder that cannot be
+    // written (full, read-only) costs a download next time; the checked bytes are used now.
     const target = path.join(folder, `${entry.sha256}.onnx`), partial = `${target}.${process.pid}.part`;
-    await fs.writeFile(partial, bytes, { mode: 0o600 });
-    await fs.rename(partial, target);
+    try {
+      await fs.mkdir(folder, { recursive: true });
+      await fs.writeFile(partial, bytes, { mode: 0o600 });
+      await fs.rename(partial, target);
+    } catch (error) {
+      await fs.rm(partial, { force: true }).catch(() => {});
+      process.stderr.write(`The landmark model was not kept: ${error.message}\n`);
+    }
     return bytes;
   }
 
@@ -52,8 +58,8 @@ function createLandmarkModel({ userData, fetchImpl = globalThis.fetch, notify = 
       pending.set(part, result);
       return result;
     },
-    /** Stops the downloads under way; the next request starts again. */
-    cancel() { controller.abort(); controller = new AbortController(); },
+    /** Stops the downloads under way; the next request starts again rather than joining a stopped one. */
+    cancel() { controller.abort(); controller = new AbortController(); pending.clear(); },
   };
 }
 

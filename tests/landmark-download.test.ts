@@ -50,9 +50,28 @@ describe('the model\'s graphs on the desktop', () => {
     const { entry } = graph(), wrong = Buffer.from(graph().bytes).fill(1);
     const { model, userData } = await setup(wrong, entry);
     await assert.rejects(model.get('stageA'), /checksum/);
-    await assert.rejects(readdir(path.join(userData, 'landmark-model')));
+    await assert.rejects(readdir(path.join(userData, 'landmark-model')), 'Nothing is kept.');
     await assert.rejects(model.get('../../secrets'), /Unknown model file/);
     await assert.rejects(model.get('toString'), /Unknown model file/);
+  });
+
+  it('starts again after Cancel instead of joining the stopped download', async () => {
+    const { bytes, entry } = graph();
+    const userData = await mkdtemp(path.join(tmpdir(), 'veacom-model-test-'));
+    directories.push(userData);
+    let calls = 0;
+    // The first download never ends unless it is stopped; the second answers.
+    const fetchImpl = mock.fn((url: string, init: { signal: AbortSignal }) => {
+      if (url.startsWith('https://github.com/')) return Promise.resolve(new Response(null, { status: 302, headers: { location: 'https://release-assets.githubusercontent.com/synthetic' } }));
+      if (calls++ === 0) return new Promise<Response>((_, reject) => init.signal.addEventListener('abort', () => reject(new Error('aborted'))));
+      return Promise.resolve(new Response(new Uint8Array(bytes)));
+    });
+    const model = createLandmarkModel({ userData, fetchImpl, manifest: { ...manifest, files: { ...manifest.files, stageA: entry } } });
+    const first = model.get('stageA');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    model.cancel();
+    await assert.rejects(first, /aborted/);
+    assert.deepEqual(Buffer.from(await model.get('stageA')), bytes);
   });
 
   it('downloads again when the kept file was changed', async () => {
@@ -80,7 +99,7 @@ describe('the model\'s graphs in the browser', () => {
     return { entries, store: { open: async () => cache } as unknown as CacheStorage };
   }
 
-  it('fetches from the site with the hash as its integrity, keeps it, and drops an earlier model\'s files', async () => {
+  it('fetches from the site, checks the hash before keeping it, and drops an earlier model\'s files', async () => {
     const { bytes, entry } = graph(), original = { ...manifest.files.stageB };
     Object.assign(manifest.files.stageB, entry);
     try {
@@ -90,9 +109,7 @@ describe('the model\'s graphs in the browser', () => {
       const base = 'https://viewer.example/', progress: number[] = [];
       const got = await landmarkModel('stageB', received => progress.push(received), { fetchImpl: fetchImpl as unknown as typeof fetch, store, base });
       assert.deepEqual(Buffer.from(got), bytes);
-      const [url, init] = fetchImpl.mock.calls[0].arguments;
-      assert.equal(url, `${base}models/${entry.file}`);
-      assert.equal(init.integrity, `sha256-${Buffer.from(entry.sha256, 'hex').toString('base64')}`);
+      assert.equal(fetchImpl.mock.calls[0].arguments[0], `${base}models/${entry.file}`);
       assert.equal(progress.at(-1), bytes.length);
       assert.deepEqual([...entries.keys()], [`${base}models/${entry.file}`]);
       assert.deepEqual(Buffer.from(await landmarkModel('stageB', undefined, { fetchImpl: fetchImpl as unknown as typeof fetch, store, base })), bytes);
@@ -106,6 +123,11 @@ describe('the model\'s graphs in the browser', () => {
       await assert.rejects(landmarkModel('stageB', undefined, { fetchImpl: long as unknown as typeof fetch, store: undefined, base }), /larger/);
       const short = mock.fn(async () => new Response(bytes.subarray(1)));
       await assert.rejects(landmarkModel('stageB', undefined, { fetchImpl: short as unknown as typeof fetch, store: undefined, base }), /incomplete/);
+      // A file of the right size but other bytes is refused and never kept.
+      const { store: fresh, entries: none } = storage();
+      const forged = mock.fn(async () => new Response(Buffer.alloc(entry.bytes, 7)));
+      await assert.rejects(landmarkModel('stageB', undefined, { fetchImpl: forged as unknown as typeof fetch, store: fresh, base }), /checksum/);
+      assert.equal(none.size, 0);
     } finally { Object.assign(manifest.files.stageB, original); }
   });
 });

@@ -16,7 +16,7 @@ export interface SuggestRequest {
   film: { pixels: PixelArray; columns: number; rows: number; mm: [number, number]; invert: boolean };
   leg: ImageLeg;
 }
-export type SuggestReply = { id: number; ok: true; anchors: Anchors; channels: Partial<Record<Channel, ChannelPoint>>; threads: number;
+export type SuggestReply = { id: number; ok: true; anchors: Record<ImageLeg, Anchors>; channels: Partial<Record<Channel, ChannelPoint>>; threads: number;
   timings: { window: number; stageA: number; crops: number; stageB: number } } | { id: number; ok: false; error: string };
 
 // The browser build requires Trusted Types in Workers too: onnxruntime starts its threads from its own script, on this site.
@@ -40,7 +40,7 @@ async function suggest(request: SuggestRequest): Promise<SuggestReply> {
   const window = lap();
   const coarse = await a.run({ canvas: new ort.Tensor('float32', canvas, [1, 1, STAGE_A.rows, STAGE_A.columns]) });
   const logits = coarse.heatmap_logits;
-  const anchors = decodeStageA(logits.data as Float32Array, logits.dims[2], logits.dims[3], scale)[request.leg];
+  const legs = decodeStageA(logits.data as Float32Array, logits.dims[2], logits.dims[3], scale), anchors = legs[request.leg];
   const stageA = lap();
   const centres = CROP_KINDS.map(kind => cropCentre(kind, request.leg, anchors, mm)), area = STAGE_B.size * STAGE_B.size;
   const crops = new Float32Array(centres.length * area);
@@ -48,7 +48,7 @@ async function suggest(request: SuggestRequest): Promise<SuggestReply> {
   const cropTime = lap();
   const fine = await b.run({ crops: new ort.Tensor('float32', crops, [centres.length, 1, STAGE_B.size, STAGE_B.size]) });
   const channels = readStageB(fine.coords.data as Float32Array, fine.confidence.data as Float32Array, CROP_KINDS, centres, mm, mirror);
-  return { id: request.id, ok: true, anchors, channels, threads: ort.env.wasm.numThreads ?? 1, timings: { window, stageA, crops: cropTime, stageB: lap() } };
+  return { id: request.id, ok: true, anchors: legs, channels, threads: ort.env.wasm.numThreads ?? 1, timings: { window, stageA, crops: cropTime, stageB: lap() } };
 }
 
 self.onmessage = ({ data }: MessageEvent<SuggestRequest>) => {

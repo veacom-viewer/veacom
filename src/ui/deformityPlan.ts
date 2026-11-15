@@ -131,6 +131,15 @@ export function acceptSuggestions(film: FilmPlans, names?: LandmarkName[]): Film
   return withPlan(film, plan);
 }
 
+/** A dragged suggestion, let go: the reader's landmark, the dragged point moved and the landmark's other points (the
+ * head's outline) accepted as they were. */
+export function settleMoved(film: FilmPlans, name: LandmarkName, index: number): FilmPlans {
+  const accepted = acceptSuggestions(film, [name]), plan = activePlan(accepted), provenance = [...(plan.provenance[name] ?? [])];
+  if (index >= provenance.length || accepted === film) return film;
+  provenance[index] = 'moved';
+  return withPlan(accepted, { ...plan, provenance: { ...plan.provenance, [name]: provenance } });
+}
+
 /** The suggestions taken off the active plan; landmarks already accepted stay. */
 export function clearSuggestions(film: FilmPlans): FilmPlans {
   const plan = activePlan(film);
@@ -180,19 +189,18 @@ export function dragContinues(held: DragContext, now: DragContext): 'move' | 'ig
   return now.key === held.key && now.plan === held.plan ? 'move' : 'stop';
 }
 
-/** What a handle on the film moves. A suggestion moved becomes the reader's landmark, its other points accepted. */
+/** What a handle on the film moves. A suggestion dragged moves as a suggestion, and becomes the reader's landmark when it
+ * is let go (settleMoved). */
 export type Handle = { kind: 'landmark'; name: LandmarkName; index: number } | { kind: 'suggestion'; name: LandmarkName; index: number } | { kind: 'marker'; index: number }
   | { kind: 'cut'; index: 0 | 1 } | { kind: 'hinge' } | { kind: 'fragment'; index: number };
 
 export function moveHandle(film: FilmPlans, handle: Handle, point: Point): FilmPlans {
   const plan = activePlan(film);
   if (handle.kind === 'suggestion') {
-    const suggested = plan.suggested?.points[handle.name];
-    // The rest of the drag moves the landmark the first move made.
-    if (!suggested) return moveHandle(film, { ...handle, kind: 'landmark' }, point);
-    if (handle.index >= suggested.length) return film;
-    const accepted = activePlan(acceptSuggestions(film, [handle.name]));
-    return moveHandle(withPlan(film, accepted), { ...handle, kind: 'landmark' }, point);
+    // The suggestion itself moves, so the handle under the pointer stays the same element for the whole drag.
+    const suggested = plan.suggested, points = suggested?.points[handle.name];
+    if (!suggested || !points || handle.index >= points.length) return film;
+    return withPlan(film, { ...plan, suggested: { ...suggested, points: { ...suggested.points, [handle.name]: points.map((p, i) => i === handle.index ? point : p) } } });
   }
   if (handle.kind === 'landmark') {
     const points = [...(plan.points[handle.name] ?? [])], provenance = [...(plan.provenance[handle.name] ?? [])];

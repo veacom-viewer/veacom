@@ -113,6 +113,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const [suggestTimes, setSuggestTimes] = useState<Record<string, number> | null>(null);
   const suggestRun = useRef<AbortController | null>(null);
   useEffect(() => () => suggestRun.current?.abort(), []);
+  // The film the pane shows now, for a run that ends after the reader paged or calibrated.
+  const shownFilm = useRef({ key: '', frame: null as ReturnType<typeof sourceFrameSeries> | null });
   useLayoutEffect(() => {
     return () => { operationGeneration.current++; };
   }, [frame, film, hidePatientData, locale]);
@@ -129,6 +131,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     window.addEventListener('keydown', stop, true);
     return () => window.removeEventListener('keydown', stop, true);
   }, [placing]);
+  useLayoutEffect(() => { shownFilm.current = { key, frame }; });
   if (!film) return <section className="deformity-panel" data-testid="deformity-panel" aria-label={t('deformity.title')} />;
   const view = planView(film, frame), plan = view.plan, leg = view.leg, tag = calibrationTag(frame, 'auto');
   const change = (update: (current: FilmPlans) => FilmPlans) => deformity.change(key, update);
@@ -197,18 +200,22 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, leg, graphs, controller.signal);
       const total = reply.total;
       setSuggestTimes({ total, ...reply.timings, threads: reply.threads });
-      // The suggestions belong to the plan and leg the model ran for.
-      const live = deformity.get().films[key], again = live ? suggestionTarget(planView(live, frame), frame) : null;
-      if (!live || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg) { setStatus(t('deformity.suggestChanged')); return; }
-      const found = suggestionsFrom(reply.anchors, reply.channels, mm);
+      // The suggestions belong to the film, plan, leg and scale the model ran with: paged, switched or calibrated since,
+      // they are not put on.
+      const now = shownFilm.current, live = deformity.get().films[key], liveView = live && now.frame ? planView(live, now.frame) : null;
+      const again = liveView && now.frame ? suggestionTarget(liveView, now.frame) : null;
+      if (now.key !== key || !live || !liveView || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg
+        || liveView.mm?.[0] !== mm[0] || liveView.mm[1] !== mm[1]) { setStatus(t('deformity.suggestChanged')); return; }
+      const found = suggestionsFrom(reply.anchors, leg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
       if (!found) { setStatus(t('deformity.suggestNone')); return; }
       deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL));
       const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
+      const known = { checksum: 'deformity.suggestChecksum', unavailable: 'deformity.suggestUnavailable', download: 'deformity.suggestDownload' } as const;
       setStatus(controller.signal.aborted ? t('deformity.suggestCancelled')
-        : t('deformity.suggestFailed', { reason: reason === 'checksum' ? t('deformity.suggestChecksum') : reason === 'unavailable' ? t('deformity.suggestUnavailable') : reason }));
+        : t('deformity.suggestFailed', { reason: Object.hasOwn(known, reason) ? t(known[reason as keyof typeof known]) : reason }));
     } finally {
       if (suggestRun.current === controller) { suggestRun.current = null; setSuggesting(null); }
     }
@@ -217,6 +224,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   // The model's plateau points sit inboard of the rim (its training labels' convention): the plateau's width, and so
   // WBL and the joint offset, are short while they stay where the model put them.
   const plateauInboard = (['tibialPlateauMedial', 'tibialPlateauLateral'] as const).some(name => plan.origin?.[name]?.model && plan.provenance[name]?.includes('accepted'));
+  // While the simulation shows, the film's fragment is drawn moved and suggestions are not drawn: none can be accepted.
+  const simulated = state.simulate && Boolean(view.simulation);
+  const fromModel = Boolean(plan.suggested) || LANDMARKS.some(name => plan.origin?.[name]?.model);
 
   // Saving, opening and the report: only when the reader asks.
   const saveFile = async () => {
@@ -373,14 +383,17 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             <span className="deformity-hint" role="status" data-testid="deformity-suggest-progress">{suggesting.received === null ? t('deformity.suggestRunning')
               : t('deformity.suggestDownloading', { received: (suggesting.received / 1e6).toFixed(1), total: (MODEL_BYTES / 1e6).toFixed(1) })}</span>
             <button type="button" className="secondary-button compact" data-action="deformity-suggest-cancel" onClick={cancelSuggest}>{t('deformity.suggestCancel')}</button>
-          </> : <button type="button" className="secondary-button compact" data-action="deformity-suggest" disabled={'block' in target}
-            data-tooltip={'block' in target ? t(`deformity.suggestBlock.${target.block}` as MessageKey) : undefined} onClick={() => void suggest()}>{t('deformity.suggest')}</button>}
+          </> : <button type="button" className="secondary-button compact" data-action="deformity-suggest" disabled={'block' in target || simulated}
+            data-tooltip={'block' in target ? t(`deformity.suggestBlock.${target.block}` as MessageKey) : simulated ? t('deformity.suggestSimulated') : undefined}
+            onClick={() => void suggest()}>{t('deformity.suggest')}</button>}
           {plan.suggested && !suggesting && <>
-            <button type="button" className="secondary-button compact" data-action="deformity-suggest-accept-all" onClick={() => change(current => acceptSuggestions(current))}>{t('deformity.acceptAll')}</button>
+            <button type="button" className="secondary-button compact" data-action="deformity-suggest-accept-all" disabled={simulated}
+              data-tooltip={simulated ? t('deformity.suggestSimulated') : undefined} onClick={() => change(current => acceptSuggestions(current))}>{t('deformity.acceptAll')}</button>
             <button type="button" className="text-button" data-action="deformity-suggest-clear" onClick={() => change(clearSuggestions)}>{t('deformity.clearSuggestions')}</button>
           </>}
         </div>
-        <p className="deformity-caution" role="note">{t('deformity.suggestTrained')}</p>
+        {/* A caution while the model's points are on the plan; until then, what the button would do. */}
+        <p className={fromModel ? 'deformity-caution' : 'deformity-note'} role="note">{t('deformity.suggestTrained')}</p>
         {plan.suggested && <p className="deformity-note">{t('deformity.suggestHeld')}</p>}
       </div>
       {placing?.kind === 'landmark' && <p className="deformity-hint" role="status" data-testid="deformity-next" data-landmark={placing.name}>
@@ -395,7 +408,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             <span className="deformity-name">{t(LANDMARK_TEXT[name].name)}{isContour(name) && placedCount(name) ? ` · ${t('deformity.pointsCount', { count: placedCount(name) })}` : ''}
               {suggested && <span className="deformity-missing"> · {t('deformity.suggested')}</span>}</span>
             <span className="deformity-row-actions">
-              {suggested && <button type="button" className="text-button" data-action="deformity-suggest-accept" onClick={() => change(current => acceptSuggestions(current, [name]))}>{t('deformity.accept')}</button>}
+              {suggested && <button type="button" className="text-button" data-action="deformity-suggest-accept" disabled={simulated}
+                aria-label={t('deformity.acceptNamed', { name: t(LANDMARK_TEXT[name].name) })} data-tooltip={simulated ? t('deformity.suggestSimulated') : undefined}
+                onClick={() => change(current => acceptSuggestions(current, [name]))}>{t('deformity.accept')}</button>}
               <button type="button" className="text-button" data-action="deformity-place" disabled={isContour(name) && placedCount(name) >= CONTOUR_MAXIMUM}
                 onClick={() => startPlacing(name)}>{done(name) ? t(isContour(name) ? 'deformity.addPoint' : 'deformity.again') : t('deformity.place')}</button>
             </span>

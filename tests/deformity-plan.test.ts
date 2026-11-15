@@ -4,7 +4,7 @@ import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, type FilmPlans } from '../src/ui/deformityStore';
-import { acceptSuggestions, clearSuggestions, dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
+import { acceptSuggestions, clearSuggestions, dragContinues, imageSideOnScreen, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
 import { MODEL, suggestionsFrom, suggestionTarget } from '../src/ui/landmarkSuggestions';
 import { lateralOnImage } from '../src/imaging/deformity/measure';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
@@ -234,9 +234,13 @@ describe('landmark suggestions', () => {
     assert.deepEqual(plan.provenance.kneeCentre, ['accepted']);
     assert.deepEqual(plan.origin?.kneeCentre, { shown: true, model: MODEL });
     assert.equal(plan.suggested?.points.kneeCentre, undefined);
-    // Moving one point of the suggested outline makes the outline the reader's: that point moved, the others accepted.
+    // Dragging one point of the suggested outline moves the suggestion, still unmeasured; let go, the outline is the
+    // reader's: that point moved, the others accepted.
     current = moveHandle(current, { kind: 'suggestion', name: 'femoralHeadContour', index: 1 }, [101, 152]);
     current = moveHandle(current, { kind: 'suggestion', name: 'femoralHeadContour', index: 1 }, [101, 151]);
+    assert.equal(current.plans[0].points.femoralHeadContour, undefined);
+    assert.deepEqual(current.plans[0].suggested?.points.femoralHeadContour?.[1], [101, 151]);
+    current = settleMoved(current, 'femoralHeadContour', 1);
     plan = current.plans[0];
     assert.deepEqual(plan.provenance.femoralHeadContour, ['accepted', 'moved', 'accepted', 'accepted']);
     assert.deepEqual(plan.points.femoralHeadContour?.[1], [101, 151]);
@@ -280,7 +284,7 @@ describe('landmark suggestions', () => {
 
   it('are saved with the model and its hashes, accepted against moved, and opened again as they were', async () => {
     let current = suggested();
-    current = acceptSuggestions(moveHandle(current, { kind: 'suggestion', name: 'tibialPlateauMedial', index: 0 }, [231, 529]));
+    current = acceptSuggestions(settleMoved(moveHandle(current, { kind: 'suggestion', name: 'tibialPlateauMedial', index: 0 }, [231, 529]), 'tibialPlateauMedial', 0));
     current = place(current, { film: key, kind: 'landmark', name: 'plafondMedial' }, [225, 890], frame).film;
     const file = await planFile(current, frame), labels = Object.fromEntries(file.plans[0].landmarks.map(label => [label.name, label]));
     assert.deepEqual(labels.kneeCentre.confidence, { model: 'veacom-landmarks-r2', sha256: { stageA: MODEL.sha256.stageA, stageB: MODEL.sha256.stageB } });
@@ -329,10 +333,15 @@ describe('landmark suggestions', () => {
     assert.deepEqual(suggestionTarget(planView(done, frame), frame), { block: 'placed' });
   });
 
-  it('are kept only when the hip, knee and ankle come down the film in that order', () => {
-    const channels = { kneeCentre: { point: [200, 500] as Point, confidence: 0.06 } };
-    assert.deepEqual(Object.keys(suggestionsFrom({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, channels, [0.33, 0.33])!), ['kneeCentre']);
-    assert.equal(suggestionsFrom({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }, channels, [0.33, 0.33]), null);
+  it('are kept only when the model found two legs, the leg\'s hip, knee and ankle down the film, and only on the film', () => {
+    const channels = { kneeCentre: { point: [200, 500] as Point, confidence: 0.06 }, ankleCentre: { point: [205, 1001] as Point, confidence: 0.06 } };
+    const right = { hip: [300, 120] as Point, knee: [290, 500] as Point, ankle: [295, 900] as Point }, size = [400, 1000] as const, mm = [0.33, 0.33] as const;
+    const legs = (left: { hip: Point; knee: Point; ankle: Point }) => ({ left, right });
+    assert.deepEqual(Object.keys(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size)!), ['kneeCentre'],
+      'The ankle centre a pixel below the film is left out.');
+    assert.equal(suggestionsFrom(legs({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null, 'The hip below the knee.');
+    assert.equal(suggestionsFrom(legs({ hip: [310, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null,
+      'The image\'s left leg found right of its right leg: both on one leg.');
   });
 });
 

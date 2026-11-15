@@ -6,6 +6,7 @@ import manifest from '../../electron/landmark-model.json';
 import type { PixelArray, Series, Volume } from '../model';
 import { projectionOf } from '../imaging/radiograph';
 import { canvasSize, kitSuggestions, modelLeg, SUGGESTED, type Anchors, type ImageLeg, type Suggestion } from '../imaging/deformity/suggest';
+import type { Point } from '../imaging/deformity/plane';
 import type { LandmarkName } from '../imaging/deformity/landmarks';
 import type { SuggestReply, SuggestRequest } from '../imaging/deformity/suggest.worker';
 import type { ModelRef } from './deformityStore';
@@ -18,14 +19,14 @@ export const MODEL_BYTES = MODEL_PARTS.reduce((sum, part) => sum + manifest.file
 export const MODEL: ModelRef = { model: manifest.name, sha256: { stageA: manifest.files.stageA.sha256, stageB: manifest.files.stageB.sha256 } };
 
 /** Why the button is off: the side is not known, the film is not upright, it has no millimetres, it is larger than the
- * model's canvas, it is in colour, or every suggested landmark is placed. */
+ * model's canvas, it is not greyscale (colour or a palette), or every suggested landmark is placed. */
 type SuggestBlock = 'side' | 'upright' | 'spacing' | 'size' | 'colour' | 'placed';
 
 /** The film's leg for the active plan, or why the model cannot run on it. The model was trained on upright greyscale
  * films with their pixel spacing, hips at the top: its rows must run across the patient and its columns towards the
  * feet, as Patient Orientation says (or as the reader answered, for the side). */
 export function suggestionTarget(view: PlanView, frame: Series): { leg: ImageLeg } | { block: SuggestBlock } {
-  if (frame.components === 3) return { block: 'colour' };
+  if (frame.components === 3 || !/^MONOCHROME[12]$/i.test(frame.photometricInterpretation)) return { block: 'colour' };
   if (!view.mm) return { block: 'spacing' };
   if (!view.lateral) return { block: 'side' };
   const orientation = projectionOf(frame)?.patientOrientation, leg = modelLeg(view.lateral);
@@ -48,25 +49,31 @@ const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map(byte => byte.
 
 /** The model's graphs, fetched by the app (desktop: main process, cached in userData; browser: this site, cached in
  * Cache Storage) and checked here against the SHA-256 the app was built with. Kept for the session once checked. */
-let models: Promise<Record<ModelPart, ArrayBuffer>> | null = null;
+interface Loading { loading: Promise<Record<ModelPart, ArrayBuffer>>; loaded: boolean }
+let models: Loading | null = null;
+/** Fails with `unavailable` (no way to fetch them), `download` (not received) or `checksum` (not the files expected). */
 export function loadModel(onProgress: (received: number) => void): Promise<Record<ModelPart, ArrayBuffer>> {
   const fetchPart = window.veacom?.landmarkModel;
   if (!fetchPart) return Promise.reject(new Error('unavailable'));
-  if (models) return models;
+  if (models) return models.loading;
   const received: Record<ModelPart, number> = { stageA: 0, stageB: 0 };
   const loading = Promise.all(MODEL_PARTS.map(async part => {
-    const bytes = await fetchPart(part, count => { received[part] = count; onProgress(received.stageA + received.stageB); });
+    const bytes = await fetchPart(part, count => { received[part] = count; onProgress(received.stageA + received.stageB); })
+      .catch((error: unknown) => { throw new Error((error as Error | null)?.message === 'checksum' ? 'checksum' : 'download', { cause: error }); });
     if (bytes.byteLength !== manifest.files[part].bytes || hex(await crypto.subtle.digest('SHA-256', bytes)) !== manifest.files[part].sha256) throw new Error('checksum');
     return [part, bytes] as const;
   })).then(parts => Object.fromEntries(parts) as Record<ModelPart, ArrayBuffer>);
-  models = loading;
+  const entry: Loading = { loading, loaded: false };
+  models = entry;
   // A load that failed is not kept: the next press tries again. The caller gets the failure from `loading` itself.
-  loading.catch(() => { if (models === loading) models = null; });
+  loading.then(() => { entry.loaded = true; }, () => { if (models === entry) models = null; });
   return loading;
 }
 
-/** Stops a model download under way (desktop: main process's download; browser: the fetch). */
+/** Stops a model download under way (desktop: main process's download; browser: the fetch). Graphs already checked
+ * are kept. */
 export function cancelModelDownload() {
+  if (!models || models.loaded) return;
   models = null;
   void window.veacom?.cancelLandmarkModel?.();
 }
@@ -101,9 +108,13 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
   });
 }
 
-/** The kit's suggestions from a run, or null when its hip, knee and ankle are not in that order down the film: the
- * model then did not find this leg (a film of one leg, or not a long-leg film). */
-export function suggestionsFrom(anchors: Anchors, channels: Extract<SuggestReply, { ok: true }>['channels'], mm: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> | null {
-  if (!(anchors.hip[1] < anchors.knee[1] && anchors.knee[1] < anchors.ankle[1])) return null;
-  return kitSuggestions(channels, mm);
+/** The kit's suggestions from a run, or null when the model did not find two legs: the leg's hip, knee and ankle must
+ * come down the film in that order, and the image's left leg must lie left of its right leg (a film of one leg, or not
+ * a long-leg film, can fail either). A suggestion with a point off the film is left out. */
+export function suggestionsFrom(legs: Record<ImageLeg, Anchors>, leg: ImageLeg, channels: Extract<SuggestReply, { ok: true }>['channels'],
+  mm: readonly [number, number], size: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> | null {
+  const { hip, knee, ankle } = legs[leg];
+  if (!(hip[1] < knee[1] && knee[1] < ankle[1]) || !(legs.left.hip[0] < legs.right.hip[0])) return null;
+  const onFilm = (p: Point) => p[0] >= 0 && p[0] <= size[0] && p[1] >= 0 && p[1] <= size[1];
+  return Object.fromEntries(Object.entries(kitSuggestions(channels, mm)).filter(([, item]) => item.points.every(onFilm)));
 }

@@ -1,7 +1,8 @@
 // The landmark model's graphs in the browser build (docs/landmark-model.md). This site serves them beside the page
-// (web/site/prepare.mjs puts them under models/), the browser checks each against its SHA-256 as it arrives
-// (Subresource Integrity), and Cache Storage keeps them, so a later visit downloads nothing. The graphs of an earlier
-// model are dropped from the cache. src/ui/landmarkSuggestions.ts checks them again before use.
+// (web/site/prepare.mjs puts them under models/); each is checked against its size and SHA-256 before Cache Storage
+// keeps it, so a later visit downloads nothing. The graphs of an earlier model are dropped from the cache.
+// src/ui/landmarkSuggestions.ts checks them again before use. No Subresource Integrity: with it, fetch() gives nothing
+// until the whole file has arrived, so the download could show no progress.
 import manifest from '../../electron/landmark-model.json';
 
 type Part = keyof typeof manifest.files;
@@ -9,7 +10,6 @@ const CACHE = 'veacom-landmark-model';
 let controller = new AbortController();
 
 const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map(byte => byte.toString(16).padStart(2, '0')).join('');
-const integrity = (sha256: string) => `sha256-${btoa(String.fromCharCode(...sha256.match(/../g)!.map(byte => parseInt(byte, 16))))}`;
 
 export async function landmarkModel(part: Part, onProgress?: (received: number) => void,
   { fetchImpl = fetch, store = globalThis.caches as CacheStorage | undefined, base = location.href } = {}): Promise<ArrayBuffer> {
@@ -25,7 +25,7 @@ export async function landmarkModel(part: Part, onProgress?: (received: number) 
     if (bytes.byteLength === entry.bytes && hex(await crypto.subtle.digest('SHA-256', bytes)) === entry.sha256) return bytes;
     await cache!.delete(url);
   }
-  const response = await fetchImpl(url, { integrity: integrity(entry.sha256), credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+  const response = await fetchImpl(url, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
   if (!response.ok || !response.body) throw new Error(`The model file was not served (HTTP ${response.status}).`);
   const bytes = new Uint8Array(entry.bytes), reader = response.body.getReader();
   let received = 0;
@@ -37,6 +37,7 @@ export async function landmarkModel(part: Part, onProgress?: (received: number) 
     onProgress?.(received);
   }
   if (received !== entry.bytes) throw new Error('The model file is incomplete.');
+  if (hex(await crypto.subtle.digest('SHA-256', bytes)) !== entry.sha256) throw new Error('checksum');
   // A cache that refuses the file (its quota, private browsing) costs only a download next time: the checked bytes are used now.
   await cache?.put(url, new Response(bytes.slice(0), { headers: { 'Content-Type': 'application/octet-stream' } })).catch(() => {});
   return bytes.buffer;

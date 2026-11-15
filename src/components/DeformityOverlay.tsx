@@ -14,7 +14,7 @@ import { moved } from '../imaging/deformity/osteotomy';
 import { add, fitCircle, rotate, scale, sub, unit, type Point } from '../imaging/deformity/plane';
 import { toImage, toPlane } from '../imaging/deformity/measure';
 import { deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
-import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
+import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, settleMoved, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle } from '../usage/tracker';
 
@@ -29,6 +29,13 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
   if (!usesSourceFrames(volume.series, view)) return null;
   const slice = Math.round(view.slice), key = filmKey(volume.series, slice), film = films[key];
   return film ? { film, frame: sourceFrameSeries(volume.series, slice), key } : null;
+}
+
+/** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step. */
+function finish(held: DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }) {
+  const handle = held.handle;
+  if (held.moved && handle.kind === 'suggestion') deformity.change(held.key, current => settleMoved(current, handle.name, handle.index), false);
+  held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
 }
 
 /** Under the drawing: the place a moved fragment left, dimmed, and the fragment drawn moved. */
@@ -89,12 +96,12 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
 export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const { t } = useTranslation();
   const state = useDeformity();
-  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }) | null>(null);
+  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; start: [number, number]; gesture: GestureHandle }) | null>(null);
   const found = state.open ? shown(volume, view, state.films) : null;
   useLayoutEffect(() => () => {
     const held = drag.current;
     drag.current = null;
-    held?.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
+    if (held) finish(held);
   }, [found?.key, found?.film.active]);
   if (!found) return null;
   const { film, frame, key } = found;
@@ -112,16 +119,19 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
+    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, start: [event.clientX, event.clientY], gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
   };
-  const end = (held: NonNullable<typeof drag.current>) => { drag.current = null; held.gesture.end({ result: held.moved ? 'ok' : 'cancel' }); };
+  const end = (held: NonNullable<typeof drag.current>) => { drag.current = null; finish(held); };
   const follow = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held) return;
-    // A drag moves the point it took, on the film and plan it took it on: paged to another film or plan, it stops.
+    // A drag moves the point it took, on the film and plan it took it on: paged to another film or plan, it stops. A
+    // pointer whose button is up has been released where this handle did not hear it.
     const now = dragContinues(held, { key, plan: film.active, pointer: event.pointerId });
     if (now === 'ignore') return;
-    if (now === 'stop') { end(held); return; }
+    if (now === 'stop' || !(event.buttons & 1)) { end(held); return; }
+    // A tap, or a pen's jitter, moves nothing: the point moves once the pointer has gone 3 px.
+    if (!held.moved && Math.hypot(event.clientX - held.start[0], event.clientY - held.start[1]) < 3) return;
     const point = pixelAt(local(event));
     // One Undo step for the whole drag: the state before it is remembered on the first move.
     deformity.change(held.key, current => moveHandle(current, held.handle, point), !held.moved);
@@ -217,7 +227,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     }))}
     {/* The model's suggestions, until the reader accepts or moves them: a dashed ring with a cross and a question mark, so
         they read apart from landmarks by shape as well as colour. Nothing is drawn or measured from them. */}
-    {!simulating && plan.plan.suggested && <g data-testid="deformity-suggestions">
+    {/* Not in pictures, reports or videos: an unaccepted suggestion is not part of the plan. */}
+    {!simulating && plan.plan.suggested && <g data-testid="deformity-suggestions" data-export-exclude>
       {(() => {
         const head = plan.plan.suggested.points.femoralHeadContour, circle = head && head.length >= 3 ? fitCircle(head) : null;
         if (!circle) return null;
