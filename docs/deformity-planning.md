@@ -98,8 +98,8 @@ supplements.
 ### Suggestions
 
 Suggest landmarks runs the landmark model on the film, on this computer (docs/landmark-model.md), and suggests all 14
-landmarks of the active plan's leg, unless the model is not sure of the leg's hip, knee and ankle (a film that stops
-above the ankles, or is not a long-leg film): then it suggests nothing and says so. Eleven were checked on real films: the femoral head, knee centre, condyles, plateau
+landmarks of the active plan's leg, unless the model is not sure of the leg's hip, knee and ankle (as on a film that
+stops above the ankles): then it suggests nothing and says so. Eleven were checked on real films: the femoral head, knee centre, condyles, plateau
 edges and ankle centre against the reader's points (the points behind mLDFA, MPTA, JLCA, HKA and MAD), the lower
 femoral shaft against the reader's point, and the other three shaft points against shaft midlines traced between the
 cortices. Three were not: the trochanter and the plafond, which the model learnt from synthetic films only. Beside the

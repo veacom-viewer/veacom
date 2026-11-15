@@ -111,18 +111,18 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
 }
 
 /** Stage A's least peak probability (`Anchors.peak`) below which the model is not sure of a leg and suggests nothing.
- * On real films of whole legs it is 0.04 to 0.06; on a film that stops above the ankles, or a drawing, under 0.02
- * (docs/landmark-model.md). */
+ * On the real films of whole legs measured it was 0.043 to 0.053; on a film that stops above the ankles, and on the
+ * synthetic drawing, under 0.02 (docs/landmark-model.md). */
 export const UNSURE_PEAK = 0.02;
 
-/** The kit's suggestions from a run, or null when the model is not sure of the leg (`UNSURE_PEAK`) or did not find two
- * legs: the leg's hip, knee and ankle must come down the film in that order, and the image's left leg must lie left of
- * its right leg (a film of one leg, or not a long-leg film, can fail either). A suggestion with a point off the film is
- * left out. */
+/** The kit's suggestions from a run; 'unsure' when stage A is not sure of the leg (`UNSURE_PEAK`); or null when the
+ * model did not find two legs: the leg's hip, knee and ankle must come down the film in that order, and the image's
+ * left leg must lie left of its right leg (a film of one leg, or not a long-leg film, can fail either). A suggestion
+ * with a point off the film is left out. */
 export function suggestionsFrom(legs: Record<ImageLeg, Anchors>, leg: ImageLeg, channels: Extract<SuggestReply, { ok: true }>['channels'],
-  mm: readonly [number, number], size: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> | null {
+  mm: readonly [number, number], size: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> | 'unsure' | null {
   const { hip, knee, ankle, peak } = legs[leg];
-  if (!(peak >= UNSURE_PEAK)) return null;
+  if (!(peak >= UNSURE_PEAK)) return 'unsure';
   // Two femoral heads' centres lie a pelvis apart, far more than 50 mm even in a child: closer, both legs' points are
   // on one leg.
   if (!(hip[1] < knee[1] && knee[1] < ankle[1]) || !((legs.right.hip[0] - legs.left.hip[0]) * mm[0] > 50)) return null;

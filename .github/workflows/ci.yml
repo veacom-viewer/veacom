@@ -349,9 +349,9 @@ jobs:
           key: mendeley-films-${{ hashFiles('tools/fixtures/fetch-mendeley-films.mjs') }}
       # The deformity plan on a synthetic long-leg DX: calibration variants, landmarks, values, osteotomy, save, report.
       # Then the landmark model: not sure, so silent, on the drawing and on a real film without ankles; suggesting all
-      # 14 landmarks on a real film of both whole legs.
+      # 14 landmarks on a real film of both whole legs. Without the films, everything before the suggestions still runs.
       - name: Deformity plan on synthetic and real long-leg films
-        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.mendeley.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
         run: |
           node tools/fixtures/make-longleg-study.mjs "$RUNNER_TEMP/longleg"
           node tools/check-deformity-plan.cjs "$RUNNER_TEMP/longleg" "$RUNNER_TEMP/mendeley" "$EVIDENCE/deformity-plan"

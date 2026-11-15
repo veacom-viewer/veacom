@@ -12,7 +12,8 @@
 //
 // Neither PNG states a spacing or an orientation. Each film's spacing is read off the ruler on its right edge: its
 // 10 mm marks, found in a column profile, and 10 mm over their mean gap. That is the ruler's plane, so it is stated as a
-// FIDUCIAL calibration. They are AP films, shown as such films are (the patient's right on the image's left; 10_0's
+// FIDUCIAL calibration. Imager Pixel Spacing is left out: the detector's is not known, and none is made up. They are
+// AP films, shown as such films are (the patient's right on the image's left; 10_0's
 // L marker is on the image's right), so Patient Orientation is L\F.
 //
 //   node tools/fixtures/fetch-mendeley-films.mjs <new-directory> [--cache=<directory>]
@@ -55,7 +56,7 @@ async function film(name, { id, bytes, sha256: pinned }) {
   let failure;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(180_000) });
+      const response = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(90_000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const png = Buffer.from(await response.arrayBuffer());
       if (png.length !== bytes || sha256(png) !== pinned) throw new Error(`${png.length} bytes, SHA-256 ${sha256(png)}, not the pinned film`);
@@ -76,7 +77,7 @@ async function film(name, { id, bytes, sha256: pinned }) {
 function dicom(name, film, grey, number) {
   const root = '2.25.297618404457296114650541803760744227', uid = `${root}.3.${number}`;
   const sopClass = '1.2.840.10008.5.1.4.1.1.1.1', transferSyntax = '1.2.840.10008.1.2.1';
-  const description = `Mendeley HTO ${name} · ${film.shows}`;
+  const description = `Mendeley HTO ${name}, ${film.shows}`;
   const meta = dataset([[0x0002, 0x0001, 'OB', [0, 1]], [0x0002, 0x0002, 'UI', sopClass], [0x0002, 0x0003, 'UI', uid],
     [0x0002, 0x0010, 'UI', transferSyntax], [0x0002, 0x0012, 'UI', `${root}.4`]]);
   const elements = [
@@ -91,18 +92,21 @@ function dicom(name, film, grey, number) {
     [0x0028, 0x0030, 'DS', [film.mm, film.mm]],
     [0x0028, 0x0100, 'US', 8], [0x0028, 0x0101, 'US', 8], [0x0028, 0x0102, 'US', 7], [0x0028, 0x0103, 'US', 0],
     [0x0028, 0x0a02, 'CS', 'FIDUCIAL'], [0x0028, 0x0a04, 'LO', `Ruler on the film: ${film.ruler}`],
-    [0x0028, 0x1050, 'DS', 128], [0x0028, 0x1051, 'DS', 256], [0x0028, 0x1040, 'CS', 'LIN'],
+    [0x0028, 0x1040, 'CS', 'LIN'], [0x0028, 0x1041, 'SS', 1], [0x0028, 0x1050, 'DS', 128], [0x0028, 0x1051, 'DS', 256],
+    [0x2050, 0x0020, 'CS', 'IDENTITY'],
     [0x7fe0, 0x0010, 'OB', grey],
   ];
   return { description, bytes: Buffer.concat([Buffer.alloc(128), Buffer.from('DICM'), element(0x0002, 0x0000, 'UL', meta.length), meta, dataset(elements)]) };
 }
 
+// Every film first, so a failed fetch leaves no half-written study behind.
+const fetched = [];
+for (const [name, pinned] of Object.entries(FILMS)) fetched.push({ name, pinned, ...await film(name, pinned) });
 await mkdir(destination); // Refuse to replace an existing study.
 const series = {};
 let number = 0;
-for (const [name, pinned] of Object.entries(FILMS)) {
+for (const { name, pinned, png, from } of fetched) {
   number++;
-  const { png, from } = await film(name, pinned);
   const image = decodePng(png);
   if (image.width !== pinned.columns || image.height !== pinned.rows) throw new Error(`${name} is ${image.width} × ${image.height}, not the pinned size.`);
   const grey = Buffer.alloc(image.width * image.height);

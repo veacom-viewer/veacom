@@ -473,8 +473,10 @@ describe('landmark suggestions', () => {
     assert.equal(UNSURE_PEAK, 0.02);
     assert.notEqual(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, UNSURE_PEAK), 'left', channels, mm, size), null, 'At the cutoff, sure enough.');
     for (const peak of [0.0199, 0.004, Number.NaN]) {
-      assert.equal(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, peak), 'left', channels, mm, size), null, `Not sure of the leg at ${peak}.`);
+      assert.equal(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, peak), 'left', channels, mm, size), 'unsure', `Not sure of the leg at ${peak}.`);
     }
+    assert.equal(suggestionsFrom(legs({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }, 0.004), 'left', channels, mm, size), 'unsure',
+      'Not sure comes first: the panel says so, not that the legs were not found.');
     assert.equal(suggestionsFrom(legs({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null, 'The hip below the knee.');
     assert.equal(suggestionsFrom(legs({ hip: [310, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null,
       'The image\'s left leg found right of its right leg: both on one leg.');

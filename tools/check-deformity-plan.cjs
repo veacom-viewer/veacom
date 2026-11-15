@@ -33,8 +33,6 @@ async function main() {
   const output = path.resolve(own[2] || 'test-results/deformity-plan');
   const manifest = JSON.parse(await fs.readFile(path.join(study, 'manifest.json'), 'utf8'));
   assert.equal(manifest.generator, 'veacom-longleg-v1', 'Run on the films made by tools/fixtures/make-longleg-study.mjs.');
-  const filmManifest = JSON.parse(await fs.readFile(path.join(films, 'manifest.json'), 'utf8'));
-  assert.equal(filmManifest.generator, 'veacom-mendeley-longleg-v1', 'Run with the films of tools/fixtures/fetch-mendeley-films.mjs.');
   await fs.mkdir(output, { recursive: true });
   const userData = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-deformity-'));
   const desktop = await electron.launch({ args: [path.resolve(__dirname, '..'), ...switches, '--study', study], timeout: 90_000,
@@ -428,14 +426,19 @@ async function main() {
     const suggest = async () => {
       await panel.locator('[data-action="deformity-suggest"]').click();
       await page.waitForFunction(() => !document.querySelector('[data-testid="deformity-suggest-progress"]')
-        && /Landmarks suggested|No suggestions|not sure/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 240_000 });
-      return panel.getByTestId('deformity-status').textContent();
+        && /Landmarks suggested|No suggestions|not sure|did not find/.test(document.querySelector('[data-testid="deformity-status"]')?.textContent ?? ''), undefined, { timeout: 240_000 });
+      // The run's timings, and stage A's least peak for the leg (docs/landmark-model.md: under 0.02, not sure).
+      return { status: await panel.getByTestId('deformity-status').textContent(), run: JSON.parse(await panel.getByTestId('deformity-suggest').getAttribute('data-suggest-run')) };
     };
+    const peaks = {};
     const unsure = async film => {
-      assert.match(await suggest(), /not sure of this leg's hip, knee and ankle, so it suggests nothing/, film);
+      const { status, run } = await suggest();
+      assert.match(status, /not sure of this leg's hip, knee and ankle, so it suggests nothing/, film);
+      assert(run.peak < 0.02, `${film}: stage A's least peak ${run.peak} is under 0.02.`);
       assert.equal(await panel.locator('.deformity-landmarks li[data-suggested]').count(), 0, `${film}: no suggested row.`);
       assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion]').count(), 0, `${film}: no suggestion drawn.`);
       assert.equal(await panel.locator('[data-action="deformity-suggest"]').isDisabled(), false, `${film}: Suggest can be pressed again.`);
+      peaks[film] = run.peak;
     };
     await open(manifest.series['ips-equal'].description);
     await panel.locator('[role="tab"]', { hasText: 'Left leg' }).click();
@@ -443,6 +446,8 @@ async function main() {
     await unsure('The synthetic drawing');
     await shot('6-suggest-unsure');
     // The Mendeley films, imported beside the synthetic study as the reader would open a folder.
+    const filmManifest = JSON.parse(await fs.readFile(path.join(films, 'manifest.json'), 'utf8'));
+    assert.equal(filmManifest.generator, 'veacom-mendeley-longleg-v1', 'Run with the films of tools/fixtures/fetch-mendeley-films.mjs.');
     const capabilities = await desktop.evaluate(({ app }, paths) => app.__VEACOM_PRIVILEGED_TEST__.authorizeImportPaths(paths), [films]);
     await page.evaluate(capabilities => window.__VEACOM_TEST__.importPaths(capabilities), capabilities);
     await page.waitForFunction(names => names.every(name => window.__VEACOM_TEST__.state().series.some(item => item.description === name)),
@@ -452,10 +457,12 @@ async function main() {
       await panel.locator('[role="tab"]', { hasText: leg }).click();
       await unsure(`Mendeley 10_0, which stops above the ankles: ${leg}`);
     }
-    check('Suggest landmarks downloads the model; it is not sure of the leg, and suggests nothing, on the synthetic drawing and on a real film that stops above the ankles');
+    check('Suggest landmarks downloads the model; it is not sure of the leg, and suggests nothing, on the synthetic drawing and on a real film that stops above the ankles', peaks);
     await open(filmManifest.series['49_0'].description);
     await panel.locator('[role="tab"]', { hasText: 'Left leg' }).click();
-    assert.match(await suggest(), /Landmarks suggested: 14/);
+    const { status: suggested, run: suggestRun } = await suggest();
+    assert.match(suggested, /Landmarks suggested: 14/);
+    assert(suggestRun.peak >= 0.02, `Mendeley 49_0: stage A's least peak ${suggestRun.peak} is 0.02 or more.`);
     const rows = selector => panel.locator(`.deformity-landmarks li${selector}`).evaluateAll(items => items.map(item => item.dataset.landmark));
     const suggestedRows = () => rows('[data-suggested]');
     assert.deepEqual(await suggestedRows(), ['femoralHeadContour', 'greaterTrochanterTip', 'femoralShaftProximal', 'femoralShaftDistal', 'kneeCentre', 'femoralCondyleMedial',
@@ -470,7 +477,6 @@ async function main() {
     assert.match(await panel.locator('[data-unchecked-note]').textContent(), /edge-traced shaft midline \(the other three\)\. Unchecked: the trochanter and plafond/);
     assert.equal((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Nothing is measured from a suggestion.');
     // No screenshot of the real film: the evidence CI keeps holds no copy of it.
-    const suggestTimes = JSON.parse(await panel.getByTestId('deformity-suggest').getAttribute('data-suggest-times'));
     // A real drag of the ankle centre's suggestion, in steps wider than its ring, makes it the reader's landmark, moved.
     // Let go, the drag is over: moving the pointer over the landmark and the knee's suggestion, button up, moves neither.
     const ring = name => page.locator(`[data-suggestion="${name}"] circle[stroke-dasharray]`).boundingBox();
@@ -534,7 +540,7 @@ async function main() {
     assert.deepEqual([labelOf('ankleCentre').provenance, labelOf('ankleCentre').confidence.model], [['moved'], modelFile.name]);
     for (const name of unchecked) assert.equal(labelOf(name).confidence.unchecked, true, `${name} is saved as unchecked.`);
     for (const name of ['femoralShaftProximal', 'femoralShaftDistal', 'tibialShaftProximal', 'tibialShaftDistal']) assert.equal(labelOf(name).confidence.unchecked, undefined, `${name} is checked on real films.`);
-    check('On a real film of both whole legs, Suggest landmarks suggests all 14 landmarks of the left leg drawn apart and unmeasured, the 3 unchecked ones marked as such; a dragged suggestion becomes a moved landmark and the drag ends with the button; Accept and Accept all measure them, the femur as a real one, the values from unchecked points marked, one Undo step, saved as the model\'s', { ...suggestTimes, mLDFA: real.mLDFA, aLDFA: real.aLDFA, femurLength: real.femurLength });
+    check('On a real film of both whole legs, Suggest landmarks suggests all 14 landmarks of the left leg drawn apart and unmeasured, the 3 unchecked ones marked as such; a dragged suggestion becomes a moved landmark and the drag ends with the button; Accept and Accept all measure them, the femur as a real one, the values from unchecked points marked, one Undo step, saved as the model\'s', { ...suggestRun, mLDFA: real.mLDFA, aLDFA: real.aLDFA, femurLength: real.femurLength });
 
     // 9. Labelling a folder (docs/deformity-planning.md): four copies of the Imager Pixel Spacing film, each its own study
     // (the UID root changed at the same length), beside a text file and a subfolder that are not listed. Film 1 has a
