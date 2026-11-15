@@ -279,8 +279,11 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         deformity.setSimulate(true); await frames(3);
         pictures.push({ caption: t('deformity.report.planned'), canvas: await capture(true) });
       }
-      const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name, leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t), normalText(name) || undefined]) },
-        { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey)]) },
+      // The report carries the plateau caution beside the values it affects, as the panel does.
+      const inboard = (applies: boolean) => plateauInboard && applies ? ` · ${t('deformity.plateauInboardShort')}` : '';
+      const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name,
+        leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t) + inboard(name === 'WBL'), normalText(name) || undefined]) },
+        { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey) + inboard(step.step === 'subluxation' && step.result !== 'unassessable')]) },
         { title: t('deformity.cora'), rows: (['femur', 'tibia'] as const).map(boneName => [t(`deformity.bone.${boneName}` as MessageKey), coraText(view, boneName, t)]) }];
       if (view.simulation && plan.osteotomy) {
         const after = view.simulation.leg.values, o = plan.osteotomy;
@@ -377,7 +380,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             <button type="button" className="text-button" data-action="deformity-suggest-clear" onClick={() => change(clearSuggestions)}>{t('deformity.clearSuggestions')}</button>
           </>}
         </div>
-        <p className="deformity-note">{t('deformity.suggestTrained')}</p>
+        <p className="deformity-caution" role="note">{t('deformity.suggestTrained')}</p>
         {plan.suggested && <p className="deformity-note">{t('deformity.suggestHeld')}</p>}
       </div>
       {placing?.kind === 'landmark' && <p className="deformity-hint" role="status" data-testid="deformity-next" data-landmark={placing.name}>
@@ -417,7 +420,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           return <tr key={name} data-value-key={name} data-value={value.value ?? undefined} className={out ? 'is-out' : ''}>
             <th scope="row" title={normal ? [normal.source, ...normal.others].join('\n') : undefined}>{NAMED[name] ? t(NAMED[name]) : name}</th>
             <td>{value.value === null ? <span className="deformity-missing">{missingText(value.missing, t)}</span> : valueText(value, tag, t)}
-              {out && <span className="deformity-verdict"> · {t(value.verdict === 'high' ? 'deformity.high' : 'deformity.low')}</span>}</td>
+              {out && <span className="deformity-verdict"> · {t(value.verdict === 'high' ? 'deformity.high' : 'deformity.low')}</span>}
+              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution" data-testid="deformity-wbl-inboard"> · {t('deformity.plateauInboardShort')}</span>}</td>
             <td>{normalText(name)}</td></tr>;
         })}</tbody>
       </table>
@@ -427,7 +431,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       <ol className="deformity-steps">{view.steps.map(step => <li key={step.step} data-step={step.step} data-result={step.result}>
         <span>{t(`deformity.mat.${step.step}` as MessageKey)}</span>
         <strong className={step.result === 'normal' || step.result === 'unassessable' ? '' : 'is-out'}>{t(`deformity.result.${step.result}` as MessageKey)}</strong>
-        {step.missing && <small>{missingText(step.missing, t)}</small>}</li>)}</ol>
+        {step.missing && <small>{missingText(step.missing, t)}</small>}
+        {plateauInboard && step.step === 'subluxation' && step.result !== 'unassessable' && <small className="deformity-caution">{t('deformity.plateauInboardShort')}</small>}</li>)}</ol>
 
       <h3>{t('deformity.cora')}</h3>
       <dl className="deformity-cora">{(['femur', 'tibia'] as const).map(name => <div key={name} data-cora={name} data-magnitude={view.cora[name]?.magnitude}>

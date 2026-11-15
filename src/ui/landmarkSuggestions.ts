@@ -74,7 +74,8 @@ export function cancelModelDownload() {
 let worker: { worker: Worker; loaded: boolean } | null = null;
 let requestId = 0;
 
-/** The model run on one leg of one frame, in its Worker. Aborted, the Worker is stopped; the next run starts another. */
+/** The model run on one leg of one frame, in its Worker. Aborted or failed, the Worker is stopped, so a failure while
+ * the runtime or the graphs load is not kept: the next run starts another. */
 export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, graphs: Record<ModelPart, ArrayBuffer>, signal: AbortSignal): Promise<Extract<SuggestReply, { ok: true }> & { total: number }> {
   if (signal.aborted) throw signal.reason;
   const started = performance.now();
@@ -84,14 +85,16 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
   const request: SuggestRequest = { id, film, leg, ...(current.loaded ? {} : { models: { stageA: graphs.stageA.slice(0), stageB: graphs.stageB.slice(0) } }) };
   current.loaded = true;
   return new Promise((resolve, reject) => {
-    const stop = () => { current.worker.terminate(); if (worker === current) worker = null; reject(signal.reason); };
+    const end = () => { current.worker.terminate(); if (worker === current) worker = null; };
+    const stop = () => { end(); reject(signal.reason); };
     signal.addEventListener('abort', stop, { once: true });
-    current.worker.onerror = event => { event.preventDefault(); signal.removeEventListener('abort', stop); current.worker.terminate(); if (worker === current) worker = null; reject(new Error(event.message || 'The landmark model stopped.')); };
+    current.worker.onerror = event => { event.preventDefault(); signal.removeEventListener('abort', stop); end(); reject(new Error(event.message || 'The landmark model stopped.')); };
     current.worker.onmessage = ({ data }: MessageEvent<SuggestReply>) => {
       if (data.id !== id) return;
       signal.removeEventListener('abort', stop);
       // The whole run as the reader waits for it: the Worker's start, the graphs' loading and the model.
-      if (data.ok) resolve({ ...data, total: performance.now() - started }); else reject(new Error(data.error));
+      if (data.ok) resolve({ ...data, total: performance.now() - started });
+      else { end(); reject(new Error(data.error)); }
     };
     const transfer = [film.pixels.buffer as ArrayBuffer, ...(request.models ? [request.models.stageA, request.models.stageB] : [])];
     current.worker.postMessage(request, transfer);

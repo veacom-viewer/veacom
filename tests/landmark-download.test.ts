@@ -145,13 +145,17 @@ describe('the model in the page', () => {
 
   it('runs in a Worker that gets the graphs once, and stops it when cancelled', async () => {
     const workers: FakeWorker[] = [];
+    let failNext = false, holdNext = false;
     class FakeWorker {
       messages: Array<{ id: number; models?: unknown }> = []; terminated = false;
       onmessage: ((event: { data: unknown }) => void) | null = null; onerror: ((event: { message: string; preventDefault(): void }) => void) | null = null;
       constructor() { workers.push(this); }
       postMessage(message: { id: number; models?: unknown }) {
         this.messages.push(message);
-        if (message.id % 2) queueMicrotask(() => this.onmessage?.({ data: { id: message.id, ok: true, anchors: {}, channels: {}, threads: 1, timings: {} } }));
+        const reply = failNext ? { id: message.id, ok: false, error: 'the runtime did not load' } : { id: message.id, ok: true, anchors: {}, channels: {}, threads: 1, timings: {} };
+        failNext = false;
+        if (!holdNext) queueMicrotask(() => this.onmessage?.({ data: reply }));
+        holdNext = false;
       }
       terminate() { this.terminated = true; }
     }
@@ -161,6 +165,7 @@ describe('the model in the page', () => {
     const first = await runModel(film(), 'left', graphs, new AbortController().signal);
     assert.equal(first.ok, true); assert.ok(first.total >= 0);
     // The second request goes unanswered until it is cancelled: the Worker is stopped and the next run starts another.
+    holdNext = true;
     const controller = new AbortController(), waiting = runModel(film(), 'left', graphs, controller.signal);
     controller.abort(new Error('cancelled'));
     await assert.rejects(waiting, /cancelled/);
@@ -170,5 +175,12 @@ describe('the model in the page', () => {
     assert.equal(workers.length, 2);
     assert.ok(workers[1].messages[0].models);
     assert.equal(graphs.stageA.byteLength, 8, 'The checked graphs stay here for the next Worker.');
+    // A failed run (the runtime not loading, say) stops its Worker too: the next run loads everything again.
+    failNext = true;
+    await assert.rejects(runModel(film(), 'left', graphs, new AbortController().signal), /runtime did not load/);
+    assert.equal(workers[1].terminated, true);
+    await runModel(film(), 'left', graphs, new AbortController().signal);
+    assert.equal(workers.length, 3);
+    assert.ok(workers[2].messages[0].models);
   });
 });

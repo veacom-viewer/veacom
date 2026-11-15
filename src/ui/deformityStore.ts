@@ -97,8 +97,23 @@ export const deformity = {
   },
   /** What Undo keeps: the plans only (the panel and what a click places are not undone). */
   snapshot: () => state.films,
-  restore(films: DeformityState['films'] | undefined) { if (films && films !== state.films) set({ ...state, films, placing: null }); },
+  restore(films: DeformityState['films'] | undefined) { if (films && films !== state.films) set({ ...state, films: keepShown(films, state.films), placing: null }); },
 };
+
+/** The films Undo or Redo puts back, still marked where a suggestion has been on screen: what the reader saw cannot be
+ * undone, so a point placed after undoing a suggestion is still labelled as placed with a suggestion shown. */
+function keepShown(films: DeformityState['films'], now: DeformityState['films']): DeformityState['films'] {
+  const entries = Object.entries(films).map(([key, film]) => {
+    const current = now[key];
+    if (!film || !current) return [key, film] as const;
+    const plans = film.plans.map(plan => {
+      const seen = Object.entries(current.plans.find(item => item.id === plan.id)?.origin ?? {}).filter(([name]) => !plan.origin?.[name as LandmarkName]?.shown);
+      return seen.length ? { ...plan, origin: { ...plan.origin, ...Object.fromEntries(seen.map(([name]) => [name, { ...plan.origin?.[name as LandmarkName], shown: true as const }])) } } : plan;
+    });
+    return [key, plans.some((plan, index) => plan !== film.plans[index]) ? { ...film, plans } : film] as const;
+  });
+  return entries.some(([key, film]) => film !== films[key]) ? Object.fromEntries(entries) : films;
+}
 
 /** An empty plan. Its name is empty until the reader adds a second plan of the same side (the panel numbers them). */
 export function newPlan(side: Side, name = ''): LegPlan {

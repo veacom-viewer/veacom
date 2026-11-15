@@ -76,7 +76,7 @@ The file holds no name, patient ID, birth date, accession number, institution, d
 | `provenance` | Per point: `placed` (by the reader), `accepted` (the model's suggestion, accepted as it was), `moved` (dragged after it was placed or suggested) or `derived` (computed). `accepted` comes only with a model. |
 | `spacing` | The calibration state when it was saved, as above. |
 | `side`, `software` | The leg and the VEAcom version, repeated on each label so a label stands on its own. |
-| `suggestionShown` | Whether the model's suggestion of this landmark has been on screen while its points were made (CLOSE checklist design, PR #31): true for an accepted or moved suggestion, and for a point placed by hand over one. A landmark the model does not suggest is always false. |
+| `suggestionShown` | Whether the model's suggestion of this landmark has been on screen while its points were made (CLOSE checklist design, PR #31): true for an accepted or moved suggestion, and for a point placed by hand over one, also after the suggestion was undone. A landmark the model does not suggest is always false. |
 | `derivedFrom` | For `hipCentre`: the fitted circle's centre of `femoralHeadContour`. Its confidence and `suggestionShown` are the outline's. |
 | `construction` | `hipCentreRing` on a `femoralHeadContour` from the model: its `accepted` points lie on a circle around the model's hip centre, not on the head's outline as a reader would trace it (docs/landmark-model.md). Its `moved` points are where the reader put them. Do not learn the outline from its accepted points. |
 

@@ -76,7 +76,7 @@ The button is off, with the reason on hover, unless:
 - the film is greyscale and has a pixel spacing or a calibration (the model works in millimetres; it never assumes one);
 - the patient's right is known (Patient Orientation, or the reader's answer), and the film is upright: its rows run
   across the patient and its columns towards the feet, as the model was trained;
-- the film fits stage A's canvas, 512 × 1408 mm;
+- the film fits stage A's canvas, 512 × 1408 mm (a standard 14 × 51 inch long-leg film does);
 - a landmark the model suggests is still unplaced.
 
 Each run suggests the active plan's leg: the leg on the patient's side of the image. A MONOCHROME1 film is inverted, so
@@ -109,9 +109,11 @@ The files are assets of release v0.1.0-beta.3, next to its installers. The insta
 choose files by their exact names, so these two cannot be taken for an update. GitHub's release downloads send no
 cross-origin headers, so the page could not read them from GitHub directly.
 
-**Speed** on an Apple M4 Pro (BMPLE test film 1061, 2396 × 5628 pixels): in Chromium from the site's own headers, 0.22 s
-a run, 0.48 s the first time (the Worker and the graphs starting); in the desktop app, 0.54 s, 0.79 s the first time,
-plus the download. Most of a run is the two graphs; windowing and cropping take about 0.1 s.
+**Speed** on an Apple M4 Pro (BMPLE test film 1061, 2396 × 5628 pixels): in headless Chromium, from a local server with
+the site's headers, 0.22 s a run on 4 threads and 0.48 s the first time (the Worker and the graphs starting); in the
+desktop app, on one thread, 0.54 s and 0.79 s the first time. The first press also downloads the model's 18 MB (and, in
+the browser, the 14.8 MB runtime, which the progress does not count). Most of a run is the two graphs; windowing and
+cropping take about 0.1 s. Safari and Firefox are not checked yet.
 
 **Port.** On six BMPLE test films the TypeScript port agrees with veacom-train's Python and onnxruntime: stage A to
 0.00001 mm, stage B within 0.1 mm.

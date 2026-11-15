@@ -265,6 +265,19 @@ describe('landmark suggestions', () => {
       ['femoralCondyleLateral', 'femoralCondyleMedial', 'femoralHeadContour', 'tibialPlateauLateral', 'tibialPlateauMedial']);
   });
 
+  it('stay marked as shown through Undo: a point placed after undoing them is labelled with a suggestion shown', async () => {
+    film();
+    const before = deformity.snapshot();
+    deformity.change(key, current => withSuggestions(current, points, MODEL));
+    deformity.restore(before);
+    const undone = deformity.get().films[key]!.plans[0];
+    assert.equal(undone.suggested, undefined, 'Undo takes the suggestions off the film.');
+    assert.equal(undone.origin?.kneeCentre?.shown, true);
+    deformity.change(key, current => place(current, { film: key, kind: 'landmark', name: 'kneeCentre' }, [200, 500], frame).film);
+    const labels = (await planFile(deformity.get().films[key]!, frame)).plans[0].landmarks;
+    assert.equal(labels.find(label => label.name === 'kneeCentre')?.suggestionShown, true);
+  });
+
   it('are saved with the model and its hashes, accepted against moved, and opened again as they were', async () => {
     let current = suggested();
     current = acceptSuggestions(moveHandle(current, { kind: 'suggestion', name: 'tibialPlateauMedial', index: 0 }, [231, 529]));
