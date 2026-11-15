@@ -18,6 +18,7 @@ const sha256 = text => createHash('sha256').update(text).digest('hex');
 /** A DICOM file by its Part 10 preamble ("DICM" at byte 128, PS3.10 7.1), or by a .dcm name for files without one. */
 async function isDicom(file) {
   if (/\.dcm$/i.test(file)) return true;
+  // A file that cannot be opened (permissions, gone meanwhile) is not a film the queue could import.
   const handle = await fs.open(file, 'r').catch(() => null);
   if (!handle) return false;
   try {
@@ -44,9 +45,13 @@ async function listFilms(root) {
 /** The plan file at `file`: null when there is none; `unreadable` when it is not a file, too large or cannot be read;
  * otherwise its text. */
 async function readPlan(file) {
-  const stat = await fs.lstat(file).catch(() => null);
-  if (!stat) return null;
+  let stat;
+  try { stat = await fs.lstat(file); } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    return { unreadable: true };
+  }
   if (!stat.isFile() || stat.size > MAX_PLAN_BYTES) return { unreadable: true };
+  // One plan that cannot be read (permissions) is that film's state, not a failure of the whole folder.
   const text = await fs.readFile(file, 'utf8').catch(() => null);
   return text === null ? { unreadable: true } : { text };
 }
