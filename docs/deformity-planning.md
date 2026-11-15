@@ -231,15 +231,17 @@ write beside the films; other browsers download each plan instead.
 - **Opening a film** imports it, opens the plan on it, and takes the film shown before off the list (its files are not
   touched). Undo starts afresh on each film, so a step back never reaches another film's plan. The plan file beside the
   film is read: if it opens, it is put on the film, unless this session has already planned the film; if it does not
-  open (another film's, not a plan, too large), it is never replaced, Save and next waits, and the queue says why. A file
-  that does not open as an image, or opens into the series of the film before it, is the queue's place with nothing to
-  save, so Next goes past it.
+  open (another film's, not a plan, too large), or the reader plans the film while it is read, it is never replaced,
+  Save and next waits, and the queue says why. A file that does not open as an image, opens into the series of a film
+  opened before it in the run, or holds several frames (a plan file holds one), is the queue's place with nothing to
+  save, so Next goes past it. While pictures or a video are made from the pane, the queue waits.
 - **Save and next** is the only control that writes. It writes the film's plans (docs/deformity-labels.md) beside the
   film, then opens the next. The desktop's main process keeps the folder's paths and writes only beside the folder's
   own films, given by their place in the list; in the browser the page writes through the folder handle it was given.
   Either way it writes only a deformity plan, only over the plan file it read when the folder was opened (or wrote
   since), and only if that file is a deformity plan: a file changed or added meanwhile, or any other file, is left alone
-  and the plan stays on the film. A write that fails does not move on.
+  and the plan stays on the film. A write that fails does not move on, nor does one during which the reader changed the
+  plan: the next press saves it as it is.
 - Nothing else is written: moving to another film keeps the plan in memory, as for any film, and autosave still waits
   for the approvals above.
 
