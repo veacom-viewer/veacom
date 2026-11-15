@@ -14,7 +14,7 @@ import { moved } from '../imaging/deformity/osteotomy';
 import { add, fitCircle, rotate, scale, sub, unit, type Point } from '../imaging/deformity/plane';
 import { toImage, toPlane } from '../imaging/deformity/measure';
 import { deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
-import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, putBackSuggestion, settleMoved, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
+import { dragContinues, fragmentView, fromUnchecked, moveHandle, movedView, pixelToScreen, place, planView, putBackSuggestion, settleMoved, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle } from '../usage/tracker';
 
@@ -178,6 +178,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       <text x={left + 5} y={y + 3} fill={colour} fontSize={12} fontWeight={500} fontFamily="var(--font-ui)">{lines.map((text, index) => <tspan key={index} x={left + 5} dy={index ? 15 : 0}>{text}</tspan>)}</text></g>;
   };
   const v = leg.values, number = (value: number | null, digits = 1) => value === null ? '–' : value.toFixed(digits);
+  // A value measured from the model's unchecked point, accepted as it was, says so on the image too (the panel's caution).
+  const marked = fromUnchecked(plan.plan), unchecked = (key: Parameters<typeof marked.has>[0]) => marked.has(key) ? ` · ${t('deformity.uncheckedChip')}` : '';
   // Which way is out, on screen, for the leg's labels.
   const outward = plan.lateral && leg.knee ? Math.sign(at(add(leg.knee, scale(plan.lateral, 20)))[0] - at(leg.knee)[0]) || 1 : 1;
   const points = simulating ? (plan.simulation ? plan.simulation.leg : leg) : leg;
@@ -190,7 +192,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     {/* The transverse bisector, 40 mm (40 pixels uncalibrated) either side of the CORA, across the bone. */}
     {line(sub(cora.point, reach(cora.bisector, 40)), add(cora.point, reach(cora.bisector, 40)), COLOUR.cora, { dash: '2 3', width: 1, test: 'bisector' })}
     <circle cx={at(cora.point)[0]} cy={at(cora.point)[1]} r={5} fill="none" stroke={COLOUR.cora} strokeWidth={2} />
-    {chip(cora.point, [t('deformity.cora.label', { angle: cora.magnitude.toFixed(1) })], COLOUR.cora, -outward, `cora-${cora.bone}`)}
+    {chip(cora.point, [t('deformity.cora.label', { angle: cora.magnitude.toFixed(1) }) + unchecked(cora.bone === 'femur' ? 'coraFemur' : 'coraTibia')], COLOUR.cora, -outward, `cora-${cora.bone}`)}
   </g>;
   const osteotomy = plan.plan.osteotomy;
   const marker = film.marker, circle = marker?.method === 'ball' && marker.points.length >= 3 ? fitCircle(marker.points) : null;
@@ -233,7 +235,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       </g>;
     }))}
     {/* The model's suggestions, until the reader accepts or moves them: a dashed ring with a cross and a question mark, so
-        they read apart from landmarks by shape as well as colour. Nothing is drawn or measured from them. */}
+        they read apart from landmarks by shape as well as colour, and a dashed diamond where the model's channel has no
+        check on real films. Nothing is drawn or measured from them. */}
     {/* Not in pictures, reports or videos: an unaccepted suggestion is not part of the plan. */}
     {!simulating && plan.plan.suggested && <g data-testid="deformity-suggestions" data-export-exclude>
       {(() => {
@@ -245,21 +248,24 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       })()}
       {LANDMARKS.flatMap(name => (plan.plan.suggested!.points[name] ?? []).map((p, index) => {
         // The head's outline points are smaller: eight of them sit close together on the circle.
-        const [x, y] = at(p), r = isContour(name) ? 4.5 : 7;
-        return <g key={`suggested-${name}-${index}`} data-suggestion={name}>
-          <circle cx={x} cy={y} r={r} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} />
+        const [x, y] = at(p), r = isContour(name) ? 4.5 : 7, unchecked = plan.plan.suggested!.unchecked?.includes(name);
+        const diamond = `${x},${y - 9} ${x + 9},${y} ${x},${y + 9} ${x - 9},${y}`;
+        return <g key={`suggested-${name}-${index}`} data-suggestion={name} data-unchecked={unchecked || undefined}>
+          {unchecked ? <polygon points={diamond} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} /> : <circle cx={x} cy={y} r={r} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} />}
           {!isContour(name) && <path d={`M${x - 3} ${y}h6M${x} ${y - 3}v6`} stroke={COLOUR.suggested} strokeWidth={1.2} />}
-          <circle cx={x} cy={y} r={r} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray={isContour(name) ? '2 2' : '3 2.5'} {...handleProps({ kind: 'suggestion', name, index })} />
+          {unchecked ? <polygon points={diamond} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray="2 3" {...handleProps({ kind: 'suggestion', name, index })} />
+            : <circle cx={x} cy={y} r={r} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray={isContour(name) ? '2 2' : '3 2.5'} {...handleProps({ kind: 'suggestion', name, index })} />}
           {(LANDMARK_MARK[name] || (isContour(name) && index === 0)) && <text x={x + 10 * outward} y={y - 8} textAnchor={outward > 0 ? 'start' : 'end'} fill={COLOUR.suggested} fontSize={11} fontWeight={600}
             stroke="#000" strokeWidth={2.5} paintOrder="stroke">{`${LANDMARK_MARK[name]}?`}</text>}
         </g>;
       }))}
     </g>}
-    {chip(points.hip?.centre ?? null, v.mLPFA.value === null ? [] : [`mLPFA ${number(v.mLPFA.value)}°`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'hip')}
-    {chip(points.knee, [v.mLDFA.value !== null ? `mLDFA ${number(v.mLDFA.value)}°` : '', v.MPTA.value !== null ? `MPTA ${number(v.MPTA.value)}°` : '',
-      v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°` : '', v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
-    {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit}${Math.abs(v.MAD.value) < 0.05 ? '' : ` ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
-    {chip(points.ankle, v.LDTA.value === null ? [] : [`LDTA ${number(v.LDTA.value)}°`], simulating ? COLOUR.corrected : COLOUR.axis, outward, 'ankle')}
+    {chip(points.hip?.centre ?? null, v.mLPFA.value === null ? [] : [`mLPFA ${number(v.mLPFA.value)}°${unchecked('mLPFA')}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'hip')}
+    {chip(points.knee, [v.mLDFA.value !== null ? `mLDFA ${number(v.mLDFA.value)}°${unchecked('mLDFA')}` : '', v.MPTA.value !== null ? `MPTA ${number(v.MPTA.value)}°${unchecked('MPTA')}` : '',
+      v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°${unchecked('JLCA')}` : '',
+      v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}${unchecked('HKA')}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
+    {chip(points.madFoot, v.MAD.value === null ? [] : [`MAD ${number(Math.abs(v.MAD.value))} ${v.MAD.unit}${Math.abs(v.MAD.value) < 0.05 ? '' : ` ${t(v.MAD.value >= 0 ? 'deformity.medial' : 'deformity.lateral')}`}${unchecked('MAD')}`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'mad')}
+    {chip(points.ankle, v.LDTA.value === null ? [] : [`LDTA ${number(v.LDTA.value)}°${unchecked('LDTA')}`], simulating ? COLOUR.corrected : COLOUR.axis, outward, 'ankle')}
   </g>;
 }
 

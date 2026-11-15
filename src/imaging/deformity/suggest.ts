@@ -1,13 +1,13 @@
 // Landmark suggestions from the round-2 landmark model (docs/landmark-model.md): the input contract of its two ONNX
 // graphs, and how their outputs become the kit's landmarks. Pure float math with no runtime, so the tests check every
 // step; the Worker (suggest.worker.ts) runs the graphs. Ported from veacom-train's stagea.py (window01, to_canvas,
-// decode) and stageb.py (crop_centre, sample_crop, crop_to_film), which the exported graphs were trained and checked
-// with, step for step: the same percentiles, area average, Gaussian pre-blur, bilinear sampling and rounding.
+// decode) and stageb.py (crop_centre, sample_crop, crop_to_film, infer_film), which the exported graphs were trained and
+// checked with, step for step: the same percentiles, area average, Gaussian pre-blur, bilinear sampling and rounding.
 //
 // Film points are DICOM image-relative pixels, as the kit's are ((0, 0) at the top left corner of the top left pixel):
 // the model's film coordinates use the same corner origin, so no half-pixel shift is needed.
 import { fitCircle, length, type Point, sub } from './plane';
-import type { LandmarkName } from './landmarks';
+import { LANDMARKS, type LandmarkName } from './landmarks';
 
 /** Stage A: the whole film at 2 mm per pixel, top left on a 256 × 704 canvas (512 × 1408 mm); 6 heatmaps at stride 2. */
 export const STAGE_A = { rows: 704, columns: 256, mm: 2, stride: 2, window: 3 } as const;
@@ -22,21 +22,32 @@ export const CHANNELS = ['hipCentre', ...CONTOUR, 'greaterTrochanterTip', 'aceta
   'femoralShaftProximal', 'femoralShaftDistal', 'tibialShaftProximal', 'tibialShaftDistal'] as const;
 export type Channel = typeof CHANNELS[number];
 
-/** The joint crops the suggested landmarks need, with the channels each owns (stageb.TYPE_CHANNELS). The shaft crops
- * are not run: their points have no check on real films (docs/landmark-model.md). */
+/** Stage B's seven crops of a leg, with the channels each owns (stageb.TYPE_CHANNELS): the hip, knee and ankle, and two
+ * along each shaft. */
 export const CROPS = {
   hip: ['hipCentre', ...CONTOUR, 'greaterTrochanterTip', 'acetabularMarginLateral'],
   knee: ['kneeCentre', 'femoralCondyleMedial', 'femoralCondyleLateral', 'tibialPlateauMedial', 'tibialPlateauLateral',
     'tibialSpineCentre', 'fibularHeadTip', 'patellaCentre'],
   ankle: ['ankleCentre', 'plafondMedial', 'plafondLateral'],
+  femurProximal: ['femoralShaftProximal'], femurDistal: ['femoralShaftDistal'],
+  tibiaProximal: ['tibialShaftProximal'], tibiaDistal: ['tibialShaftDistal'],
 } as const satisfies Record<string, readonly Channel[]>;
 type CropKind = keyof typeof CROPS;
 export const CROP_KINDS = Object.keys(CROPS) as CropKind[];
 
-/** The landmarks the kit suggests: those behind mLDFA, MPTA, JLCA, HKA and MAD, whose channels were checked against
- * readers on real films. The femoral head is suggested as an outline around the checked hip centre (kitSuggestions). */
-export const SUGGESTED = ['femoralHeadContour', 'kneeCentre', 'femoralCondyleMedial', 'femoralCondyleLateral',
-  'tibialPlateauMedial', 'tibialPlateauLateral', 'ankleCentre'] as const satisfies readonly LandmarkName[];
+/** Where a shaft crop is centred: a fixed share of the way between two of stage A's anchors (stageb.SHAFT). Where a
+ * shaft point lies along the bone is this definition, not something the model finds: it finds the middle between the
+ * cortices on the crop's centre row. */
+const SHAFT_CROPS: Record<Exclude<CropKind, 'hip' | 'knee' | 'ankle'>, readonly [keyof Anchors, keyof Anchors, number]> = {
+  femurProximal: ['hip', 'knee', 0.30], femurDistal: ['hip', 'knee', 0.75], tibiaProximal: ['knee', 'ankle', 0.25], tibiaDistal: ['knee', 'ankle', 0.80],
+};
+
+/** The kit suggests every landmark. These have no check on real films: BMPLE, the only real films the model learnt
+ * from, does not label them, and no reference traced on its films is reliable enough to check them (docs/landmark-model.md).
+ * The kit marks them, and the values measured from them while they stay as suggested. The others were checked on
+ * BMPLE's 69 test films: the hip, knee and ankle centres, the condyles, the plateau and the lower femoral shaft against
+ * the reader's points, the other three shaft points against shaft midlines traced between the cortices. */
+export const UNCHECKED = ['greaterTrochanterTip', 'plafondMedial', 'plafondLateral'] as const satisfies readonly LandmarkName[];
 
 /**
  * The model's legs are named by where they lie on the image, as on a standard AP display: `left` is stage A's "R"
@@ -154,10 +165,13 @@ export function decodeStageA(logits: ArrayLike<number>, height: number, width: n
 export interface Anchors { hip: Point; knee: Point; ankle: Point }
 
 /** Where a crop is centred in film pixels: the knee and ankle at their anchors, the hip 22 mm lateral of its centre so the
- * trochanter is in the crop too (stageb.crop_centre). */
+ * trochanter is in the crop too, and a shaft crop its share of the way between two anchors (stageb.crop_centre). */
 export function cropCentre(kind: CropKind, leg: ImageLeg, anchors: Anchors, mm: readonly [number, number]): Point {
   if (kind === 'hip') return [anchors.hip[0] + (leg === 'left' ? -1 : 1) * STAGE_B.hipLateralMm / mm[0], anchors.hip[1]];
-  return kind === 'knee' ? anchors.knee : anchors.ankle;
+  if (kind === 'knee') return anchors.knee;
+  if (kind === 'ankle') return anchors.ankle;
+  const [from, to, share] = SHAFT_CROPS[kind], a = anchors[from], b = anchors[to];
+  return [a[0] + share * (b[0] - a[0]), a[1] + share * (b[1] - a[1])];
 }
 
 /** scipy.ndimage.gaussian_filter1d's kernel: radius int(4σ + 0.5). */
@@ -229,14 +243,16 @@ export function mirroredChannel(channel: Channel): Channel {
 export interface ChannelPoint { point: Point; confidence: number }
 
 /** Stage B's outputs for one leg's crops (`kinds`, in order) as film points of their own channels: `coords` is
- * (crops, 26, 2) in crop pixels, `confidence` (crops, 26), each channel's heatmap peak probability. */
+ * (crops, 26, 2) in crop pixels, `confidence` (crops, 26), each channel's heatmap peak probability. A shaft point is the
+ * predicted x on the crop's centre row (stageb.infer_film). */
 export function readStageB(coords: ArrayLike<number>, confidence: ArrayLike<number>, kinds: readonly CropKind[], centres: readonly Point[],
   mm: readonly [number, number], mirror: boolean): Partial<Record<Channel, ChannelPoint>> {
   const out: Partial<Record<Channel, ChannelPoint>> = {};
   kinds.forEach((kind, crop) => {
     for (const channel of CROPS[kind]) {
       const source = CHANNELS.indexOf(mirror ? mirroredChannel(channel) : channel), index = crop * CHANNELS.length + source;
-      out[channel] = { point: cropToFilm([coords[index * 2], coords[index * 2 + 1]], centres[crop], mm, mirror), confidence: confidence[index] };
+      const row = kind in SHAFT_CROPS ? STAGE_B.size / 2 : coords[index * 2 + 1];
+      out[channel] = { point: cropToFilm([coords[index * 2], row], centres[crop], mm, mirror), confidence: confidence[index] };
     }
   });
   return out;
@@ -245,8 +261,8 @@ export function readStageB(coords: ArrayLike<number>, confidence: ArrayLike<numb
 export interface Suggestion { points: Point[]; confidence: number }
 
 /**
- * The kit's landmarks from one leg's channel points, for the landmarks in SUGGESTED only. The channel names are the
- * kit's (docs/landmark-schema.md in veacom-train maps them), and medial is towards the image's centre on both legs.
+ * The kit's landmarks from one leg's channel points. The channel names are the kit's (docs/landmark-schema.md in
+ * veacom-train maps them), and medial is towards the image's centre on both legs.
  *
  * The kit finds the hip centre by fitting a circle to the femoral head's outline. The model's checked point is the hip
  * centre itself (hipCentre, 1.37 mm on BMPLE test); its outline channels have no real-film check. So the outline is
@@ -254,9 +270,9 @@ export interface Suggestion { points: Point[]; confidence: number }
  * their median distance, in millimetres: the circle the kit fits through them has the checked centre exactly, and its
  * size, which no value uses, is the model's estimate of the head's.
  */
-export function kitSuggestions(channels: Partial<Record<Channel, ChannelPoint>>, mm: readonly [number, number]): Partial<Record<typeof SUGGESTED[number], Suggestion>> {
-  const out: Partial<Record<typeof SUGGESTED[number], Suggestion>> = {};
-  for (const name of SUGGESTED) {
+export function kitSuggestions(channels: Partial<Record<Channel, ChannelPoint>>, mm: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> {
+  const out: Partial<Record<LandmarkName, Suggestion>> = {};
+  for (const name of LANDMARKS) {
     if (name === 'femoralHeadContour') continue;
     const found = channels[name];
     if (found && found.point.every(Number.isFinite)) out[name] = { points: [found.point], confidence: found.confidence };

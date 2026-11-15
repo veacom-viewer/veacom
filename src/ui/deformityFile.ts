@@ -9,6 +9,10 @@ import type { Osteotomy } from '../imaging/deformity/osteotomy';
 import type { Point } from '../imaging/deformity/plane';
 import { activePlan, newPlan, type FilmPlans, type LegPlan, type Marker, type ModelRef, type Provenance } from './deformityStore';
 import { planView } from './deformityPlan';
+import { UNCHECKED } from '../imaging/deformity/suggest';
+import { MODEL } from './landmarkSuggestions';
+
+const sameModel = (a: ModelRef, b: ModelRef) => a.model === b.model && a.sha256.stageA === b.sha256.stageA && a.sha256.stageB === b.sha256.stageB;
 
 export const PLAN_SCHEMA = 'veacom.deformity-plan';
 export const PLAN_VERSION = 1;
@@ -22,8 +26,9 @@ export interface LandmarkLabel {
   name: LandmarkName | 'hipCentre';
   /** Image pixels, DICOM image-relative: (0, 0) is the top left corner of the top left pixel. */
   points: Array<[number, number]>;
-  /** `manual` when the reader placed every point; otherwise the landmark model the points came from. */
-  confidence: 'manual' | ModelRef;
+  /** `manual` when the reader placed every point; otherwise the landmark model the points came from, with `unchecked`
+   * when the model's channel for this landmark has no check against readers on real films. */
+  confidence: 'manual' | (ModelRef & { unchecked?: true });
   provenance: Array<Provenance | 'derived'>;
   /** What the film's millimetres stood for when the label was made (imaging/radiograph.ts). */
   spacing: CalibrationState;
@@ -81,7 +86,8 @@ export async function planFile(film: FilmPlans, frame: Series, now = new Date())
     plans: film.plans.map(plan => {
       const view = planView(film, frame, plan);
       const label = (name: LandmarkLabel['name'], points: readonly Point[], provenance: LandmarkLabel['provenance'], origin = plan.origin?.[name === 'hipCentre' ? 'femoralHeadContour' : name]): LandmarkLabel => ({
-        name, points: points.map(p => [p[0], p[1]]), confidence: origin?.model ?? 'manual', provenance, spacing: state, side: plan.side, software: version,
+        name, points: points.map(p => [p[0], p[1]]), confidence: origin?.model ? { ...origin.model, ...(origin.unchecked ? { unchecked: true as const } : {}) } : 'manual',
+        provenance, spacing: state, side: plan.side, software: version,
         suggestionShown: Boolean(origin?.shown), ...(name === 'femoralHeadContour' && origin?.model && origin.construction ? { construction: origin.construction } : {}) });
       const landmarks = LANDMARKS.filter(name => plan.points[name]?.length).map(name => label(name, plan.points[name]!, plan.provenance[name] ?? plan.points[name]!.map(() => 'placed' as const)));
       if (view.leg.hip) landmarks.push({ ...label('hipCentre', [view.leg.hip.centre], ['derived']), derivedFrom: 'femoralHeadContour' });
@@ -139,8 +145,12 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
       plan.points = { ...plan.points, [name]: list }; plan.provenance = { ...plan.provenance, [name]: provenance };
       const shown = label.suggestionShown === true;
       const ring = from && name === 'femoralHeadContour' && label.construction === 'hipCentreRing';
+      // A model's point is unchecked as the file says, and always where the model is the one this VEAcom ships and its
+      // channel is one with no real-film check: a file saved again by a VEAcom that drops the mark never makes it checked.
+      const unchecked = from && ((isObject(label.confidence) && label.confidence.unchecked === true) || (sameModel(from, MODEL) && (UNCHECKED as readonly string[]).includes(name)));
       // Where the points came from and whether a suggestion was shown are kept apart, each as the file says.
-      if (shown || from) plan.origin = { ...plan.origin, [name]: { ...(shown ? { shown: true as const } : {}), ...(from ? { model: from } : {}), ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
+      if (shown || from) plan.origin = { ...plan.origin, [name]: { ...(shown ? { shown: true as const } : {}), ...(from ? { model: from } : {}), ...(unchecked ? { unchecked: true as const } : {}),
+        ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
     }
     const o = entry.osteotomy;
     if (isObject(o)) {
