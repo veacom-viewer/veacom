@@ -770,10 +770,27 @@ async function main() {
     }), 'The app writes pictures to a clipboard in memory.');
     const copies = () => desktop.evaluate(() => globalThis.veacomCheckPictures.length);
     const imagePane = page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]');
-    // A notice takes room above the images: each copy is made with none showing, so the copies are of one layout.
+    // A notice takes room above the images: each copy is made with none showing, so the copies are of one layout. When
+    // the notice goes the panes grow back at once, but each image and its overlay are drawn again for the new size a
+    // frame or more later (Viewport's measurePane). A copy in between is the old frame stretched, a pixel off at the
+    // edges and resampled, so the copy waits until every pane is drawn at the size it shows.
+    const panesNow = () => page.evaluate(() => [...document.querySelectorAll('.viewport-cell')].map(cell => {
+      const image = cell.querySelector('canvas[data-renderer]'), overlay = cell.querySelector('svg[data-testid="annotation-overlay"]');
+      if (!image || !overlay) return { drawn: true };
+      const shown = image.getBoundingClientRect(), box = overlay.getBoundingClientRect(), view = overlay.viewBox.baseVal;
+      const want = [Math.max(1, Math.round(shown.width * devicePixelRatio)), Math.max(1, Math.round(shown.height * devicePixelRatio))];
+      return { drawn: image.width === want[0] && image.height === want[1] && Math.abs(view.width - box.width) < 0.5 && Math.abs(view.height - box.height) < 0.5,
+        canvas: [image.width, image.height], want, viewBox: [view.width, view.height], box: [box.width, box.height] };
+    }));
     const noNotice = async () => {
       if (await page.getByTestId('notice').count()) await page.getByTestId('notice-dismiss').click();
       await page.getByTestId('notice').waitFor({ state: 'detached' });
+      for (const started = Date.now(); ;) {
+        const panes = await panesNow();
+        if (panes.every(pane => pane.drawn)) return;
+        if (Date.now() - started > 10_000) throw new Error(`The panes were not drawn again at their size: ${JSON.stringify(panes)}`);
+        await settle();
+      }
     };
     const copy = async (keys, said) => {
       const before = await copies();
