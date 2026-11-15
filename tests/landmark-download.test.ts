@@ -141,7 +141,7 @@ describe('the model in the page', () => {
     assert.notEqual(second.buffer, data.buffer);
     const partial = { ...volume, data: data.slice(6), sourceFrameIndex: 1 } as unknown as Volume;
     assert.deepEqual([...framePixels(partial, 1)], [6, 7, 8, 9, 10, 11]);
-    assert.throws(() => framePixels(partial, 0), /not loaded/);
+    assert.throws(() => framePixels(partial, 0), /^Error: frame$/);
   });
 
   it('checks the graphs against their hashes, and keeps them for the session once checked', async () => {
@@ -199,7 +199,10 @@ describe('the model in the page', () => {
     assert.equal(graphs.stageA.byteLength, 8, 'The checked graphs stay here for the next Worker.');
     // A failed run (the runtime not loading, say) stops its Worker too: the next run loads everything again.
     failNext = true;
-    await assert.rejects(runModel(film(), 'left', graphs, new AbortController().signal), /runtime did not load/);
+    const logged = mock.method(console, 'error', () => {});
+    await assert.rejects(runModel(film(), 'left', graphs, new AbortController().signal), /^Error: run$/);
+    assert.match(String(logged.mock.calls[0].arguments[1]), /runtime did not load/, 'The detail goes to the console.');
+    logged.mock.restore();
     assert.equal(workers[1].terminated, true);
     await runModel(film(), 'left', graphs, new AbortController().signal);
     assert.equal(workers.length, 3);

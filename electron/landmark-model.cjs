@@ -54,7 +54,7 @@ function createLandmarkModel({ userData, fetchImpl = globalThis.fetch, notify = 
       if (typeof part !== 'string' || !Object.hasOwn(manifest.files, part)) return Promise.reject(new Error('Unknown model file.'));
       if (pending.has(part)) return pending.get(part);
       const entry = manifest.files[part], signal = controller.signal;
-      const result = kept(entry).then(bytes => bytes ?? download(part, entry, signal)).finally(() => pending.delete(part));
+      const result = kept(entry).then(bytes => bytes ?? download(part, entry, signal)).finally(() => { if (pending.get(part) === result) pending.delete(part); });
       pending.set(part, result);
       return result;
     },

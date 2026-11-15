@@ -25,8 +25,9 @@ describe('the model\'s view of the film', () => {
     assert.deepEqual(windowRange(film, COLUMNS, ROWS), [10, 58]);
     assert.equal(windowedFilm[0], 1);
     assertClose(windowedFilm[1], (31 - 10) / 48, 6);
-    const inverted = windowed(film, COLUMNS, ROWS, true);
-    for (const i of [0, 1, 500, 2000]) assertClose(inverted[i], 1 - windowedFilm[i], 7);
+    // MONOCHROME1: the stored values inverted, windowed as the model's training films were.
+    const inverted = windowed(film, COLUMNS, ROWS, true), negated = windowed(film.map(value => -value), COLUMNS, ROWS, false);
+    for (let i = 0; i < film.length; i += 97) assertClose(inverted[i], negated[i], 6);
   });
 
   it('averages areas onto the 2 mm canvas as torch\'s area resampling does', () => {

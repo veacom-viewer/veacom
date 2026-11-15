@@ -39,9 +39,10 @@ export function suggestionTarget(view: PlanView, frame: Series): { leg: ImageLeg
 /** One frame's stored values, copied: the Volume's own buffer is never handed over. */
 export function framePixels(volume: Volume, frameIndex: number): PixelArray {
   const [columns, rows] = volume.series.dimensions, size = columns * rows;
-  if (volume.sourceFrameIndex !== undefined && volume.sourceFrameIndex !== frameIndex) throw new Error('The film\'s frame is not loaded yet.');
+  // `frame`: the film's pixels are not all here yet (a frame still loading).
+  if (volume.sourceFrameIndex !== undefined && volume.sourceFrameIndex !== frameIndex) throw new Error('frame');
   const offset = volume.sourceFrameIndex !== undefined ? 0 : frameIndex * size;
-  if (offset + size > volume.data.length) throw new Error('The film\'s pixels are incomplete.');
+  if (offset + size > volume.data.length) throw new Error('frame');
   return volume.data.slice(offset, offset + size);
 }
 
@@ -95,13 +96,14 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
     const end = () => { current.worker.terminate(); if (worker === current) worker = null; };
     const stop = () => { end(); reject(signal.reason); };
     signal.addEventListener('abort', stop, { once: true });
-    current.worker.onerror = event => { event.preventDefault(); signal.removeEventListener('abort', stop); end(); reject(new Error(event.message || 'The landmark model stopped.')); };
+    // `run`: the model did not run (its runtime or graphs did not load, or it failed); the detail goes to the console.
+    current.worker.onerror = event => { event.preventDefault(); signal.removeEventListener('abort', stop); end(); console.error('The landmark model stopped:', event.message); reject(new Error('run')); };
     current.worker.onmessage = ({ data }: MessageEvent<SuggestReply>) => {
       if (data.id !== id) return;
       signal.removeEventListener('abort', stop);
       // The whole run as the reader waits for it: the Worker's start, the graphs' loading and the model.
       if (data.ok) resolve({ ...data, total: performance.now() - started });
-      else { end(); reject(new Error(data.error)); }
+      else { end(); console.error('The landmark model failed:', data.error); reject(new Error('run')); }
     };
     const transfer = [film.pixels.buffer as ArrayBuffer, ...(request.models ? [request.models.stageA, request.models.stageB] : [])];
     current.worker.postMessage(request, transfer);
@@ -114,7 +116,9 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
 export function suggestionsFrom(legs: Record<ImageLeg, Anchors>, leg: ImageLeg, channels: Extract<SuggestReply, { ok: true }>['channels'],
   mm: readonly [number, number], size: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> | null {
   const { hip, knee, ankle } = legs[leg];
-  if (!(hip[1] < knee[1] && knee[1] < ankle[1]) || !(legs.left.hip[0] < legs.right.hip[0])) return null;
+  // Two femoral heads' centres lie a pelvis apart, far more than 50 mm even in a child: closer, both legs' points are
+  // on one leg.
+  if (!(hip[1] < knee[1] && knee[1] < ankle[1]) || !((legs.right.hip[0] - legs.left.hip[0]) * mm[0] > 50)) return null;
   const onFilm = (p: Point) => p[0] >= 0 && p[0] <= size[0] && p[1] >= 0 && p[1] <= size[1];
   return Object.fromEntries(Object.entries(kitSuggestions(channels, mm)).filter(([, item]) => item.points.every(onFilm)));
 }

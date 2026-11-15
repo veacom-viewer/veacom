@@ -342,6 +342,10 @@ describe('landmark suggestions', () => {
     assert.equal(suggestionsFrom(legs({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null, 'The hip below the knee.');
     assert.equal(suggestionsFrom(legs({ hip: [310, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null,
       'The image\'s left leg found right of its right leg: both on one leg.');
+    assert.equal(suggestionsFrom(legs({ hip: [160, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null,
+      'Both hips found within 50 mm (140 px of 0.33 mm, 46 mm): both on one leg.');
+    assert.deepEqual(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }), 'left', { femoralCondyleMedial: { point: [-1, 500] as Point, confidence: 0.06 } }, mm, size),
+      {}, 'Every point off the film leaves nothing to suggest (the panel then says the model found nothing).');
   });
 });
 

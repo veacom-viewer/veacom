@@ -567,6 +567,8 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.suggestChecksum': 'modelin dosyaları sağlama değerleriyle uyuşmuyor',
   'deformity.suggestUnavailable': 'bu sürüm modeli indiremiyor',
   'deformity.suggestDownload': 'model indirilemedi. Bağlantıyı kontrol edip yeniden deneyin',
+  'deformity.suggestFrame': 'grafi hâlâ yükleniyor. Tamamı görününce yeniden deneyin',
+  'deformity.suggestRun': 'model bu bilgisayarda çalışamadı',
   'deformity.suggestSimulated': 'Önerileri görmek için simülasyonu kapatın.',
   'deformity.acceptNamed': 'Kabul et: {name}',
   'deformity.suggestChanged': 'Model çalışırken grafi ya da plan değişti. Yeniden önerin.',

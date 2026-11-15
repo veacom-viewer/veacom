@@ -430,18 +430,25 @@ async function main() {
     assert.equal((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Nothing is measured from a suggestion.');
     const suggestTimes = JSON.parse(await panel.getByTestId('deformity-suggest').getAttribute('data-suggest-times'));
     await shot('6-suggestions');
-    // A real drag of the ankle centre's suggestion makes it the reader's landmark, moved; the pointer let go, hovering
-    // over another suggestion moves nothing.
+    // A real drag of the ankle centre's suggestion, in steps wider than its ring, makes it the reader's landmark, moved.
+    // Let go, the drag is over: moving the pointer over the landmark and the knee's suggestion, button up, moves neither.
     const ring = name => page.locator(`[data-suggestion="${name}"] circle[stroke-dasharray]`).boundingBox();
     const ankleRing = await ring('ankleCentre'), kneeBefore = await ring('kneeCentre');
-    await page.mouse.move(ankleRing.x + ankleRing.width / 2, ankleRing.y + ankleRing.height / 2);
+    const from = [ankleRing.x + ankleRing.width / 2, ankleRing.y + ankleRing.height / 2];
+    await page.mouse.move(...from);
     await page.mouse.down();
-    for (let step = 1; step <= 6; step++) await page.mouse.move(ankleRing.x + ankleRing.width / 2 + step * 2, ankleRing.y + ankleRing.height / 2 + step);
+    for (let step = 1; step <= 4; step++) await page.mouse.move(from[0] + step * 15, from[1] + step * 8);
     await page.mouse.up();
     await page.waitForFunction(() => document.querySelector('.deformity-landmarks [data-landmark="ankleCentre"]')?.dataset.origin === 'model', undefined, { timeout: 5_000 });
     assert.equal(await panel.locator('[data-landmark="ankleCentre"]').getAttribute('data-suggested'), null);
-    for (const [dx, dy] of [[0, 0], [8, 4], [-6, 10]]) await page.mouse.move(kneeBefore.x + kneeBefore.width / 2 + dx, kneeBefore.y + kneeBefore.height / 2 + dy);
-    assert.deepEqual(await ring('kneeCentre'), kneeBefore, 'A hover after the drag moves nothing.');
+    const ankleMark = () => page.getByTestId('deformity-drawing').locator('[data-landmark="ankleCentre"] circle').boundingBox();
+    const ankleAfter = await ankleMark();
+    assert(Math.hypot(ankleAfter.x + ankleAfter.width / 2 - from[0] - 60, ankleAfter.y + ankleAfter.height / 2 - from[1] - 32) < 2, 'The ankle centre is where it was let go.');
+    for (const [x, y] of [[ankleAfter.x + 5, ankleAfter.y + 5], [ankleAfter.x + 40, ankleAfter.y - 30], [kneeBefore.x + kneeBefore.width / 2, kneeBefore.y + kneeBefore.height / 2], [kneeBefore.x + 30, kneeBefore.y - 20]]) {
+      await page.mouse.move(x, y, { steps: 3 });
+    }
+    assert.deepEqual(await ankleMark(), ankleAfter, 'A pointer moved with its button up moves no landmark.');
+    assert.deepEqual(await ring('kneeCentre'), kneeBefore, 'Nor a suggestion.');
     await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-suggest-accept"]').click();
     assert.equal(await panel.locator('[data-landmark="kneeCentre"]').getAttribute('data-origin'), 'model');
     await panel.locator('[data-action="deformity-suggest-accept-all"]').click();

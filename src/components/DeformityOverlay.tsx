@@ -31,10 +31,13 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
   return film ? { film, frame: sourceFrameSeries(volume.series, slice), key } : null;
 }
 
-/** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step. */
-function finish(held: DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }) {
+/** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step, when the reader let
+ * it go on the plan it was taken from. A cancelled gesture, or one ended by a switch of plan, leaves it a suggestion. */
+function finish(held: DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }, settle: boolean) {
   const handle = held.handle;
-  if (held.moved && handle.kind === 'suggestion') deformity.change(held.key, current => settleMoved(current, handle.name, handle.index), false);
+  if (settle && held.moved && handle.kind === 'suggestion') {
+    deformity.change(held.key, current => current.active === held.plan ? settleMoved(current, handle.name, handle.index) : current, false);
+  }
   held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
 }
 
@@ -101,7 +104,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   useLayoutEffect(() => () => {
     const held = drag.current;
     drag.current = null;
-    if (held) finish(held);
+    if (held) finish(held, false);
   }, [found?.key, found?.film.active]);
   if (!found) return null;
   const { film, frame, key } = found;
@@ -121,7 +124,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     event.currentTarget.setPointerCapture(event.pointerId);
     drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, start: [event.clientX, event.clientY], gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
   };
-  const end = (held: NonNullable<typeof drag.current>) => { drag.current = null; finish(held); };
+  const end = (held: NonNullable<typeof drag.current>, settle = true) => { drag.current = null; finish(held, settle); };
   const follow = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held) return;
@@ -129,7 +132,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     // pointer whose button is up has been released where this handle did not hear it.
     const now = dragContinues(held, { key, plan: film.active, pointer: event.pointerId });
     if (now === 'ignore') return;
-    if (now === 'stop' || !(event.buttons & 1)) { end(held); return; }
+    if (now === 'stop' || !(event.buttons & 1)) { end(held, now !== 'stop'); return; }
     // A tap, or a pen's jitter, moves nothing: the point moves once the pointer has gone 3 px.
     if (!held.moved && Math.hypot(event.clientX - held.start[0], event.clientY - held.start[1]) < 3) return;
     const point = pixelAt(local(event));
@@ -140,7 +143,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const release = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held || held.pointer !== event.pointerId) return;
-    end(held);
+    end(held, event.type !== 'pointercancel');
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const handleProps = (handle: Handle) => ({ onPointerDown: grab(handle), onPointerMove: follow, onPointerUp: release, onPointerCancel: release, onLostPointerCapture: release, style: { pointerEvents: placing ? 'none' : 'all', cursor: 'move' } as const });

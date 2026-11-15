@@ -564,6 +564,8 @@ export const en = {
   'deformity.suggestChecksum': 'the model\'s files do not match their checksums',
   'deformity.suggestUnavailable': 'this version cannot download the model',
   'deformity.suggestDownload': 'the model could not be downloaded. Check the connection and try again',
+  'deformity.suggestFrame': 'the film is still loading. Try again when it is shown in full',
+  'deformity.suggestRun': 'the model did not run on this computer',
   'deformity.suggestSimulated': 'Turn off Show simulation to see the suggestions.',
   'deformity.acceptNamed': 'Accept: {name}',
   'deformity.suggestChanged': 'The film or the plan changed while the model ran. Suggest again.',

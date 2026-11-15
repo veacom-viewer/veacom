@@ -207,13 +207,14 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (now.key !== key || !live || !liveView || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg
         || liveView.mm?.[0] !== mm[0] || liveView.mm[1] !== mm[1]) { setStatus(t('deformity.suggestChanged')); return; }
       const found = suggestionsFrom(reply.anchors, leg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
-      if (!found) { setStatus(t('deformity.suggestNone')); return; }
+      if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
       deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL));
       const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const known = { checksum: 'deformity.suggestChecksum', unavailable: 'deformity.suggestUnavailable', download: 'deformity.suggestDownload' } as const;
+      const known = { checksum: 'deformity.suggestChecksum', unavailable: 'deformity.suggestUnavailable', download: 'deformity.suggestDownload',
+        frame: 'deformity.suggestFrame', run: 'deformity.suggestRun' } as const;
       setStatus(controller.signal.aborted ? t('deformity.suggestCancelled')
         : t('deformity.suggestFailed', { reason: Object.hasOwn(known, reason) ? t(known[reason as keyof typeof known]) : reason }));
     } finally {
