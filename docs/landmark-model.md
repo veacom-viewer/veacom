@@ -136,7 +136,7 @@ film's stated spacing; on the films marked CI, the desktop check asserts which s
 | BMPLE's test films | 0.041 and above |
 | [Mendeley Data's High Tibial Osteotomy](https://doi.org/10.17632/bpvj6xczm2.3) film 49_0, both legs hip to ankle (CI) | 0.050 and 0.053 |
 | Film 10_0 of the same set, which stops mid-tibia (CI) | 0.004 and 0.006, the ankles |
-| The synthetic long-leg drawing (CI, its left leg) | 0.007 to 0.016 over its variants |
+| The synthetic long-leg drawing: its variants, measured in Node; CI checks the left leg of one | 0.007 to 0.016 |
 
 The two Mendeley films are real standing long-leg films from another hospital (ORTOTOP, Poland) that the model never
 saw. CI fetches them from Mendeley Data with their SHA-256 pinned (`tools/fixtures/fetch-mendeley-films.mjs`) and keeps

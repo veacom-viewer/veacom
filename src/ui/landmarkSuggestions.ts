@@ -111,8 +111,8 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
 }
 
 /** Stage A's least peak probability (`Anchors.peak`) below which the model is not sure of a leg and suggests nothing.
- * On the real films of whole legs measured it was 0.043 to 0.053; on a film that stops above the ankles, and on the
- * synthetic drawing, under 0.02 (docs/landmark-model.md). */
+ * On real films of whole legs it was 0.041 or more (BMPLE test, Mendeley Data's 49_0); on a film that stops above the
+ * ankles, and on the synthetic drawing, under 0.02 (docs/landmark-model.md). */
 export const UNSURE_PEAK = 0.02;
 
 /** The kit's suggestions from a run; 'unsure' when stage A is not sure of the leg (`UNSURE_PEAK`); or null when the

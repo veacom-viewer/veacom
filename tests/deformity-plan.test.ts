@@ -471,7 +471,8 @@ describe('landmark suggestions', () => {
     assert.deepEqual(Object.keys(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size)!), ['kneeCentre'],
       'The ankle centre a pixel below the film is left out.');
     assert.equal(UNSURE_PEAK, 0.02);
-    assert.notEqual(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, UNSURE_PEAK), 'left', channels, mm, size), null, 'At the cutoff, sure enough.');
+    assert.deepEqual(Object.keys(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, UNSURE_PEAK), 'left', channels, mm, size) as object), ['kneeCentre'],
+      'At the cutoff, sure enough.');
     for (const peak of [0.0199, 0.004, Number.NaN]) {
       assert.equal(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, peak), 'left', channels, mm, size), 'unsure', `Not sure of the leg at ${peak}.`);
     }
