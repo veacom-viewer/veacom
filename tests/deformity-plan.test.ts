@@ -301,6 +301,14 @@ describe('landmark suggestions', () => {
     // Saved again, the labels are the same: a model's point is never laundered into the reader's.
     const reopened = await planFile({ ...current, plans: opened.plans, active: opened.plans[0].id }, frame);
     assert.deepEqual(reopened.plans[0].landmarks, file.plans[0].landmarks);
+    // A model's outline saved without the ring's mark (a traced one) is not called a ring when saved again.
+    const traced = structuredClone(JSON.parse(text));
+    for (const label of traced.plans[0].landmarks) if (label.name === 'femoralHeadContour') delete label.construction;
+    const tracedOpen = await parsePlanFile(JSON.stringify(traced), current, frame);
+    assert.ok(!('error' in tracedOpen));
+    const tracedSaved = await planFile({ ...current, plans: tracedOpen.plans, active: tracedOpen.plans[0].id }, frame);
+    const head = tracedSaved.plans[0].landmarks.find(label => label.name === 'femoralHeadContour')!;
+    assert.deepEqual([head.confidence, head.construction], [MODEL, undefined]);
     // A point claimed as accepted with no model, or a model with a malformed hash, is the reader's.
     const forged = structuredClone(JSON.parse(text));
     for (const label of forged.plans[0].landmarks) if (label.name === 'kneeCentre') label.confidence = 'manual';

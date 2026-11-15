@@ -82,7 +82,7 @@ export async function planFile(film: FilmPlans, frame: Series, now = new Date())
       const view = planView(film, frame, plan);
       const label = (name: LandmarkLabel['name'], points: readonly Point[], provenance: LandmarkLabel['provenance'], origin = plan.origin?.[name === 'hipCentre' ? 'femoralHeadContour' : name]): LandmarkLabel => ({
         name, points: points.map(p => [p[0], p[1]]), confidence: origin?.model ?? 'manual', provenance, spacing: state, side: plan.side, software: version,
-        suggestionShown: Boolean(origin?.shown), ...(name === 'femoralHeadContour' && origin?.model ? { construction: 'hipCentreRing' as const } : {}) });
+        suggestionShown: Boolean(origin?.shown), ...(name === 'femoralHeadContour' && origin?.model && origin.construction ? { construction: origin.construction } : {}) });
       const landmarks = LANDMARKS.filter(name => plan.points[name]?.length).map(name => label(name, plan.points[name]!, plan.provenance[name] ?? plan.points[name]!.map(() => 'placed' as const)));
       if (view.leg.hip) landmarks.push({ ...label('hipCentre', [view.leg.hip.centre], ['derived']), derivedFrom: 'femoralHeadContour' });
       return { name: plan.name, side: plan.side, landmarks, osteotomy: plan.osteotomy,
@@ -138,7 +138,8 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
       });
       plan.points = { ...plan.points, [name]: list }; plan.provenance = { ...plan.provenance, [name]: provenance };
       const shown = label.suggestionShown === true;
-      if (shown || from) plan.origin = { ...plan.origin, [name]: { shown: true, ...(from ? { model: from } : {}) } };
+      const ring = from && name === 'femoralHeadContour' && label.construction === 'hipCentreRing';
+      if (shown || from) plan.origin = { ...plan.origin, [name]: { shown: true, ...(from ? { model: from } : {}), ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
     }
     const o = entry.osteotomy;
     if (isObject(o)) {

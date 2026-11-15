@@ -6,7 +6,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { afterEach, describe, it, mock } from 'node:test';
 import manifest from '../electron/landmark-model.json';
-import { landmarkModel } from '../src/web/landmarkModel';
+import { cancelLandmarkModel, landmarkModel } from '../src/web/landmarkModel';
 import { framePixels, loadModel, runModel } from '../src/ui/landmarkSuggestions';
 import type { Volume } from '../src/model';
 import { restoreGlobals, stubGlobal } from './support';
@@ -123,6 +123,15 @@ describe('the model\'s graphs in the browser', () => {
       await assert.rejects(landmarkModel('stageB', undefined, { fetchImpl: long as unknown as typeof fetch, store: undefined, base }), /larger/);
       const short = mock.fn(async () => new Response(bytes.subarray(1)));
       await assert.rejects(landmarkModel('stageB', undefined, { fetchImpl: short as unknown as typeof fetch, store: undefined, base }), /incomplete/);
+      // Cancel while the cache is still being read stops that request; the next one downloads.
+      const { store: slow } = storage();
+      let open = () => {};
+      const opened = new Promise<void>(resolve => { open = resolve; });
+      const pending = landmarkModel('stageB', undefined, { fetchImpl: fetchImpl as unknown as typeof fetch, base,
+        store: { open: async () => { await opened; return slow.open(''); } } as unknown as CacheStorage });
+      cancelLandmarkModel(); open();
+      await assert.rejects(pending, /abort/i);
+      assert.equal(fetchImpl.mock.callCount(), 2, 'The cancelled request fetched nothing.');
       // A file of the right size but other bytes is refused and never kept.
       const { store: fresh, entries: none } = storage();
       const forged = mock.fn(async () => new Response(Buffer.alloc(entry.bytes, 7)));

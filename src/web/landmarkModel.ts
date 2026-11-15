@@ -14,6 +14,8 @@ const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map(byte => byte.
 export async function landmarkModel(part: Part, onProgress?: (received: number) => void,
   { fetchImpl = fetch, store = globalThis.caches as CacheStorage | undefined, base = location.href } = {}): Promise<ArrayBuffer> {
   if (!Object.hasOwn(manifest.files, part)) throw new Error('Unknown model file.');
+  // Cancel stops the request it was pressed for, also while the cache is still being read.
+  const signal = controller.signal;
   const entry = manifest.files[part], url = new URL(`models/${entry.file}`, base).href;
   const wanted = new Set(Object.values(manifest.files).map(file => new URL(`models/${file.file}`, base).href));
   // Cache Storage exists only in a secure context, and a browser may refuse it (private windows): then it downloads.
@@ -25,7 +27,8 @@ export async function landmarkModel(part: Part, onProgress?: (received: number) 
     if (bytes.byteLength === entry.bytes && hex(await crypto.subtle.digest('SHA-256', bytes)) === entry.sha256) return bytes;
     await cache!.delete(url);
   }
-  const response = await fetchImpl(url, { credentials: 'same-origin', cache: 'no-store', signal: controller.signal });
+  signal.throwIfAborted();
+  const response = await fetchImpl(url, { credentials: 'same-origin', cache: 'no-store', signal });
   if (!response.ok || !response.body) throw new Error(`The model file was not served (HTTP ${response.status}).`);
   const bytes = new Uint8Array(entry.bytes), reader = response.body.getReader();
   let received = 0;

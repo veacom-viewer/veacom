@@ -24,9 +24,10 @@ export interface LegPlan {
   osteotomy: Osteotomy | null;
   /** The model's suggestions the reader has not accepted or moved yet: drawn apart from the landmarks and never measured. */
   suggested?: { model: ModelRef; points: Landmarks };
-  /** Per landmark: a suggestion of it has been on screen (`shown`), and the model its points came from while the reader
-   * keeps the points a suggestion gave (`model`). The plan file's confidence and suggestionShown. */
-  origin?: Partial<Record<LandmarkName, { shown: true; model?: ModelRef }>>;
+  /** Per landmark: a suggestion of it has been on screen (`shown`), the model its points came from while the reader
+   * keeps the points a suggestion gave (`model`), and how the model made them (`construction`: the femoral head's ring
+   * around the model's hip centre). The plan file's suggestionShown, confidence and construction. */
+  origin?: Partial<Record<LandmarkName, { shown: true; model?: ModelRef; construction?: 'hipCentreRing' }>>;
 }
 
 /** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it

@@ -126,7 +126,8 @@ export function acceptSuggestions(film: FilmPlans, names?: LandmarkName[]): Film
     const points = suggested.points[name];
     if (!points) continue;
     plan = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: points.map(() => 'accepted' as const) },
-      origin: { ...plan.origin, [name]: { shown: true, model: suggested.model } } }, name);
+      // The model's head is always the ring around its hip centre (suggest.ts kitSuggestions).
+      origin: { ...plan.origin, [name]: { shown: true, model: suggested.model, ...(name === 'femoralHeadContour' ? { construction: 'hipCentreRing' as const } : {}) } } }, name);
   }
   return withPlan(film, plan);
 }
@@ -155,8 +156,8 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
     const provenance = contour ? [...(plan.provenance[name] ?? []), 'placed' as const].slice(0, CONTOUR_MAXIMUM) : ['placed' as const];
     // A point placed by hand replaces the landmark's suggestion. The landmark keeps its model only while points the
     // model gave remain (an outline taking one more point), and stays marked as shown a suggestion.
-    const shown = plan.origin?.[name]?.shown || plan.suggested?.points[name], model = contour ? plan.origin?.[name]?.model : undefined;
-    const origin = shown ? { ...plan.origin, [name]: { shown: true as const, ...(model ? { model } : {}) } } : plan.origin;
+    const shown = plan.origin?.[name]?.shown || plan.suggested?.points[name], kept = contour ? plan.origin?.[name] : undefined;
+    const origin = shown ? { ...plan.origin, [name]: { shown: true as const, ...(kept?.model ? { model: kept.model } : {}), ...(kept?.construction ? { construction: kept.construction } : {}) } } : plan.origin;
     const next = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: provenance }, origin }, name);
     // The head's outline takes points until it has three; clicked again later, it takes more.
     const stay = contour && points.length < CONTOUR_MINIMUM;
