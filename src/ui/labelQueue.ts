@@ -86,9 +86,9 @@ export function useLabelQueue(): QueueState {
 /** The legs a film shows: the one its laterality names, else both. */
 export const filmSides = (laterality: string | undefined): Side[] => laterality === 'R' ? ['R'] : laterality === 'L' ? ['L'] : ['R', 'L'];
 
-/** The legs to plan on a film that has no plan yet: the run's, among those the film shows, or the run's when the film
- * shows none of them. */
+/** The legs to plan on a film that has no plan yet: the run's, among those the film shows, or the film's when it
+ * shows none of the run's. A film is never given a leg it does not show. */
 export function sidesFor(run: readonly Side[], laterality: string | undefined): Side[] {
   const shows = filmSides(laterality), both = run.filter(side => shows.includes(side));
-  return both.length ? both : [...run];
+  return both.length ? both : shows;
 }

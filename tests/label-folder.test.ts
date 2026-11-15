@@ -190,7 +190,7 @@ describe('the labelling queue', () => {
     assert.deepEqual(filmSides('R'), ['R']); assert.deepEqual(filmSides('B'), ['R', 'L']); assert.deepEqual(filmSides(undefined), ['R', 'L']);
     assert.deepEqual(sidesFor(['R'], 'B'), ['R']);
     assert.deepEqual(sidesFor(['R', 'L'], 'L'), ['L']);
-    assert.deepEqual(sidesFor(['R'], 'L'), ['R'], 'A film showing none of the run\'s legs gets the run\'s.');
+    assert.deepEqual(sidesFor(['R'], 'L'), ['L'], 'A film showing none of the run\'s legs gets the leg it shows.');
   });
 
   it('waits for one film or write at a time, and keeps the settings from run to run', () => {

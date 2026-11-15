@@ -227,7 +227,8 @@ write beside the films; other browsers download each plan instead.
 - **Above the plan**, the queue shows the film, Previous and Next, a list to go to any film, and two settings:
   - **Suggestions** on or off. Off, Suggest landmarks cannot be pressed on the queue's films, so a film labelled with
     them off records no suggestion shown (`suggestionShown` false).
-  - **Legs**: right, left or both, for each film that has no plan yet (among those the film shows).
+  - **Legs**: right, left or both, for each film that has no plan yet (among those the film shows). A film whose
+    laterality names only the other leg gets that leg: a film is never given a leg it does not show.
 - **Opening a film** imports it, opens the plan on it, and takes the film shown before off the list (its files are not
   touched). Undo starts afresh on each film, so a step back never reaches another film's plan. The plan file beside the
   film is read: if it opens, it is put on the film, unless this session has already planned the film; if it does not
