@@ -724,6 +724,7 @@ export const en = {
   'label.waitForCapture': 'Pictures or a video are being made from the pane. Wait for them to finish, or cancel them in the status bar, then go on.',
   'label.multiFrame': 'This file holds several frames, and a plan file holds one; label its frames from files of their own.',
   'label.changedWhileSaved': 'Saved {file}, but the plan changed while it was written. Save and next again to save it as it is now.',
+  'label.waitForFilm': 'A film of the folder is opening. Make pictures or a video once it is shown.',
   'label.empty': 'There are no DICOM films directly inside the chosen folder.',
   'label.invalidPlan': 'This is not a deformity plan, so it was not saved.',
   'label.planChanged': 'The plan file beside this film was changed or added outside VEAcom since the folder was opened, so it was not replaced. Open the folder again.',

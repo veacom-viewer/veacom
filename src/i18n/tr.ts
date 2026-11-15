@@ -727,6 +727,7 @@ export const tr: Record<keyof typeof en, string> = {
   'label.waitForCapture': 'Panodan resim ya da video yapılıyor. Bitmesini bekleyin ya da durum çubuğundan iptal edin, sonra devam edin.',
   'label.multiFrame': 'Bu dosyada birden çok kare var, plan dosyası ise tek kareyi tutar; karelerini ayrı dosyalardan işaretleyin.',
   'label.changedWhileSaved': '{file} kaydedildi, ama yazılırken plan değişti. Şimdiki haliyle kaydetmek için yeniden Kaydet ve sonraki’ye basın.',
+  'label.waitForFilm': 'Klasörün bir grafisi açılıyor. Resim ya da videoyu grafi gösterilince yapın.',
   'label.empty': 'Seçilen klasörün içinde doğrudan DICOM grafisi yok.',
   'label.invalidPlan': 'Bu bir deformite planı değil; kaydedilmedi.',
   'label.planChanged': 'Bu grafinin yanındaki plan dosyası, klasör açıldıktan sonra VEAcom dışında değiştirildi ya da eklendi; üzerine yazılmadı. Klasörü yeniden açın.',

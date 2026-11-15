@@ -1106,12 +1106,14 @@ export default function App() {
   const goToFilm = async (index: number) => {
     const queue = labelQueue.get(), folder = queue.folder, bridge = window.veacom?.labelFolder;
     if (!folder || !bridge || index < 0 || index >= folder.films.length) return;
-    // Pictures or a video being made from the pane: the film shown must stay until they are done. What was just saved
-    // is still said.
-    if (capturingRef.current) { labelQueue.say([labelQueue.get().status, t('label.waitForCapture')].filter(Boolean).join(' ')); return; }
+    // Pictures or a video being made, or about to be made, from the pane: the film shown must stay until they are done.
+    // What was just saved is still said. (While a film opens, no capture can start: openExport.)
+    if (capturingRef.current || exportMode === 'images' || exportMode === 'video') {
+      labelQueue.say([labelQueue.get().status, t('label.waitForCapture')].filter(Boolean).join(' ')); return;
+    }
     if (!labelQueue.begin()) return;
     // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run, and that run is left alone.
-    const same = () => labelQueue.get().folder?.token === folder.token, capturing = () => capturingRef.current;
+    const same = () => labelQueue.get().folder?.token === folder.token;
     // No `finally` here: the React Compiler leaves a component unmemoized when any function in it has one.
     let status: string | null | undefined;
     try {
@@ -1123,8 +1125,7 @@ export default function App() {
         const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
         // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
         const shared = labelQueue.shares(index, opened);
-        // A capture started while the film imported keeps the film it is made from on the list.
-        const before = capturing() ? [] : queue.seriesIds.filter(id => !opened.includes(id));
+        const before = queue.seriesIds.filter(id => !opened.includes(id));
         if (before.length) removeFromList(before, opened.length > 0);
         labelQueue.shown(index, shared ? [] : opened);
         forgetHistory();
@@ -1815,6 +1816,8 @@ export default function App() {
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
     if ((mode === 'video' || mode === 'images') && activeVolume?.sourceFrameIndex !== undefined) { say('notice.videoAfterLoad', 'info'); return; }
+    // A film of a folder being labelled is replacing the one shown: pictures wait until it is there.
+    if ((mode === 'video' || mode === 'images') && labelQueue.get().busy) { setNotice({ message: t('label.waitForFilm'), kind: 'info' }); return; }
     if ((mode === 'video' || mode === 'images') && activeVolume) {
       const viewport = gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
       if (!viewport) return;
