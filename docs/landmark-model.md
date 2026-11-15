@@ -126,8 +126,24 @@ apart; closer, the model put both legs' points on one leg). A BMPLE film with on
 real films of one leg are not checked. A point that falls off the film is not suggested. While the osteotomy's simulation shows,
 suggestions are not drawn and cannot be accepted, and they never appear in pictures, reports or videos.
 
-The heatmap peak probability (stage B's confidence) is not used to hold points back: on BMPLE test it does not separate
-good points from bad. The largest errors, 12 to 20 mm, had peaks of 0.06 to 0.07, as high as most correct points.
+Nothing is suggested, either, when stage A is not sure of the leg. For each of the leg's hip, knee and ankle, its peak is
+the largest value of the softmax over that heatmap; under 0.02 for any of the three, the panel says the model is not
+sure and suggests nothing. Stage A's least peak per leg, at each film's stated spacing:
+
+| Film | Least peak |
+| --- | --- |
+| BMPLE's test films | 0.041 and above |
+| [Mendeley Data's High Tibial Osteotomy](https://doi.org/10.17632/bpvj6xczm2.3) film 49_0, both legs hip to ankle (CI) | 0.050 and 0.053 |
+| Film 10_0 of the same set, which stops mid-tibia (CI) | 0.004 and 0.006, the ankles |
+| The synthetic long-leg drawing (CI) | 0.007 to 0.016 |
+
+The two Mendeley films are real standing long-leg films from another hospital (ORTOTOP, Poland) that the model never
+saw. CI fetches them from Mendeley Data with their SHA-256 pinned (`tools/fixtures/fetch-mendeley-films.mjs`) and does
+not keep or publish them; their stated spacing comes from the ruler on each film.
+
+Stage B's heatmap peak probability (its confidence) is not used to hold single points back: on BMPLE test it does not
+separate good points from bad. The largest errors, 12 to 20 mm, had peaks of 0.06 to 0.07, as high as most correct
+points.
 
 ## Limits
 

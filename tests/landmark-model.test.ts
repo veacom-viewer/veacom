@@ -59,20 +59,25 @@ describe('the model\'s view of the film', () => {
 });
 
 describe('reading the model', () => {
-  it('finds stage A\'s peaks to a fraction of a cell, the image\'s left leg in the first three channels', () => {
+  it('finds stage A\'s peaks to a fraction of a cell, the image\'s left leg in the first three channels, and how sure it is of each leg', () => {
     const height = 40, width = 20, logits = new Float32Array(6 * height * width).fill(-50);
     // A peak between cells: equal logits on two neighbours put the point on their shared edge.
     const peaks: Array<[number, number]> = [[3, 4], [5, 20], [6, 33], [14, 5], [15, 21], [13, 34]];
     peaks.forEach(([x, y], channel) => { logits[channel * height * width + y * width + x] = 10; logits[channel * height * width + y * width + x + 1] = 10; });
+    // The right knee's map has a third, weaker place, far from its peak: half as likely, so its peak is 1 / 2.5.
+    logits[4 * height * width + 2 * width + 2] = 10 - Math.log(2);
     const scale: [number, number] = [0.5, 0.25];
     const legs = decodeStageA(logits, height, width, scale);
     const expected = (x: number, y: number): Point => [(x + 1) * 2 / scale[0], (y + 0.5) * 2 / scale[1]];
     const got = [legs.left.hip, legs.left.knee, legs.left.ankle, legs.right.hip, legs.right.knee, legs.right.ankle];
     got.forEach((point, i) => { assertClose(point[0], expected(...peaks[i])[0], 6); assertClose(point[1], expected(...peaks[i])[1], 6); });
+    // Each leg's peak is its least sure joint's softmax maximum: two equal cells give 0.5.
+    assertClose(legs.left.peak, 0.5, 6);
+    assertClose(legs.right.peak, 0.4, 6);
   });
 
   it('centres the hip crop 22 mm lateral, the shaft crops along the anchors, and maps crop pixels back, mirrored for the right leg', () => {
-    const anchors = { hip: [100, 50] as Point, knee: [110, 400] as Point, ankle: [115, 800] as Point }, mm = [0.2, 0.25] as const;
+    const anchors = { hip: [100, 50] as Point, knee: [110, 400] as Point, ankle: [115, 800] as Point, peak: 0.05 }, mm = [0.2, 0.25] as const;
     assert.deepEqual(cropCentre('hip', 'left', anchors, mm), [100 - 110, 50]);
     assert.deepEqual(cropCentre('hip', 'right', anchors, mm), [100 + 110, 50]);
     assert.deepEqual(cropCentre('ankle', 'right', anchors, mm), [115, 800]);

@@ -325,12 +325,36 @@ jobs:
         run: |
           node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
           node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
-      # The deformity plan on a synthetic long-leg DX: calibration variants, landmarks, values, osteotomy, save, report.
-      - name: Deformity plan on synthetic long-leg films
+      # The landmark model's real films (docs/landmark-model.md): two of Mendeley Data's long-leg films, fetched from its
+      # public download path with their SHA-256 pinned. This cache keeps them between runs; the repository, the
+      # evidence and the releases never hold them. The fetch is its own step so a fetched film is kept even when a
+      # later check fails.
+      - name: Mendeley films from the cache
+        id: mendeley-cache
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/veacom-fixtures/mendeley
+          key: mendeley-films-${{ hashFiles('tools/fixtures/fetch-mendeley-films.mjs') }}
+          restore-keys: mendeley-films-
+      - name: Mendeley films, checked against their pinned hashes and wrapped as DX
+        id: mendeley
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: node tools/fixtures/fetch-mendeley-films.mjs "$RUNNER_TEMP/mendeley"
+      - name: Keep the Mendeley films for the next run
+        if: ${{ !cancelled() && steps.mendeley.outcome == 'success' && steps.mendeley-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/veacom-fixtures/mendeley
+          key: mendeley-films-${{ hashFiles('tools/fixtures/fetch-mendeley-films.mjs') }}
+      # The deformity plan on a synthetic long-leg DX: calibration variants, landmarks, values, osteotomy, save, report.
+      # Then the landmark model: not sure, so silent, on the drawing and on a real film without ankles; suggesting all
+      # 14 landmarks on a real film of both whole legs.
+      - name: Deformity plan on synthetic and real long-leg films
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.mendeley.outcome == 'success' }}
         run: |
           node tools/fixtures/make-longleg-study.mjs "$RUNNER_TEMP/longleg"
-          node tools/check-deformity-plan.cjs "$RUNNER_TEMP/longleg" "$EVIDENCE/deformity-plan"
+          node tools/check-deformity-plan.cjs "$RUNNER_TEMP/longleg" "$RUNNER_TEMP/mendeley" "$EVIDENCE/deformity-plan"
       # What Explorer's "Open with VEAcom" does while VEAcom runs: a later launch hands its study to the open window.
       - name: A later launch opens its study in the running window
         if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}

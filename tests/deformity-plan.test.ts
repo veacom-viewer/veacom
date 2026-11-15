@@ -5,7 +5,7 @@ import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, withPlan, type FilmPlans } from '../src/ui/deformityStore';
 import { acceptSuggestions, clearSuggestions, dragContinues, fromUnchecked, imageSideOnScreen, LEG_AXIS, MEASURED_FROM, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, putBackSuggestion, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
-import { MODEL, suggestionsFrom, suggestionTarget } from '../src/ui/landmarkSuggestions';
+import { MODEL, suggestionsFrom, suggestionTarget, UNSURE_PEAK } from '../src/ui/landmarkSuggestions';
 import { lateralOnImage, type Landmarks } from '../src/imaging/deformity/measure';
 import { LANDMARKS } from '../src/imaging/deformity/landmarks';
 import { UNCHECKED } from '../src/imaging/deformity/suggest';
@@ -463,12 +463,18 @@ describe('landmark suggestions', () => {
     assert.deepEqual(suggestionTarget(planView(done, frame), frame), { block: 'placed' });
   });
 
-  it('are kept only when the model found two legs, the leg\'s hip, knee and ankle down the film, and only on the film', () => {
+  it('are kept only when stage A is sure of the leg and found two legs, the leg\'s hip, knee and ankle down the film, and only on the film', () => {
     const channels = { kneeCentre: { point: [200, 500] as Point, confidence: 0.06 }, ankleCentre: { point: [205, 1001] as Point, confidence: 0.06 } };
-    const right = { hip: [300, 120] as Point, knee: [290, 500] as Point, ankle: [295, 900] as Point }, size = [400, 1000] as const, mm = [0.33, 0.33] as const;
-    const legs = (left: { hip: Point; knee: Point; ankle: Point }) => ({ left, right });
+    // The other leg's peak does not count: only the leg suggested must be sure.
+    const right = { hip: [300, 120] as Point, knee: [290, 500] as Point, ankle: [295, 900] as Point, peak: 0.001 }, size = [400, 1000] as const, mm = [0.33, 0.33] as const;
+    const legs = (left: { hip: Point; knee: Point; ankle: Point }, peak = 0.05) => ({ left: { ...left, peak }, right });
     assert.deepEqual(Object.keys(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size)!), ['kneeCentre'],
       'The ankle centre a pixel below the film is left out.');
+    assert.equal(UNSURE_PEAK, 0.02);
+    assert.notEqual(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, UNSURE_PEAK), 'left', channels, mm, size), null, 'At the cutoff, sure enough.');
+    for (const peak of [0.0199, 0.004, Number.NaN]) {
+      assert.equal(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }, peak), 'left', channels, mm, size), null, `Not sure of the leg at ${peak}.`);
+    }
     assert.equal(suggestionsFrom(legs({ hip: [100, 520], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null, 'The hip below the knee.');
     assert.equal(suggestionsFrom(legs({ hip: [310, 120], knee: [200, 500], ankle: [205, 900] }), 'left', channels, mm, size), null,
       'The image\'s left leg found right of its right leg: both on one leg.');
