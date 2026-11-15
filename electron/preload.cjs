@@ -58,6 +58,7 @@ contextBridge.exposeInMainWorld('veacom', {
       .finally(() => ipcRenderer.removeListener('landmarks:progress', notify));
   },
   cancelLandmarkModel: () => invoke('landmarks:cancel'),
+  labelFolder: { open: () => invoke('label:open'), film: (token, index) => invoke('label:film', token, index), write: (token, index, text) => invoke('label:write', token, index, text) },
   exportDicom: (seriesId, options) => invoke('dicom:export', seriesId, options),
   sendFeedback: payload => invoke('feedback:send', payload),
   estimateExport: (seriesId, options) => invoke('dicom:estimate', seriesId, options),

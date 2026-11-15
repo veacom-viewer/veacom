@@ -19,6 +19,7 @@ import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type F
 import { acceptSuggestions, clearSuggestions, fromUnchecked, imageSideOnScreen, nextLandmark, planView, uncheckedAsSuggested, withSuggestions, type PlanView } from '../ui/deformityPlan';
 import { cancelModelDownload, framePixels, loadModel, MODEL, MODEL_BYTES, runModel, suggestionsFrom, suggestionTarget } from '../ui/landmarkSuggestions';
 import { MAX_PLANS, parsePlanFile, planFile } from '../ui/deformityFile';
+import { filmSides, labelQueue, sidesFor } from '../ui/labelQueue';
 import { drawReport, pictureSize, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
 import { Download, FolderOpen, Images, Plus, Redo2, Undo2, X } from './icons';
@@ -34,8 +35,6 @@ const CORA_KEY = { femur: 'coraFemur', tibia: 'coraTibia' } as const;
 /** The value each step of the malalignment test reads (analysis.ts malalignmentTest). */
 const STEP_KEY = { mad: 'MAD', femur: 'mLDFA', tibia: 'MPTA', joint: 'JLCA', subluxation: 'subluxation' } as const;
 
-/** The sides a film is planned for when it opens: the one its laterality names, else both. */
-const sidesOf = (laterality: string | undefined): Side[] => laterality === 'R' ? ['R'] : laterality === 'L' ? ['L'] : ['R', 'L'];
 
 /** A plan's name: the reader's, else its leg, numbered when the film has more than one plan of that leg. */
 export function planName(film: FilmPlans, id: string, t: Translator): string {
@@ -87,7 +86,7 @@ async function save(name: string, data: ArrayBuffer | string): Promise<string | 
 
 const frames = (count: number) => new Promise<void>(resolve => { const step = (left: number) => left ? requestAnimationFrame(() => step(left - 1)) : resolve(); step(count); });
 
-export function DeformityPanel({ volume, slice, view: paneView, onClose, headingRef, onCalibrate, onUndo, history, hidePatientData, viewport }: {
+export function DeformityPanel({ volume, slice, view: paneView, onClose, headingRef, onCalibrate, onUndo, history, hidePatientData, viewport, labelling }: {
   /** The active pane's film, as decorated with its calibration (App's measurement scale). */
   volume: Volume; slice: number;
   /** The pane's view, as shown: its turn and flips tell which side of the image the pane's left and right are. */
@@ -101,6 +100,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   hidePatientData: boolean;
   /** The pane that shows the film, for the report's pictures. */
   viewport: () => HTMLElement | null;
+  /** A folder being labelled (ui/labelQueue.ts): the legs a new film's plan gets, and whether suggestions may be asked
+   * for. Its Save and next is the main action, so Report steps back. */
+  labelling?: { sides: Side[]; suggestions: boolean };
 }) {
   const { t, locale } = useTranslation();
   const state = useDeformity();
@@ -124,7 +126,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   }, [frame, film, hidePatientData, locale]);
   useEffect(() => { deformity.setOpen(true); return () => deformity.setOpen(false); }, []);
   useEffect(() => {
-    deformity.ensure(series, frameIndex, sidesOf(projection?.laterality));
+    deformity.ensure(series, frameIndex, labelling ? sidesFor(labelling.sides, projection?.laterality) : filmSides(projection?.laterality));
     // Undo past the film's first step removes it from the store: it is made again, empty.
   }, [series.id, series.uid, series.frameMetadata, frameIndex, projection?.laterality, Boolean(film)]);
   // Esc stops placing points wherever focus is (the pane included); the next Esc in the panel closes it.
@@ -214,6 +216,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
       // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
       if (deformity.get().simulate && liveView.simulation) { setStatus(t('deformity.suggestSimulated')); return; }
+      // Suggestions turned off for a folder's run while the model ran: none is put on its film.
+      const run = labelQueue.get();
+      if (run.folder && !run.suggestions && run.seriesIds.includes(series.id)) { setStatus(t('label.suggestionsOff')); return; }
       deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL, UNCHECKED));
       const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
@@ -402,8 +407,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             <span className="deformity-hint" role="status" data-testid="deformity-suggest-progress">{suggesting.received === null ? t('deformity.suggestRunning')
               : t('deformity.suggestDownloading', { received: (suggesting.received / 1e6).toFixed(1), total: (MODEL_BYTES / 1e6).toFixed(1) })}</span>
             <button type="button" className="secondary-button compact" data-action="deformity-suggest-cancel" onClick={cancelSuggest}>{t('deformity.suggestCancel')}</button>
-          </> : <button type="button" className="secondary-button compact" data-action="deformity-suggest" disabled={'block' in target || simulated}
-            data-tooltip={'block' in target ? t(`deformity.suggestBlock.${target.block}` as MessageKey) : simulated ? t('deformity.suggestSimulated') : undefined}
+          </> : <button type="button" className="secondary-button compact" data-action="deformity-suggest" disabled={'block' in target || simulated || labelling?.suggestions === false}
+            data-tooltip={labelling?.suggestions === false ? t('label.suggestionsOff') : 'block' in target ? t(`deformity.suggestBlock.${target.block}` as MessageKey) : simulated ? t('deformity.suggestSimulated') : undefined}
             onClick={() => void suggest()}>{t('deformity.suggest')}</button>}
           {plan.suggested && !suggesting && <>
             <button type="button" className="secondary-button compact" data-action="deformity-suggest-accept-all" disabled={simulated}
@@ -542,7 +547,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       <button type="button" className="secondary-button compact" data-action="deformity-open" disabled={busy || !film.sopInstanceUid} onClick={() => fileInput.current?.click()}><FolderOpen size={14} />{t('deformity.open')}</button>
       <input ref={fileInput} type="file" accept=".json,application/json" hidden data-action="deformity-open-file" onChange={event => void openFile(event)} />
       <button type="button" className="secondary-button compact" data-action="deformity-save" disabled={busy || !film.sopInstanceUid} onClick={() => void saveFile()}><Download size={14} />{t('deformity.save')}</button>
-      <button type="button" className="primary-button compact" data-action="deformity-report" disabled={busy} onClick={() => void report()}><Images size={14} />{t('deformity.report')}</button>
+      <button type="button" className={labelling ? 'secondary-button compact' : 'primary-button compact'} data-action="deformity-report" disabled={busy} onClick={() => void report()}><Images size={14} />{t('deformity.report')}</button>
     </footer>
   </section>;
 }

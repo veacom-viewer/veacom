@@ -13,6 +13,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
+const crypto = require('node:crypto');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { decodePng } = require('./lib/png.cjs');
@@ -498,6 +499,92 @@ async function main() {
     for (const name of unchecked) assert.equal(labelOf(name).confidence.unchecked, true, `${name} is saved as unchecked.`);
     for (const name of ['femoralShaftProximal', 'femoralShaftDistal', 'tibialShaftProximal', 'tibialShaftDistal']) assert.equal(labelOf(name).confidence.unchecked, undefined, `${name} is checked on real films.`);
     check('Suggest landmarks downloads the model, suggests all 14 landmarks of the left leg drawn apart and unmeasured, the 3 unchecked ones marked as such; a dragged suggestion becomes a moved landmark and the drag ends with the button; Accept and Accept all measure them, the values from unchecked points marked, one Undo step, saved as the model\'s', suggestTimes);
+
+    // 9. Labelling a folder (docs/deformity-planning.md): four copies of the Imager Pixel Spacing film, each its own study
+    // (the UID root changed at the same length), beside a text file and a subfolder that are not listed. Film 1 has a
+    // plan file, film 3 one that is not JSON; the run starts at film 2, the first without a plan.
+    const labelFolder = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-label-'));
+    try {
+      const source = await fs.readFile(path.join(study, manifest.series['ips-only'].file)), root = Buffer.from('2.25.118804557219940366285711983047021555003');
+      const copy = number => {
+        const bytes = Buffer.from(source), other = Buffer.from(`${root.toString().slice(0, -3)}${number}`);
+        for (let at = bytes.indexOf(root); at >= 0; at = bytes.indexOf(root, at + root.length)) other.copy(bytes, at);
+        return bytes;
+      };
+      const sopOf = bytes => { const at = bytes.indexOf('.3.', bytes.indexOf(Buffer.from([0x08, 0x00, 0x18, 0x00]))) ; return bytes.toString('latin1', bytes.indexOf(Buffer.from([0x08, 0x00, 0x18, 0x00])) + 8, at + 3) + bytes.toString('latin1', at + 3).match(/^\d+/)[0]; };
+      const films = { 'film 1.dcm': copy(101), 'film 2.dcm': copy(102), 'film 3.dcm': copy(103), 'film 10.dcm': copy(110) };
+      for (const [name, bytes] of Object.entries(films)) await fs.writeFile(path.join(labelFolder, name), bytes);
+      await fs.writeFile(path.join(labelFolder, 'notes.txt'), 'not a film');
+      await fs.mkdir(path.join(labelFolder, 'sub'));
+      await fs.writeFile(path.join(labelFolder, 'sub', 'film 4.dcm'), copy(104));
+      await fs.writeFile(path.join(labelFolder, 'film 3.dcm.veacom-plan.json'), '{');
+      const knee = manifest.legs.find(item => item.side === 'R').landmarks.kneeCentre;
+      const sopHash = crypto.createHash('sha256').update(sopOf(films['film 1.dcm'])).digest('hex');
+      const saved = { schema: 'veacom.deformity-plan', version: 1, software: { name: 'VEAcom', version: 'check', kernel: 1 }, savedAt: '2026-01-01T00:00:00.000Z',
+        coordinates: 'dicom-image-relative', film: { sopInstanceSha256: sopHash, frame: 1, columns: manifest.columns, rows: manifest.rows, modality: 'DX' },
+        calibration: { state: 'detector', mmPerPixel: [0.33, 0.33], marker: null }, active: 0,
+        plans: [{ name: '', side: 'R', landmarks: [{ name: 'kneeCentre', points: [knee], confidence: 'manual', provenance: ['placed'], spacing: 'detector', side: 'R', software: 'check', suggestionShown: false }], osteotomy: null, values: {} }] };
+      await fs.writeFile(path.join(labelFolder, 'film 1.dcm.veacom-plan.json'), JSON.stringify(saved));
+      await desktop.evaluate(({ dialog }, folder) => { dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [folder] }); }, labelFolder);
+      const queue = page.getByTestId('label-queue');
+      const settled = index => page.waitForFunction(i => { const q = document.querySelector('[data-testid="label-queue"]'); return q?.dataset.index === String(i) && !q.dataset.busy; }, index, { timeout: 60_000 });
+      await page.getByTestId('tool-open').click();
+      await page.locator('[data-action="toolbar-label-folder"]').click();
+      await settled(1);
+      await page.getByTestId('deformity-drawing').waitFor({ state: 'attached', timeout: 60_000 });
+      assert.deepEqual(await queue.locator('[data-action="label-film"] option').allTextContents(),
+        ['1. film 1.dcm · plan saved', '2. film 2.dcm · no plan', '3. film 3.dcm · plan file not readable', '4. film 10.dcm · no plan']);
+      assert.match(await queue.textContent(), /Film 2 of 4 · 1 with a plan/);
+      // Blind: no suggestion can be asked for.
+      await queue.locator('[data-action="label-suggestions"]', { hasText: 'Off' }).click();
+      assert.equal(await panel.locator('[data-action="deformity-suggest"]').isDisabled(), true);
+      assert.equal(await panel.locator('[data-action="deformity-suggest"]').getAttribute('data-tooltip'), 'Suggestions are off for this labelling run.');
+      await settle();
+      await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-place"]').click();
+      await click(knee); await landed('kneeCentre', knee);
+      await queue.locator('[data-action="label-legs"]', { hasText: 'Right' }).click();
+      const film2 = (await page.evaluate(() => window.__VEACOM_TEST__.state())).activeSeriesId;
+      await queue.locator('[data-action="label-save-next"]').click();
+      await settled(2);
+      const written = JSON.parse(await fs.readFile(path.join(labelFolder, 'film 2.dcm.veacom-plan.json'), 'utf8'));
+      assert.deepEqual(written.plans.map(item => item.side), ['R', 'L'], 'Film 2 had its plans before the legs were set.');
+      const kneeLabel = written.plans[0].landmarks.find(item => item.name === 'kneeCentre');
+      assert.deepEqual([kneeLabel.confidence, kneeLabel.suggestionShown, kneeLabel.points[0].map(Math.round)], ['manual', false, knee.map(Math.round)]);
+      assert.match(await queue.getByTestId('label-status').textContent(), /Saved film 2\.dcm\.veacom-plan\.json beside the film/);
+      assert(!(await page.evaluate(() => window.__VEACOM_TEST__.state())).series.some(item => item.id === film2), 'The film left is taken off the list.');
+      // Film 3's plan file did not open: it stays as it is, and Save and next waits, also once the film is planned here.
+      // Undo starts afresh on each film: nothing reaches back into film 2's plan.
+      await queue.getByTestId('label-refused').waitFor();
+      assert.equal(await queue.locator('[data-action="label-save-next"]').isDisabled(), true);
+      assert.equal(await panel.locator('[data-action="deformity-undo"]').isDisabled(), true, 'Undo starts afresh on each film.');
+      await page.getByTestId('deformity-drawing').waitFor({ state: 'attached', timeout: 60_000 });
+      await settle();
+      await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-place"]').click();
+      await click(knee); await landed('kneeCentre', knee);
+      await queue.locator('[data-action="label-next"]').click();
+      await settled(3);
+      await page.getByTestId('deformity-drawing').waitFor({ state: 'attached', timeout: 60_000 });
+      assert.deepEqual(await panel.locator('[role="tab"]').allTextContents(), ['Right leg'], 'A new film gets the run\'s legs.');
+      await queue.locator('[data-action="label-save-next"]').click();
+      await page.waitForFunction(() => /That was the last film/.test(document.querySelector('[data-testid="label-status"]')?.textContent ?? ''), undefined, { timeout: 30_000 });
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(labelFolder, 'film 10.dcm.veacom-plan.json'), 'utf8')).plans.map(item => item.side), ['R']);
+      // Back on film 3, planned here, its plan file is still refused.
+      await queue.locator('[data-action="label-film"]').selectOption('2');
+      await settled(2);
+      await queue.getByTestId('label-refused').waitFor();
+      assert.equal(await queue.locator('[data-action="label-save-next"]').isDisabled(), true, 'A planned film never writes over a plan file that did not open.');
+      // Film 1 opens with the plan beside it.
+      await queue.locator('[data-action="label-film"]').selectOption('0');
+      await settled(0);
+      await page.waitForFunction(() => document.querySelector('.deformity-landmarks [data-landmark="kneeCentre"]')?.hasAttribute('data-placed'), undefined, { timeout: 30_000 });
+      assert.equal(await fs.readFile(path.join(labelFolder, 'film 3.dcm.veacom-plan.json'), 'utf8'), '{', 'A plan file that did not open is never replaced.');
+      assert.deepEqual((await fs.readdir(labelFolder)).sort(), ['film 1.dcm', 'film 1.dcm.veacom-plan.json', 'film 10.dcm', 'film 10.dcm.veacom-plan.json', 'film 2.dcm',
+        'film 2.dcm.veacom-plan.json', 'film 3.dcm', 'film 3.dcm.veacom-plan.json', 'notes.txt', 'sub'], 'Only Save and next wrote, and only beside its film.');
+      await shot('7-labelling');
+      await queue.locator('[data-action="label-stop"]').click();
+      await page.waitForFunction(() => !document.querySelector('[data-testid="label-queue"]'), undefined, { timeout: 5_000 });
+      check('Label a folder lists its DICOM films in order with each plan file\'s state, opens the first without a plan, keeps suggestions off and the legs as set, writes a plan only on Save and next and only beside its film, never over a plan file that did not open, takes the film left off the list, and opens a film with the plan beside it');
+    } finally { await fs.rm(labelFolder, { recursive: true, force: true }); }
 
     // The usage timings carry only control ids from the schema: no landmark, point, value or file.
     const schema = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'electron', 'usage-schema.json'), 'utf8'));
