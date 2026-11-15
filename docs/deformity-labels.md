@@ -5,7 +5,8 @@ set a landmark model can later learn from: every landmark the reader placed, in 
 how far it can be trusted, the calibration it was measured with, the side and the software that made it. Code:
 `src/ui/deformityFile.ts`; tests: `tests/deformity-plan.test.ts`.
 
-The file is written only when the reader saves it. VEAcom has no path that uploads it and keeps it apart from the usage
+The file is written only when the reader saves it: through the save dialog, or with Save and next while labelling a
+folder, beside its film as `<film's file name>.veacom-plan.json` (docs/deformity-planning.md, "Labelling a folder"). VEAcom has no path that uploads it and keeps it apart from the usage
 timings, which never carry a plan, a landmark or a value. Gathering files for training is the institution's work, under
 its own approvals, after anonymisation (feasibility study, section 6.9).
 

@@ -358,6 +358,8 @@ app.whenReady().then(async () => {
   usage = registerUsageHandlers({ handle, ipcMain, validateSender, userData: app.getPath('userData'), version: app.getVersion(), packaged: app.isPackaged, resourceMonitor: require('./resource-monitor.cjs').forViewer(app, engine, () => Boolean(window && !window.isDestroyed() && window.isVisible() && !window.isMinimized())) });
   disposeUpdates = require('./updates.cjs').registerUpdateHandlers({ handle, app, getWindow: () => window, dialog, shell });
   require('./landmark-model.cjs').registerLandmarkModel({ handle, userData: app.getPath('userData'), getWindow: () => window });
+  // A folder of films to label: main keeps the paths, and writes a plan only beside its film (label-folder.cjs).
+  require('./label-folder.cjs').registerLabelFolder({ handle, dialog, getWindow: () => window, authorize: paths => imaging.authorizeImportPaths(paths), t });
   const media = require('./media.cjs');
   disposeMedia = media.registerMediaHandlers({
     handle, getWindow: () => window, exportFolder, recordExport, sweepFolder, cancelStaging: cancelEngineExports,

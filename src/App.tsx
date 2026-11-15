@@ -21,6 +21,7 @@ import { advanceCine } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
 import { isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
 import { deformity, type FilmSelection } from './ui/deformityStore';
+import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -79,6 +80,7 @@ const VolumeView = lazy(() => import('./components/VolumeView').then(module => (
 const PreopChecklist = lazy(() => import('./components/PreopChecklist').then(module => ({ default: module.PreopChecklist })));
 const AssessmentPanel = lazy(() => import('./components/AssessmentPanel').then(module => ({ default: module.AssessmentPanel })));
 const DeformityPanel = lazy(() => import('./components/DeformityPanel').then(module => ({ default: module.DeformityPanel })));
+const LabelQueue = lazy(() => import('./components/LabelQueue').then(module => ({ default: module.LabelQueue })));
 
 type Panel = 'measurements' | 'display' | 'tags' | null;
 /** `unfused`: this pane never shows the fusion (the plain CT beside the fused one); a new series or the fusion button in it clears it. */
@@ -974,8 +976,9 @@ export default function App() {
   // `trigger` says how the study was opened (folder, disc, drop...) for usage timings; never where from.
   // Set below, where arrangements are applied: opens a study's first image, or the arrangement it matches.
   const openStudy = useRef<(first: Series, study: Series[], keepShown?: boolean, session?: Series[]) => void>(() => {});
-  const importStudies = async (paths: string[], trigger = 'other') => {
-    if (!paths.length) return;
+  /** Imports what the capabilities name and opens it; gives the image series imported, none when it failed. */
+  const importStudies = async (paths: string[], trigger = 'other'): Promise<string[]> => {
+    if (!paths.length) return [];
     // A study named at launch has been opening since the window was created (the monotonic clock's zero).
     usage.beginStudy(trigger, trigger === 'startup' ? 0 : undefined);
     importCount.current++; setImporting(importCount.current);
@@ -1009,7 +1012,7 @@ export default function App() {
         if (first) assignSeries(activeIdRef.current, images[0]);
       }
     })();
-    await importPaths(paths).then(result => {
+    return importPaths(paths).then(result => {
       earlyWatch.abort();
       // A series published early that came out the same keeps its pane, its view and the volume already loading.
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
@@ -1055,7 +1058,8 @@ export default function App() {
       if (firstImage) openStudy.current(firstImage, [...known.values()].filter(item => studyKey(item) === studyKey(firstImage)), keep, [...known.values()]);
       else if (result.series.length) say('segmentation.onlySegmentations', 'info');
       else say('notice.noDicomFound', 'info');
-    }).catch(error => {
+      return images.map(item => item.id);
+    }).catch((error: unknown) => {
       earlyWatch.abort();
       usage.studyOpened({ modalities: [], series: 0, slices: 0, result: 'error' }, []); setNotice({ message: errorText(error), kind: 'error' });
       // The series published early go with the failed import (the engine has taken them back).
@@ -1064,6 +1068,7 @@ export default function App() {
         setSeries(current => current.filter(item => !early.has(item.id)));
         setSlots(current => current.map(slot => slot.seriesId && early.has(slot.seriesId) ? { ...slot, seriesId: null } : slot));
       }
+      return [];
     }).finally(() => {
       earlyWatch.abort();
       for (const id of early.keys()) earlySeries.current.delete(id);
@@ -1090,6 +1095,52 @@ export default function App() {
     usage.touch('dialog');
     try { await importStudies(await window.veacom.openPaths(kind), trigger); }
     catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+  };
+
+  // Labelling a folder of long-leg films (ui/labelQueue.ts): one film open at a time. The next opens before the one
+  // shown is taken off the list, so the plan stays open between them; a film that fails to open leaves the shown one.
+  const labelling = useLabelQueue();
+  const goToFilm = async (index: number) => {
+    const queue = labelQueue.get(), folder = queue.folder, bridge = window.veacom?.labelFolder;
+    if (!folder || !bridge || index < 0 || index >= folder.films.length || !labelQueue.begin()) return;
+    let status: string | null | undefined;
+    try {
+      const opened = await importStudies(await bridge.film(folder.token, index), 'folder');
+      // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run.
+      if (labelQueue.get().folder?.token !== folder.token) return;
+      const before = queue.seriesIds.filter(id => !opened.includes(id));
+      if (before.length) removeFromList(before, opened.length > 0);
+      // A file that did not open as an image is still the queue's place, so Next goes past it.
+      labelQueue.shown(index, opened);
+      if (opened.length) setChecklistOpen(true);
+      else status = t('label.notOpened', { name: folder.films[index].name });
+    } catch (error) { status = errorText(error); }
+    finally { labelQueue.end(status); }
+  };
+  const startLabelling = async () => {
+    setMenu(null);
+    const bridge = window.veacom?.labelFolder;
+    if (!bridge) { say('notice.desktopToOpen', 'info'); return; }
+    usage.touch('dialog');
+    try {
+      const folder = await bridge.open();
+      if (!folder) return;
+      if (!folder.films.length) { setNotice({ message: t('label.empty', { folder: folder.folder }), kind: 'info' }); return; }
+      labelQueue.start(folder);
+      // The first film without a plan, so a run stopped halfway goes on where it was.
+      const next = folder.films.findIndex(film => film.plan === null && !film.tooLarge);
+      await goToFilm(next >= 0 ? next : 0);
+    } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+  };
+
+  /** A film's ball or ruler calibration from the plan, or its removal: announced when it changes the scale. */
+  const calibrateFilm = (id: string, key: string, calibration: FilmCalibration | null) => {
+    const before = filmCalibrations[id]?.[key];
+    setFilmCalibration(id, key, calibration);
+    // Confirming the ball's depth changes no scale: no announcement.
+    if (calibration && calibration.method !== 'dicom' && (before?.method === 'dicom' || calibration.scale !== before?.scale)) {
+      setSettings(current => ({ ...current, measurementUnits: 'auto' })); say('notice.calibratedFilm', 'info', undefined, true);
+    }
   };
 
   const restoreCatalog = async () => {
@@ -1375,15 +1426,17 @@ export default function App() {
     if (item.segmentation) toggleSegmentation(item, slotId); else { assignSeries(slotId, item); offerPair(slotId, item); }
   };
   /** Series taken off the list (VEAcom 1.x's list menu): panes showing them are emptied, their volumes,
-   * drawings and overlays go, and the engine frees them. The files themselves are not touched. */
-  const removeFromList = (ids: string[]) => {
+   * drawings and overlays go, and the engine frees them. The files themselves are not touched. `replaced`: a film just
+   * opened takes their place (labelling a folder), so the workspace is not started afresh although the list, as this
+   * render knows it, would be empty. */
+  const removeFromList = (ids: string[], replaced = false) => {
     const gone = new Set(ids);
     const removed = seriesRef.current.filter(item => gone.has(item.id));
     if (!removed.length) return;
     const empty = (slot: Slot): Slot => slot.seriesId && gone.has(slot.seriesId) ? { ...slot, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } } : slot;
     // Panes a smaller layout keeps hidden would bring the removed series back when the layout grows again.
     hiddenSlots.current = hiddenSlots.current.filter(slot => !(slot.seriesId && gone.has(slot.seriesId)));
-    if (removed.length === seriesRef.current.length) {
+    if (removed.length === seriesRef.current.length && !replaced) {
       // With the list emptied, the workspace starts afresh as at launch: one pane, nothing hidden, maximized, in MPR,
       // in 3D, fused or playing, so the next study opens as the first one did.
       const fresh = makeSlot();
@@ -2170,6 +2223,8 @@ export default function App() {
         <MenuItem action="toolbar-open-folder" icon={<FolderOpen size={16} />} shortcut={bridgeCan('importWindow') ? undefined : combo(mod, 'O')} onClick={() => void open('folder')}>{t('toolbar.openFolder')}</MenuItem>
         <MenuItem action="toolbar-open-files" icon={<Files size={16} />} onClick={() => void open('files')}>{t('toolbar.openFiles')}</MenuItem>
         <MenuItem action="toolbar-open-archive" icon={<FileArchive size={16} />} onClick={() => void open('archive')}>{t('toolbar.openArchive')}</MenuItem>
+        {window.veacom?.labelFolder && <><MenuDivider />
+          <MenuItem action="toolbar-label-folder" icon={<FolderOpen size={16} />} onClick={() => void startLabelling()}>{t('toolbar.labelFolder')}</MenuItem></>}
       </Menu>}</div> },
     ...(bridgeCan('discImport') ? [{ id: 'cd', group: 'file', node: <ToolButton icon={<Glyph name="cd" />} label={t('toolbar.openDisc')} testId="tool-open-disc" onClick={() => void openImport('disc')} /> } satisfies ToolbarItem] : []),
     { id: 'export', group: 'file', node: <ToolButton icon={<Upload size={18} />} label={t('toolbar.export')} shortcut={`${mod}+E`} testId="tool-export" disabled={!activeSeries} onClick={() => openExport('dicom')} /> },
@@ -2383,17 +2438,16 @@ export default function App() {
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
           updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage(); }} /></Suspense></div>}
-      {deformityShown && activeVolume && <div className="assessment-overlay"><Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
-        onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
-        viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
-        onCalibrate={(id, key, calibration) => {
-          const before = filmCalibrations[id]?.[key];
-          setFilmCalibration(id, key, calibration);
-          // Confirming the ball's depth changes no scale: no announcement.
-          if (calibration && calibration.method !== 'dicom' && (before?.method === 'dicom' || calibration.scale !== before?.scale)) {
-            setSettings(current => ({ ...current, measurementUnits: 'auto' })); say('notice.calibratedFilm', 'info', undefined, true);
-          }
-        }} /></Suspense></div>}
+      {(() => {
+        const plan = deformityShown && activeVolume ? <Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
+          onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
+          viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
+          labelling={labelling.folder ? { sides: labelling.sides, suggestions: labelling.suggestions } : undefined} onCalibrate={calibrateFilm} /></Suspense> : null;
+        // While a folder is being labelled, its queue stays above the plan, also on a film the plan cannot open.
+        if (labelling.folder) return <div className="assessment-overlay"><div className="label-queue-column"><Suspense fallback={null}>
+          <LabelQueue volume={activeVolume ?? undefined} slice={activeDisplayView.slice} planOpen={Boolean(plan)} longLeg={opensDeformity} onGo={index => void goToFilm(index)} onCalibrate={calibrateFilm} /></Suspense>{plan}</div></div>;
+        return plan && <div className="assessment-overlay">{plan}</div>;
+      })()}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
       <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} onError={showTagError}>
         {inspectorShown && <>

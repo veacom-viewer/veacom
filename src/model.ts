@@ -302,6 +302,19 @@ export type BridgeFeature =
   | 'updates'
   /** Sending feedback to the team. */
   | 'feedback';
+/** A film of a folder being labelled, with the plan file beside it: its text, null when there is none, or `tooLarge`. */
+export interface LabelFilm { name: string; plan: string | null; tooLarge?: true }
+/** A folder chosen for labelling: `writes` says where Save and next puts a plan, beside its film or as a download (a
+ * browser that cannot write into a folder). */
+export interface LabelFolder { token: string; folder: string; films: LabelFilm[]; writes: 'beside' | 'download' }
+export interface LabelFolderBridge {
+  open(): Promise<LabelFolder | null>;
+  /** Import capabilities for one film, for importSelected. */
+  film(token: string, index: number): Promise<string[]>;
+  /** Writes a film's plan, and gives the file's name. */
+  write(token: string, index: number, text: string): Promise<string>;
+}
+
 export interface DesktopBridge {
   /** The browser build (viewer.veacom.app, src/web): no desktop window around the page, files chosen in the page. */
   web?: boolean;
@@ -352,6 +365,9 @@ export interface DesktopBridge {
   landmarkModel?: (part: 'stageA' | 'stageB', onProgress?: (received: number) => void) => Promise<ArrayBuffer>;
   /** Stops the model's download under way. */
   cancelLandmarkModel?: () => Promise<void>;
+  /** A folder of films to label one after another (docs/deformity-planning.md, "Labelling a folder"): chosen in the
+   * system's or the browser's own dialog; a film is named by the folder's token and its place in the list. */
+  labelFolder?: LabelFolderBridge;
   exportDicom: (seriesId: string | string[], options: { anonymize: boolean; full?: boolean; dicomdir: boolean; decompress?: boolean; root?: boolean; here?: boolean; frame?: number; zip?: boolean; smallest?: boolean; engineGeneration?: number }) => Promise<ExportResult | null>;
   /** In-app feedback to the team (veacom.app), sent only once the user confirms it in main's own dialog. `reason` is the service's or main's short error code. */
   sendFeedback?: (payload: { kind: 'problem' | 'suggestion'; message: string; email: string; includeSystem: boolean }) => Promise<{ ok: boolean; cancelled?: boolean; status?: number; reason?: string }>;
