@@ -47,12 +47,14 @@ graphs are seed 0.
 | Ankle centre | 1.19 mm |
 | Condyles, medial and lateral | 1.76 and 1.77 mm |
 | Plateau, medial and lateral | 2.39 and 1.87 mm |
-The shaft points were checked in veacom-train's round 4 (`docs/round4-status.md`), on the same 69 films, with stage B
-run as VEAcom runs it. A shaft point's error is across the shaft, at the point's own level.
+
+The shaft points were checked in veacom-train's round 4 (`docs/round4-status.md`), on the same 69 films, with the
+shipped graphs (seed 0). A shaft point's error is across the shaft, at the point's own level, with stage B run as
+VEAcom runs it, except against F, where the crop is centred at F's row.
 
 | Shaft point | Checked against | Error across the shaft |
 | --- | --- | --- |
-| Femoral shaft, lower | the reader's point (BMPLE's F), at its level | 0.45 mm |
+| Femoral shaft, lower | the reader's point (BMPLE's F), the crop at F's row | 0.45 mm; 0.26 mm against the shaft midline, run as VEAcom runs it |
 | Femoral shaft, upper | an edge-traced shaft midline: the middle between the cortices, traced on each film | 0.56 mm |
 | Tibial shaft, upper and lower | an edge-traced shaft midline | 0.35 and 0.39 mm |
 

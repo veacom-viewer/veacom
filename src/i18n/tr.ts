@@ -552,7 +552,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.stop': 'Durdur',
   'deformity.suggest': 'Noktaları öner',
   'deformity.suggestTrained': 'Donanımsız erişkin grafileriyle eğitildi. Çocuk, fiksatör ya da implantı tanımaz; bunlarda da nokta önerir.',
-  'deformity.suggestUnchecked': 'Gerçek grafilerde kontrol edildi: cisim noktaları, okuyucunun noktasına (alt femur cismi) ya da kenarlardan çizilen cisim orta hattına (diğer üçü) göre. Kontrol edilmedi: trokanter ve plafond, yalnızca sentetik grafilerden öğrenildi.',
+  'deformity.suggestUnchecked': 'Cisim noktaları da gerçek grafilerde kontrol edildi: okuyucunun noktasına (alt femur cismi) ya da kenarlardan çizilen cisim orta hattına (diğer üçü) göre. Kontrol edilmedi: trokanter ve plafond, yalnızca sentetik grafilerden öğrenildi.',
   'deformity.suggestBlock.side': 'Önce hastanın sağının nerede olduğunu seçin.',
   'deformity.suggestBlock.upright': 'Model grafinin dik, kalçaların üstte olmasını ister.',
   'deformity.suggestBlock.spacing': 'Model grafinin piksel aralığını ya da bir kalibrasyonu ister.',

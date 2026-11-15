@@ -549,7 +549,7 @@ export const en = {
   'deformity.stop': 'Stop',
   'deformity.suggest': 'Suggest landmarks',
   'deformity.suggestTrained': 'Trained on adult films without hardware. It does not recognise children, fixators or implants, and still suggests points on them.',
-  'deformity.suggestUnchecked': 'Checked on real films: the shaft points, against the reader\'s point (lower femoral shaft) or an edge-traced shaft midline (the other three). Unchecked: the trochanter and plafond, learnt from synthetic films only.',
+  'deformity.suggestUnchecked': 'The shaft points were also checked on real films: against the reader\'s point (lower femoral shaft) or an edge-traced shaft midline (the other three). Unchecked: the trochanter and plafond, learnt from synthetic films only.',
   'deformity.suggestBlock.side': 'Say where the patient\'s right is first.',
   'deformity.suggestBlock.upright': 'The model needs the film upright, hips at the top.',
   'deformity.suggestBlock.spacing': 'The model needs the film\'s pixel spacing or a calibration.',
