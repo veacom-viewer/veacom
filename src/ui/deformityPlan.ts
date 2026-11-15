@@ -9,7 +9,7 @@ import { lateralOnImage, measureLeg, type Leg, type LegInput } from '../imaging/
 import { fragmentFor, moved, paleyRule, simulate, type Osteotomy, type Simulation } from '../imaging/deformity/osteotomy';
 import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
 import type { Point } from '../imaging/deformity/plane';
-import { activePlan, withPlan, type FilmPlans, type LegPlan, type Placing } from './deformityStore';
+import { activePlan, withPlan, type FilmPlans, type LegPlan, type ModelRef, type Placing } from './deformityStore';
 
 export interface PlanView {
   film: FilmPlans; plan: LegPlan;
@@ -89,11 +89,69 @@ export { sub };
 
 // Edits. Each returns the film as the reader's click or drag leaves it; the store makes it an Undo step.
 
-/** The landmark the kit asks for after `name`: the next one in order that is not placed yet. */
+/** Whether a landmark has the points it needs. */
+export const isPlaced = (plan: LegPlan, name: LandmarkName) => (plan.points[name]?.length ?? 0) >= (isContour(name) ? CONTOUR_MINIMUM : 1);
+
+/** The landmark the kit asks for after `name`: the next one in order that is not placed yet and has no suggestion
+ * waiting for the reader. */
 export function nextLandmark(plan: LegPlan, after?: LandmarkName): LandmarkName | null {
   const start = after ? LANDMARKS.indexOf(after) + 1 : 0;
-  const placed = (name: LandmarkName) => (plan.points[name]?.length ?? 0) >= (isContour(name) ? CONTOUR_MINIMUM : 1);
-  return [...LANDMARKS.slice(start), ...LANDMARKS.slice(0, start)].find(name => !placed(name)) ?? null;
+  return [...LANDMARKS.slice(start), ...LANDMARKS.slice(0, start)].find(name => !isPlaced(plan, name) && !plan.suggested?.points[name]) ?? null;
+}
+
+/** The plan without the suggestion of `name`. */
+function withoutSuggestion(plan: LegPlan, name: LandmarkName): LegPlan {
+  if (!plan.suggested?.points[name]) return plan;
+  const { [name]: _gone, ...points } = plan.suggested.points;
+  return { ...plan, suggested: Object.keys(points).length ? { ...plan.suggested, points } : undefined };
+}
+
+/** The model's suggestions put on the active plan, for the landmarks it has not placed: they replace earlier ones,
+ * and each suggested landmark is marked as shown (the plan file's suggestionShown). */
+export function withSuggestions(film: FilmPlans, points: LegPlan['points'], model: ModelRef): FilmPlans {
+  const plan = activePlan(film);
+  const names = LANDMARKS.filter(name => points[name]?.length && !isPlaced(plan, name));
+  if (!names.length) return film;
+  const origin = { ...plan.origin };
+  for (const name of names) origin[name] = { ...origin[name], shown: true };
+  return withPlan(film, { ...plan, suggested: { model, points: Object.fromEntries(names.map(name => [name, points[name]])) }, origin });
+}
+
+/** The reader accepts suggestions as they are (one landmark, or all): they become the plan's landmarks, from the model. */
+export function acceptSuggestions(film: FilmPlans, names?: LandmarkName[]): FilmPlans {
+  let plan = activePlan(film);
+  const suggested = plan.suggested;
+  if (!suggested) return film;
+  for (const name of names ?? LANDMARKS) {
+    const points = suggested.points[name];
+    if (!points) continue;
+    plan = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: points.map(() => 'accepted' as const) },
+      // The model's head is always the ring around its hip centre (suggest.ts kitSuggestions).
+      origin: { ...plan.origin, [name]: { shown: true, model: suggested.model, ...(name === 'femoralHeadContour' ? { construction: 'hipCentreRing' as const } : {}) } } }, name);
+  }
+  return withPlan(film, plan);
+}
+
+/** A dragged suggestion, let go: the reader's landmark, the dragged point moved and the landmark's other points (the
+ * head's outline) accepted as they were. */
+export function settleMoved(film: FilmPlans, name: LandmarkName, index: number): FilmPlans {
+  const accepted = acceptSuggestions(film, [name]), plan = activePlan(accepted), provenance = [...(plan.provenance[name] ?? [])];
+  if (index >= provenance.length || accepted === film) return film;
+  provenance[index] = 'moved';
+  return withPlan(accepted, { ...plan, provenance: { ...plan.provenance, [name]: provenance } });
+}
+
+/** A suggested point put back on plan `planId` (active or not), as a drag that did not finish leaves it. */
+export function putBackSuggestion(film: FilmPlans, planId: string, name: LandmarkName, index: number, point: Point): FilmPlans {
+  const plan = film.plans.find(item => item.id === planId), suggested = plan?.suggested, points = suggested?.points[name];
+  if (!plan || !suggested || !points || index >= points.length) return film;
+  return withPlan(film, { ...plan, suggested: { ...suggested, points: { ...suggested.points, [name]: points.map((p, i) => i === index ? point : p) } } });
+}
+
+/** The suggestions taken off the active plan; landmarks already accepted stay. */
+export function clearSuggestions(film: FilmPlans): FilmPlans {
+  const plan = activePlan(film);
+  return plan.suggested ? withPlan(film, { ...plan, suggested: undefined }) : film;
 }
 
 /** A click on the film while the kit asks for a point: the film after it, and what the next click places. */
@@ -103,7 +161,11 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
     const name = placing.name, contour = isContour(name);
     const points = contour ? [...(plan.points[name] ?? []), point].slice(0, CONTOUR_MAXIMUM) : [point];
     const provenance = contour ? [...(plan.provenance[name] ?? []), 'placed' as const].slice(0, CONTOUR_MAXIMUM) : ['placed' as const];
-    const next = { ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: provenance } };
+    // A point placed by hand replaces the landmark's suggestion. The landmark keeps its model only while points the
+    // model gave remain (an outline taking one more point), and stays marked as shown a suggestion.
+    const shown = plan.origin?.[name]?.shown || plan.suggested?.points[name], kept = contour ? plan.origin?.[name] : undefined;
+    const origin = shown ? { ...plan.origin, [name]: { shown: true as const, ...(kept?.model ? { model: kept.model } : {}), ...(kept?.construction ? { construction: kept.construction } : {}) } } : plan.origin;
+    const next = withoutSuggestion({ ...plan, points: { ...plan.points, [name]: points }, provenance: { ...plan.provenance, [name]: provenance }, origin }, name);
     // The head's outline takes points until it has three; clicked again later, it takes more.
     const stay = contour && points.length < CONTOUR_MINIMUM;
     const following = stay ? name : nextLandmark(next, name);
@@ -135,12 +197,19 @@ export function dragContinues(held: DragContext, now: DragContext): 'move' | 'ig
   return now.key === held.key && now.plan === held.plan ? 'move' : 'stop';
 }
 
-/** What a handle on the film moves. */
-export type Handle = { kind: 'landmark'; name: LandmarkName; index: number } | { kind: 'marker'; index: number }
+/** What a handle on the film moves. A suggestion dragged moves as a suggestion, and becomes the reader's landmark when it
+ * is let go (settleMoved). */
+export type Handle = { kind: 'landmark'; name: LandmarkName; index: number } | { kind: 'suggestion'; name: LandmarkName; index: number } | { kind: 'marker'; index: number }
   | { kind: 'cut'; index: 0 | 1 } | { kind: 'hinge' } | { kind: 'fragment'; index: number };
 
 export function moveHandle(film: FilmPlans, handle: Handle, point: Point): FilmPlans {
   const plan = activePlan(film);
+  if (handle.kind === 'suggestion') {
+    // The suggestion itself moves, so the handle under the pointer stays the same element for the whole drag.
+    const suggested = plan.suggested, points = suggested?.points[handle.name];
+    if (!suggested || !points || handle.index >= points.length) return film;
+    return withPlan(film, { ...plan, suggested: { ...suggested, points: { ...suggested.points, [handle.name]: points.map((p, i) => i === handle.index ? point : p) } } });
+  }
   if (handle.kind === 'landmark') {
     const points = [...(plan.points[handle.name] ?? [])], provenance = [...(plan.provenance[handle.name] ?? [])];
     if (handle.index >= points.length) return film;

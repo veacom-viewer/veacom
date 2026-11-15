@@ -4,6 +4,10 @@
 // whole series, with no error on the page. A PNG, a JPEG and a BMP made in the page must open as one series where the
 // page is isolated (its picture decoder needs the threads build), and be refused in one sentence elsewhere.
 //
+// The landmark model (docs/landmark-model.md) must load from the site's models/ through the bridge, checked and kept in
+// Cache Storage, and run in its Worker under the site's content policy: on several threads where the page is isolated,
+// on one elsewhere.
+//
 // The site's files (web/site/public, from prepare.mjs) go through the site's own Worker (web/site/worker.js), so the
 // page gets the headers and content policy it gets in production; the study is served beside them.
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
@@ -32,7 +36,7 @@ execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR'], { stdio
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
 
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
 /** What Cloudflare's static assets would answer for `request` (the Worker's `env.ASSETS`). */
 const assets = {
@@ -163,6 +167,26 @@ async function checkArchiveLimit(page) {
   assert.deepEqual(await importPickedFiles(page, [path.join(study, studyFiles[0])]), [1]);
 }
 
+/** In the page: the landmark model's graphs through the bridge, then one run of its Worker on a synthetic film. */
+async function runLandmarkModel(workerUrl) {
+  const bridge = window.veacom;
+  const [stageA, stageB] = await Promise.all(['stageA', 'stageB'].map(part => bridge.landmarkModel(part)));
+  const kept = (await (await caches.open('veacom-landmark-model')).keys()).length;
+  const columns = 1300, rows = 3500, pixels = new Uint16Array(columns * rows);
+  for (let i = 0; i < pixels.length; i++) pixels[i] = (i % columns) * 3 + Math.floor(i / columns) % 500;
+  const worker = new Worker(workerUrl, { type: 'module' });
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) => resolve(data);
+      worker.onerror = event => reject(new Error(event.message || 'the landmark Worker did not start'));
+      worker.postMessage({ id: 1, models: { stageA, stageB }, film: { pixels, columns, rows, mm: [0.3, 0.3], invert: false }, leg: 'left' });
+    });
+    const points = reply.ok ? Object.values(reply.channels) : [];
+    return { ok: reply.ok, error: reply.error, threads: reply.threads, channels: points.length, finite: points.every(item => item.point.every(Number.isFinite)),
+      bytes: [stageA.byteLength, stageB.byteLength], kept, expected: self.crossOriginIsolated ? Math.min(4, Math.ceil((navigator.hardwareConcurrency || 1) / 2)) : 1 };
+  } finally { worker.terminate(); }
+}
+
 async function checkQueuedImports() {
   const bridge = window.veacom;
   const names = await (await fetch('/__study/files.json')).json();
@@ -225,6 +249,10 @@ try {
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
+      const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
+      const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);
+      check(model.ok && model.channels === 22 && model.finite, `landmark model: ${JSON.stringify(model)}`);
+      check(model.threads === model.expected && model.kept === 2, `landmark model threads and cache: ${JSON.stringify(model)}`);
       await checkFilePicker(page);
       await page.evaluate(checkQueuedImports);
       await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
@@ -239,7 +267,7 @@ try {
           `pictures without isolation: ${JSON.stringify(pictures)}`);
       }
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
-      console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
+      console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, landmark model on ${model.threads} thread(s), ${errors.length} errors`);
     } catch (error) {
       failures.push(`${mode}: ${error.message}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
     } finally {
@@ -255,4 +283,4 @@ if (failures.length) {
   console.error(failures.join('\n'));
   process.exit(1);
 }
-console.log('The browser build starts and opens a study with and without cross-origin isolation.');
+console.log('The browser build starts, opens a study and runs the landmark model with and without cross-origin isolation.');

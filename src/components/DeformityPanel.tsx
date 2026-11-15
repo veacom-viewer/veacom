@@ -15,7 +15,8 @@ import { fitCircle, distance } from '../imaging/deformity/plane';
 import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
 import { coraNeeds } from '../imaging/deformity/analysis';
 import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
-import { imageSideOnScreen, nextLandmark, planView, type PlanView } from '../ui/deformityPlan';
+import { acceptSuggestions, clearSuggestions, imageSideOnScreen, nextLandmark, planView, withSuggestions, type PlanView } from '../ui/deformityPlan';
+import { cancelModelDownload, framePixels, loadModel, MODEL, MODEL_BYTES, runModel, suggestionsFrom, suggestionTarget } from '../ui/landmarkSuggestions';
 import { MAX_PLANS, parsePlanFile, planFile } from '../ui/deformityFile';
 import { drawReport, pictureSize, pngBytes, reportHeader, type ReportSection } from '../ui/deformityReport';
 import { captureViewportCanvas } from '../export-video';
@@ -107,6 +108,13 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const [busy, setBusy] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const operationGeneration = useRef(0);
+  // A suggestion run: the model's download (bytes received) and then its run (null), with how long the last run took.
+  const [suggesting, setSuggesting] = useState<{ received: number | null } | null>(null);
+  const [suggestTimes, setSuggestTimes] = useState<Record<string, number> | null>(null);
+  const suggestRun = useRef<AbortController | null>(null);
+  useEffect(() => () => suggestRun.current?.abort(), []);
+  // The film the pane shows now, for a run that ends after the reader paged or calibrated.
+  const shownFilm = useRef({ key: '', frame: null as ReturnType<typeof sourceFrameSeries> | null });
   useLayoutEffect(() => {
     return () => { operationGeneration.current++; };
   }, [frame, film, hidePatientData, locale]);
@@ -123,6 +131,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     window.addEventListener('keydown', stop, true);
     return () => window.removeEventListener('keydown', stop, true);
   }, [placing]);
+  useLayoutEffect(() => { shownFilm.current = { key, frame }; });
   if (!film) return <section className="deformity-panel" data-testid="deformity-panel" aria-label={t('deformity.title')} />;
   const view = planView(film, frame), plan = view.plan, leg = view.leg, tag = calibrationTag(frame, 'auto');
   const change = (update: (current: FilmPlans) => FilmPlans) => deformity.change(key, update);
@@ -173,6 +182,54 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const applied = Boolean(known && fit && marker && known.method === marker.method && Math.abs(known.scale - marker.knownMm / fit.world) <= 1e-9 * known.scale);
   const imager = projection?.imagerPixelSpacing;
   const mmPerPixel = fit && marker ? marker.knownMm / fit.pixels : null;
+
+  // Suggestions from the landmark model (ui/landmarkSuggestions.ts), only when the reader asks: never measured until
+  // the reader accepts or moves them.
+  const target = suggestionTarget(view, frame);
+  const suggest = async () => {
+    if (!('leg' in target) || !view.mm) return;
+    const controller = new AbortController(), planId = plan.id, leg = target.leg, mm = view.mm;
+    suggestRun.current = controller;
+    // "Downloading" shows only while bytes arrive: a kept model loads without it.
+    setStatus(null); setSuggesting({ received: null });
+    try {
+      const graphs = await loadModel(received => { if (suggestRun.current === controller && received > 0) setSuggesting({ received }); });
+      if (controller.signal.aborted) throw controller.signal.reason;
+      setSuggesting({ received: null });
+      const reply = await runModel({ pixels: framePixels(volume, frameIndex), columns: frame.dimensions[0], rows: frame.dimensions[1], mm: [mm[0], mm[1]],
+        invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, leg, graphs, controller.signal);
+      const total = reply.total;
+      setSuggestTimes({ total, ...reply.timings, threads: reply.threads });
+      // The suggestions belong to the film, plan, leg and scale the model ran with: paged, switched or calibrated since,
+      // they are not put on.
+      const now = shownFilm.current, live = deformity.get().films[key], liveView = live && now.frame ? planView(live, now.frame) : null;
+      const again = liveView && now.frame ? suggestionTarget(liveView, now.frame) : null;
+      if (now.key !== key || !live || !liveView || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg
+        || liveView.mm?.[0] !== mm[0] || liveView.mm[1] !== mm[1]) { setStatus(t('deformity.suggestChanged')); return; }
+      const found = suggestionsFrom(reply.anchors, leg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
+      if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
+      // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
+      if (deformity.get().simulate && liveView.simulation) { setStatus(t('deformity.suggestSimulated')); return; }
+      deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL));
+      const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
+      setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      const known = { checksum: 'deformity.suggestChecksum', unavailable: 'deformity.suggestUnavailable', download: 'deformity.suggestDownload',
+        frame: 'deformity.suggestFrame', run: 'deformity.suggestRun' } as const;
+      setStatus(controller.signal.aborted ? t('deformity.suggestCancelled')
+        : t('deformity.suggestFailed', { reason: Object.hasOwn(known, reason) ? t(known[reason as keyof typeof known]) : reason }));
+    } finally {
+      if (suggestRun.current === controller) { suggestRun.current = null; setSuggesting(null); }
+    }
+  };
+  const cancelSuggest = () => { cancelModelDownload(); suggestRun.current?.abort(); };
+  // The model's plateau points sit inboard of the rim (its training labels' convention): the plateau's width, and so
+  // WBL and the joint offset, are short while they stay where the model put them.
+  const plateauInboard = (['tibialPlateauMedial', 'tibialPlateauLateral'] as const).some(name => plan.origin?.[name]?.model && plan.provenance[name]?.includes('accepted'));
+  // While the simulation shows, the film's fragment is drawn moved and suggestions are not drawn: none can be accepted.
+  const simulated = state.simulate && Boolean(view.simulation);
+  const fromModel = Boolean(plan.suggested) || LANDMARKS.some(name => plan.origin?.[name]?.model);
 
   // Saving, opening and the report: only when the reader asks.
   const saveFile = async () => {
@@ -235,15 +292,18 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         deformity.setSimulate(true); await frames(3);
         pictures.push({ caption: t('deformity.report.planned'), canvas: await capture(true) });
       }
-      const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name, leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t), normalText(name) || undefined]) },
-        { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey)]) },
+      // The report carries the plateau caution beside the values it affects, as the panel does.
+      const inboard = (applies: boolean) => plateauInboard && applies ? ` · ${t('deformity.plateauInboardShort')}` : '';
+      const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => [NAMED[name] ? t(NAMED[name]) : name,
+        leg.values[name].value === null ? missingText(leg.values[name].missing, t) : valueText(leg.values[name], tag, t) + inboard(name === 'WBL'), normalText(name) || undefined]) },
+        { title: t('deformity.mat'), rows: view.steps.map(step => [t(`deformity.mat.${step.step}` as MessageKey), t(`deformity.result.${step.result}` as MessageKey) + inboard(step.step === 'subluxation' && step.result !== 'unassessable')]) },
         { title: t('deformity.cora'), rows: (['femur', 'tibia'] as const).map(boneName => [t(`deformity.bone.${boneName}` as MessageKey), coraText(view, boneName, t)]) }];
       if (view.simulation && plan.osteotomy) {
         const after = view.simulation.leg.values, o = plan.osteotomy;
         sections.push({ title: t('deformity.osteotomy'), rows: [
           [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t((view.simulation.wedge ?? o.wedge) === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
           [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`],
-          ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}`] as [string, string]),
+          ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}${inboard(name === 'WBL')}`] as [string, string]),
         ] });
       }
       const canvas = drawReport({ title: `${t('deformity.title')} · ${planName(film, plan.id, t)}`,
@@ -320,16 +380,45 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       </div>
 
       <h3>{t('deformity.landmarks')}</h3>
+      <div className="deformity-suggest" data-testid="deformity-suggest" data-suggest-times={suggestTimes ? JSON.stringify(suggestTimes) : undefined}>
+        <div className="deformity-actions">
+          {suggesting ? <>
+            <span className="deformity-hint" role="status" data-testid="deformity-suggest-progress">{suggesting.received === null ? t('deformity.suggestRunning')
+              : t('deformity.suggestDownloading', { received: (suggesting.received / 1e6).toFixed(1), total: (MODEL_BYTES / 1e6).toFixed(1) })}</span>
+            <button type="button" className="secondary-button compact" data-action="deformity-suggest-cancel" onClick={cancelSuggest}>{t('deformity.suggestCancel')}</button>
+          </> : <button type="button" className="secondary-button compact" data-action="deformity-suggest" disabled={'block' in target || simulated}
+            data-tooltip={'block' in target ? t(`deformity.suggestBlock.${target.block}` as MessageKey) : simulated ? t('deformity.suggestSimulated') : undefined}
+            onClick={() => void suggest()}>{t('deformity.suggest')}</button>}
+          {plan.suggested && !suggesting && <>
+            <button type="button" className="secondary-button compact" data-action="deformity-suggest-accept-all" disabled={simulated}
+              data-tooltip={simulated ? t('deformity.suggestSimulated') : undefined} onClick={() => change(current => acceptSuggestions(current))}>{t('deformity.acceptAll')}</button>
+            <button type="button" className="text-button" data-action="deformity-suggest-clear" onClick={() => change(clearSuggestions)}>{t('deformity.clearSuggestions')}</button>
+          </>}
+        </div>
+        {/* A caution while the model's points are on the plan; until then, what the button would do. */}
+        <p className={fromModel ? 'deformity-caution' : 'deformity-note'} role="note">{t('deformity.suggestTrained')}</p>
+        {plan.suggested && <p className="deformity-note">{t('deformity.suggestHeld')}</p>}
+      </div>
       {placing?.kind === 'landmark' && <p className="deformity-hint" role="status" data-testid="deformity-next" data-landmark={placing.name}>
         {t('deformity.next', { name: t(LANDMARK_TEXT[placing.name].name) })} {t(LANDMARK_TEXT[placing.name].hint)}
         {isContour(placing.name) && ` (${t('deformity.pointsCount', { count: placedCount(placing.name) })})`}</p>}
       <ol className="deformity-landmarks">
-        {LANDMARKS.map(name => <li key={name} className={placing?.kind === 'landmark' && placing.name === name ? 'is-current' : ''} data-landmark={name} data-placed={done(name) || undefined}>
-          <span className="deformity-mark" aria-hidden="true">{done(name) ? '●' : '○'}</span>
-          <span className="deformity-name">{t(LANDMARK_TEXT[name].name)}{isContour(name) && placedCount(name) ? ` · ${t('deformity.pointsCount', { count: placedCount(name) })}` : ''}</span>
-          <button type="button" className="text-button" data-action="deformity-place" disabled={isContour(name) && placedCount(name) >= CONTOUR_MAXIMUM}
-            onClick={() => startPlacing(name)}>{done(name) ? t(isContour(name) ? 'deformity.addPoint' : 'deformity.again') : t('deformity.place')}</button>
-        </li>)}
+        {LANDMARKS.map(name => {
+          const suggested = Boolean(plan.suggested?.points[name]);
+          return <li key={name} className={placing?.kind === 'landmark' && placing.name === name ? 'is-current' : ''} data-landmark={name} data-placed={done(name) || undefined}
+            data-suggested={suggested || undefined} data-origin={plan.origin?.[name]?.model ? 'model' : undefined}>
+            <span className="deformity-mark" aria-hidden="true">{done(name) ? '●' : suggested ? '◌' : '○'}</span>
+            <span className="deformity-name">{t(LANDMARK_TEXT[name].name)}{isContour(name) && placedCount(name) ? ` · ${t('deformity.pointsCount', { count: placedCount(name) })}` : ''}
+              {suggested && <span className="deformity-missing"> · {t('deformity.suggested')}</span>}</span>
+            <span className="deformity-row-actions">
+              {suggested && <button type="button" className="text-button" data-action="deformity-suggest-accept" disabled={simulated}
+                aria-label={t('deformity.acceptNamed', { name: t(LANDMARK_TEXT[name].name) })} data-tooltip={simulated ? t('deformity.suggestSimulated') : undefined}
+                onClick={() => change(current => acceptSuggestions(current, [name]))}>{t('deformity.accept')}</button>}
+              <button type="button" className="text-button" data-action="deformity-place" disabled={isContour(name) && placedCount(name) >= CONTOUR_MAXIMUM}
+                onClick={() => startPlacing(name)}>{done(name) ? t(isContour(name) ? 'deformity.addPoint' : 'deformity.again') : t('deformity.place')}</button>
+            </span>
+          </li>;
+        })}
       </ol>
       <div className="deformity-actions">
         {placing ? <button type="button" className="secondary-button compact" data-action="deformity-place-stop" onClick={() => deformity.setPlacing(null)}>{t('deformity.stop')}</button>
@@ -338,6 +427,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       {leg.swapped.length > 0 && <WarningBox title={t('deformity.swappedTitle')} dismissKey={`deformity-swapped:${plan.id}:${leg.swapped.join(',')}`} testId="deformity-swapped">
         <p>{t('deformity.swapped', { names: leg.swapped.map(name => t(LANDMARK_TEXT[name].name)).join(', ') })}</p></WarningBox>}
       {leg.headFitPoor && <p className="deformity-caution">{t('deformity.headFit')}</p>}
+      {plateauInboard && <p className="deformity-caution" role="note" data-testid="deformity-plateau-inboard">{t('deformity.plateauInboard')}</p>}
 
       <h3>{t('deformity.values')}</h3>
       <table className="deformity-values">
@@ -348,7 +438,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           return <tr key={name} data-value-key={name} data-value={value.value ?? undefined} className={out ? 'is-out' : ''}>
             <th scope="row" title={normal ? [normal.source, ...normal.others].join('\n') : undefined}>{NAMED[name] ? t(NAMED[name]) : name}</th>
             <td>{value.value === null ? <span className="deformity-missing">{missingText(value.missing, t)}</span> : valueText(value, tag, t)}
-              {out && <span className="deformity-verdict"> · {t(value.verdict === 'high' ? 'deformity.high' : 'deformity.low')}</span>}</td>
+              {out && <span className="deformity-verdict"> · {t(value.verdict === 'high' ? 'deformity.high' : 'deformity.low')}</span>}
+              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution" data-testid="deformity-wbl-inboard"> · {t('deformity.plateauInboardShort')}</span>}</td>
             <td>{normalText(name)}</td></tr>;
         })}</tbody>
       </table>
@@ -358,7 +449,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       <ol className="deformity-steps">{view.steps.map(step => <li key={step.step} data-step={step.step} data-result={step.result}>
         <span>{t(`deformity.mat.${step.step}` as MessageKey)}</span>
         <strong className={step.result === 'normal' || step.result === 'unassessable' ? '' : 'is-out'}>{t(`deformity.result.${step.result}` as MessageKey)}</strong>
-        {step.missing && <small>{missingText(step.missing, t)}</small>}</li>)}</ol>
+        {step.missing && <small>{missingText(step.missing, t)}</small>}
+        {plateauInboard && step.step === 'subluxation' && step.result !== 'unassessable' && <small className="deformity-caution">{t('deformity.plateauInboardShort')}</small>}</li>)}</ol>
 
       <h3>{t('deformity.cora')}</h3>
       <dl className="deformity-cora">{(['femur', 'tibia'] as const).map(name => <div key={name} data-cora={name} data-magnitude={view.cora[name]?.magnitude}>
@@ -404,7 +496,9 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           <thead><tr><th scope="col" /><th scope="col">{t('deformity.before')}</th><th scope="col">{t('deformity.after')}</th></tr></thead>
           <tbody>{(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => <tr key={name} data-value-key={name} data-value={after[name].value ?? undefined}
             className={after[name].verdict && after[name].verdict !== 'normal' ? 'is-out' : ''}>
-            <th scope="row">{NAMED[name] ? t(NAMED[name]) : name}</th><td>{valueText(leg.values[name], '', t)}</td><td>{valueText(after[name], '', t)}</td></tr>)}</tbody>
+            <th scope="row">{NAMED[name] ? t(NAMED[name]) : name}</th>
+            {[leg.values[name], after[name]].map((value, index) => <td key={index}>{valueText(value, '', t)}
+              {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution"> · {t('deformity.plateauInboardShort')}</span>}</td>)}</tr>)}</tbody>
         </table>}
         {view.simulation?.wedge && view.simulation.wedge !== osteotomy.wedge && <p className="deformity-caution" role="note" data-testid="deformity-wedge-mismatch">
           {t(view.simulation.wedge === 'opening' ? 'deformity.wedgeIsOpening' : 'deformity.wedgeIsClosing')}</p>}

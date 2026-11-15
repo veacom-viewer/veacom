@@ -347,6 +347,11 @@ export interface DesktopBridge {
   importFiles: (files: File[]) => Promise<string[]>;
   openExternal: (url: string) => Promise<void>;
   saveFile: (suggestedName: string, data: ArrayBuffer | string) => Promise<string | null>;
+  /** One of the landmark model's graphs for the deformity kit's suggestions (docs/landmark-model.md), fetched the first
+   * time and kept: the desktop's main process downloads it from the release, the browser from its own site. */
+  landmarkModel?: (part: 'stageA' | 'stageB', onProgress?: (received: number) => void) => Promise<ArrayBuffer>;
+  /** Stops the model's download under way. */
+  cancelLandmarkModel?: () => Promise<void>;
   exportDicom: (seriesId: string | string[], options: { anonymize: boolean; full?: boolean; dicomdir: boolean; decompress?: boolean; root?: boolean; here?: boolean; frame?: number; zip?: boolean; smallest?: boolean; engineGeneration?: number }) => Promise<ExportResult | null>;
   /** In-app feedback to the team (veacom.app), sent only once the user confirms it in main's own dialog. `reason` is the service's or main's short error code. */
   sendFeedback?: (payload: { kind: 'problem' | 'suggestion'; message: string; email: string; includeSystem: boolean }) => Promise<{ ok: boolean; cancelled?: boolean; status?: number; reason?: string }>;

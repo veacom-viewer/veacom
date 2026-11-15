@@ -11,12 +11,23 @@ import type { Point } from '../imaging/deformity/plane';
 import type { Series } from '../model';
 import { filmKey } from '../imaging/radiograph';
 
+/** How a point came to be: placed by the reader, a model's suggestion the reader accepted, or either moved after. */
+export type Provenance = 'placed' | 'accepted' | 'moved';
+/** The landmark model a suggestion came from: its name and the SHA-256 of its two graphs (docs/landmark-model.md). */
+export interface ModelRef { model: string; sha256: { stageA: string; stageB: string } }
+
 /** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
 export interface LegPlan {
   id: string; name: string; side: Side;
   points: Landmarks;
-  provenance: Partial<Record<LandmarkName, Array<'placed' | 'moved'>>>;
+  provenance: Partial<Record<LandmarkName, Provenance[]>>;
   osteotomy: Osteotomy | null;
+  /** The model's suggestions the reader has not accepted or moved yet: drawn apart from the landmarks and never measured. */
+  suggested?: { model: ModelRef; points: Landmarks };
+  /** Per landmark: a suggestion of it has been on screen (`shown`), the model its points came from while the reader
+   * keeps the points a suggestion gave (`model`), and how the model made them (`construction`: the femoral head's ring
+   * around the model's hip centre). The plan file's suggestionShown, confidence and construction. */
+  origin?: Partial<Record<LandmarkName, { shown?: true; model?: ModelRef; construction?: 'hipCentreRing' }>>;
 }
 
 /** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it
@@ -87,8 +98,23 @@ export const deformity = {
   },
   /** What Undo keeps: the plans only (the panel and what a click places are not undone). */
   snapshot: () => state.films,
-  restore(films: DeformityState['films'] | undefined) { if (films && films !== state.films) set({ ...state, films, placing: null }); },
+  restore(films: DeformityState['films'] | undefined) { if (films && films !== state.films) set({ ...state, films: keepShown(films, state.films), placing: null }); },
 };
+
+/** The films Undo or Redo puts back, still marked where a suggestion has been on screen: what the reader saw cannot be
+ * undone, so a point placed after undoing a suggestion is still labelled as placed with a suggestion shown. */
+function keepShown(films: DeformityState['films'], now: DeformityState['films']): DeformityState['films'] {
+  const entries = Object.entries(films).map(([key, film]) => {
+    const current = now[key];
+    if (!film || !current) return [key, film] as const;
+    const plans = film.plans.map(plan => {
+      const seen = Object.entries(current.plans.find(item => item.id === plan.id)?.origin ?? {}).filter(([name, origin]) => origin.shown && !plan.origin?.[name as LandmarkName]?.shown);
+      return seen.length ? { ...plan, origin: { ...plan.origin, ...Object.fromEntries(seen.map(([name]) => [name, { ...plan.origin?.[name as LandmarkName], shown: true as const }])) } } : plan;
+    });
+    return [key, plans.some((plan, index) => plan !== film.plans[index]) ? { ...film, plans } : film] as const;
+  });
+  return entries.some(([key, film]) => film !== films[key]) ? Object.fromEntries(entries) : films;
+}
 
 /** An empty plan. Its name is empty until the reader adds a second plan of the same side (the panel numbers them). */
 export function newPlan(side: Side, name = ''): LegPlan {

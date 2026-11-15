@@ -11,6 +11,7 @@ import { handOverPixels } from '../imaging/pixelHandoff';
 import type { EngineExport, EngineInfo, EnginePixels, EngineRequest } from './engine.worker';
 import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
+import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -545,6 +546,8 @@ export function createWebBridge(): DesktopBridge {
 
     openExternal: async url => { window.open(url, '_blank', 'noopener,noreferrer'); },
     async saveFile(suggestedName, data) { download(suggestedName, new Blob([data])); return suggestedName; },
+    landmarkModel: (part, onProgress) => landmarkModel(part, onProgress),
+    async cancelLandmarkModel() { cancelLandmarkModel(); },
     copyText: text => navigator.clipboard.writeText(text),
 
     // Exports end in the browser's downloads: DICOM (with a DICOMDIR when asked) and pictures as one ZIP, video as MP4.

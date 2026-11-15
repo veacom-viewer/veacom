@@ -89,6 +89,7 @@ export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; o
         <a href="https://github.com/veacom-viewer/veacom" target="_blank" rel="noopener noreferrer">{t('help.source')}</a>
         <br />{t('help.notices')} <a href="THIRD_PARTY_JAVASCRIPT_LICENSES.md" target="_blank" rel="noopener">JavaScript</a>
         {' · '}<a href="RUST_LICENSES.txt" target="_blank" rel="noopener">Rust</a>
+        {' · '}<a href="onnxruntime-LICENSE.txt" target="_blank" rel="noopener">ONNX Runtime</a>
       </p>}
       <pre lang="en" tabIndex={0} aria-label={t('help.licence')}>{licence}</pre>
     </details>

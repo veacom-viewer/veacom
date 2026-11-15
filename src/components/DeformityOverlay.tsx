@@ -9,18 +9,18 @@ import { screenToWorld, sourceFrameSeries, type ScreenMapping } from '../imaging
 import { sliceRenderer } from '../imaging/sliceRenderer';
 import { usesSourceFrames } from '../imaging/viewState';
 import type { Cora } from '../imaging/deformity/analysis';
-import { LANDMARK_MARK, LANDMARKS } from '../imaging/deformity/landmarks';
+import { isContour, LANDMARK_MARK, LANDMARKS } from '../imaging/deformity/landmarks';
 import { moved } from '../imaging/deformity/osteotomy';
 import { add, fitCircle, rotate, scale, sub, unit, type Point } from '../imaging/deformity/plane';
 import { toImage, toPlane } from '../imaging/deformity/measure';
 import { deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
-import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
+import { dragContinues, fragmentView, moveHandle, movedView, pixelToScreen, place, planView, putBackSuggestion, settleMoved, worldToPixel, type DragContext, type Handle, type PlanView } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle } from '../usage/tracker';
 
 // Colours on the image only (the design guidelines' --measure family): the measure yellow for mechanical axes and
 // joint lines, so the angles they make read as measurements; the others tell constructions apart.
-const COLOUR = { axis: '#ffcc00', anatomic: '#c9a0ff', landmark: '#7fd1ff', cora: '#ff9f43', cut: '#ff6b6b', corrected: '#4dff8b', marker: '#e6e8eb' };
+const COLOUR = { axis: '#ffcc00', anatomic: '#c9a0ff', landmark: '#7fd1ff', cora: '#ff9f43', cut: '#ff6b6b', corrected: '#4dff8b', marker: '#e6e8eb', suggested: '#ff8fe0' };
 const layerStyle = { position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' } as const;
 interface Props { volume: Volume; view: ViewState; size: [number, number]; mapping: ScreenMapping }
 
@@ -29,6 +29,18 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
   if (!usesSourceFrames(volume.series, view)) return null;
   const slice = Math.round(view.slice), key = filmKey(volume.series, slice), film = films[key];
   return film ? { film, frame: sourceFrameSeries(volume.series, slice), key } : null;
+}
+
+/** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step, when the reader let
+ * it go on the plan it was taken from. A cancelled gesture, or one ended by a switch of plan, puts the suggestion back
+ * where the model put it, so a later Accept never takes a moved point as the model's. */
+function finish(held: DragContext & { handle: Handle; moved: boolean; from?: Point; gesture: GestureHandle }, settle: boolean) {
+  const handle = held.handle, from = held.from;
+  if (held.moved && handle.kind === 'suggestion') {
+    deformity.change(held.key, current => settle && current.active === held.plan ? settleMoved(current, handle.name, handle.index)
+      : from ? putBackSuggestion(current, held.plan, handle.name, handle.index, from) : current, false);
+  }
+  held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
 }
 
 /** Under the drawing: the place a moved fragment left, dimmed, and the fragment drawn moved. */
@@ -89,12 +101,12 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
 export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const { t } = useTranslation();
   const state = useDeformity();
-  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }) | null>(null);
+  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; start: [number, number]; from?: Point; gesture: GestureHandle }) | null>(null);
   const found = state.open ? shown(volume, view, state.films) : null;
   useLayoutEffect(() => () => {
     const held = drag.current;
     drag.current = null;
-    held?.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
+    if (held) finish(held, false);
   }, [found?.key, found?.film.active]);
   if (!found) return null;
   const { film, frame, key } = found;
@@ -112,16 +124,21 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
+    const from = handle.kind === 'suggestion' ? plan.plan.suggested?.points[handle.name]?.[handle.index] : undefined;
+    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, start: [event.clientX, event.clientY], from,
+      gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
   };
-  const end = (held: NonNullable<typeof drag.current>) => { drag.current = null; held.gesture.end({ result: held.moved ? 'ok' : 'cancel' }); };
+  const end = (held: NonNullable<typeof drag.current>, settle = true) => { drag.current = null; finish(held, settle); };
   const follow = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held) return;
-    // A drag moves the point it took, on the film and plan it took it on: paged to another film or plan, it stops.
+    // A drag moves the point it took, on the film and plan it took it on: paged to another film or plan, it stops. A
+    // pointer whose button is up has been released where this handle did not hear it.
     const now = dragContinues(held, { key, plan: film.active, pointer: event.pointerId });
     if (now === 'ignore') return;
-    if (now === 'stop') { end(held); return; }
+    if (now === 'stop' || !(event.buttons & 1)) { end(held, now !== 'stop'); return; }
+    // A tap, or a pen's jitter, moves nothing: the point moves once the pointer has gone 3 px.
+    if (!held.moved && Math.hypot(event.clientX - held.start[0], event.clientY - held.start[1]) < 3) return;
     const point = pixelAt(local(event));
     // One Undo step for the whole drag: the state before it is remembered on the first move.
     deformity.change(held.key, current => moveHandle(current, held.handle, point), !held.moved);
@@ -130,7 +147,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const release = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held || held.pointer !== event.pointerId) return;
-    end(held);
+    end(held, event.type !== 'pointercancel');
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
   };
   const handleProps = (handle: Handle) => ({ onPointerDown: grab(handle), onPointerMove: follow, onPointerUp: release, onPointerCancel: release, onLostPointerCapture: release, style: { pointerEvents: placing ? 'none' : 'all', cursor: 'move' } as const });
@@ -215,6 +232,29 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
         {LANDMARK_MARK[name] && <text x={x + 8 * outward} y={y - 7} textAnchor={outward > 0 ? 'start' : 'end'} fill={COLOUR.landmark} fontSize={11} fontWeight={600} stroke="#000" strokeWidth={2.5} paintOrder="stroke">{LANDMARK_MARK[name]}</text>}
       </g>;
     }))}
+    {/* The model's suggestions, until the reader accepts or moves them: a dashed ring with a cross and a question mark, so
+        they read apart from landmarks by shape as well as colour. Nothing is drawn or measured from them. */}
+    {/* Not in pictures, reports or videos: an unaccepted suggestion is not part of the plan. */}
+    {!simulating && plan.plan.suggested && <g data-testid="deformity-suggestions" data-export-exclude>
+      {(() => {
+        // Fitted in millimetres, as the ring was made and as the kit fits the head: round on non-square pixels too.
+        const head = plan.plan.suggested.points.femoralHeadContour, circle = head && head.length >= 3 ? fitCircle(head.map(p => toPlane(p, plan.mm))) : null;
+        if (!circle) return null;
+        const centre = toImage(circle.centre, plan.mm), [x, y] = at(centre), edge = at([centre[0] + circle.radius * toPixels, centre[1]]);
+        return <circle data-suggestion-head cx={x} cy={y} r={Math.hypot(edge[0] - x, edge[1] - y)} fill="none" stroke={COLOUR.suggested} strokeWidth={1.2} strokeDasharray="4 4" />;
+      })()}
+      {LANDMARKS.flatMap(name => (plan.plan.suggested!.points[name] ?? []).map((p, index) => {
+        // The head's outline points are smaller: eight of them sit close together on the circle.
+        const [x, y] = at(p), r = isContour(name) ? 4.5 : 7;
+        return <g key={`suggested-${name}-${index}`} data-suggestion={name}>
+          <circle cx={x} cy={y} r={r} fill="none" stroke="#000" strokeWidth={3.5} opacity={0.6} />
+          {!isContour(name) && <path d={`M${x - 3} ${y}h6M${x} ${y - 3}v6`} stroke={COLOUR.suggested} strokeWidth={1.2} />}
+          <circle cx={x} cy={y} r={r} fill="rgba(0,0,0,0.2)" stroke={COLOUR.suggested} strokeWidth={1.6} strokeDasharray={isContour(name) ? '2 2' : '3 2.5'} {...handleProps({ kind: 'suggestion', name, index })} />
+          {(LANDMARK_MARK[name] || (isContour(name) && index === 0)) && <text x={x + 10 * outward} y={y - 8} textAnchor={outward > 0 ? 'start' : 'end'} fill={COLOUR.suggested} fontSize={11} fontWeight={600}
+            stroke="#000" strokeWidth={2.5} paintOrder="stroke">{`${LANDMARK_MARK[name]}?`}</text>}
+        </g>;
+      }))}
+    </g>}
     {chip(points.hip?.centre ?? null, v.mLPFA.value === null ? [] : [`mLPFA ${number(v.mLPFA.value)}°`], simulating ? COLOUR.corrected : COLOUR.axis, -outward, 'hip')}
     {chip(points.knee, [v.mLDFA.value !== null ? `mLDFA ${number(v.mLDFA.value)}°` : '', v.MPTA.value !== null ? `MPTA ${number(v.MPTA.value)}°` : '',
       v.JLCA.value !== null ? `JLCA ${number(v.JLCA.value)}°` : '', v.HKA.value !== null ? `HKA ${number(Math.abs(v.HKA.value))}°${Math.abs(v.HKA.value) < 0.05 ? '' : ` ${t(v.HKA.value >= 0 ? 'deformity.varus' : 'deformity.valgus')}`}` : ''].filter(Boolean), simulating ? COLOUR.corrected : COLOUR.axis, outward, 'knee')}
