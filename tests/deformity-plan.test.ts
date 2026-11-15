@@ -309,6 +309,13 @@ describe('landmark suggestions', () => {
     const tracedSaved = await planFile({ ...current, plans: tracedOpen.plans, active: tracedOpen.plans[0].id }, frame);
     const head = tracedSaved.plans[0].landmarks.find(label => label.name === 'femoralHeadContour')!;
     assert.deepEqual([head.confidence, head.construction], [MODEL, undefined]);
+    // A model's label that says no suggestion was shown keeps saying so.
+    const unshown = structuredClone(JSON.parse(text));
+    for (const label of unshown.plans[0].landmarks) if (label.name === 'kneeCentre') label.suggestionShown = false;
+    const unshownOpen = await parsePlanFile(JSON.stringify(unshown), current, frame);
+    assert.ok(!('error' in unshownOpen));
+    const unshownLabel = (await planFile({ ...current, plans: unshownOpen.plans, active: unshownOpen.plans[0].id }, frame)).plans[0].landmarks.find(label => label.name === 'kneeCentre')!;
+    assert.deepEqual([unshownLabel.confidence, unshownLabel.suggestionShown], [MODEL, false]);
     // A point claimed as accepted with no model, or a model with a malformed hash, is the reader's.
     const forged = structuredClone(JSON.parse(text));
     for (const label of forged.plans[0].landmarks) if (label.name === 'kneeCentre') label.confidence = 'manual';

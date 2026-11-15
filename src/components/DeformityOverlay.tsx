@@ -32,11 +32,13 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
 }
 
 /** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step, when the reader let
- * it go on the plan it was taken from. A cancelled gesture, or one ended by a switch of plan, leaves it a suggestion. */
-function finish(held: DragContext & { handle: Handle; moved: boolean; gesture: GestureHandle }, settle: boolean) {
-  const handle = held.handle;
-  if (settle && held.moved && handle.kind === 'suggestion') {
-    deformity.change(held.key, current => current.active === held.plan ? settleMoved(current, handle.name, handle.index) : current, false);
+ * it go on the plan it was taken from. A cancelled gesture, or one ended by a switch of plan, puts the suggestion back
+ * where the model put it, so a later Accept never takes a moved point as the model's. */
+function finish(held: DragContext & { handle: Handle; moved: boolean; from?: Point; gesture: GestureHandle }, settle: boolean) {
+  const handle = held.handle, from = held.from;
+  if (held.moved && handle.kind === 'suggestion') {
+    deformity.change(held.key, current => current.active !== held.plan ? current
+      : settle ? settleMoved(current, handle.name, handle.index) : from ? moveHandle(current, handle, from) : current, false);
   }
   held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
 }
@@ -99,7 +101,7 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
 export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const { t } = useTranslation();
   const state = useDeformity();
-  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; start: [number, number]; gesture: GestureHandle }) | null>(null);
+  const drag = useRef<(DragContext & { handle: Handle; moved: boolean; start: [number, number]; from?: Point; gesture: GestureHandle }) | null>(null);
   const found = state.open ? shown(volume, view, state.films) : null;
   useLayoutEffect(() => () => {
     const held = drag.current;
@@ -122,7 +124,9 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, start: [event.clientX, event.clientY], gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
+    const from = handle.kind === 'suggestion' ? plan.plan.suggested?.points[handle.name]?.[handle.index] : undefined;
+    drag.current = { handle, key, plan: film.active, pointer: event.pointerId, moved: false, start: [event.clientX, event.clientY], from,
+      gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag') };
   };
   const end = (held: NonNullable<typeof drag.current>, settle = true) => { drag.current = null; finish(held, settle); };
   const follow = (event: ReactPointerEvent<SVGElement>) => {
@@ -233,9 +237,10 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     {/* Not in pictures, reports or videos: an unaccepted suggestion is not part of the plan. */}
     {!simulating && plan.plan.suggested && <g data-testid="deformity-suggestions" data-export-exclude>
       {(() => {
-        const head = plan.plan.suggested.points.femoralHeadContour, circle = head && head.length >= 3 ? fitCircle(head) : null;
+        // Fitted in millimetres, as the ring was made and as the kit fits the head: round on non-square pixels too.
+        const head = plan.plan.suggested.points.femoralHeadContour, circle = head && head.length >= 3 ? fitCircle(head.map(p => toPlane(p, plan.mm))) : null;
         if (!circle) return null;
-        const [x, y] = at(circle.centre), edge = at([circle.centre[0] + circle.radius, circle.centre[1]]);
+        const centre = toImage(circle.centre, plan.mm), [x, y] = at(centre), edge = at([centre[0] + circle.radius * toPixels, centre[1]]);
         return <circle data-suggestion-head cx={x} cy={y} r={Math.hypot(edge[0] - x, edge[1] - y)} fill="none" stroke={COLOUR.suggested} strokeWidth={1.2} strokeDasharray="4 4" />;
       })()}
       {LANDMARKS.flatMap(name => (plan.plan.suggested!.points[name] ?? []).map((p, index) => {

@@ -208,6 +208,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         || liveView.mm?.[0] !== mm[0] || liveView.mm[1] !== mm[1]) { setStatus(t('deformity.suggestChanged')); return; }
       const found = suggestionsFrom(reply.anchors, leg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
       if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
+      // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
+      if (deformity.get().simulate && liveView.simulation) { setStatus(t('deformity.suggestSimulated')); return; }
       deformity.change(key, current => withSuggestions(current, Object.fromEntries(Object.entries(found).map(([name, item]) => [name, item.points])), MODEL));
       const count = Object.keys(activePlan(deformity.get().films[key]!).suggested?.points ?? {}).length;
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));

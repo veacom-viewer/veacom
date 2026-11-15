@@ -27,7 +27,7 @@ export interface LegPlan {
   /** Per landmark: a suggestion of it has been on screen (`shown`), the model its points came from while the reader
    * keeps the points a suggestion gave (`model`), and how the model made them (`construction`: the femoral head's ring
    * around the model's hip centre). The plan file's suggestionShown, confidence and construction. */
-  origin?: Partial<Record<LandmarkName, { shown: true; model?: ModelRef; construction?: 'hipCentreRing' }>>;
+  origin?: Partial<Record<LandmarkName, { shown?: true; model?: ModelRef; construction?: 'hipCentreRing' }>>;
 }
 
 /** A ball or ruler on the film, as the reader marked it: the ball's edge points, or the ruler's two marks. Whether it
@@ -108,7 +108,7 @@ function keepShown(films: DeformityState['films'], now: DeformityState['films'])
     const current = now[key];
     if (!film || !current) return [key, film] as const;
     const plans = film.plans.map(plan => {
-      const seen = Object.entries(current.plans.find(item => item.id === plan.id)?.origin ?? {}).filter(([name]) => !plan.origin?.[name as LandmarkName]?.shown);
+      const seen = Object.entries(current.plans.find(item => item.id === plan.id)?.origin ?? {}).filter(([name, origin]) => origin.shown && !plan.origin?.[name as LandmarkName]?.shown);
       return seen.length ? { ...plan, origin: { ...plan.origin, ...Object.fromEntries(seen.map(([name]) => [name, { ...plan.origin?.[name as LandmarkName], shown: true as const }])) } } : plan;
     });
     return [key, plans.some((plan, index) => plan !== film.plans[index]) ? { ...film, plans } : film] as const;

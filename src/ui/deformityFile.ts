@@ -139,7 +139,8 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
       plan.points = { ...plan.points, [name]: list }; plan.provenance = { ...plan.provenance, [name]: provenance };
       const shown = label.suggestionShown === true;
       const ring = from && name === 'femoralHeadContour' && label.construction === 'hipCentreRing';
-      if (shown || from) plan.origin = { ...plan.origin, [name]: { shown: true, ...(from ? { model: from } : {}), ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
+      // Where the points came from and whether a suggestion was shown are kept apart, each as the file says.
+      if (shown || from) plan.origin = { ...plan.origin, [name]: { ...(shown ? { shown: true as const } : {}), ...(from ? { model: from } : {}), ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
     }
     const o = entry.osteotomy;
     if (isObject(o)) {
