@@ -5,7 +5,7 @@
 // 8° opening wedge HTO measured again live and its fragment drawn moved, Undo and Redo, saving and opening the plan,
 // and the report. On the film without spacing it calibrates on the ball; on the mirrored film the angles keep their
 // names; on the film without Patient Orientation the kit asks where the patient's right is. Last, Suggest landmarks
-// downloads the landmark model from its release and suggests the left leg's 14 landmarks, the six with no real-film
+// downloads the landmark model from its release and suggests the left leg's 14 landmarks, the three with no real-film
 // check marked as unchecked, which the reader accepts.
 // usage: node tools/check-deformity-plan.cjs LONGLEG_STUDY [OUTPUT_DIR] [-- app switches, e.g. --force-device-scale-factor=1]
 const { _electron: electron } = require('playwright');
@@ -428,14 +428,14 @@ async function main() {
     const suggestedRows = () => rows('[data-suggested]');
     assert.deepEqual(await suggestedRows(), ['femoralHeadContour', 'greaterTrochanterTip', 'femoralShaftProximal', 'femoralShaftDistal', 'kneeCentre', 'femoralCondyleMedial',
       'femoralCondyleLateral', 'tibialPlateauMedial', 'tibialPlateauLateral', 'tibialShaftProximal', 'tibialShaftDistal', 'plafondMedial', 'plafondLateral', 'ankleCentre']);
-    // The six with no real-film check: tagged in the list and drawn as diamonds, apart from the checked rings.
-    const unchecked = ['greaterTrochanterTip', 'femoralShaftProximal', 'tibialShaftProximal', 'tibialShaftDistal', 'plafondMedial', 'plafondLateral'];
+    // The three with no real-film check: tagged in the list and drawn as diamonds, apart from the checked rings.
+    const unchecked = ['greaterTrochanterTip', 'plafondMedial', 'plafondLateral'];
     assert.deepEqual(await rows('[data-unchecked]'), unchecked);
     assert.match(await panel.locator('[data-landmark="plafondMedial"]').textContent(), /suggested · unchecked/);
     assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion]').count(), 8 + 13);
     assert.deepEqual(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion][data-unchecked]').evaluateAll(items => items.map(item => item.dataset.suggestion)), unchecked);
-    assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-unchecked] polygon[stroke-dasharray]').count(), 6);
-    assert.match(await panel.locator('[data-unchecked-note]').textContent(), /Unchecked: the trochanter, upper femoral shaft, tibial shafts and plafond/);
+    assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-unchecked] polygon[stroke-dasharray]').count(), 3);
+    assert.match(await panel.locator('[data-unchecked-note]').textContent(), /edge-traced shaft midline \(the other three\)\. Unchecked: the trochanter and plafond/);
     assert.equal((await values('.deformity-values:not(.deformity-compare)')).HKA, null, 'Nothing is measured from a suggestion.');
     const suggestTimes = JSON.parse(await panel.getByTestId('deformity-suggest').getAttribute('data-suggest-times'));
     await shot('6-suggestions');
@@ -466,7 +466,7 @@ async function main() {
     // Accepted as they were, the unchecked points stay tagged, and the values measured from them say so.
     assert.deepEqual(await rows('[data-unchecked]'), unchecked);
     const markedValues = await panel.locator('.deformity-values:not(.deformity-compare) tr').evaluateAll(items => items.filter(item => item.querySelector('[data-unchecked-value]')).map(item => item.dataset.valueKey));
-    assert.deepEqual(markedValues, ['mLPFA', 'aLDFA', 'LDTA', 'AMA']);
+    assert.deepEqual(markedValues, ['mLPFA', 'LDTA']);
     assert.match(await panel.locator('tr[data-value-key="LDTA"]').textContent(), /from an unchecked point/);
     // The femur's CORA uses the trochanter and the tibia's the plafond: each one found says so, and so do the labels of
     // mLPFA and LDTA on the image.
@@ -496,8 +496,8 @@ async function main() {
     assert.equal(labelOf('femoralHeadContour').construction, 'hipCentreRing');
     assert.deepEqual([labelOf('ankleCentre').provenance, labelOf('ankleCentre').confidence.model], [['moved'], modelFile.name]);
     for (const name of unchecked) assert.equal(labelOf(name).confidence.unchecked, true, `${name} is saved as unchecked.`);
-    assert.equal(labelOf('femoralShaftDistal').confidence.unchecked, undefined, 'The lower femoral shaft is checked on real films.');
-    check('Suggest landmarks downloads the model, suggests all 14 landmarks of the left leg drawn apart and unmeasured, the 6 unchecked ones marked as such; a dragged suggestion becomes a moved landmark and the drag ends with the button; Accept and Accept all measure them, the values from unchecked points marked, one Undo step, saved as the model\'s', suggestTimes);
+    for (const name of ['femoralShaftProximal', 'femoralShaftDistal', 'tibialShaftProximal', 'tibialShaftDistal']) assert.equal(labelOf(name).confidence.unchecked, undefined, `${name} is checked on real films.`);
+    check('Suggest landmarks downloads the model, suggests all 14 landmarks of the left leg drawn apart and unmeasured, the 3 unchecked ones marked as such; a dragged suggestion becomes a moved landmark and the drag ends with the button; Accept and Accept all measure them, the values from unchecked points marked, one Undo step, saved as the model\'s', suggestTimes);
 
     // The usage timings carry only control ids from the schema: no landmark, point, value or file.
     const schema = JSON.parse(await fs.readFile(path.join(__dirname, '..', 'electron', 'usage-schema.json'), 'utf8'));

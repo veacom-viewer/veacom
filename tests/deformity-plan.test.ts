@@ -341,26 +341,26 @@ describe('landmark suggestions', () => {
       plafondMedial: [[222, 895]] as Point[], plafondLateral: [[188, 897]] as Point[] };
     deformity.change(key, current => withSuggestions(current, all, MODEL, UNCHECKED));
     let current = deformity.get().films[key]!;
-    assert.deepEqual(current.plans[0].suggested?.unchecked, ['greaterTrochanterTip', 'femoralShaftProximal', 'plafondMedial', 'plafondLateral']);
+    assert.deepEqual(current.plans[0].suggested?.unchecked, ['greaterTrochanterTip', 'plafondMedial', 'plafondLateral']);
     assert.equal(fromUnchecked(current.plans[0]).size, 0, 'Nothing is measured from a suggestion, so nothing is marked yet.');
     current = acceptSuggestions(current);
     let plan = current.plans[0];
     assert.deepEqual(plan.origin?.plafondMedial, { shown: true, model: MODEL, unchecked: true });
-    assert.deepEqual(plan.origin?.femoralShaftDistal, { shown: true, model: MODEL }, 'The lower femoral shaft is checked on real films.');
-    assert.deepEqual([...fromUnchecked(plan)].sort(), ['AMA', 'LDTA', 'aLDFA', 'coraFemur', 'coraTibia', 'mLPFA']);
+    assert.deepEqual(plan.origin?.femoralShaftProximal, { shown: true, model: MODEL }, 'The shafts are checked on real films.');
+    assert.deepEqual([...fromUnchecked(plan)].sort(), ['LDTA', 'coraFemur', 'coraTibia', 'mLPFA']);
     // Moved, the plafond is the reader's point: LDTA and the tibia's CORA lose the mark, and the label keeps the model and
     // that its channel is unchecked.
     current = moveHandle(current, { kind: 'landmark', name: 'plafondMedial', index: 0 }, [223, 894]);
     current = moveHandle(current, { kind: 'landmark', name: 'plafondLateral', index: 0 }, [187, 898]);
-    assert.deepEqual([...fromUnchecked(current.plans[0])].sort(), ['AMA', 'aLDFA', 'coraFemur', 'mLPFA']);
+    assert.deepEqual([...fromUnchecked(current.plans[0])].sort(), ['coraFemur', 'mLPFA']);
     // Placed again by hand, the trochanter is the reader's alone.
     current = place(current, { film: key, kind: 'landmark', name: 'greaterTrochanterTip' }, [61, 141], frame).film;
     plan = current.plans[0];
     assert.deepEqual(plan.origin?.greaterTrochanterTip, { shown: true });
-    assert.deepEqual([...fromUnchecked(plan)].sort(), ['AMA', 'aLDFA']);
+    assert.equal(fromUnchecked(plan).size, 0);
     // Saved, the model's confidence says its channel is unchecked; opened and saved again, the labels are the same.
     const file = await planFile(current, frame), labels = Object.fromEntries(file.plans[0].landmarks.map(label => [label.name, label]));
-    assert.deepEqual([labels.femoralShaftProximal.confidence, labels.femoralShaftProximal.provenance], [{ ...MODEL, unchecked: true }, ['accepted']]);
+    assert.deepEqual([labels.femoralShaftProximal.confidence, labels.femoralShaftProximal.provenance], [MODEL, ['accepted']]);
     assert.deepEqual([labels.plafondMedial.confidence, labels.plafondMedial.provenance], [{ ...MODEL, unchecked: true }, ['moved']]);
     assert.deepEqual(labels.femoralShaftDistal.confidence, MODEL);
     assert.deepEqual([labels.greaterTrochanterTip.confidence, labels.greaterTrochanterTip.suggestionShown], ['manual', true]);
@@ -378,8 +378,8 @@ describe('landmark suggestions', () => {
     // does not know when it saves a file again).
     const dropped = await edited(label => { if (isModel(label.confidence)) delete label.confidence.unchecked; });
     assert.ok(!('error' in dropped));
-    assert.equal(dropped.plans[0].origin?.femoralShaftProximal?.unchecked, true);
-    assert.equal(dropped.plans[0].origin?.femoralShaftDistal?.unchecked, undefined);
+    assert.equal(dropped.plans[0].origin?.plafondMedial?.unchecked, true);
+    assert.equal(dropped.plans[0].origin?.femoralShaftProximal?.unchecked, undefined);
     // Another model's label is unchecked only where its file says so; a point the file gives no model is the reader's.
     const other = { model: 'other', sha256: { stageA: 'a'.repeat(64), stageB: 'b'.repeat(64) } };
     const foreign = await edited(label => {

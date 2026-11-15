@@ -233,7 +233,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const plateauInboard = (['tibialPlateauMedial', 'tibialPlateauLateral'] as const).some(name => plan.origin?.[name]?.model && plan.provenance[name]?.includes('accepted'));
   // Values measured from a landmark the model suggested with no real-film check, accepted as it was: marked beside them.
   const unchecked = fromUnchecked(plan);
-  const uncheckedShown = Boolean(plan.suggested?.unchecked?.length) || LANDMARKS.some(name => uncheckedAsSuggested(plan, name));
+  // The line on what is checked shows with the suggestions, and while an unchecked one is kept as it was suggested.
+  const uncheckedShown = LANDMARKS.some(name => uncheckedAsSuggested(plan, name));
   // While the simulation shows, the film's fragment is drawn moved and suggestions are not drawn: none can be accepted.
   const simulated = state.simulate && Boolean(view.simulation);
   const fromModel = Boolean(plan.suggested) || LANDMARKS.some(name => plan.origin?.[name]?.model);
@@ -412,7 +413,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         </div>
         {/* A caution while the model's points are on the plan; until then, what the button would do. */}
         <p className={fromModel ? 'deformity-caution' : 'deformity-note'} role="note">{t('deformity.suggestTrained')}</p>
-        {uncheckedShown && <p className="deformity-note" role="note" data-unchecked-note>{t('deformity.suggestUnchecked')}</p>}
+        {(plan.suggested || uncheckedShown) && <p className="deformity-note" role="note" data-unchecked-note>{t('deformity.suggestUnchecked')}</p>}
       </div>
       {placing?.kind === 'landmark' && <p className="deformity-hint" role="status" data-testid="deformity-next" data-landmark={placing.name}>
         {t('deformity.next', { name: t(LANDMARK_TEXT[placing.name].name) })} {t(LANDMARK_TEXT[placing.name].hint)}

@@ -42,12 +42,12 @@ const SHAFT_CROPS: Record<Exclude<CropKind, 'hip' | 'knee' | 'ankle'>, readonly 
   femurProximal: ['hip', 'knee', 0.30], femurDistal: ['hip', 'knee', 0.75], tibiaProximal: ['knee', 'ankle', 0.25], tibiaDistal: ['knee', 'ankle', 0.80],
 };
 
-/** The kit suggests every landmark. These have no check against readers on real films: BMPLE, the only real films the
- * model learnt from, does not label them, so it learnt them from synthetic films alone (docs/landmark-model.md). The
- * kit marks them, and the values measured from them while they stay as suggested. The others were checked on BMPLE's
- * 69 test films: the hip, knee and ankle centres, the condyles, the plateau and the lower femoral shaft. */
-export const UNCHECKED = ['greaterTrochanterTip', 'femoralShaftProximal', 'tibialShaftProximal', 'tibialShaftDistal', 'plafondMedial',
-  'plafondLateral'] as const satisfies readonly LandmarkName[];
+/** The kit suggests every landmark. These have no check on real films: BMPLE, the only real films the model learnt
+ * from, does not label them, and no reference traced on its films is reliable enough to check them (docs/landmark-model.md).
+ * The kit marks them, and the values measured from them while they stay as suggested. The others were checked on
+ * BMPLE's 69 test films: the hip, knee and ankle centres, the condyles, the plateau and the lower femoral shaft against
+ * the reader's points, the other three shaft points against shaft midlines traced between the cortices. */
+export const UNCHECKED = ['greaterTrochanterTip', 'plafondMedial', 'plafondLateral'] as const satisfies readonly LandmarkName[];
 
 /**
  * The model's legs are named by where they lie on the image, as on a standard AP display: `left` is stage A's "R"

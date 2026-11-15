@@ -97,18 +97,20 @@ supplements.
 ### Suggestions
 
 Suggest landmarks runs the landmark model on the film, on this computer (docs/landmark-model.md), and suggests all 14
-landmarks of the active plan's leg. Eight were checked on real films: the femoral head, knee centre, condyles, plateau
-edges and ankle centre, the points behind mLDFA, MPTA, JLCA, HKA and MAD, and the lower femoral shaft. Six were not: the
-trochanter, the upper femoral shaft, the tibial shafts and the plafond, which the model learnt from synthetic films only.
-Beside the button, one line says what the model was trained on and that it cannot tell children, fixators or implants
-apart.
+landmarks of the active plan's leg. Eleven were checked on real films: the femoral head, knee centre, condyles, plateau
+edges and ankle centre against the reader's points (the points behind mLDFA, MPTA, JLCA, HKA and MAD), the lower
+femoral shaft against the reader's point, and the other three shaft points against shaft midlines traced between the
+cortices. Three were not: the trochanter and the plafond, which the model learnt from synthetic films only. Beside the
+button, one line says what the model was trained on and that it
+cannot tell children, fixators or implants apart.
 
 - A suggestion is a dashed ring with a cross and a question mark ("K?", "A?"), and the row says "suggested". No axis,
   line or value comes from it.
-- An unchecked suggestion is a dashed diamond, its row says "suggested · unchecked", and one line under the button names
-  the six and why. Accepted as it was, its row still says "unchecked", and mLPFA, aLDFA, AMA, LDTA or a CORA measured
-  from it says "from an unchecked point" beside it in the panel and the report ("unchecked point" in its label on the
-  image), as does the Paley rule in the panel, until the reader moves or places that point.
+- An unchecked suggestion is a dashed diamond, its row says "suggested · unchecked", and one line under the button says
+  what the shaft points were checked against and which points are unchecked. Accepted as it was, its row still says
+  "unchecked", and mLPFA, LDTA or a CORA measured from it says "from an unchecked point" beside it in the panel and the
+  report ("unchecked point" in its label on the image), as does the Paley rule in the panel, until the reader moves or
+  places that point.
 - Accept takes one landmark as it is; Accept all takes every suggestion. Dragging a suggestion (3 px or more) moves it,
   and letting go makes it the landmark, moved (for the head, that point moved and the others accepted). Place on a
   suggested row places the point by hand instead. Clear suggestions removes the ones left. Each of these is one Undo
@@ -225,7 +227,7 @@ would (`tests/source-renderer.browser.mjs`). Before, such a film failed to draw 
   the report a PNG for now.
 - Opt-in autosave, after the approvals above.
 - A keyboard way to place and nudge points: they are placed and moved with the mouse, pen or touch only.
-- A real-film check of the trochanter, upper femoral shaft, tibial shaft and plafond suggestions: no public dataset the
-  model learnt from labels them.
+- A real-film check of the trochanter and plafond suggestions: no public dataset the model learnt from labels them, and
+  no reference traced on its films is reliable enough yet.
 - Snapping points to bone edges, automatic ball detection, stitched films, implant templates, double-level and dome
   osteotomies, sagittal analysis and printing the report through the system print dialog (PR #31's path).

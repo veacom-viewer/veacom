@@ -131,8 +131,8 @@ describe('the kit\'s suggestions', () => {
     greaterTrochanterTip: { point: [40, 80], confidence: 0.04 }, plafondMedial: { point: [140, 1790], confidence: 0.05 },
   });
 
-  it('marks as unchecked the landmarks BMPLE does not label, and only those', () => {
-    assert.deepEqual([...UNCHECKED], ['greaterTrochanterTip', 'femoralShaftProximal', 'tibialShaftProximal', 'tibialShaftDistal', 'plafondMedial', 'plafondLateral']);
+  it('marks as unchecked the trochanter and the plafond, which nothing on real films checks yet', () => {
+    assert.deepEqual([...UNCHECKED], ['greaterTrochanterTip', 'plafondMedial', 'plafondLateral']);
     assert.ok(UNCHECKED.every(name => LANDMARKS.includes(name)));
   });
 

@@ -1,10 +1,10 @@
 # Landmark model
 
 Suggest landmarks, in the deformity plan (docs/deformity-planning.md), runs a landmark model on the film and suggests
-all 14 of the kit's landmarks. Eight were checked against a reader on real films; the other six were not, and the kit
-says so wherever they or the values measured from them appear. It is off until the reader presses the button, and the
+all 14 of the kit's landmarks. Eleven were checked on real films; the other three were not, and the kit says so
+wherever they or the values measured from them appear. It is off until the reader presses the button, and the
 reader confirms every point: a suggestion is drawn apart from the landmarks and nothing is measured from it until the
-reader accepts or moves it. The model was trained and checked in veacom-train (`docs/synthetic.md` §7 and §8 there); this page
+reader accepts or moves it. The model was trained and checked in veacom-train (`docs/synthetic.md` §7 and §8, `docs/round4-status.md`); this page
 is its card.
 
 Code: `src/imaging/deformity/suggest.ts` (the input contract and decoding, ported from veacom-train's `stagea.py` and
@@ -47,12 +47,23 @@ graphs are seed 0.
 | Ankle centre | 1.19 mm |
 | Condyles, medial and lateral | 1.76 and 1.77 mm |
 | Plateau, medial and lateral | 2.39 and 1.87 mm |
-| Femoral shaft, lower | 0.40 mm across the shaft |
+The shaft points were checked in veacom-train's round 4 (`docs/round4-status.md`), on the same 69 films, with stage B
+run as VEAcom runs it. A shaft point's error is across the shaft, at the point's own level.
 
-The femoral shaft's error is across the shaft at the reader's own level, which BMPLE's reader put 76 to 87 % of the way
-from hip to knee (mean 83 %, over the reader's hip, knee and shaft points of the 138 test legs). VEAcom reads the point
-at 75 %, where veacom-train's own inference (`stageb.infer_film`) puts the crop and where the synthetic films label it,
-on the same shaft.
+| Shaft point | Checked against | Error across the shaft |
+| --- | --- | --- |
+| Femoral shaft, lower | the reader's point (BMPLE's F), at its level | 0.45 mm |
+| Femoral shaft, upper | an edge-traced shaft midline: the middle between the cortices, traced on each film | 0.56 mm |
+| Tibial shaft, upper and lower | an edge-traced shaft midline | 0.35 and 0.39 mm |
+
+- **The femoral midline** passes within the reader's own spread of F on 134 of 138 legs; the upper femoral level has no
+  reader point. **The tibial midline** has no reader point at all: it is checked only for consistency (it passes 1.3 mm
+  from the reader's ankle centre).
+- **Their axes and values:** the femoral anatomic axis is 0.17° off the midline's, the tibial 0.16°. End to end, aLDFA is
+  0.84° off (sd 1.42) and AMA 0.27°.
+- **Where along the shaft.** BMPLE's reader put F 76 to 87 % of the way from hip to knee (mean 83 %, over the reader's
+  hip, knee and shaft points of the 138 test legs). VEAcom reads the point at 75 %, where veacom-train's own inference
+  (`stageb.infer_film`) puts the crop and where the synthetic films label it, on the same shaft.
 
 | Value | Error | Legs within 2° (MAD: 2 mm) |
 | --- | --- | --- |
@@ -68,22 +79,21 @@ All 14 landmarks.
 
 | Checked on real films (BMPLE test) | Unchecked |
 | --- | --- |
-| Femoral head, knee centre, both condyles, both plateau edges, femoral shaft lower, ankle centre | Greater trochanter, femoral shaft upper, tibial shaft upper and lower, plafond medial and lateral |
+| Femoral head, knee centre, both condyles, both plateau edges and ankle centre (the reader's points); femoral shaft lower (the reader's point) and upper, tibial shaft upper and lower (edge-traced midlines) | Greater trochanter, plafond medial and lateral |
 
-- **Unchecked** points have no check against a reader on real films: BMPLE, the only real films the model learnt from,
-  does not label them, so the model learnt them from synthetic films alone (`suggest.ts` `UNCHECKED`).
-  - On veacom-train's held-out synthetic films (adult legs, not validation), the trochanter tip is 2.6 mm off, the
-    plafond's medial edge 2.2 mm, and the shaft points 0.1 mm across the shaft. The kit's mLPFA, aLDFA and LDTA from all
-    predicted points are 1.3°, 0.4° and 2.0° off there.
-  - On four real development films, checked by eye only, the plafond edges sit where a reader would put them.
-  - So mLPFA, aLDFA, AMA, LDTA and the CORA of each bone have no real-film number.
+- **Unchecked** points have no check on real films (`suggest.ts` `UNCHECKED`). BMPLE does not label them, and round 4
+  found no reference on its films reliable enough to check them:
+  - **Trochanter.** An edge-traced tip was found on only 43 % of legs. Against it, indicatively, the model's tip is about
+    4.7 mm off, and mLPFA reads 2.8° low.
+  - **Plafond.** Against a traced plafond line, the medial and lateral points are 2.85 and 4.25 mm off, LDTA 2.45° (sd
+    3.8). The model sits about 1 mm above the traced line, possibly a difference of convention.
+  - So mLPFA, LDTA and the CORA of each bone have no real-film number.
 - **How the kit says so.** An unchecked suggestion is a dashed diamond, not a ring. Its row says "suggested ·
-  unchecked", and one line under the button names the six points and why. Accepted as it was, the row still says
-  "unchecked", and every value, malalignment step and CORA measured from it says "from an unchecked point" beside it,
-  in the panel and in the report, and "unchecked point" in its label on the image (the Paley rule says so in the panel),
-  until the reader moves that point or places it again. A file from another model may mark any landmark unchecked; the
-  same rule then marks whatever is measured from it. The tibial shaft points feed no value;
-  they draw the tibial anatomic axis.
+  unchecked", and one line under the button says what each shaft point was checked against and that the trochanter and
+  plafond are unchecked. Accepted as it was, the row still says "unchecked", and every value, malalignment step and CORA
+  measured from it says "from an unchecked point" beside it, in the panel and in the report, and "unchecked point" in
+  its label on the image (the Paley rule says so in the panel), until the reader moves that point or places it again. A
+  file from another model may mark any landmark unchecked; the same rule then marks whatever is measured from it.
 - **Saved,** the label's `confidence` names the model and says `unchecked` (docs/deformity-labels.md), so these labels
   are never mistaken for checked ones when the files are used for training.
 - **The femoral head.** The kit takes the hip centre as the circle fitted to the head's outline. The model's checked point
@@ -121,7 +131,8 @@ good points from bad. The largest errors, 12 to 20 mm, had peaks of 0.06 to 0.07
 
 - The model has seen adults with varus osteoarthritis, without hardware. It cannot tell a child's film, an external
   fixator or an implant from what it knows, and will suggest points on them anyway; the panel says so beside the button.
-  Its numbers on synthetic children, fixators and implants are not validation, and no real film of these was labelled.
+  Its numbers on synthetic children, fixators and implants are not validation, and no real film of these
+  was labelled.
 - Two hospitals' films only: other detectors, stitching and positioning are untested.
 - A film flipped left to right gives the same suggestions for the same leg (checked on a mirrored BMPLE film: angles
   within 0.05°).
