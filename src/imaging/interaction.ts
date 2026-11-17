@@ -59,13 +59,13 @@ export interface WheelStream { fineUntil: number; allowance?: number; allowanceA
 
 /** The slices of one event of a stream. A touchpad's movement can come to whole notches by chance; during a swipe
  * (within SWIPE_GAP_MS of its last fine part) such an event is read as part of the swipe, by its pixels. A mouse
- * wheel turned within that time is read the same way, which changes only its speed. */
+ * wheel turned within that time is read the same way, which changes only its speed. Only the swipe's own fine parts
+ * prolong it, so notches that keep coming after the touchpad stops are notches again SWIPE_GAP_MS later. */
 export function streamWheelSteps(event: WheelInput, zoom: number, now: number, stream: WheelStream): WheelSteps {
   const read = wheelSteps(event, zoom);
   if (read.steps === 0) return read;
-  if (!read.fine && !(event.deltaMode === 0 && now < stream.fineUntil)) return read;
-  stream.fineUntil = now + SWIPE_GAP_MS;
-  return read.fine ? read : { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true };
+  if (read.fine) { stream.fineUntil = now + SWIPE_GAP_MS; return read; }
+  return event.deltaMode === 0 && now < stream.fineUntil ? { steps: event.deltaY * zoom / PIXELS_PER_STEP, fine: true } : read;
 }
 
 const touchpadSpeedOf = (value: number) => Number.isFinite(value) ? Math.max(TOUCHPAD_SPEED.min, Math.min(TOUCHPAD_SPEED.max, value)) : TOUCHPAD_SPEED.default;

@@ -101,6 +101,16 @@ describe('the touchpad speed', () => {
     stream.fineUntil = 5000;
     assert.deepEqual(streamWheelSteps({ deltaY: 3, deltaMode: 1 }, 1, 4000, stream), { steps: 1, fine: false });
   });
+  it('lets only the fine parts of a swipe prolong it, so a wheel that keeps turning after it pages a slice a notch', () => {
+    const stream: WheelStream = { fineUntil: 0 };
+    assert.deepEqual(streamWheelSteps({ deltaY: 25, deltaMode: 0, wheelDeltaY: -30 }, 1, 1000, stream), { steps: 0.625, fine: true });
+    // Notches 100 ms apart: read by their pixels while the swipe lasts, notches once its last fine part is SWIPE_GAP_MS behind.
+    const notch = (at: number) => streamWheelSteps({ deltaY: 100, deltaMode: 0, wheelDeltaY: -120 }, 1, at, stream);
+    assert.deepEqual(notch(1100), { steps: 2.5, fine: true });
+    assert.deepEqual(notch(1200), { steps: 2.5, fine: true });
+    assert.deepEqual(notch(1000 + SWIPE_GAP_MS), { steps: 1, fine: false });
+    assert.deepEqual(notch(1000 + SWIPE_GAP_MS + 100), { steps: 1, fine: false });
+  });
   it('pages a typical Windows touchpad swipe several times faster than before at the default speed', () => {
     // One deliberate two-finger swipe through Windows' wheel messages: raw units a message, 1000 in all (833 px).
     const raw = [8, 16, 32, 56, 80, 104, 120, 120, 112, 96, 80, 64, 48, 32, 20, 12];
