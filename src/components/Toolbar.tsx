@@ -153,7 +153,9 @@ export function Toolbar({ label, start, end, moreLabel }: {
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widths = useRef(new Map<string, number>());
-  const [hidden, setHidden] = useState<Set<string>>(() => new Set());
+  // The items moved to the second row, and the content width they were planned for.
+  const [fit, setFit] = useState<{ hidden: Set<string>; width: number }>(() => ({ hidden: new Set(), width: 0 }));
+  const hidden = fit.hidden;
   const [secondRow, setSecondRow] = useState(false);
   const current = useRef<HTMLElement | null>(null);
   const items = [...start, ...end];
@@ -180,7 +182,10 @@ export function Toolbar({ label, start, end, moreLabel }: {
     entries.push({ id: '__dividers', width: new Set(items.map(item => item.group)).size * 13 });
     // 40 px: the More arrow (28) and the divider before it (9), with the gaps between them.
     const next = planToolbar(entries, available, 40);
-    setHidden(previous => previous.size === next.size && [...next].every(id => previous.has(id)) ? previous : next);
+    setFit(previous => {
+      const same = previous.hidden.size === next.size && [...next].every(id => previous.hidden.has(id));
+      return same && previous.width === available ? previous : { hidden: same ? previous.hidden : next, width: available };
+    });
     if (!next.size) setSecondRow(false);
   });
 
@@ -221,7 +226,10 @@ export function Toolbar({ label, start, end, moreLabel }: {
   const render = (list: ToolbarItem[]) => row(list.filter(item => !hidden.has(item.id)));
   const overflowed = items.filter(item => hidden.has(item.id));
   return <>
-    <div ref={ref} className="toolbar" role="toolbar" aria-label={label} onKeyDown={keyDown}
+    {/* data-fitted-width: the content width the shown items were planned for. Once the toolbar has fitted itself to the
+        window as it now is, it is the toolbar's content width, to within a pixel at zoom (tools/check-interface.cjs
+        waits for that). */}
+    <div ref={ref} className="toolbar" role="toolbar" aria-label={label} onKeyDown={keyDown} data-fitted-width={fit.width}
       onFocus={event => { const target = event.target as HTMLElement; if (!target.closest('.popover-menu') && controls().includes(target)) { current.current = target; syncTabStops(); } }}>
       {render(start)}
       {overflowed.length > 0 && <>
