@@ -34,7 +34,8 @@ export async function measureSourceRegion(annotation: Annotation, volume: Volume
   if ((volume.sourceFrameIndex !== undefined && volume.sourceFrameIndex !== index)
     || !['rectangle', 'ellipse', 'polygon'].includes(annotation.type) || series.components === 3) return null;
   if (annotation.mode === 'source' && index === null) return null;
-  const plane = roiPlane(annotation, index === null ? series : sourceFrameSeries(series, index));
+  const film = index === null ? series : sourceFrameSeries(series, index);
+  const plane = roiPlane(annotation, film);
   if (!plane) return null;
   const points = planePoints(plane);
   const aligned = annotation.mode !== 'source' ? voxelPlane(points, series) : undefined;
@@ -42,7 +43,7 @@ export async function measureSourceRegion(annotation: Annotation, volume: Volume
   const address = index !== null ? { frame: sourceFrameRef(series, index) } : aligned ? { voxelPlane: aligned } : { oblique: { u: plane.u, v: plane.v } };
   const result = await sampleSeries(series, { kind: 'sourceRegion', ...address,
     shape: annotation.type as 'rectangle' | 'ellipse' | 'polygon', points,
-    normalization: series.suvNormalization, pixelUnits: series.measurementUnits === 'px', measurementScale: series.measurementScale });
+    normalization: series.suvNormalization, pixelUnits: film.measurementUnits === 'px', measurementScale: film.measurementScale });
   return validatedRegion(result, !('oblique' in address));
 }
 

@@ -192,19 +192,21 @@ const beforeContrastName = /\bpre\b|pre[- ]?(c|gd|cont)|\bnon\b|non[- ]?c|kontra
 const afterContrastName = /\+\s*c\b|\bc\s*\+|\bpost\b|post[- ]?(c|gd|gad|cont)|gado|\bgd\b|kontrastli|contrast/;
 const localizerName = /locali[sz]er|scout|survey|scano|\bloc\b|3[- ]?plane|planlama/;
 const sequenceText = (series: Series) => [series.description, series.protocolName, series.sequenceName].filter(Boolean).join(' ').toLowerCase().replaceAll('_', ' ');
-interface ContrastEvidence { state: 'pre' | 'post' | 'uncertain' | null; basis: string; }
+/** `from`: what says so. The frames' own contrast usage, the series' name, or an agent recorded on the series, which
+ * some scanners copy onto every series of the examination. */
+interface ContrastEvidence { state: 'pre' | 'post' | 'uncertain' | null; basis: string; from?: 'usage' | 'name' | 'tag'; }
 function contrastEvidence(series: Series, translate = t): ContrastEvidence {
   const phase = series.contrastBolusPhase?.trim().toUpperCase(), administered = series.contrastBolusAdministered?.trim().toUpperCase();
   const detected = series.contrastBolusDetected?.trim().toUpperCase();
-  if (phase === 'MIXED' || administered === 'MIXED') return { state: 'uncertain', basis: translate('clinical.basis.mixedContrast') };
+  if (phase === 'MIXED' || administered === 'MIXED') return { state: 'uncertain', basis: translate('clinical.basis.mixedContrast'), from: 'usage' };
   // Frame usage describes this acquisition; an agent name can be copied across a whole examination.
-  if (phase === 'PRE_CONTRAST' || administered === 'NO') return { state: 'pre', basis: translate('clinical.basis.precontrastUsage') };
-  if (phase && ['POST_CONTRAST', 'IMMEDIATE', 'DYNAMIC', 'STEADY_STATE', 'DELAYED', 'ARTERIAL', 'CAPILLARY', 'VENOUS', 'PORTAL_VENOUS'].includes(phase)) return { state: 'post', basis: translate('clinical.basis.postcontrastPhase') };
-  if (administered === 'YES' || detected === 'YES') return { state: 'post', basis: translate('clinical.basis.contrastRecorded') };
+  if (phase === 'PRE_CONTRAST' || administered === 'NO') return { state: 'pre', basis: translate('clinical.basis.precontrastUsage'), from: 'usage' };
+  if (phase && ['POST_CONTRAST', 'IMMEDIATE', 'DYNAMIC', 'STEADY_STATE', 'DELAYED', 'ARTERIAL', 'CAPILLARY', 'VENOUS', 'PORTAL_VENOUS'].includes(phase)) return { state: 'post', basis: translate('clinical.basis.postcontrastPhase'), from: 'usage' };
+  if (administered === 'YES' || detected === 'YES') return { state: 'post', basis: translate('clinical.basis.contrastRecorded'), from: 'usage' };
   const name = sequenceText(series);
-  if (beforeContrastName.test(name)) return { state: 'pre', basis: translate('clinical.basis.precontrastName') };
-  if (afterContrastName.test(name)) return { state: 'post', basis: translate('clinical.basis.postcontrastName') };
-  if (series.contrastBolusAgent?.trim() || series.contrastBolusRoute?.trim()) return { state: 'post', basis: translate('clinical.basis.contrastTag') };
+  if (beforeContrastName.test(name)) return { state: 'pre', basis: translate('clinical.basis.precontrastName'), from: 'name' };
+  if (afterContrastName.test(name)) return { state: 'post', basis: translate('clinical.basis.postcontrastName'), from: 'name' };
+  if (series.contrastBolusAgent?.trim() || series.contrastBolusRoute?.trim()) return { state: 'post', basis: translate('clinical.basis.contrastTag'), from: 'tag' };
   return { state: null, basis: '' };
 }
 interface MrKind { role: SequenceRole | null; basis: string; assumedContrast?: boolean; }
@@ -269,14 +271,56 @@ export function inferSequence(series: Series, translate = t): SequenceChoice {
   if (kind.assumedContrast) return { role: 't1c', bValue, basis: translate('clinical.basis.assumedGre') };
   return { role: 't1', bValue, basis: translate('clinical.basis.phaseUnknown', { basis: kind.basis }) };
 }
-function acquisitionSeconds(series: Series): number | null {
-  const datetime = series.acquisitionDateTime?.trim();
-  const value = datetime && /^\d{8}\d{4}/.test(datetime) ? datetime.slice(8).replace(/[+-]\d{4}$/, '') : series.acquisitionTime?.trim();
-  const match = value?.match(/^(\d{2})(\d{2})(?:(\d{2})(?:\.(\d{1,6}))?)?$/);
+/** A DICOM time of day (TM) in seconds, or null when it is not one. */
+function timeOfDay(value: string | undefined): number | null {
+  const match = value?.trim().match(/^(\d{2})(\d{2})(?:(\d{2})(?:\.(\d{1,6}))?)?$/);
   if (!match) return null;
   const hours = Number(match[1]), minutes = Number(match[2]), seconds = Number(match.at(3) ?? 0);
   if (hours > 23 || minutes > 59 || seconds > 60) return null;
   return hours * 3600 + minutes * 60 + seconds + Number(`0.${match.at(4) ?? 0}`);
+}
+function acquisitionSeconds(series: Series): number | null {
+  const datetime = series.acquisitionDateTime?.trim();
+  return timeOfDay(datetime && /^\d{8}\d{4}/.test(datetime) ? datetime.slice(8).replace(/[+-]\d{4}$/, '') : series.acquisitionTime);
+}
+
+/** Whether contrast had been given when a series was taken: before it, after it, or not told. */
+export type ContrastState = 'pre' | 'post' | null;
+// What CT series are called, in Turkish and English, beyond the words above. Read on text folded to plain letters.
+const ctBeforeName = /\bnative?\b|unenhanced|\bplain\b|\bnc\b|\bno[ -]?contrast|oncesi|km'?siz|calcium|kalsiyum/;
+const ctAfterName = /arter|venoz|venous|portal|delayed|\bgec\b|\blate\b|angio|anjiyo|\bcta\b|sonrasi|km'?li/;
+const plainName = (series: Series) => [series.description, series.protocolName].filter(Boolean).join(' ').toLocaleLowerCase('tr')
+  .replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c').replaceAll('_', ' ');
+/** How long after another take a take must begin to be a take of its own, in seconds. */
+const LATER_TAKE_SECONDS = 30;
+
+/**
+ * Whether a CT series was taken before or after contrast, as far as the record tells, strongest evidence first:
+ * 1. what its frames record (Contrast/Bolus Usage);
+ * 2. its name: kontrastsız, native, arterial, portal and the like;
+ * 3. its time against the start of the injection (Contrast/Bolus Start Time);
+ * 4. its place in the study: where the study records contrast and its volumes were taken at more than one time, a
+ *    series of a later take is after contrast. A series of the first take stays untold, since an agent recorded on
+ *    it may only have been copied from the later ones. Scouts and other images that are not volumes are no takes;
+ * 5. an agent or route recorded on a series of a study taken once.
+ * Null when nothing tells: the series is then neither like nor unlike another. `session` is every loaded series; the
+ * series' own study is found in it.
+ */
+export function ctContrast(series: Series, session: readonly Series[]): ContrastState {
+  const own = contrastEvidence(series);
+  if (own.from === 'usage') return own.state === 'uncertain' ? null : own.state;
+  const name = plainName(series);
+  if (beforeContrastName.test(name) || ctBeforeName.test(name)) return 'pre';
+  if (afterContrastName.test(name) || ctAfterName.test(name)) return 'post';
+  const taken = acquisitionSeconds(series), injected = timeOfDay(series.contrastBolusStartTime);
+  if (taken !== null && injected !== null) return taken < injected ? 'pre' : 'post';
+  const study = session.filter(other => other.modality === 'CT' && studyKey(other) === studyKey(series));
+  if (taken !== null && study.some(other => contrastEvidence(other).state === 'post')) {
+    const takes = study.filter(other => other.canReconstruct).flatMap(other => acquisitionSeconds(other) ?? []);
+    if (takes.some(when => taken - when > LATER_TAKE_SECONDS)) return 'post';
+    if (takes.some(when => when - taken > LATER_TAKE_SECONDS)) return null;
+  }
+  return own.from === 'tag' ? 'post' : null;
 }
 function repeatSignature(series: Series): string | null {
   if (!(series.repetitionTime! > 0) || !(series.echoTime! > 0) || series.orientationKnown === false || series.direction.length !== 9) return null;

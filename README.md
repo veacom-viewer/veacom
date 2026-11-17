@@ -90,7 +90,7 @@ Only synthetic fixtures belong in source control, screenshots, CI artifacts, or 
 
 Optional usage collector configuration and all ingest tokens stay outside Git. Packaged viewers send [automatic crash reports](telemetry/TELEMETRY.md#automatic-crash-reports) to a separate public intake. Sending telemetry in release builds needs the owner's approval. Secrets belong in GitHub Secrets or Google Secret Manager.
 
-The [first departmental beta](https://github.com/veacom-viewer/veacom-private/releases/tag/v0.1.0-beta.1) was distributed privately. Future releases belong on the [VEAcom releases page](https://github.com/veacom-viewer/veacom/releases). The beta makes no automatic update requests. See [installers and updates](docs/electron-updates.md) for signing and distribution requirements.
+The [first departmental beta](https://github.com/veacom-viewer/veacom-private/releases/tag/v0.1.0-beta.1) was distributed privately. Future releases belong on the [VEAcom releases page](https://github.com/veacom-viewer/veacom/releases). The beta makes no automatic update requests. The deformity plan's Suggest landmarks downloads its model from the same releases page the first time it is pressed (docs/landmark-model.md). See [installers and updates](docs/electron-updates.md) for signing and distribution requirements.
 
 ## Licence
 

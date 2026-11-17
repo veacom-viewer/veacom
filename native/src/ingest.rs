@@ -73,7 +73,7 @@ fn frame_group(obj: &InMemDicomObject, frame: usize, shared: bool) -> Option<&In
     .get(if shared { 0 } else { frame })
 }
 
-fn frame_value<T>(
+pub(crate) fn frame_value<T>(
     obj: &InMemDicomObject,
     frame: usize,
     sequence: Tag,
@@ -99,7 +99,7 @@ fn first_number(obj: &InMemDicomObject, tag: Tag) -> Option<f64> {
         .filter(|value| value.is_finite())
 }
 
-fn nonempty_text(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
+pub(crate) fn nonempty_text(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
     let value = text(obj, tag);
     (!value.is_empty()).then_some(value)
 }
@@ -126,6 +126,11 @@ fn contrast_usage(obj: &InMemDicomObject, frame: usize, tag: Tag) -> String {
         .or_else(|| frame_group(obj, frame, true).and_then(read))
         .or_else(|| read(obj))
         .unwrap_or_default()
+}
+
+// DICOM PS3.3 C.7.3.1: a paired body part can have frame, image, or series laterality.
+fn laterality_code(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
+    nonempty_text(obj, tag).filter(|code| matches!(code.as_str(), "L" | "R" | "B" | "U"))
 }
 
 fn acquisition_metadata(obj: &InMemDicomObject, frame: usize) -> AcquisitionMetadata {
@@ -189,6 +194,13 @@ fn acquisition_metadata(obj: &InMemDicomObject, frame: usize) -> AcquisitionMeta
         patient_age_text: text(obj, Tag(0x0010, 0x1010)),
         study_time: text(obj, Tag(0x0008, 0x0030)),
         study_description: text(obj, Tag(0x0008, 0x1030)),
+        body_part_examined: text(obj, Tag(0x0018, 0x0015)),
+        laterality: frame_value(obj, frame, Tag(0x0020, 0x9071), |group| {
+            laterality_code(group, Tag(0x0020, 0x9072))
+        })
+        .or_else(|| laterality_code(obj, Tag(0x0020, 0x0062)))
+        .or_else(|| laterality_code(obj, Tag(0x0020, 0x0060)))
+        .unwrap_or_default(),
         institution_name: text(obj, Tag(0x0008, 0x0080)),
         accession_number: text(obj, Tag(0x0008, 0x0050)),
         magnetic_field_strength: number(obj, Tag(0x0018, 0x0087)).filter(|v| *v > 0.),
@@ -730,6 +742,10 @@ const MAX_STACKS: usize = 8;
 /// A series whose images face several ways in handfuls (a localizer, a few MPR snapshots) stays one series in
 /// the scanner's order, as in VEAcom 1.x: split by orientation, its images were listed as series of one or two.
 /// It is split only when every orientation is a stack of its own: at least 5 images, at most 8 stacks.
+/// One case more is split: a single stack with one image facing another way, the reference image a scanner
+/// puts at the head of a reformatted series. Kept in the stack, it would stop the stack being reconstructed.
+/// An image whose orientation differs from the stack's only in its rounding is a slice of the stack and stays
+/// in it (`faces_another_way`).
 fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Frame>)>) {
     let mut alike: BTreeMap<(String, String, String), Vec<GroupKey>> = BTreeMap::new();
     for key in groups.keys() {
@@ -747,6 +763,19 @@ fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Fra
         {
             continue;
         }
+        if let [a, b] = keys.as_slice() {
+            let (image, stack) = if groups[a].1.len() == 1 {
+                (&groups[a].1, &groups[b].1)
+            } else {
+                (&groups[b].1, &groups[a].1)
+            };
+            if image.len() == 1
+                && stack.len() >= MIN_STACK_IMAGES
+                && faces_another_way(&image[0], stack)
+            {
+                continue;
+            }
+        }
         let mut keys = keys.into_iter();
         let first = keys.next().unwrap();
         let (info, mut frames) = groups.remove(&first).unwrap();
@@ -756,6 +785,26 @@ fn merge_scattered_orientations(groups: &mut BTreeMap<GroupKey, (Series, Vec<Fra
         frames.sort_by_key(|f| (f.instance_number, f.source.path.clone(), f.index));
         groups.insert(first, (info, frames));
     }
+}
+
+/// Whether an image faces another way than a stack: both orientations are known, and the image's is none of the
+/// stack's by the tolerance within which the volume geometry takes a stack's images for one orientation. The key
+/// that groups images rounds each orientation, so two images of one stack can fall either side of a rounding
+/// step; kept apart for that alone, a slice would leave its stack and the stack be built without it.
+fn faces_another_way(image: &Frame, stack: &[Frame]) -> bool {
+    let Some(own) = image
+        .geometry
+        .orientation
+        .filter(|orientation| geometry::plane_normal(*orientation).is_some())
+    else {
+        return false;
+    };
+    let mut known = stack
+        .iter()
+        .filter_map(|frame| frame.geometry.orientation)
+        .filter(|orientation| geometry::plane_normal(*orientation).is_some())
+        .peekable();
+    known.peek().is_some() && !known.any(|other| geometry::same_orientation(own, other))
 }
 
 /// The explicit temporal position shared by every frame of a group.
@@ -1069,6 +1118,7 @@ fn frame_metadata(
         voi_lut: None,
         voi_function: None,
         nm: None,
+        projection: None,
     }
 }
 
@@ -1898,6 +1948,18 @@ fn read_frames_budget(
                 None
             }
         });
+        // A projection radiograph measures with the spacing the DICOM rules give (projection.rs), named with it. A frame
+        // placed in the patient by Image Orientation is a cross-section, even of a projection modality (a breast
+        // tomosynthesis or XA 3D slice), and keeps its Pixel Spacing as before.
+        let projection = if orientation.is_some_and(valid_orientation) {
+            None
+        } else {
+            crate::projection::read(&obj, index, &modality)
+        };
+        let pixel_spacing = match &projection {
+            Some(projection) => projection.spacing,
+            None => pixel_spacing,
+        };
         let slice_thickness = frame_value(&obj, index, Tag(0x0028, 0x9110), |v| {
             number(v, Tag(0x0018, 0x0050))
         });
@@ -1982,6 +2044,16 @@ fn read_frames_budget(
         let mut warnings = crate::message::Notes::from(pet_warnings.clone());
         if modality == "PT" && !lut_suv_compatible && suv_factor.is_some() {
             warnings.push(note!("series.suvLutUnits", "SUV conversion is unavailable because Modality LUT output units differ from the PET calibration units"));
+        }
+        if let Some(value) = projection
+            .as_ref()
+            .and_then(|projection| projection.ignored_magnification.clone())
+        {
+            warnings.push(note!(
+                "projection.badMagnification",
+                "Estimated Radiographic Magnification Factor {value} is not a magnification and was left out",
+                value = value
+            ));
         }
         // A gated SPECT's gate is its frame's time: each gate becomes a phase of its own, in the file's order.
         let gate = camera.as_ref().and_then(|camera| camera.gate(index));
@@ -2169,6 +2241,7 @@ fn read_frames_budget(
         metadata.padding_is_nan = padding_is_nan;
         metadata.voi_function = voi_function;
         metadata.nm = camera.as_ref().and_then(|camera| camera.frame(index));
+        metadata.projection = projection;
         metadata.sop_instance_uid = text(&obj, Tag(0x0008, 0x0018));
         metadata.source_frame_number = (frames > 1).then_some(index as u32 + 1);
         if segmentation.is_some() {
@@ -2738,6 +2811,14 @@ fn catalogue(
                     }
                     merge_calibration(group, &info);
                     merge_pet_acquisition(group, &info);
+                    merge_anatomy_value(
+                        &mut group.acquisition.body_part_examined,
+                        &info.acquisition.body_part_examined,
+                    );
+                    merge_anatomy_value(
+                        &mut group.acquisition.laterality,
+                        &info.acquisition.laterality,
+                    );
                     frames.push(frame);
                 }
             }
@@ -4039,6 +4120,29 @@ impl PetAcquisition {
     }
 }
 
+/// The most parts of the body one series is let name, and the longest name kept (CS holds 16 characters).
+const MAX_BODY_PARTS: usize = 8;
+const MAX_BODY_PART_TEXT: usize = 64;
+
+/// A file joins a series: a Body Part Examined it records that the series does not name yet is added. A series whose
+/// first file lacks the value still has it, and one whose files name several parts names them all, as a
+/// multi-valued attribute would (`HEAD\NECK`): a comparison then never takes it for a series of no known part.
+fn merge_anatomy_value(series: &mut String, file: &str) {
+    let part = file.trim();
+    if part.is_empty() || part.len() > MAX_BODY_PART_TEXT {
+        return;
+    }
+    let named = || series.split('\\').filter(|name| !name.is_empty());
+    let known = named().any(|name| name.eq_ignore_ascii_case(part));
+    if known || named().count() >= MAX_BODY_PARTS {
+        return;
+    }
+    if !series.is_empty() {
+        series.push('\\');
+    }
+    series.push_str(part);
+}
+
 /// A file joins `group`: the PET details it records that the series' first file lacks are added.
 fn merge_pet_acquisition(group: &mut Series, info: &Series) {
     if let Some(theirs) = &info.acquisition.pet_acquisition {
@@ -4390,12 +4494,34 @@ mod tests {
         assert_eq!(meta.acquisition_date_time, "20261103101112.5+0100");
     }
     #[test]
+    fn frame_and_image_laterality_take_precedence_over_series_laterality() {
+        let mut obj = metadata_object(2);
+        obj.put_str(Tag(0x0020, 0x0060), VR::CS, "R");
+        assert_eq!(acquisition_metadata(&obj, 0).laterality, "R");
+        obj.put_str(Tag(0x0020, 0x0062), VR::CS, "B");
+        let anatomy = InMemDicomObject::from_element_iter([DataElement::new(
+            Tag(0x0020, 0x9072),
+            VR::CS,
+            "L",
+        )]);
+        obj.put(sequence(
+            Tag(0x5200, 0x9230),
+            vec![
+                InMemDicomObject::from_element_iter([sequence(Tag(0x0020, 0x9071), vec![anatomy])]),
+                InMemDicomObject::new_empty(),
+            ],
+        ));
+        assert_eq!(acquisition_metadata(&obj, 0).laterality, "L");
+        assert_eq!(acquisition_metadata(&obj, 1).laterality, "B");
+    }
+    #[test]
     fn corner_text_fields_are_read_and_the_frame_thickness_wins() {
         let mut obj = metadata_object(2);
         obj.put_str(Tag(0x0010, 0x0030), VR::DA, "19800102");
         obj.put_str(Tag(0x0010, 0x1010), VR::AS, "045Y");
         obj.put_str(Tag(0x0008, 0x0030), VR::TM, "101530");
         obj.put_str(Tag(0x0008, 0x1030), VR::LO, "Beyin MR");
+        obj.put_str(Tag(0x0018, 0x0015), VR::CS, "BRAIN");
         obj.put_str(Tag(0x0008, 0x0080), VR::LO, "Deneme Hastanesi");
         obj.put_str(Tag(0x0008, 0x0050), VR::SH, "LHK000000001");
         obj.put(ds(Tag(0x0018, 0x0087), "1.5"));
@@ -4405,6 +4531,7 @@ mod tests {
         assert_eq!(shared.patient_age_text, "045Y");
         assert_eq!(shared.study_time, "101530");
         assert_eq!(shared.study_description, "Beyin MR");
+        assert_eq!(shared.body_part_examined, "BRAIN");
         assert_eq!(shared.institution_name, "Deneme Hastanesi");
         assert_eq!(shared.accession_number, "LHK000000001");
         assert_eq!(shared.magnetic_field_strength, Some(1.5));
@@ -5064,6 +5191,28 @@ mod tests {
         assert_eq!(first.uptake_seconds, None);
     }
     #[test]
+    fn a_series_keeps_the_body_part_its_first_file_lacks_and_names_every_part_its_files_record() {
+        let mut series = String::new();
+        merge_anatomy_value(&mut series, "");
+        assert_eq!(series, "");
+        merge_anatomy_value(&mut series, "BRAIN");
+        merge_anatomy_value(&mut series, "");
+        merge_anatomy_value(&mut series, " brain ");
+        assert_eq!(series, "BRAIN");
+        // Two parts in one series are both kept: neither is dropped, and the series is not left without one.
+        merge_anatomy_value(&mut series, "NECK");
+        assert_eq!(series, "BRAIN\\NECK");
+        merge_anatomy_value(&mut series, "NECK");
+        assert_eq!(series, "BRAIN\\NECK");
+        // A file cannot make the list grow without bound.
+        merge_anatomy_value(&mut series, &"X".repeat(MAX_BODY_PART_TEXT + 1));
+        for index in 0..20 {
+            merge_anatomy_value(&mut series, &format!("PART{index}"));
+        }
+        assert_eq!(series.split('\\').count(), MAX_BODY_PARTS);
+        assert!(series.starts_with("BRAIN\\NECK\\PART0"));
+    }
+    #[test]
     fn values_already_in_suv_convert_only_from_body_weight() {
         let mut obj = InMemDicomObject::from_element_iter([
             DataElement::new(Tag(0x0054, 0x1001), VR::CS, "GML"),
@@ -5539,6 +5688,133 @@ mod tests {
     }
     fn import_dir(dir: &crate::test_dir::TempDir) -> Imported {
         import(&[dir.path().to_string_lossy().into_owned()]).unwrap()
+    }
+    /// A one-frame DX of its own series, with these spacing and orientation tags (text values).
+    fn radiograph(series: u32, tags: &[(Tag, VR, &str)]) -> InMemDicomObject {
+        let mut obj = metadata_object(1);
+        for tag in [
+            Tag(0x0028, 0x0030),
+            Tag(0x0020, 0x0037),
+            Tag(0x0018, 0x0050),
+            Tag(0x0028, 0x0008),
+        ] {
+            obj.remove_element(tag);
+        }
+        obj.put(DataElement::new(
+            Tag(0x0008, 0x0016),
+            VR::UI,
+            "1.2.840.10008.5.1.4.1.1.1.1",
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0008, 0x0018),
+            VR::UI,
+            format!("2.25.7710.{series}"),
+        ));
+        obj.put(DataElement::new(Tag(0x0008, 0x0060), VR::CS, "DX"));
+        obj.put(DataElement::new(
+            Tag(0x0020, 0x000e),
+            VR::UI,
+            format!("2.25.7711.{series}"),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0020, 0x0011),
+            VR::IS,
+            series.to_string(),
+        ));
+        for (tag, vr, value) in tags {
+            obj.put(DataElement::new(*tag, *vr, *value));
+        }
+        obj
+    }
+    #[test]
+    fn a_radiograph_measures_with_the_spacing_the_dicom_rules_give_and_names_it() {
+        let ips = (Tag(0x0018, 0x1164), VR::DS, "0.33\\0.33");
+        let dir = write_slices(vec![
+            radiograph(
+                1,
+                &[
+                    ips,
+                    (Tag(0x0020, 0x0020), VR::CS, "L\\F"),
+                    (Tag(0x0020, 0x0062), VR::CS, "B"),
+                ],
+            ),
+            radiograph(2, &[ips, (Tag(0x0018, 0x1114), VR::DS, "1.1")]),
+            radiograph(3, &[ips, (Tag(0x0018, 0x1114), VR::DS, "0.5")]),
+            radiograph(
+                4,
+                &[
+                    (Tag(0x0028, 0x0030), VR::DS, "0.3\\0.3"),
+                    ips,
+                    (Tag(0x0028, 0x0a02), VR::CS, "FIDUCIAL"),
+                ],
+            ),
+            radiograph(5, &[]),
+        ]);
+        let imported = import_dir(&dir);
+        let mut sources: Vec<_> = imported.sources.iter().map(|source| &source.info).collect();
+        sources.sort_by_key(|info| info.series_number);
+        let codes = |info: &Series| {
+            info.warnings
+                .iter()
+                .map(|note| note.code)
+                .collect::<Vec<_>>()
+        };
+        let basis = |info: &Series| info.frame_metadata[0].projection.as_ref().map(|p| p.basis);
+        let detector = sources[0];
+        assert!(detector.spacing_known);
+        assert_eq!(&detector.spacing[..2], &[0.33, 0.33]);
+        assert_eq!(basis(detector), Some(crate::projection::Basis::Detector));
+        let projection = detector.frame_metadata[0].projection.as_ref().unwrap();
+        assert_eq!(
+            (
+                projection.patient_orientation.clone(),
+                projection.laterality.as_str()
+            ),
+            (vec!["L".to_owned(), "F".to_owned()], "B")
+        );
+        assert!(!codes(detector).contains(&"series.noPixelSpacing"));
+        let corrected = sources[1];
+        assert_eq!(
+            basis(corrected),
+            Some(crate::projection::Basis::Magnification)
+        );
+        assert!(
+            (corrected.spacing[0] - 0.3).abs() < 1e-12
+                && (corrected.spacing[1] - 0.3).abs() < 1e-12
+        );
+        // A factor below one is no magnification: left out, and said.
+        let ignored = sources[2];
+        assert_eq!(basis(ignored), Some(crate::projection::Basis::Detector));
+        assert!(
+            codes(ignored).contains(&"projection.badMagnification"),
+            "{:?}",
+            codes(ignored)
+        );
+        assert_eq!(
+            basis(sources[3]),
+            Some(crate::projection::Basis::Calibrated)
+        );
+        assert_eq!(&sources[3].spacing[..2], &[0.3, 0.3]);
+        let pixels = sources[4];
+        assert!(!pixels.spacing_known);
+        assert_eq!(basis(pixels), Some(crate::projection::Basis::None));
+        assert!(codes(pixels).contains(&"series.noPixelSpacing"));
+    }
+    #[test]
+    fn a_slice_placed_in_the_patient_is_no_projection_whatever_its_modality() {
+        // A breast tomosynthesis slice: MG, with Image Orientation and Position, Pixel Spacing alone.
+        let mut slice = radiograph(6, &[(Tag(0x0028, 0x0030), VR::DS, "0.1\\0.1")]);
+        slice.put(DataElement::new(Tag(0x0008, 0x0060), VR::CS, "MG"));
+        slice.put(DataElement::new(
+            Tag(0x0020, 0x0037),
+            VR::DS,
+            "1\\0\\0\\0\\1\\0",
+        ));
+        slice.put(DataElement::new(Tag(0x0020, 0x0032), VR::DS, "0\\0\\0"));
+        let imported = import_dir(&write_slices(vec![slice]));
+        let info = &imported.sources[0].info;
+        assert!(info.frame_metadata[0].projection.is_none());
+        assert_eq!(&info.spacing[..2], &[0.1, 0.1]);
     }
     fn phase(source: &SourceSeries) -> &PhaseIdentity {
         source.info.phase.as_ref().expect("series has no phase")
@@ -7000,6 +7276,50 @@ mod tests {
         let imported = import_dir(&write_slices(slices));
         assert_eq!(imported.sources.len(), 1);
         assert_eq!(imported.sources[0].frames.len(), 8);
+    }
+
+    #[test]
+    fn a_stack_with_one_reference_image_facing_another_way_is_the_stack_and_the_image() {
+        let mut slices = vec![facing(1, SAGITTAL, 0.)];
+        slices.extend((2..=7).map(|n| facing(n, AXIAL, n as f64)));
+        let imported = import_dir(&write_slices(slices));
+        let mut sizes: Vec<_> = imported.sources.iter().map(|s| s.frames.len()).collect();
+        sizes.sort();
+        assert_eq!(sizes, [1, 6]);
+        let stack = imported
+            .sources
+            .iter()
+            .find(|s| s.frames.len() == 6)
+            .unwrap();
+        assert!(stack.info.can_reconstruct, "{:?}", stack.info.warnings);
+        // Four images and one facing another way are no stack: they stay one series.
+        let mut few = vec![facing(1, SAGITTAL, 0.)];
+        few.extend((2..=5).map(|n| facing(n, AXIAL, n as f64)));
+        assert_eq!(import_dir(&write_slices(few)).sources.len(), 1);
+    }
+
+    #[test]
+    fn a_slice_whose_orientation_differs_only_in_its_rounding_stays_in_its_stack() {
+        // 0.00006 in one component crosses a rounding step of the key that groups images, yet is one orientation
+        // to the volume geometry: the slice is no reference image, and the stack is built with it.
+        let mut slices: Vec<_> = (1..=5).map(|n| facing(n, AXIAL, n as f64)).collect();
+        slices.push(facing(6, r"1\0.00006\0\0\1\0", 6.));
+        let imported = import_dir(&write_slices(slices));
+        assert_eq!(imported.sources.len(), 1);
+        let stack = &imported.sources[0];
+        assert_eq!(stack.frames.len(), 6);
+        assert!(stack.info.can_reconstruct, "{:?}", stack.info.warnings);
+    }
+
+    #[test]
+    fn an_image_of_no_known_orientation_is_not_taken_for_a_reference_image() {
+        let mut slices: Vec<_> = (1..=5).map(|n| facing(n, AXIAL, n as f64)).collect();
+        let mut unplaced = classic_slice(6, 6.);
+        unplaced.remove_element(Tag(0x0020, 0x0037));
+        slices.push(unplaced);
+        let imported = import_dir(&write_slices(slices));
+        assert_eq!(imported.sources.len(), 1);
+        assert_eq!(imported.sources[0].frames.len(), 6);
     }
 
     #[test]

@@ -52,6 +52,14 @@ pub struct AcquisitionMetadata {
     pub study_time: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub study_description: String,
+    /// Body Part Examined (0018,0015), as stored: a series of another part of the body is never put beside this one
+    /// as its counterpart in another study. Where the files of a series name several parts, all of them, separated
+    /// by backslashes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub body_part_examined: String,
+    /// Distinct DICOM laterality codes recorded across the series, separated by backslashes.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub laterality: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub institution_name: String,
     /// The hospital's number for the study (Accession Number): the protocol number readers look for.
@@ -251,6 +259,9 @@ pub struct FrameMetadata {
     /// A gamma camera frame: which detector took it, in which view, energy window and phase.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nm: Option<NmFrame>,
+    /// A projection radiograph: the spacing measurements use and what it means, the side and orientation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub projection: Option<crate::projection::Projection>,
 }
 
 /// What a gamma camera (NM) frame is, from the vectors its file's Frame Increment Pointer names (PS3.3 C.8.4.8). The

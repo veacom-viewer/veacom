@@ -1,0 +1,17 @@
+/* Labelling a folder, above the deformity plan in the right-hand column (tokens from theme.css). */
+.label-queue-column { width: 440px; max-width: 100%; height: 100%; display: flex; flex-direction: column; min-height: 0; border-left: 1px solid var(--line); background: var(--bg-panel); }
+.label-queue-column > .deformity-panel { flex: 1; height: auto; min-height: 0; border-left: 0; }
+.label-queue { display: flex; flex-direction: column; gap: 6px; padding: 8px 12px 10px; border-bottom: 1px solid var(--line); color: var(--text); font-size: var(--text-sm); }
+.label-queue > header { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.label-queue > header h2 { margin: 0; font-size: var(--text-md); font-weight: 600; color: var(--text-strong); white-space: nowrap; }
+.label-queue-folder { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.label-queue-film { display: flex; align-items: center; gap: 4px; }
+.label-queue-film select { flex: 1; min-width: 0; height: var(--control); }
+.label-queue p { margin: 0; line-height: 1.4; }
+.label-queue-progress { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.label-queue-settings { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 6px 10px; color: var(--text-secondary); }
+.label-queue-note { color: var(--text-tertiary); }
+.label-queue-actions { display: flex; align-items: center; gap: 8px; }
+.label-queue-status { flex: 1; min-width: 0; color: var(--text-secondary); }
+/* The run's settings show which is chosen, as the toolbar's segments do. */
+.label-queue-settings [role=radio][aria-checked=true] { background: var(--accent-solid); border-color: var(--accent-solid); color: var(--on-accent); }
