@@ -73,11 +73,14 @@ async function checkShutdownRollback(manager, connection, directory, study) {
 }
 
 // The engine runs below the priority of the process that started it, so that decoding a study does not hold back the
-// app's first picture (run_below_the_app in native/src/main.rs). On Linux each thread carries a priority of its own:
-// every thread the engine started must have it.
+// app's first picture (run_below_the_app in native/src/main.rs): 10 more on Linux and macOS, where 19 is the most, and
+// the next class down on Windows, where a process above normal starts its children at normal. On Linux each thread
+// carries a priority of its own: every thread the engine started must have it.
 async function checkPriority(pid) {
-  const engine = os.getPriority(pid);
-  assert.ok(engine > os.getPriority(), `the engine runs at priority ${engine}, not below this process's ${os.getPriority()}`);
+  const own = os.getPriority(), engine = os.getPriority(pid);
+  const { PRIORITY_BELOW_NORMAL, PRIORITY_LOW } = os.constants.priority;
+  const expected = process.platform === 'win32' ? (own >= PRIORITY_BELOW_NORMAL ? PRIORITY_LOW : PRIORITY_BELOW_NORMAL) : Math.min(own + 10, PRIORITY_LOW);
+  assert.equal(engine, expected, `the engine runs at priority ${engine}, not at ${expected} under this process's ${own}`);
   if (process.platform !== 'linux') return;
   const threads = await fs.readdir(`/proc/${pid}/task`);
   // Field 19 of a thread's stat is its nice value; the name before it may hold spaces, so count from its closing bracket.
