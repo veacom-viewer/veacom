@@ -10,6 +10,7 @@ const { promisify } = require('node:util');
 const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 const exec = promisify(execFile);
 const options = Object.fromEntries(process.argv.slice(2).map(argument => {
   const equal = argument.indexOf('='); return [argument.slice(2, equal), argument.slice(equal + 1)];
@@ -137,10 +138,10 @@ async function main() {
       assert.equal(await scrollTool.getAttribute('aria-pressed'), 'true');
       await settle();
     }
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3);
     await snapshot('ct-mpr');
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 1);
     await closeImage();
     await snapshot('ct-closed');

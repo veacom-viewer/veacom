@@ -14,6 +14,7 @@ const { temporaryExportFolder } = require('./lib/export-folder.cjs');
 const { prepareCounter, readCounts } = require('./lib/io-count.cjs');
 const { compareRounds, median } = require('./lib/open-speed.cjs');
 const { decodePng, encodePng } = require('./lib/png.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 
 const [directory, repetitions = '7'] = process.argv.slice(2);
 assert(directory && process.env.BASE_APP && process.env.HEAD_APP, 'Pass output directory and set BASE_APP and HEAD_APP');
@@ -42,7 +43,7 @@ function generate() {
 }
 
 async function measureWindow(page) {
-  await page.getByTestId('tool-mpr').evaluate(button => button.click());
+  await toggleMpr(page);
   await page.waitForFunction(() => document.querySelectorAll('canvas[data-mode="mpr"]').length === 3);
   const times = [];
   let value;
