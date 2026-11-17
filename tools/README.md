@@ -162,7 +162,7 @@ With both engines and web apps built and Electron installed, run:
 BASE_APP=/path/to/beta2 HEAD_APP=/path/to/candidate node tools/check-beta-performance.cjs /tmp/beta-desktop 7
 ```
 
-The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
+The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, a PET/CT opened and fused, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles. Beta 2 fuses the PET/CT as it opens and the candidate when Fusion is pressed, so the fusion time is shown but not judged.
 
 The PNG is measured twice, once as a direct selection and once through **Open files**. The latter substitutes a native picker response after 750 ms in both builds and times from confirmation. A cancelled picker or a DICOM selection immediately closes its unused decoder.
 
@@ -172,11 +172,11 @@ The PNG is measured twice, once as a direct selection and once through **Open fi
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
+- The study opens on its first image, unfused, with no recorded action, and Fusion lays the corrected PET over its CT in one press. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
 - A click on the MIP sends the linked panes to a lesion.
 - A pane moved and kept changes how the next PET/CT opens.
 - Undo restores the screen from before, and can be kept too.
-- Forget brings back VEAcom's own screen.
+- Forget brings back VEAcom's own opening: the first image, unfused.
 - A PET opened by hand is inverted grey, with its window in SUV.
 
 CI's desktop job, the Windows job and `tools/verify.sh` run it.
