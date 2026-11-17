@@ -1036,12 +1036,21 @@ fn run_below_the_app() {
         libc::nice(10);
     }
     #[cfg(windows)]
-    // SAFETY: the pseudo-handle of this process is always valid, and the call only changes its scheduling priority.
+    // SAFETY: the pseudo-handle of this process is always valid, and the calls only read and change its scheduling
+    // priority.
     unsafe {
         use windows_sys::Win32::System::Threading::{
-            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, SetPriorityClass,
+            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass, IDLE_PRIORITY_CLASS,
+            NORMAL_PRIORITY_CLASS, SetPriorityClass,
         };
-        SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
+        // One class below the one the engine was started in. That is the app's class at normal and below; under an
+        // app above normal Windows starts the engine at normal, which is below the app already.
+        let lower = match GetPriorityClass(GetCurrentProcess()) {
+            NORMAL_PRIORITY_CLASS => BELOW_NORMAL_PRIORITY_CLASS,
+            BELOW_NORMAL_PRIORITY_CLASS => IDLE_PRIORITY_CLASS,
+            _ => return,
+        };
+        SetPriorityClass(GetCurrentProcess(), lower);
     }
 }
 
