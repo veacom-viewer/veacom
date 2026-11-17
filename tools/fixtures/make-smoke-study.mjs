@@ -9,12 +9,13 @@ import path from 'node:path';
 const [destination, ...options] = process.argv.slice(2);
 const large = options.includes('--pipe-volume');
 const video = options.includes('--video-ct');
+const manySmall = options.includes('--many-small');
 const flag = options.indexOf('--modality'), modality = flag >= 0 ? options[flag + 1] : 'CT';
 const numbered = options.find(arg => arg.startsWith('--series-index='));
 const index = numbered ? Number(numbered.slice('--series-index='.length)) : 1;
 if (!destination || !['CT', 'MR'].includes(modality) || !Number.isInteger(index) || index < 1 || index > 99
-    || (video && (large || modality !== 'CT')) || options.length !== (flag >= 0 ? 2 : 0) + Number(large) + Number(video) + Number(Boolean(numbered))) {
-  throw new Error('Usage: node tools/fixtures/make-smoke-study.mjs <new-directory> [--modality CT|MR] [--series-index=N] [--pipe-volume|--video-ct]');
+    || (manySmall && (large || video || numbered)) || (video && (large || modality !== 'CT')) || options.length !== (flag >= 0 ? 2 : 0) + Number(large) + Number(video) + Number(Boolean(numbered)) + Number(manySmall)) {
+  throw new Error('Usage: node tools/fixtures/make-smoke-study.mjs <new-directory> [--modality CT|MR] [--series-index=N] [--pipe-volume|--video-ct|--many-small]');
 }
 const mr = modality === 'MR';
 await mkdir(destination); // Refuse to replace an existing study.
@@ -23,7 +24,7 @@ await mkdir(series);
 // The MR's UIDs sit under their own branch, so both studies can be open together.
 const root = `2.25.302617644913925066835652647005517224101${mr ? '.10' : ''}`;
 const sopClass = mr ? '1.2.840.10008.5.1.4.1.1.4' : '1.2.840.10008.5.1.4.1.1.2', transferSyntax = '1.2.840.10008.1.2.1';
-const size = large ? 512 : video ? 256 : 128, slices = large ? 1000 : numbered ? 40 : 100, hashes = {};
+const size = manySmall ? 16 : large ? 512 : video ? 256 : 128, slices = manySmall ? 1024 : large ? 1000 : numbered ? 40 : 100, hashes = {};
 let seed = 0x8192abcd;
 const volumeHash = createHash('sha256');
 for (let z = 0; z < slices; z++) {

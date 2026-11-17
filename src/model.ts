@@ -26,6 +26,37 @@ export interface FrameMetadata {
   voiFunction?: VoiFunction;
   /** A gamma camera frame: which detector took it, in which view, energy window and phase. */
   nm?: NmFrame;
+  /** A projection radiograph: the spacing measurements use and what it means, its side and orientation. */
+  projection?: Projection;
+  /** A ball or ruler calibration the reader set on this film alone (radiograph.ts withFilmCalibrations), and its scale. */
+  measurementScale?: number; manualCalibration?: ManualCalibration;
+}
+/** A scale the reader set from a known object on a film (the planning panel's ball or ruler). */
+export interface ManualCalibration {
+  method: 'ball' | 'ruler';
+  /** The object's size in mm: the ball's diameter or the ruler's length between the two marks. */
+  knownMm: number;
+  /** The film's measurement scale it gave (mm per coordinate unit). */
+  scale: number;
+  /** The reader confirmed the ball lay at the bones' depth. */
+  depthConfirmed?: boolean;
+}
+/** What the engine read of a projection radiograph's calibration, side and orientation (native/src/projection.rs). */
+export interface Projection {
+  /** What the spacing measurements use stands for (PS3.3 10.7.1.1): Pixel Spacing that was corrected or calibrated,
+   * Imager Pixel Spacing divided by the Estimated Radiographic Magnification Factor, Imager Pixel Spacing at the
+   * detector, Pixel Spacing that does not say, or none. */
+  basis: 'calibrated' | 'magnification' | 'detector' | 'scanned' | 'unstated' | 'none';
+  /** Row then column spacing in mm that measurements use. */
+  spacing?: [number, number];
+  pixelSpacing?: [number, number]; imagerPixelSpacing?: [number, number]; nominalScannedPixelSpacing?: [number, number];
+  magnification?: number; calibrationType?: string; calibrationDescription?: string;
+  sourceDetector?: number; sourcePatient?: number;
+  /** Patient Orientation (0020,0020): the patient directions of the rows and the columns, such as L and F. */
+  patientOrientation?: [string, string];
+  /** R, L, B (both) or U (unpaired), from the frame, the image or the series. */
+  laterality?: string;
+  bodyPart?: string; viewPosition?: string;
 }
 /** What a gamma camera (NM) frame is, from its file's frame vectors. The view (ANT, POST, RAO, LAO, RPO, LPO, R LAT,
  * L LAT) comes from the detector's View Code Sequence; detector, energy window and phase are given only where the file
@@ -77,10 +108,14 @@ export interface Series {
   paddingRange?: [number, number];
   paddingIsNaN?: boolean;
   measurementScale?: number;
+  /** The ball or ruler behind measurementScale, on a film calibrated by itself (FrameMetadata, sourceFrameSeries). */
+  manualCalibration?: ManualCalibration;
   measurementUnits?: 'auto' | 'px';
   /** The SUV the reader chose for PET values (Units panel); body weight when unset. */
   suvNormalization?: SuvNormalization;
   sourceFramesOnly?: boolean;
+  /** From a projection frame (sourceFrameSeries); FrameMetadata carries it per frame. */
+  projection?: Projection;
   /** A phase of a series the engine parted, in order; one gate of a gated SPECT carries `gate` (kind `timeSlot`). */
   phase?: { kind: string; value: string; label: string; order: number; gate?: Gate };
   patientAge?: number; patientSex?: string;
@@ -94,6 +129,9 @@ export interface Series {
   /** For the image corners, as stored: Patient's Birth Date, Patient's Age (045Y), Study Time and so on. */
   patientBirthDate?: string; patientAgeText?: string; studyTime?: string; studyDescription?: string;
   institutionName?: string; accessionNumber?: string; magneticFieldStrength?: number; sliceThickness?: number;
+  /** Body Part Examined (0018,0015), as stored; every part the series' files record, separated by backslashes. */
+  bodyPartExamined?: string;
+  laterality?: string;
   /** A PET's tracer, injection and patient, for its acquisition panel (imaging/petAcquisition.ts). */
   petAcquisition?: PetAcquisition;
   /** Blood glucose in mmol/l the reader typed for this PET's study (imaging/glucose.ts): a display setting, as
@@ -268,6 +306,19 @@ export type BridgeFeature =
   | 'updates'
   /** Sending feedback to the team. */
   | 'feedback';
+/** A film of a folder being labelled, with the plan file beside it: its text, null when there is none, or `unreadable`. */
+export interface LabelFilm { name: string; plan: string | null; unreadable?: true }
+/** A folder chosen for labelling: `writes` says where Save and next puts a plan, beside its film or as a download (a
+ * browser that cannot write into a folder). */
+export interface LabelFolder { token: string; folder: string; films: LabelFilm[]; writes: 'beside' | 'download' }
+export interface LabelFolderBridge {
+  open(): Promise<LabelFolder | null>;
+  /** Import capabilities for one film, for importSelected. */
+  film(token: string, index: number): Promise<string[]>;
+  /** Writes a film's plan, and gives the file's name. */
+  write(token: string, index: number, text: string): Promise<string>;
+}
+
 export interface DesktopBridge {
   /** The browser build (viewer.veacom.app, src/web): no desktop window around the page, files chosen in the page. */
   web?: boolean;
@@ -313,6 +364,14 @@ export interface DesktopBridge {
   importFiles: (files: File[]) => Promise<string[]>;
   openExternal: (url: string) => Promise<void>;
   saveFile: (suggestedName: string, data: ArrayBuffer | string) => Promise<string | null>;
+  /** One of the landmark model's graphs for the deformity kit's suggestions (docs/landmark-model.md), fetched the first
+   * time and kept: the desktop's main process downloads it from the release, the browser from its own site. */
+  landmarkModel?: (part: 'stageA' | 'stageB', onProgress?: (received: number) => void) => Promise<ArrayBuffer>;
+  /** Stops the model's download under way. */
+  cancelLandmarkModel?: () => Promise<void>;
+  /** A folder of films to label one after another (docs/deformity-planning.md, "Labelling a folder"): chosen in the
+   * system's or the browser's own dialog; a film is named by the folder's token and its place in the list. */
+  labelFolder?: LabelFolderBridge;
   exportDicom: (seriesId: string | string[], options: { anonymize: boolean; full?: boolean; dicomdir: boolean; decompress?: boolean; root?: boolean; here?: boolean; frame?: number; zip?: boolean; smallest?: boolean; engineGeneration?: number }) => Promise<ExportResult | null>;
   /** In-app feedback to the team (veacom.app), sent only once the user confirms it in main's own dialog. `reason` is the service's or main's short error code. */
   sendFeedback?: (payload: { kind: 'problem' | 'suggestion'; message: string; email: string; includeSystem: boolean }) => Promise<{ ok: boolean; cancelled?: boolean; status?: number; reason?: string }>;

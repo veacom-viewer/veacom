@@ -125,6 +125,54 @@ export const FUSION: Arrangement = {
   panes: [{ role: 'ct', show: 'fused', over: 'overlay' }],
 };
 
+/** Comparison with the same patient's earlier study, asked for from Layout: the earlier study on the left and this one
+ * on the right. The series in the active pane stays as the reader has it; beside it comes its counterpart in the
+ * earlier study (src/arrangements/counterpart.ts), at the same level and linked there, so the two page, zoom and pan
+ * together. The two studies share no frame of reference: the level is a first guess the reader corrects with the link
+ * button. */
+export const COMPARE_WITH_PRIOR: Arrangement = {
+  id: 'compare-prior', when: 'screen', name: 'arrangement.compare',
+  roles: { picked: {}, prior: { of: 'picked', study: 'prior', alike: true } },
+  grid: [1, 2],
+  panes: [{ role: 'prior' }, { role: 'picked', asShown: true }],
+  link: 'level',
+  view: 'shared',
+  notice: { key: 'arrangement.comparePrior.notice' },
+};
+
+/** The same screen asked for while the active pane shows the earlier study: its counterpart in the later one comes
+ * on the right. */
+export const COMPARE_WITH_LATER: Arrangement = {
+  ...COMPARE_WITH_PRIOR,
+  id: 'compare-later',
+  roles: { picked: {}, later: { of: 'picked', study: 'later', alike: true } },
+  panes: [{ role: 'picked', asShown: true }, { role: 'later' }],
+  notice: { key: 'arrangement.compareLater.notice' },
+};
+
+/** No earlier study has a counterpart of the series: that side stays empty for the reader to fill. VEAcom never puts
+ * a series of another kind there. `other` only tells that an earlier study of the patient is loaded. */
+const COMPARE_WITH_PRIOR_EMPTY: Arrangement = {
+  ...COMPARE_WITH_PRIOR,
+  id: 'compare-prior-empty',
+  roles: { picked: {}, other: { of: 'picked', study: 'prior' } },
+  lead: 1,
+  panes: [{ role: 'picked', asShown: true }],
+  notice: { key: 'arrangement.comparePrior.none' },
+};
+/** The same from the earlier study: the later study's side, on the right, stays empty. */
+const COMPARE_WITH_LATER_EMPTY: Arrangement = {
+  ...COMPARE_WITH_PRIOR,
+  id: 'compare-later-empty',
+  roles: { picked: {}, other: { of: 'picked', study: 'later' } },
+  panes: [{ role: 'picked', asShown: true }],
+  notice: { key: 'arrangement.compareLater.none' },
+};
+
+/** The comparison screen in Layout: with the earlier study if there is one, else with the later; a counterpart
+ * beside the series where the other study has one, else an empty side. */
+export const COMPARISONS: readonly Arrangement[] = [COMPARE_WITH_PRIOR, COMPARE_WITH_PRIOR_EMPTY, COMPARE_WITH_LATER, COMPARE_WITH_LATER_EMPTY];
+
 /** The first arrangement matching the trigger and all required roles applies. */
 export const BUILTIN_ARRANGEMENTS: readonly Arrangement[] = [PET_FOLLOW_UP, PET_CT, WHOLE_BODY, SPECT_CT, DWI_ADC, ADC_DWI, SIDE_BY_SIDE, FUSION];
 

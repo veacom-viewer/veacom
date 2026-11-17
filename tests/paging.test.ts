@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Series } from '../src/model';
-import { openingSlice, pageStep, pagesBackwards } from '../src/imaging/paging';
+import { assessmentRoiLocation } from '../src/ui/assessmentRoi';
+import { translate, type Translator } from '../src/i18n';
+import { measuredSlice, numbersBackwards, openingSlice, pageStep, pagesBackwards, shownSlice } from '../src/imaging/paging';
 
 // Synthetic stacks with no frame metadata: the volume geometry alone places the slices.
 const stack = (direction: number[], slices = 20): Series => ({
@@ -43,5 +45,47 @@ describe('VEAcom 1.x paging order', () => {
   it('pages an axial reconstruction of a feet-up volume from the top down too', () => {
     assert.equal(pagesBackwards(stack([1, 0, 0, 0, 1, 0, 0, 0, 1]), { plane: 'axial', mode: 'mpr' }), true);
     assert.equal(pagesBackwards(stack([1, 0, 0, 0, 1, 0, 0, 0, 1]), { plane: 'coronal', mode: 'mpr' }), false);
+  });
+});
+
+describe('the slice number shown', () => {
+  // A stack stored from the feet up is paged from its last index down: 4, 3, 2 …
+  const feetUp = stack([1, 0, 0, 0, 1, 0, 0, 0, 1], 5);
+  const numbered = (numbers: number[]): Series => ({ ...feetUp,
+    frameMetadata: numbers.map((instanceNumber, index) => ({ origin: [0, 0, index * 2], direction: feetUp.direction, spacing: feetUp.spacing, instanceNumber })) });
+  const shown = (series: Series) => [4, 3, 2, 1, 0].map(slice => shownSlice(series, source, slice, 5));
+
+  it('counts in paging order where the images carry no numbers of their own', () => {
+    assert.equal(numbersBackwards(feetUp, source), true);
+    assert.deepEqual(shown(feetUp), [1, 2, 3, 4, 5]);
+  });
+  it('is the image\'s own number where the scanner numbered the stack 1 to N, though it falls as the reader pages down', () => {
+    const fromTheFeet = numbered([1, 2, 3, 4, 5]);
+    assert.equal(numbersBackwards(fromTheFeet, source), false);
+    assert.deepEqual(shown(fromTheFeet), [5, 4, 3, 2, 1]);
+    const fromTheHead = numbered([5, 4, 3, 2, 1]);
+    assert.equal(numbersBackwards(fromTheHead, source), true);
+    assert.equal(measuredSlice(fromTheHead, { plane: 'axial', slice: 0 }, 0), 5);
+    assert.equal(measuredSlice(fromTheFeet, { plane: 'axial', slice: 0 }, 0), 1);
+    assert.deepEqual(shown(fromTheHead), [1, 2, 3, 4, 5]);
+  });
+  it('counts in paging order where the numbers are not 1 to N in order', () => {
+    for (const numbers of [[2, 3, 4, 5, 6], [1, 3, 2, 4, 5], [7, 7, 7, 7, 7], [1, 2, 3, 4]]) assert.deepEqual(shown(numbered(numbers)), [1, 2, 3, 4, 5], String(numbers));
+  });
+  it('labels a source ROI with the displayed slice, the distinct DICOM instance and its frame', () => {
+    const t: Translator = (key, params) => translate('en', key, params);
+    const drawn = { mode: 'source', plane: 'axial', slice: 0 } as const;
+    const irregular = numbered([10, 20, 30, 40, 50]);
+    irregular.frameMetadata![0].sourceFrameNumber = 2;
+    assert.equal(assessmentRoiLocation(irregular, drawn, 0, t), 'Image 5 · Instance Number 10 · frame 2');
+    assert.equal(assessmentRoiLocation(numbered([1, 2, 3, 4, 5]), drawn, 0, t), 'Image 1');
+    assert.equal(assessmentRoiLocation(feetUp, drawn, 0, t), 'Image 5');
+    assert.equal(assessmentRoiLocation(feetUp, drawn, null, t), t('assessment.sourceUnavailable'));
+  });
+  it('counts a reconstructed plane in paging order, whatever the acquired images are numbered', () => {
+    const fromTheFeet = numbered([1, 2, 3, 4, 5]);
+    assert.equal(numbersBackwards(fromTheFeet, { plane: 'axial', mode: 'mpr' }), true);
+    assert.equal(shownSlice(fromTheFeet, { plane: 'axial', mode: 'mpr' }, 4, 5), 1);
+    assert.deepEqual([0, 4].map(slice => measuredSlice(fromTheFeet, { plane: 'axial', slice })), [5, 1]);
   });
 });
