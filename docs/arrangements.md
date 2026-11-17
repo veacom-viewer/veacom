@@ -31,7 +31,8 @@ PET/CT opens in one axial pane with PET uptake over the matching CT. Layout offe
 - `imageType`: a value of Image Type (0008,0008), such as `WHOLE BODY`;
 - `views`: gamma camera views the series holds a frame in, each of them, such as `["ANT", "POST"]`;
 - `of`: another role, or the series the reader picked. That series is the role's anchor;
-- `study`: `same` as the anchor (the default), or `prior`, the same patient's most recent earlier study, found among every loaded series;
+- `study`: `same` as the anchor (the default); `prior`, the same patient's most recent earlier study; or `later`, the next later one. Other studies are found among every loaded series;
+- `alike`: `true` for the anchor's counterpart, a series of the anchor's own kind ([the comparison screen](#the-comparison-screen));
 - `frame`: `same`, meaning the series can be drawn with its anchor (one frame of reference, known orientation, reconstructable);
 - `prefer`: ranking keys, compared in order: `ungated` (not one gate of a gated SPECT), `corrected` (not NAC), `sameGrid` (slice count and spacing of the anchor), `overlap` (z-range shared with the anchor), `slices`, `highB`.
 
@@ -39,12 +40,15 @@ A required role that finds no series means no match. An anchor takes the best se
 
 **Panes** give each role a `plane` (`axial`, `coronal`, `sagittal`; the acquired plane shows the series' own slices) and a `show`: `plain`; `fused` (this pane's series with `over` drawn on it); or `mip` (a whole-volume projection). For gamma camera frames, `view` opens the pane on the frame taken in that view (`ANT`, `POST`, `RAO`, `LAO`, `RPO`, `LPO`, `R LAT`, `L LAT`). The `display` sets `palette`, `invert` and a `window` in the series' own quantity. A unit the series lacks is skipped: a PET without SUV keeps its own window, and nothing on it is called SUV. `link` is `crosshair` (linking on: positions and the crosshair follow across one frame of reference) or `none` (linking off: each pane pages on its own); without `link` the linking stays as it is. Undo puts the linking back. `scale: "shared"` keeps the arrangement's PETs on one SUV scale: windowing one gives the others the same SUV range, converted through each PET's own values per SUV, and inverting or recolouring one does the same to them. The PET follow-up screen uses it, since response is read on one fixed scale. `notice` is the message key of the pane notice.
 
+The comparison screen adds four words. A pane `asShown` keeps the series of the active pane as the reader has it. `link: "level"` is for two studies, which share no frame of reference. `view: "shared"` makes the panes zoom and pan together. `lead` leaves that many panes empty before the listed ones.
+
 ## Where arrangements apply
 
 | Trigger | Arrangement | Behaviour kept from today |
 |---|---|---|
 | A study opens (`importStudies`) | Kept PET follow-up, then `pet-ct` | A matching PET/CT opens in 1×1 fusion unless the reader has kept a different layout. Other studies open their first image in the active pane. |
 | Nuclear medicine screen beside Fusion | PET follow-up, four-pane PET/CT, whole body or SPECT/CT | The reader’s active patient and study supply the screen. Only a follow-up prior is drawn from the wider session and must match patient and tracer. [PET quantification](pet-quantification.md) |
+| **Compare with the earlier study** in Layout | `compare-prior`, `compare-later` and their `-empty` forms | Offered when another study of the same patient is loaded, for the series in the active pane. Not offered between two PET studies or in the three-plane MPR. [The comparison screen](#the-comparison-screen) |
 | One series picked into a pane (`selectSeries`, `dropSeries`) | `dwi-adc`, `adc-dwi` | Only with exactly two panes and no three-plane MPR. The partner goes into the other pane, linking turns on, and the pane says "ADC added to this pane" with Undo. |
 | Several series picked together (`openSideBySide`) | `side-by-side` | `grid` by count: 2 → 1×2, 3 → 1×3, 4 → 2×2, 5–6 → 2×3. The first picked goes first, at most six, with no notice. |
 | The fusion button (`startFusion`, `fuseInActive`) | `fusion` | Its `overlay` role (a PET or a reconstructed SPECT) and `ct` role replace `bestPartner`'s callback and scoring. They give the same ranking, and `tests/fusion.test.ts` stays as it is. For a CT, `ungated` picks a summed SPECT over its gates; a gate shown in the pane is fused itself. |
@@ -64,6 +68,43 @@ Keep derives a variant from the current panes. It records the order and each pan
 Undo of an automatic layout offers **Keep this** to turn automatic opening off. Undo of a requested screen restores the previous view. The reading screen remains available on request.
 
 Variants are stored in `localStorage` under `veacom:arrangements:v1` (per user, per computer) and validated on read, as `readSettings` does. The next matching study opens with the variant; its notice reads "Your PET/CT layout" and still offers Undo. The display panel's Workspace section lists what was kept, and **Forget kept layouts** brings VEAcom's own arrangements back.
+
+## The comparison screen
+
+Layout offers **Compare with the earlier study** when another study of the same patient is loaded. The earlier study goes on the left and the later one on the right.
+
+```json
+{
+  "id": "compare-prior", "name": "arrangement.compare", "when": "screen",
+  "roles": {
+    "picked": {},
+    "prior": { "of": "picked", "study": "prior", "alike": true }
+  },
+  "grid": [1, 2],
+  "panes": [{ "role": "prior" }, { "role": "picked", "asShown": true }],
+  "link": "level",
+  "view": "shared",
+  "notice": { "key": "arrangement.comparePrior.notice" }
+}
+```
+
+- **The reader's pane stays.** The series in the active pane goes to the right with its slice, window, zoom, pan and fusion.
+- **The counterpart.** The left pane takes that series' counterpart in the most recent earlier study that has one (`src/arrangements/counterpart.ts`). A counterpart is of the same kind, never merely the nearest series:
+  - always the same modality, both volumes or neither, and the same acquired plane;
+  - never another part of the body, where both series record Body Part Examined (0018,0015). HEAD and BRAIN, CHEST and CHESTABDPELVIS, SPINE and LSPINE, and KNEE LEFT and KNEE are one part. A name that merely begins or ends with another is not: HIP is not HIPPOCAMPUS. A part one of the two does not record decides nothing. The engine keeps every part the files of a series record, so a series whose first file lacks the value still has it;
+  - MR: the same likely sequence, so T1 with contrast is not T1. Names do not matter: "AX T2 TSE" pairs with "t2_tse_tra". A series whose sequence cannot be told pairs only with one of the same description;
+  - CT: ranked by the same contrast state, the same description, the same stored window (a lung reconstruction with a lung reconstruction), the nearer slice thickness, then the most slices. Whether a series was taken before or after contrast is read, strongest evidence first, from what its frames record, from its name (kontrastsız, native, arterial, portal), from its time against the start of the injection, and from its place in the study: where the study records contrast and was taken at more than one time, a series of a later take is after contrast. An agent recorded on a series counts only last, since some scanners copy it onto every series. Where the state of one of the two is not told, contrast counts neither for nor against the pair;
+  - any other modality: only a series of the same description.
+- **No counterpart.** The earlier study's side stays empty and the note says so (`compare-prior-empty`). VEAcom puts no series of another kind there.
+- **From the earlier study.** With the earlier study in the active pane, the entry reads **Compare with the later study**, and the later study's counterpart comes on the right (`compare-later`).
+- **Level and linking.** The counterpart opens as far through its stack as the reader's pane is through its own, going the same way in the patient. The two are linked there, as the link button links panes by hand, and page by the distance gone. The level is a first guess, not a registration, and the note says to check it. To correct it, turn linking off, page one pane to the matching level and turn linking on again.
+- **The same kind of view.** Beside a reconstructed plane the counterpart opens in that plane, with its tilt and slab; beside a MIP, as a MIP at the same turn.
+- **One view.** While linked, the two panes zoom and pan together. CT beside CT takes one window, since Hounsfield units are one scale. An MR keeps its own window on each side.
+- **A series put in one pane** changes that pane only. A series of the study the pane showed opens where the reader was; any other opens level with the other pane. Either way it is linked to the other pane there. The other pane offers that series' counterpart, named as the series list names it ("Open the earlier AX T2 TSE here?"), for five seconds, and one click opens it. The DWI/ADC pairing does not apply in this screen.
+- **Another patient.** A series of another patient put in a pane is shown and linked like any other, and a warning says that the patient details in the two panes differ ([design guidelines](design-guidelines.md), "Patient safety"): an ID, a name or a birth date that both series record is not the same. The warning has its own bar, so no other message takes its place: it stays until the reader dismisses it or the panes show one patient again. A field one of the two does not record brings no warning: a missing ID beside a matching name is not a mismatch.
+- **Ctrl+→ and Ctrl+←** (⌘ on macOS) step both panes to the next and previous series that has a counterpart in the other pane's study, each pane staying at its level. Outside this screen they open the next and previous series of the active pane's study.
+- **PET.** Two studies that both hold a PET are compared on the PET follow-up screen, which keeps this study on the left; the comparison is not offered between them. A PET/CT is compared with an earlier CT alone.
+- **Not kept.** The screen starts from what the reader shows, so there is nothing to keep.
 
 ## The two new primitives
 
@@ -151,4 +192,6 @@ Known limits:
 - The gates of a gated SPECT do not play as a cine at the acquisition rate: cine pages slices, not series. Paging from gate to gate is done by picking each gate.
 - SUV 0–5 suits FDG. Readers of other tracers widen it with the presets, and Keep remembers it.
 - Outside the PET's field of view the image stays black, as no data is drawn today, even in an inverted pane.
+- The comparison's level is a share of the way through each stack. Two studies that cover different lengths of the body open at different levels until the reader links them again.
+- Body Part Examined is compared as text. Two names of one part outside the head and trunk, such as EXTREMITY and KNEE, do not match, and the side stays empty. Laterality is not compared: a left knee can be put beside a right knee.
 - Nothing here has been tried with real PET or gamma camera data.

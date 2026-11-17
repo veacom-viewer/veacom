@@ -22,6 +22,7 @@ function groups(t: Translator): { title: MessageKey; rows: Row[] }[] {
     ] },
     { title: 'help.group.navigate', rows: [
       [t('help.slices'), [['↑'], ['↓'], [t('help.wheelKey')]]], [t('help.pageSlices'), [['PgUp'], ['PgDn']]],
+      [t('help.series'), [[mod, '←'], [mod, '→']]],
       [t('help.zoomKeys'), [['+'], ['−']]], [t('help.zoomWheel'), [[mod, t('help.wheelKey')]]],
       [t('help.panKeys'), [[shift, t('help.arrowKeys')]]], [t('help.zoomPan'), [[t('help.zoomPanKeys')]]],
       [t('help.resetView'), [[t('help.doubleClickKey')]]], [t('help.mpr'), [['M']]], [t('help.fusionDrag'), [[mod, t('help.dragKey')]]], [t('help.quickMenu'), [[t('help.spaceKey')]]],

@@ -186,6 +186,32 @@ node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
 
+## Comparison with an earlier study
+
+`check-comparison.cjs` covers [the comparison screen](../docs/arrangements.md#the-comparison-screen). It opens the
+synthetic patient from `fixtures/make-comparison-studies.mjs`: an earlier and a current brain MR and an earlier and a
+current chest CT, their dates interleaved. The two MRs name their series differently and record the body part as
+BRAIN and HEAD; the current MR has a FLAIR the earlier one lacks; each CT has a soft-tissue and a lung reconstruction.
+
+- Layout puts the earlier study's T2 on the left of the current T2, level with it, and the reader's pane keeps its view.
+- The two page, zoom and pan together. Each MR keeps its window; CT beside CT takes one.
+- A series picked into one pane changes that pane only; the other offers its counterpart, and an offer left alone clears itself.
+- Ctrl+Left and Ctrl+Right step both panes pair by pair, past the FLAIR.
+- The FLAIR leaves the earlier study's side empty.
+- A coronal reconstruction is compared in the same plane, and the earlier study with the later one on the right.
+- Another patient's series (the follow-up's earlier CT) put in a pane brings a warning, which goes when the panes show one patient again.
+
+A second launch opens the synthetic PET/CT follow-up. A fused PET/CT compared with the earlier CT alone keeps its
+fusion. With the earlier PET loaded too, Layout offers the PET follow-up and not the comparison.
+
+CI's desktop job, the Windows job and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-comparison-studies.mjs /tmp/comparison-studies
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/check-comparison.cjs /tmp/comparison-studies /tmp/pet-followup test-results/comparison
+```
+
 ## PET validation against the vendor workstation
 
 `pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET
