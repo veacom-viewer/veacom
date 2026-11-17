@@ -161,6 +161,26 @@ export function withStudyGlucose(records: PetStudyRecords, study: string, glucos
   return withStudy({ ...records }, study, { ...records[study]?.series }, glucose ?? undefined, now, info, limit);
 }
 
+/** The records with what was kept for one series at `from` moved to `to`, with its study's typed glucose, and the
+ * patient and date of `info` set; what `to` already keeps stays. */
+export function withSeriesMoved(records: PetStudyRecords, from: { study: string; series: string }, to: { study: string; series: string },
+  now: number, info: { patient?: string; date?: string } = {}): PetStudyRecords {
+  const earlier = Object.hasOwn(records, from.study) ? records[from.study] : undefined;
+  if (!earlier) return records;
+  let next = records;
+  const record = Object.hasOwn(earlier.series, from.series) ? earlier.series[from.series] : undefined;
+  const taken = Object.hasOwn(records, to.study) && Object.hasOwn(records[to.study].series, to.series);
+  if (record && !taken) {
+    next = withPetSeries(next, from.study, from.series, null, now);
+    next = withPetSeries(next, to.study, to.series, record, now, info);
+  }
+  if (earlier.glucose !== undefined && next[to.study]?.glucose === undefined) {
+    next = withStudyGlucose(next, from.study, null, now);
+    next = withStudyGlucose(next, to.study, earlier.glucose, now, info);
+  }
+  return next;
+}
+
 /** `next` with a study's series and typed glucose, its patient and date set; the study goes when it keeps nothing. */
 function withStudy(next: PetStudyRecords, study: string, entries: Record<string, PetSeriesRecord>, glucose: number | undefined, now: number,
   info: { patient?: string; date?: string }, limit: number): PetStudyRecords {
@@ -210,7 +230,8 @@ export async function uidDigest(uid: string): Promise<string> {
   return [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('');
 }
 
-/** The native patient key includes the issuer and is scoped to the study for unissued IDs. */
+/** The native patient key holds the ID with its issuer, or for an ID without one, with the name and birth date; it is
+ * scoped to the study when either is missing. */
 export function patientDigest(series: Pick<Series, 'patientId' | 'patientKey'>): string | undefined {
   return series.patientId.trim() && series.patientKey && DIGEST.test(series.patientKey) ? series.patientKey : undefined;
 }

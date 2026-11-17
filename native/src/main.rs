@@ -1804,6 +1804,53 @@ mod protocol_tests {
     }
 
     #[test]
+    fn studies_without_an_issuer_join_as_one_patient_by_id_name_and_birth_date() {
+        use dicom_core::{Tag, VR};
+        let _turn = job_tests_progress();
+        let temp = crate::test_dir::tempdir().unwrap();
+        let mut paths = Vec::new();
+        // Two studies of one patient with the name written two ways, and a third with another birth date.
+        for (value, study, name, birth_date, modality) in [
+            (11, "2.25.1011", "SENTETIK^HASTA", "19800101", "MR"),
+            (22, "2.25.1022", "sentetik hasta", "19800101", "PT"),
+            (33, "2.25.1033", "SENTETIK^HASTA", "19800102", "MR"),
+        ] {
+            let path = super::job_tests::slice(temp.path(), &format!("slice{value}.dcm"), value);
+            let mut obj = dicom_object::open_file(&path).unwrap();
+            obj.put_str(Tag(0x0010, 0x0010), VR::PN, name);
+            obj.put_str(Tag(0x0010, 0x0020), VR::LO, "P1");
+            obj.put_str(Tag(0x0010, 0x0030), VR::DA, birth_date);
+            obj.put_str(Tag(0x0020, 0x000d), VR::UI, study);
+            obj.put_str(Tag(0x0020, 0x000e), VR::UI, format!("{study}.1"));
+            obj.put_str(Tag(0x0008, 0x0060), VR::CS, modality);
+            obj.write_to_file(&path).unwrap();
+            paths.push(path);
+        }
+        let mut engine = Engine::start();
+        let (status, result) = engine.json(json!({"op":"import", "body":{"paths":paths}}));
+        assert_eq!(status, 200, "{result}");
+        let series = result["series"].as_array().unwrap();
+        let study = |uid: &str| series.iter().find(|s| s["studyUid"] == uid).unwrap();
+        let (first, second, third) = (study("2.25.1011"), study("2.25.1022"), study("2.25.1033"));
+        assert_eq!(first["patientKey"], second["patientKey"], "{result}");
+        assert_ne!(first["patientKey"], third["patientKey"], "{result}");
+        // Each keeps the key earlier builds scoped to its study; a PET also its reconstruction ID made with it.
+        assert!(first["studyScopedPatientKey"].is_string());
+        assert_ne!(
+            first["studyScopedPatientKey"],
+            second["studyScopedPatientKey"]
+        );
+        assert!(first.get("studyScopedPetId").is_none());
+        assert!(second["studyScopedPetId"].is_string());
+        assert_ne!(second["studyScopedPetId"], second["id"]);
+        assert!(
+            !result["warningNotes"]
+                .as_array()
+                .is_some_and(|notes| notes.iter().any(|n| n["code"] == "import.patientConflict"))
+        );
+    }
+
+    #[test]
     fn changed_source_never_supplies_pixels_tags_or_exports_under_the_old_uid() {
         use dicom_core::{Tag, VR};
         let _turn = job_tests_progress();
