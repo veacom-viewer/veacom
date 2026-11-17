@@ -968,14 +968,15 @@ export default function App() {
     publishLoadedVolumes(volumesRef.current);
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
-  // Each card's picture is its series' middle frame, at most two in flight. It does not wait for volumes to load: a
-  // frame is small next to a volume, and waiting would keep every card's placeholder until the last volume had arrived.
-  // A load starting or ending runs this again (loadingIds.size), retrying a card whose picture failed or was dropped;
-  // the frame cache shares a request already under way.
+  // Each card's picture is its series' middle frame, at most two in flight. It does not wait for other volumes to load:
+  // a frame is small next to a volume, and waiting would keep every card's placeholder until the last volume had
+  // arrived. A series that is itself loading is left out: its card takes its picture from the images that load brings
+  // (acquireVolume), and a frame fetched for it here would be read twice. A load starting or ending runs this again
+  // (loadingIds), retrying a card whose picture failed or was dropped; the frame cache shares a request already under way.
   useEffect(() => {
     if (importing) return;
     const work = { stopped: false, cursor: 0 };
-    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
+    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id) && !loadingIds.has(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
       const volume = fullyLoaded.current.has(item.id) ? volumesRef.current.get(item.id) : undefined;
       const middle = volume ?? await frameCache.get(item, thumbnailFrame(item));
@@ -997,7 +998,7 @@ export default function App() {
     };
     void preload(); void preload();
     return () => { work.stopped = true; };
-  }, [series, importing, loadingIds.size, frameCache]);
+  }, [series, importing, loadingIds, frameCache]);
 
   useEffect(() => {
     // While a study is read, frames come only for the series it has already published (see importStudies).
