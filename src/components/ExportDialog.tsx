@@ -36,8 +36,9 @@ export interface ExportDialogProps {
     nativeSize?: { width: number; height: number };
     /** The pane pages against the slice order (an axial stack stored from the feet up): down the page is a lower index. */
     backwards?: boolean;
-    /** The pane's slice numbers fall as the index rises: what it shows as slice 1 is the last index (imaging/paging.ts). */
-    numbersBackwards?: boolean;
+    /** What the pane adds to a slice's own number, and the total it shows beside it: a stack paged with its reference
+     * image counts that image too (imaging/paging.ts). */
+    numberOffset?: number; numberTotal?: number; numbersBackwards?: boolean;
   };
   /** The acquired slice on screen (its file), for "current slice" DICOM. */
   currentFrame?: number;
@@ -136,8 +137,8 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const [more, setMore] = useState(() => remembered(MORE) === '1');
   const [prefix, setPrefix] = useState(() => remembered(PREFIX) ?? '');
   const [reverse, setReverse] = useState(false);
-  const [start, setStart] = useState(1);
-  const [end, setEnd] = useState(video?.frameCount ?? 1);
+  const [start, setStart] = useState(1 + (video?.numberOffset ?? 0));
+  const [end, setEnd] = useState((video?.frameCount ?? 1) + (video?.numberOffset ?? 0));
   const [error, setError] = useState('');
   const abort = useRef<AbortController | null>(null);
   const dialog = useRef<HTMLElement>(null);
@@ -157,13 +158,13 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const ids = shownScope === 'all' ? series.map(item => item.id) : shownScope === 'picked' ? series.filter(item => picked.has(item.id)).map(item => item.id) : active ? [active.id] : [];
   const fitSize = { width: FIT_SIZES[fit][0], height: FIT_SIZES[fit][1] };
   const outputSize = size === 'native' ? video?.nativeSize : size === 'fit' ? fitSize : undefined;
-  // The slices go out in the order the pane pages them, under the numbers the pane shows.
-  const backwards = Boolean(video?.backwards), countsBackwards = Boolean(video?.numbersBackwards), count = video?.frameCount ?? 1;
-  const indexOf = (shown: number) => countsBackwards ? count - shown : shown - 1;
+  // Slices are numbered as the pane numbers them.
+  const backwards = Boolean(video?.backwards), count = video?.frameCount ?? 1, offset = video?.numberOffset ?? 0;
+  const indexOf = (shown: number) => video?.numbersBackwards ? count - (shown - offset) : shown - offset - 1;
   const sliceRange = shownScope === 'slice' && video ? { start: video.originalSlice, end: video.originalSlice }
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
-  const order = { descending: backwards !== reverse, numberOf: (slice: number) => countsBackwards ? count - slice : slice + 1, prefix };
-  const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && start <= end && end <= (video?.frameCount ?? 0));
+  const order = { descending: backwards !== reverse, numberOf: (slice: number) => (video?.numbersBackwards ? count - slice : slice + 1) + offset, prefix };
+  const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 + offset && start <= end && end <= (video?.frameCount ?? 0) + offset);
   // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs), a disc's as well.
   const tooMany = !captures && ids.length > MAX_EXPORT_SERIES;
   const ready = Boolean(window.veacom) && (shownScope === 'layout' || (captures ? rangeValid && (isImages || (fps >= 1 && fps <= 120)) : ids.length > 0))
@@ -319,9 +320,9 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
                   {isVideo ? <input type="number" className="export-number" data-action="export-fps" min={1} max={120} step={1} value={fps} onChange={event => setFps(Number(event.target.value))} />
                     : <span className="export-slider"><input type="range" data-action="export-quality" min={50} max={100} step={1} value={quality} onChange={event => setQuality(Number(event.target.value))} /><output>{quality}</output></span>}</div>}
                 {shownScope === 'series' && video && <div className="export-row"><span className="export-row-label">{t('export.slices')}</span>
-                  <span className="export-range"><input type="number" className="export-number" data-action="export-first-slice" min={1} max={video.frameCount} value={start} onChange={event => setStart(Number(event.target.value))} />
-                    –<input type="number" className="export-number" data-action="export-last-slice" min={start} max={video.frameCount} value={end} onChange={event => setEnd(Number(event.target.value))} />
-                    <small>/ {video.frameCount}</small></span></div>}
+                  <span className="export-range"><input type="number" className="export-number" data-action="export-first-slice" min={1 + offset} max={video.frameCount + offset} value={start} onChange={event => setStart(Number(event.target.value))} />
+                    –<input type="number" className="export-number" data-action="export-last-slice" min={start} max={video.frameCount + offset} value={end} onChange={event => setEnd(Number(event.target.value))} />
+                    <small>/ {video.numberTotal ?? video.frameCount}</small></span></div>}
                 <div className="export-row"><span className="export-row-label">{t('export.prefix')}</span>
                   <input data-action="export-prefix" value={prefix} maxLength={40} placeholder="IMG_" onChange={event => { const next = event.target.value.replace(/[^\p{L}\p{N} _.-]/gu, ''); setPrefix(next); remember(PREFIX, next); }} /></div>
                 {isVideo && <label className="export-check"><input type="checkbox" data-action="export-reverse" checked={reverse} onChange={event => setReverse(event.target.checked)} /><span>{t('export.reverse')}</span></label>}
