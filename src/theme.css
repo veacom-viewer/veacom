@@ -51,6 +51,10 @@
   --overlay-text: #e6e8eb;
   --measure: #ffcc00;
   --label-chip: rgba(11, 13, 17, .8);
+  /* The crosshair and measuring tools' pointer, drawn by the app: the crosshair marker's "+" in --overlay-text on a
+     --bg-image rim, hotspot at its centre. The system crosshair inverts what is under it: over it the green marker turns
+     pink and yellow drawings blue. A data URL cannot read tokens: keep its colours in step with them. */
+  --cursor-point: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='32' height='32'%3E%3Cg fill='none' stroke-linecap='round'%3E%3Cpath d='M5 16H13M19 16H27M16 5V13M16 19V27' stroke='%23000' stroke-opacity='.7' stroke-width='4'/%3E%3Cpath d='M5 16H13M19 16H27M16 5V13M16 19V27' stroke='%23e6e8eb' stroke-width='1.8'/%3E%3C/g%3E%3C/svg%3E") 16 16, crosshair;
 
   --text-xs: 11px;
   --text-sm: 12px;
