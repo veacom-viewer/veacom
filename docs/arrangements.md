@@ -181,7 +181,7 @@ Both panes show the one series, each on its own frame. Panes showing one PET or 
 - PET look on every PET pane, not only arranged ones. The nuclear medicine review asks for inverted grey PET by default and one scale across panes.
 - A MIP click picks the hottest voxel near the ray, as PET workstations do, with 4 mm of tolerance for a click slightly off a small lesion.
 - The fused pane takes the scanner's look, as the fusion button does, so one fusion never looks two ways.
-- A PET/CT opens on its first image, unfused: not every reading starts from the fusion, and a fused opening reads the PET as well before the screen settles. Fusion fuses it in one press. For reporting, choose the four-pane reading view in Layout. To have PET/CT open in a view of its own, change a pane’s plane and choose Keep.
+- A PET/CT opens on its first image, unfused: not every reading starts from the fusion, and a fused opening reads the PET as well before the screen settles. Fusion fuses it in one press. For reporting, choose the four-pane reading view in Layout. To have PET/CT open in a view of its own, choose one of its layouts in Layout (the one-pane fusion or the four-pane reading view), change a pane’s plane or look, and choose Keep.
 
 - SPECT/CT is the PET/CT screen with the SPECT's own window, as a PET without SUV has. Inverted grey matches the PET panes and a bone scan's planar views.
 - Log or square-root display for bone scans is not offered. It does not fit the window and palette primitives: the VOI function comes from the file, not from the reader, and the palettes are fixed colour scales in the shader. A curve would need a renderer change. Saturation is the window's upper end.
