@@ -41,8 +41,10 @@ describe('click budgets', () => {
 });
 
 describe('budget coverage', () => {
-  const coverage = async (smoke: string[], canonical: string[]) => {
+  const coverage = async (smoke: string[], canonical: string[], deformity?: string[]) => {
     const evidence = path.join(dir, 'evidence');
+    await rm(path.join(evidence, 'deformity-plan'), { recursive: true, force: true });
+    if (deformity) { await mkdir(path.join(evidence, 'deformity-plan'), { recursive: true }); await writeFile(path.join(evidence, 'deformity-plan', 'deformity-plan.json'), JSON.stringify({ budgets: deformity.map(task => ({ task, status: 'pass' })) })); }
     await mkdir(path.join(evidence, 'desktop-smoke'), { recursive: true }); await mkdir(path.join(evidence, 'click-budget'), { recursive: true });
     const results = (tasks: string[]) => tasks.map(task => ({ task, status: 'pass' }));
     await writeFile(path.join(evidence, 'desktop-smoke', 'desktop-smoke.json'), JSON.stringify({ checks: [{ name: 'Click budgets', detail: results(smoke) }] }));
@@ -56,6 +58,9 @@ describe('budget coverage', () => {
     const run = await coverage(['open'], ['pick']);
     assert.equal(run.status, 1);
     assert.ok(run.stderr.includes('close'));
+  });
+  it('counts the deformity plan check\'s tasks', async () => {
+    assert.equal((await coverage(['open'], ['pick'], ['close'])).status, 0);
   });
   it('is part of local verification', async () => {
     const verify = await readFile(path.join(root, 'tools/verify.sh'), 'utf8');

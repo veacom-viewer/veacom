@@ -4,6 +4,10 @@
 // whole series, with no error on the page. A PNG, a JPEG and a BMP made in the page must open as one series where the
 // page is isolated (its picture decoder needs the threads build), and be refused in one sentence elsewhere.
 //
+// The landmark model (docs/landmark-model.md) must load from the site's models/ through the bridge, checked and kept in
+// Cache Storage, and run in its Worker under the site's content policy: on several threads where the page is isolated,
+// on one elsewhere.
+//
 // The site's files (web/site/public, from prepare.mjs) go through the site's own Worker (web/site/worker.js), so the
 // page gets the headers and content policy it gets in production; the study is served beside them.
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
@@ -32,7 +36,7 @@ execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR'], { stdio
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
 
-const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
+const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
 /** What Cloudflare's static assets would answer for `request` (the Worker's `env.ASSETS`). */
 const assets = {
@@ -163,6 +167,26 @@ async function checkArchiveLimit(page) {
   assert.deepEqual(await importPickedFiles(page, [path.join(study, studyFiles[0])]), [1]);
 }
 
+/** In the page: the landmark model's graphs through the bridge, then one run of its Worker on a synthetic film. */
+async function runLandmarkModel(workerUrl) {
+  const bridge = window.veacom;
+  const [stageA, stageB] = await Promise.all(['stageA', 'stageB'].map(part => bridge.landmarkModel(part)));
+  const kept = (await (await caches.open('veacom-landmark-model')).keys()).length;
+  const columns = 1300, rows = 3500, pixels = new Uint16Array(columns * rows);
+  for (let i = 0; i < pixels.length; i++) pixels[i] = (i % columns) * 3 + Math.floor(i / columns) % 500;
+  const worker = new Worker(workerUrl, { type: 'module' });
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      worker.onmessage = ({ data }) => resolve(data);
+      worker.onerror = event => reject(new Error(event.message || 'the landmark Worker did not start'));
+      worker.postMessage({ id: 1, models: { stageA, stageB }, film: { pixels, columns, rows, mm: [0.3, 0.3], invert: false }, leg: 'left' });
+    });
+    const points = reply.ok ? Object.values(reply.channels) : [];
+    return { ok: reply.ok, error: reply.error, threads: reply.threads, channels: points.length, finite: points.every(item => item.point.every(Number.isFinite)),
+      bytes: [stageA.byteLength, stageB.byteLength], kept, expected: self.crossOriginIsolated ? Math.min(4, Math.ceil((navigator.hardwareConcurrency || 1) / 2)) : 1 };
+  } finally { worker.terminate(); }
+}
+
 async function checkQueuedImports() {
   const bridge = window.veacom;
   const names = await (await fetch('/__study/files.json')).json();
@@ -183,6 +207,120 @@ async function checkQueuedImports() {
   const shown = await bridge.getProgress();
   const cancelled = await bridge.cancelOperation(shown.id);
   if (!cancelled.requested || !await queued) throw new Error('The queued import did not cancel');
+}
+
+function waitForWorker(worker, event) {
+  return worker.evaluate(event => Promise.race([self[event], new Promise((_, reject) => {
+    setTimeout(() => reject(new Error('Timed out waiting for ' + event)), 30_000);
+  })]), event);
+}
+
+/** A threaded engine whose helpers start but never get the file batch must still decode all the loose slices. */
+async function checkUnacknowledgedFiles(page) {
+  const folder = path.join(scratch, 'many-small');
+  execFileSync(process.execPath, [makeStudy, folder, '--many-small']);
+  const seriesDir = path.join(folder, 'S01');
+  const paths = readdirSync(seriesDir).map(name => path.join(seriesDir, name));
+
+  await page.addInitScript(() => {
+    window.withheldFiles = 0;
+    window.forgottenFiles = new Set();
+    const send = Worker.prototype.postMessage;
+    Worker.prototype.postMessage = function (message, ...args) {
+      if (!(message.files instanceof MessagePort)) return send.call(this, message, ...args);
+      message.files.onmessage = ({ data }) => {
+        if (data.files) window.withheldFiles = Math.max(window.withheldFiles, data.files.length);
+        for (const id of data.forget ?? []) window.forgottenFiles.add(id);
+      };
+      const { port1, port2 } = new MessageChannel();
+      port1.close();
+      return send.call(this, { ...message, files: port2 }, [port2]);
+    };
+  });
+  await page.reload();
+  await page.waitForFunction(() => Number(document.documentElement.dataset.engineThreads) > 1);
+  const worker = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
+  assert(worker, 'The engine Worker is running.');
+  await worker.evaluate(() => {
+    const read = File.prototype.arrayBuffer;
+    let release, notify;
+    const gate = new Promise(resolve => { release = resolve; });
+    self.releaseReads = release;
+    self.readsPending = new Promise(resolve => { notify = resolve; });
+    self.reads = 0;
+    File.prototype.arrayBuffer = async function () {
+      // The ninth read starts after the first file was held. Leave the rest in flight until after Cancel.
+      self.reads++;
+      if (self.reads === 9) notify();
+      if (self.reads > 1) await gate;
+      return read.call(this);
+    };
+    const readSync = FileReaderSync.prototype.readAsArrayBuffer;
+    self.syncReads = 0;
+    FileReaderSync.prototype.readAsArrayBuffer = function (blob) { self.syncReads++; return readSync.call(this, blob); };
+  });
+  assert.deepEqual(await importPickedFiles(page, paths), [1024]);
+  const name = path.basename(studyFiles[0]);
+  const zip = zipStored([{ name, bytes: readFileSync(path.join(mrStudy, 'S01', name)) }]);
+  assert.deepEqual(await importPickedFiles(page, [{ name: 'mr.zip', mimeType: 'application/zip', buffer: Buffer.from(await zip.arrayBuffer()) }]), [1]);
+
+  const volume = await page.evaluate(async () => {
+    const bridge = window.veacom;
+    const { series } = await bridge.listSeries();
+    const { id, catalogRevision } = series.find(item => item.dimensions[2] === 1024);
+    return { seriesId: id, generation: (await bridge.getCoreState()).generation, revision: catalogRevision };
+  });
+  await worker.evaluate(() => {
+    self.syncReads = 0;
+    self.volumeDispatched = new Promise(resolve => {
+      self.addEventListener('message', ({ data }) => { if (data.op === 'volume') setTimeout(resolve, 0); }, { once: true });
+    });
+  });
+  await page.evaluate(volume => {
+    window.cancelledVolume = window.veacom.fetchPixels(volume).then(() => 'decoded', error => error.message);
+  }, volume);
+  await waitForWorker(worker, 'volumeDispatched');
+  assert.equal(await worker.evaluate(() => self.reads), 0, 'The ZIP import must not bypass the earlier helper transfer.');
+  await waitForWorker(worker, 'readsPending');
+  const cancelled = await page.evaluate(async () => {
+    const bridge = window.veacom;
+    const { id } = await bridge.getProgress();
+    const { requested } = await bridge.cancelOperation(id);
+    const message = await window.cancelledVolume;
+    return { requested, message, restarted: (await bridge.getCoreState()).restartCount };
+  });
+  assert.deepEqual(cancelled, { requested: true, message: 'Operation cancelled', restarted: 0 });
+  assert.equal(await worker.evaluate(() => self.syncReads), 0, 'Cancel must skip the synchronous fallback.');
+  await worker.evaluate(() => self.releaseReads());
+  const before = await worker.evaluate(() => self.reads);
+  const result = await page.evaluate(async volume => {
+    const pixels = await window.veacom.fetchPixels(volume);
+    return { withheld: window.withheldFiles, bytes: Number(pixels.headers.get('Content-Length')) };
+  }, volume);
+  assert.deepEqual(result, { withheld: 1024, bytes: 16 * 16 * 1024 * 2 });
+  assert.equal(await worker.evaluate(() => self.reads) - before, 1024, 'The retry must reload every file held by the cancelled request.');
+
+  // Fail registration of the second file after both file headers were read.
+  await worker.evaluate(() => {
+    const slice = File.prototype.slice;
+    File.prototype.slice = function (...args) {
+      if (this.name === 'bad.dcm') Object.defineProperty(this, 'size', { get() { throw new Error('Cannot register bad.dcm'); } });
+      return slice.apply(this, args);
+    };
+  });
+  const forgotten = await page.evaluate(() => window.forgottenFiles.size);
+  const files = ['good.dcm', 'bad.dcm'].map(name => ({ name, mimeType: 'application/dicom', buffer: readFileSync(path.join(study, studyFiles[0])) }));
+  await assert.rejects(importPickedFiles(page, files), /Cannot register bad.dcm/);
+  await page.waitForFunction(before => window.forgottenFiles.size === before + 1, forgotten);
+  assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 2);
+
+  // The helpers still withhold every batch for five seconds. The large cached volume needs none of these MR files.
+  await importPickedFiles(page, [path.join(mrStudy, 'S01', name)]);
+  const cachedBytes = await page.evaluate(async volume => {
+    const pixels = await window.veacom.fetchPixels(volume, AbortSignal.timeout(4000));
+    return Number(pixels.headers.get('Content-Length'));
+  }, volume);
+  assert.equal(cachedBytes, result.bytes, 'A cache hit must return while an unrelated helper transfer is pending.');
 }
 
 const browser = await chromium.launch();
@@ -225,6 +363,10 @@ try {
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
+      const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
+      const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);
+      check(model.ok && model.channels === 26 && model.finite, `landmark model: ${JSON.stringify(model)}`);
+      check(model.threads === model.expected && model.kept === 2, `landmark model threads and cache: ${JSON.stringify(model)}`);
       await checkFilePicker(page);
       await page.evaluate(checkQueuedImports);
       await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
@@ -238,8 +380,9 @@ try {
         check(pictures.error === 'Desteklenen görüntü bulunamadı. 3 dosya okunamadı: PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.',
           `pictures without isolation: ${JSON.stringify(pictures)}`);
       }
+      if (isolated) await checkUnacknowledgedFiles(page);
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
-      console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, ${errors.length} errors`);
+      console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, landmark model on ${model.threads} thread(s), ${errors.length} errors`);
     } catch (error) {
       failures.push(`${mode}: ${error.message}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
     } finally {
@@ -255,4 +398,4 @@ if (failures.length) {
   console.error(failures.join('\n'));
   process.exit(1);
 }
-console.log('The browser build starts and opens a study with and without cross-origin isolation.');
+console.log('The browser build starts, opens a study and runs the landmark model with and without cross-origin isolation.');

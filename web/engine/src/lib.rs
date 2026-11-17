@@ -16,7 +16,7 @@ mod blob;
 #[cfg(target_arch = "wasm32")]
 mod libc_shim;
 
-/// The threads build's lent threads: Web Workers that call `helperMain` and work on the engine's parallel runs.
+/// The threads build's lent threads: Web Workers that call `helperServe` and work on the engine's parallel runs.
 #[cfg(all(target_arch = "wasm32", feature = "threads"))]
 mod helpers;
 

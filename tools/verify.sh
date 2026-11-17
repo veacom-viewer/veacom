@@ -39,6 +39,12 @@ run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
 run video-encoder node tools/check-video-encoder.cjs "$out/video-encoder"
 run video-encoder-no-gpu node tools/check-video-encoder.cjs "$out/video-encoder" --no-gpu
 run click-budget node tools/check-click-budget.cjs "$study" "$out/click-budget"
+run longleg-fixture node tools/fixtures/make-longleg-study.mjs "$out/longleg"
+# The Mendeley films go to a temporary folder, not the evidence: they are not VEAcom's to keep (docs/landmark-model.md).
+films=$(mktemp -d)
+trap 'rm -rf "$films"' EXIT
+run mendeley-fixture node tools/fixtures/fetch-mendeley-films.mjs "$films/mendeley"
+run deformity-plan node tools/check-deformity-plan.cjs "$out/longleg" "$films/mendeley" "$out/deformity-plan"
 run budget-coverage node tools/check-budget-coverage.cjs "$out"
 run file-drop node tools/check-file-drop.cjs --study "$series" --output "$out/file-drop"
 run engine-pipe node tools/check-engine-pipe.cjs
@@ -54,6 +60,8 @@ run pet-validation node tools/pet-validation.cjs "$out/pet-followup" "$out/pet-f
 run pet-validation-cases node tools/check-pet-validation-cases.mjs "$out/pet-followup" "$out/pet-validation-cases"
 run petct-fixture node tools/fixtures/make-petct-study.mjs "$out/petct-study"
 run arrangements node tools/check-arrangements.cjs "$out/petct-study" "$out/arrangements"
+run comparison-fixture node tools/fixtures/make-comparison-studies.mjs "$out/comparison-studies"
+run comparison node tools/check-comparison.cjs "$out/comparison-studies" "$out/pet-followup" "$out/comparison"
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"
 run nm-fixture node tools/fixtures/make-nm-study.mjs "$out/nm-study"
 run gamma-camera node tools/check-gamma-camera.cjs "$out/nm-study" "$out/gamma-camera"

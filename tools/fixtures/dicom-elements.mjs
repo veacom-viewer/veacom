@@ -4,6 +4,7 @@ export function element(group, item, vr, value) {
   let body;
   if (LONG_LENGTH.has(vr)) body = Buffer.from(value);
   else if (vr === 'US') { body = Buffer.alloc(2); body.writeUInt16LE(value); }
+  else if (vr === 'SS') { body = Buffer.alloc(2); body.writeInt16LE(value); }
   else if (vr === 'UL') { body = Buffer.alloc(4); body.writeUInt32LE(value); }
   else body = Buffer.from(Array.isArray(value) ? value.join('\\') : String(value), 'latin1');
   if (body.length % 2) body = Buffer.concat([body, Buffer.from(vr === 'UI' || vr === 'OB' ? [0] : [0x20])]);
