@@ -105,12 +105,14 @@ try {
   const releasedCursor=await paneCursor();
   // A release the pane never saw (the window lost the pointer): the next move without a button brings the pointer back.
   await page.mouse.move(250,260);await page.mouse.down();await settle();
-  const hiddenAgain=await paneCursor();
+  const hiddenAgain=await paneCursor(),pressedPoint=(await state()).crosshair;
   await page.evaluate(()=>{const pane=document.querySelector('[data-testid="dicom-viewport"]'),box=pane.getBoundingClientRect();pane.dispatchEvent(new PointerEvent('pointermove',{pointerId:1,pointerType:'mouse',isPrimary:true,buttons:0,clientX:box.left+262,clientY:box.top+281,bubbles:true}));});await settle();
-  const afterLostRelease=await paneCursor();
+  const afterLostRelease=await paneCursor(),pointAfterLostRelease=(await state()).crosshair;
   await page.mouse.up();await settle();
   check('Crosshair tool: the app\'s own pointer, hidden while pressed with the marker following it',hiddenAgain==='none'&&afterLostRelease===pointerCursor&&releasedCursor===pointerCursor&&pointerCursor.startsWith('url("data:image/svg+xml')&&pointerCursor.endsWith(', crosshair')
     &&pressedCursor==='none'&&followed.every(distance=>distance<=1.5)&&await paneCursor()===pointerCursor);
+  // That move also ends the press: the point stays where the press set it.
+  check('Crosshair tool: a press whose release was lost ends with the next move without a button, its point kept',JSON.stringify(pointAfterLostRelease)===JSON.stringify(pressedPoint)&&pressedPoint?.length===3);
   await page.evaluate(()=>window.viewportTest.setView({plane:'coronal',slice:32}));await settle();
   check('Coronal MPR renders',await page.locator('canvas').getAttribute('data-plane')==='coronal');
   await page.evaluate(()=>window.viewportTest.setView({oblique:[15,10]}));await settle();check('Oblique MPR renders without errors',await page.locator('[role="alert"]').count()===0);

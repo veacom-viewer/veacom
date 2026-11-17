@@ -639,10 +639,19 @@ export function Viewport(props: ViewportProps) {
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     syncInteractionContext(latest.current.volume, liveView.current);
-    const point = local(event), active = drag.current;
-    // A press whose release the pane never saw (the window lost the pointer) gives the pointer back with the next move
-    // made without a button.
-    if (event.buttons === 0) showCursor();
+    const point = local(event);
+    // A press whose release the pane never saw (the window lost the pointer) ends with the next move made without a
+    // button, as its release would have: a crosshair drag lets go of its point, and the pointer comes back.
+    if (event.buttons === 0) {
+      const lost = drag.current;
+      if (lost?.mode === 'crosshair' && lost.pointer === event.pointerId) {
+        gesture.current?.end(lost.moved ? {} : { id: `click-${lost.mode}`, input: event.pointerType === 'touch' ? 'touch' : 'mouse' }); gesture.current = null;
+        drag.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      showCursor();
+    }
+    const active = drag.current;
     if (event.pointerType !== 'touch') { hover.current = point; updateReadout(); }
     if (touches.current.has(event.pointerId)) touches.current.set(event.pointerId, point);
     if (pinch.current && touches.current.size >= 2) {
