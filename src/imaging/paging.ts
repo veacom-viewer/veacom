@@ -1,5 +1,5 @@
 import type { Annotation, Joined, Series, ViewState } from '../model';
-import { getPlaneFrame, sliceCount, sub } from './geometry';
+import { dot, getPlaneFrame, isProjection, parallelToAcquired, planeAxes, sliceCount, sliceDirection, sub } from './geometry';
 import { usesSourceFrames } from './viewState';
 
 // Paging the slices the way VEAcom 1.x does: an axial stack from the top down (the head first; the wheel, a
@@ -7,7 +7,8 @@ import { usesSourceFrames } from './viewState';
 // middle, paging from right to left. Slice indices stay in the series' own order; the direction a reader pages
 // in, and where a series opens, follow these rules. The number a slice shows is another matter: numbersBackwards.
 
-type Paged = Pick<ViewState, 'plane' | 'mode' | 'oblique'>;
+type Paged = Pick<ViewState, 'plane' | 'mode' | 'oblique' | 'projection'>;
+const ACQUIRED: Paged = { plane: 'axial', mode: 'source' };
 
 /** How the slice centres move from the first slice to the last one, in patient coordinates (LPS). */
 function travel(series: Series, view: Paged): [number, number, number] | null {
@@ -47,11 +48,21 @@ export function scannerStep(series: Series): number {
   return result;
 }
 
+/** True when slice `slice` of `count` is numbered `count - slice`, false when `slice + 1`. The acquired images carry
+ * their own numbers where the scanner numbered the stack 1 to N in order. A reconstruction whose slices are those
+ * images (their plane, untilted, one slice per image, as a thick slab or three-plane MPR draws it) numbers them the same
+ * way, so a position keeps its number whichever draws it. OHIF's overlay also looks up the image's own Instance Number
+ * on its MPR's acquisition plane, and OHIF Viewers issue 5261 reports a mismatch there as a bug. Everything else counts
+ * in paging order. */
 export function numbersBackwards(series: Series, view: Paged): boolean {
   if (usesSourceFrames(series, view)) {
     const step = scannerStep(series), first = series.frameMetadata?.[0]?.instanceNumber;
     if (step === 1 && first === 1) return false;
     if (step === -1 && first === series.dimensions[2]) return true;
+  } else if (!isProjection(series, view) && !view.oblique?.some(Boolean) && sliceCount(series, view) === series.dimensions[2]) {
+    // Its slice index runs with the images' index or against it (a sagittal plane is reconstructed towards the right).
+    const { normal } = planeAxes(series, view);
+    if (parallelToAcquired(series, normal)) return numbersBackwards(series, ACQUIRED) !== (dot(normal, sliceDirection(series)) < 0);
   }
   return pagesBackwards(series, view);
 }
@@ -88,7 +99,7 @@ export function shownSlice(series: Series, view: Paged, slice: number, count: nu
  * its slice: the acquired image at index `frame`, counted with the stack's reference image where the two are paged as
  * one (`joined`), or, with no `frame`, the measurement's slice of the reconstructed plane it was drawn on. */
 export function measuredSlice(series: Series, annotation: Pick<Annotation, 'plane' | 'slice' | 'oblique'>, frame?: number, joined?: Joined | null): number {
-  if (frame !== undefined) return shownSlice(series, { mode: 'source', plane: 'axial' }, frame, series.dimensions[2], joined).number;
+  if (frame !== undefined) return shownSlice(series, ACQUIRED, frame, series.dimensions[2], joined).number;
   const plane: Paged = { mode: 'mpr', plane: annotation.plane, oblique: annotation.oblique };
   return shownSlice(series, plane, annotation.slice, sliceCount(series, plane)).number;
 }
@@ -101,8 +112,7 @@ export function pageStep(series: Series, view: Paged, steps: number): number {
 /** Where a series opens in the plane it was acquired in: axial at the top, coronal at the front, sagittal in
  * the middle, anything else at its first image. */
 export function openingSlice(series: Series): number {
-  const view: Paged = { plane: 'axial', mode: 'source' };
-  const count = sliceCount(series, view), step = travel(series, view);
+  const count = sliceCount(series, ACQUIRED), step = travel(series, ACQUIRED);
   if (!step) return 0;
   const axis = axisOf(step);
   if (axis === 2) return step[2] > 0 ? count - 1 : 0;
