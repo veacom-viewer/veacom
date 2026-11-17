@@ -11,6 +11,8 @@ import { handOverPixels } from '../imaging/pixelHandoff';
 import type { EngineExport, EngineInfo, EnginePixels, EngineRequest } from './engine.worker';
 import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
+import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
+import { createLabelFolder, type FolderEntry } from './labelFolder';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -172,7 +174,11 @@ export function createWebBridge(): DesktopBridge {
   let helpers: Worker[] = [];
 
   const publish = (next: CoreState) => { state = next; for (const listener of stateListeners) listener({ ...state }); };
-  const setCancel = (value: number) => { if (cancel) Atomics.store(cancel, 0, value); if (shared) Atomics.store(shared.cancel, 0, value); };
+  const setCancel = (value: number) => {
+    if (cancel) Atomics.store(cancel, 0, value);
+    if (shared) Atomics.store(shared.cancel, 0, value);
+    if (value && pending.get(value)?.op === 'volume') worker?.postMessage({ cancelVolume: value });
+  };
 
   /** Fails every request sent or waiting: the engine that had them answers none. */
   function failPending(): void {
@@ -292,7 +298,7 @@ export function createWebBridge(): DesktopBridge {
    * than in the engine Worker so that one that stops (a panic aborts the threads build) reaches the page, which then
    * replaces the engine: an engine run waiting for that Worker would otherwise wait for ever, and its Worker could hear
    * nothing. */
-  function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort }): void {
+  function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort; files: MessagePort[] }): void {
     const started: Worker[] = [];
     let waiting = request.count + 1, settled = false;
     const settle = (error?: string) => {
@@ -306,7 +312,7 @@ export function createWebBridge(): DesktopBridge {
     };
     const stopped = (error: string) => { if (!settled) settle(error); else if (engine === worker) crashed(); };
     const timer = setTimeout(() => settle('the threads did not start in time'), HELPER_START_MS);
-    const watch = (helper: Worker) => {
+    const watch = (helper: Worker, files?: MessagePort) => {
       started.push(helper); helpers.push(helper);
       helper.onmessage = ({ data }) => {
         if (data?.type === 'ready') { if (--waiting === 0) settle(); return; }
@@ -316,9 +322,9 @@ export function createWebBridge(): DesktopBridge {
         }
       };
       helper.onerror = () => stopped('a thread could not start');
-      helper.postMessage({ module: request.module, memory: request.memory });
+      helper.postMessage({ module: request.module, memory: request.memory, files }, files ? [files] : []);
     };
-    for (let index = 0; index < request.count; index++) watch(new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' }));
+    for (let index = 0; index < request.count; index++) watch(new Worker(new URL('./engine.helper.ts', import.meta.url), { type: 'module' }), request.files[index]);
     watch(new Worker(new URL('./picture.worker.ts', import.meta.url), { type: 'module' }));
   }
 
@@ -447,6 +453,7 @@ export function createWebBridge(): DesktopBridge {
     return [token];
   }
 
+  const writablePicker = (window as { showDirectoryPicker?: (options: { mode: 'readwrite'; id: string }) => Promise<FolderEntry> }).showDirectoryPicker;
   const updates: UpdateStatus = { phase: 'manual', currentVersion: 'web', message: '', canDownload: false, canInstall: false, sourceBuild: true };
   const unsupported = (key: Parameters<typeof t>[0]) => () => Promise.reject(new Error(t(key)));
   // Pictures and videos being exported, gathered here until they are downloaded.
@@ -470,6 +477,14 @@ export function createWebBridge(): DesktopBridge {
     onCoreState(listener) { stateListeners.add(listener); return () => { stateListeners.delete(listener); }; },
 
     async openPaths(kind) { return remember(await chooseFiles(kind)); },
+    // A folder to label, read and written where the browser lets the page write into it (src/web/labelFolder.ts).
+    labelFolder: createLabelFolder({
+      pick: writablePicker ? () => writablePicker.call(window, { mode: 'readwrite', id: 'veacom-label' }) : undefined,
+      chooseFiles: async () => (await chooseFiles('folder')).flat().map(item => item.file),
+      importFile: async file => remember([[{ path: file.name, file }]]),
+      download: (name, text) => download(name, new Blob([text], { type: 'application/json' })),
+      refused: { invalid: () => t('label.invalidPlan'), changed: () => t('label.planChanged'), notAPlan: () => t('label.notAPlan'), expired: () => t('label.expired') },
+    }),
     async importFiles(files) {
       const drop = dropped;
       dropped = null;
@@ -545,6 +560,8 @@ export function createWebBridge(): DesktopBridge {
 
     openExternal: async url => { window.open(url, '_blank', 'noopener,noreferrer'); },
     async saveFile(suggestedName, data) { download(suggestedName, new Blob([data])); return suggestedName; },
+    landmarkModel: (part, onProgress) => landmarkModel(part, onProgress),
+    async cancelLandmarkModel() { cancelLandmarkModel(); },
     copyText: text => navigator.clipboard.writeText(text),
 
     // Exports end in the browser's downloads: DICOM (with a DICOMDIR when asked) and pictures as one ZIP, video as MP4.

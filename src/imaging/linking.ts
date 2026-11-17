@@ -82,6 +82,18 @@ export function samePatient(a: Series, b: Series): boolean {
   return Boolean(a.studyUid && a.studyUid === b.studyUid);
 }
 
+/** Whether two series are of one patient. `same`: as `samePatient` tells it. `different`: an ID, a name or a birth
+ * date that both series record differs. `unknown`: anything else. A field one of the two does not record
+ * establishes nothing, so a missing ID beside a matching name is never taken for a mismatch. */
+export function patientMatch(a: Series, b: Series): 'same' | 'different' | 'unknown' {
+  if (samePatient(a, b)) return 'same';
+  const differs = (one: string | undefined, other: string | undefined) => {
+    const [x, y] = [one, other].map(value => (value ?? '').trim().toUpperCase());
+    return Boolean(x && y && x !== y);
+  };
+  return differs(a.patientId, b.patientId) || differs(a.patientName, b.patientName) || differs(a.patientBirthDate, b.patientBirthDate) ? 'different' : 'unknown';
+}
+
 /** Images with no place in the patient (PNG/JPEG pictures, or an unknown orientation): they page by image number. */
 export const unplaced = (series: Series) => series.orientationKnown !== true;
 
@@ -126,6 +138,16 @@ export function followTarget(source: Pane, target: Pane, anchor: { source: numbe
   const ratio = (sourceSlice - anchor.source) * a.gap / b.gap;
   const steps = Math.sign(ratio) * Math.floor(Math.abs(ratio) + 0.5 + 1e-6);
   return clampSlice(target, anchor.target + steps * sameWay(source, target));
+}
+
+/** For two stacks of one part of the body with no frame of reference in common (two studies): the target's slice as
+ * far through its stack as the source is through its own, going the same way in the patient. A first guess for the
+ * reader to correct, never a measured correspondence. */
+export function levelSlice(source: Pane, target: Pane): number {
+  const from = sliceCount(source.series, source.view), to = sliceCount(target.series, target.view);
+  if (from < 2 || to < 2) return clampSlice(target, Math.round(target.view.slice));
+  const through = Math.max(0, Math.min(1, Math.round(source.view.slice) / (from - 1)));
+  return clampSlice(target, Math.round((sameWay(source, target) > 0 ? through : 1 - through) * (to - 1)));
 }
 
 export const pairKey = (a: string, b: string) => [a, b].sort().join('|');

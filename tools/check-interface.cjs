@@ -439,6 +439,32 @@ async function main() {
     await page.waitForFunction(before => window.__VEACOM_TEST__.state().view.slice === before, measuredSlice);
     await pickedDrawing.waitFor();
     assert.equal(await page.locator('[data-annotation-id][data-selected]').count(), 0, 'Leaving the slice ends the selection, so Delete cannot remove a measurement off screen.');
+
+    const originalView = await page.evaluate(() => window.__VEACOM_TEST__.state().view);
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ mode: 'source', plane: 'axial' }));
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().displayedView.mode === 'source');
+    const spacingRow = page.locator('.series-details dt').filter({ hasText: /^(Pixel spacing|Piksel aralığı)$/ }).locator('+ dd');
+    const dicomSpacing = await spacingRow.innerText();
+    await page.getByTestId('tool-measure-menu').click();
+    await page.locator('[data-action="toolbar-units-calibration"]').click();
+    await page.locator('[data-action="calibration-length"]').fill('200');
+    await page.locator('[data-action="calibrate"]').click();
+    await page.locator('.calibration-status').waitFor();
+    await page.getByTestId('inspector-tab-measurements').click();
+    const appliedSpacing = await spacingRow.innerText();
+    assert.notEqual(appliedSpacing, dicomSpacing, 'The reference line changes CT pixel spacing.');
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ mode: 'mpr', plane: 'coronal' }));
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().displayedView.plane === 'coronal');
+    assert.equal(await spacingRow.innerText(), appliedSpacing, 'MPR keeps the calibrated CT spacing in the inspector.');
+    await page.getByTestId('inspector-tab-display').click();
+    await page.locator('[data-action="calibration-remove"]').click();
+    await page.locator('#section-units-toggle').click();
+    await page.getByTestId('inspector-tab-measurements').click();
+    assert.equal(await spacingRow.innerText(), dicomSpacing);
+    await page.evaluate(view => window.__VEACOM_TEST__.setView(view), originalView);
+    await pickedDrawing.waitFor();
+    check('CT pixel spacing follows calibration in acquired and reconstructed views');
+
     await page.getByTestId('findings-delete-all').click();
     await page.waitForFunction(() => !document.querySelector('[data-annotation-id]:not([data-annotation-id="draft"])'));
     await page.getByTestId('notice-dismiss').click();
@@ -782,7 +808,21 @@ async function main() {
     await page.keyboard.press('ControlOrMeta+z');
     await page.waitForFunction(before => document.querySelectorAll('[data-annotation-id]:not([data-annotation-id="draft"])').length === before, drawnBeforeCopy);
     await page.keyboard.press('w');
-    check('Ctrl+C copies the picture without patient details; Shift copies the layout; a text field keeps its own copy', { pane: [withDetails.width, withDetails.height], layout: [wholeLayout.width, wholeLayout.height], colours });
+    // Text selected elsewhere and left there does not take Ctrl+C from the image: on a pane it copies the picture.
+    await noNotice();
+    const copiesBeforeSelection = await copies();
+    const leftSelected = await page.evaluate(() => { getSelection().selectAllChildren(document.querySelector('.series-browser')); return getSelection().toString().trim().length; });
+    assert(leftSelected > 0, 'Text is selected in the series list.');
+    await imagePane.focus();
+    await page.keyboard.press('ControlOrMeta+c');
+    for (let tries = 0; await copies() === copiesBeforeSelection; tries++) {
+      if (tries === 100) throw new Error('Ctrl+C on the image copied the text selected in the series list, not the picture.');
+      await page.waitForTimeout(50);
+    }
+    await page.locator('[data-testid="notice"][data-code="notice.imageCopied"]').waitFor();
+    await noNotice();
+    await page.evaluate(() => getSelection().removeAllRanges());
+    check('Ctrl+C copies the picture without patient details; Shift copies the layout; a text field keeps its own copy, and text selected elsewhere does not', { pane: [withDetails.width, withDetails.height], layout: [wholeLayout.width, wholeLayout.height], colours });
 
     // Narrow and zoomed windows keep every control reachable, and dialogs stay out of the window's drag strip:
     // Electron decides dragging by rectangle, so a dialog control inside the strip would move the window.
@@ -802,6 +842,17 @@ async function main() {
     ];
     await size(900, 640); await settle();
     assert.deepEqual(await unreachable(), [], 'Controls cut off at 900 × 640.');
+    // The More arrow follows the last tool still shown on the left, where the folded tools come from, not the right-hand
+    // tools at the window's edge; those keep their place at the right.
+    const moreAt = await page.evaluate(() => {
+      const bar = document.querySelector('.toolbar[role="toolbar"]:not(.toolbar-second)'), children = [...bar.children], spacer = bar.querySelector('.toolbar-spacer');
+      const left = children.slice(0, children.indexOf(spacer)).filter(element => element.matches('[data-toolbar-item]')).at(-1).getBoundingClientRect();
+      const more = bar.querySelector('[data-testid="tool-more"]').getBoundingClientRect(), right = [...bar.querySelectorAll('[data-toolbar-item]')].at(-1).getBoundingClientRect();
+      return { gap: Math.round(more.left - left.right), rightGap: Math.round(bar.getBoundingClientRect().right - parseFloat(getComputedStyle(bar).paddingRight) - right.right) };
+    });
+    assert.ok(moreAt.gap >= 0 && moreAt.gap <= 16, `The More arrow is ${moreAt.gap} px past the last tool on the left.`);
+    assert.ok(Math.abs(moreAt.rightGap) <= 2, `The right-hand tools end ${moreAt.rightGap} px short of the toolbar's right edge.`);
+    check('More arrow right after the last tool on the left; the right-hand tools at the right edge', moreAt);
     const dialogsAt900 = await dialogsClear();
     // At this width the assessment button sits in the More row. On a CT it is the checklist's button there too: it
     // opens and closes the checklist (never the MR assessment), and closing hands focus back to it, or to More once the
