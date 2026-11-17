@@ -35,6 +35,9 @@ downloads.
   (`THIRD_PARTY_JAVASCRIPT_LICENSES.md`) and of the engine's Rust crates (`engine/RUST_LICENSES.txt`). Help links
   to both, and to the source. When browser dependencies change in the workspace `Cargo.lock`, regenerate the Rust
   notices with cargo-about 0.9.3 (the command is in `engine/about.toml`).
+- `prepare.mjs` also puts the landmark model's two graphs under `models/` (docs/landmark-model.md): downloaded from the
+  release `electron/landmark-model.json` names and checked against its SHA-256, or copied from `VEACOM_MODEL_DIR`. The page
+  reads them from the site itself, since GitHub's downloads send no cross-origin headers.
 - `worker.js` adds the headers to every response (cross-origin isolation for the threads, the content policy, a year's
   caching for the hashed files under `/assets/`, `no-cache` for the rest) and answers only GET and HEAD.
 - `wrangler.jsonc`: the Worker `veacom-viewer` on the custom domain viewer.veacom.app, with no workers.dev address.

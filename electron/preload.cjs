@@ -33,6 +33,7 @@ contextBridge.exposeInMainWorld('veacom', {
   removeSeries: (ids, generation) => invoke('imaging:remove', ids, generation),
   getPixels: request => invoke('imaging:pixels', request),
   takeStartupPaths: () => invoke('files:startup'),
+  onOpened: listener => { const notify = () => listener(); ipcRenderer.on('files:opened', notify); return () => ipcRenderer.removeListener('files:opened', notify); },
   getCoreState: () => invoke('core:state'),
   getGraphicsStatus: () => invoke('gpu:status'),
   // Page zoom (View > Zoom In/Out) shrinks a wheel notch's legacy units; wheelSliceSteps undoes it.
@@ -50,6 +51,14 @@ contextBridge.exposeInMainWorld('veacom', {
   },
   openExternal: url => invoke('links:open', url),
   saveFile: (suggestedName, data) => invoke('files:save', suggestedName, data),
+  landmarkModel: (part, onProgress) => {
+    const notify = (_event, from, received) => { if (from === part) onProgress?.(received); };
+    ipcRenderer.on('landmarks:progress', notify);
+    return invoke('landmarks:model', part).then(bytes => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+      .finally(() => ipcRenderer.removeListener('landmarks:progress', notify));
+  },
+  cancelLandmarkModel: () => invoke('landmarks:cancel'),
+  labelFolder: { open: () => invoke('label:open'), film: (token, index) => invoke('label:film', token, index), write: (token, index, text) => invoke('label:write', token, index, text) },
   exportDicom: (seriesId, options) => invoke('dicom:export', seriesId, options),
   sendFeedback: payload => invoke('feedback:send', payload),
   estimateExport: (seriesId, options) => invoke('dicom:estimate', seriesId, options),
@@ -61,6 +70,7 @@ contextBridge.exposeInMainWorld('veacom', {
   beginImages: (name, here) => invoke('images:begin', name, here),
   exportFolder: () => invoke('export:folder'),
   copyText: text => invoke('clipboard:write', text),
+  copyImage: picture => invoke('clipboard:write-image', picture),
   chooseExportFolder: () => invoke('export:chooseFolder'),
   revealExport: target => invoke('export:reveal', target),
   appendImage: (id, name, data) => invoke('images:append', id, name, data),

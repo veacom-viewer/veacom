@@ -1,7 +1,12 @@
 use crate::model::{Frame, PixelBuffer, SourceSeries};
 use anyhow::{Context, Result, bail};
 use dicom_pixeldata::{DecodedPixelData, PixelDecoder};
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::HashMap,
+    mem::MaybeUninit,
+    path::Path,
+    sync::atomic::{AtomicBool, Ordering},
+};
 
 /// In WebAssembly everything shares 4 GB, so a decoded volume may take a quarter of it there.
 const MAX_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") {
@@ -748,13 +753,14 @@ fn one_frame_values(
     })
 }
 
-fn copy_values<T: Sample>(target: &mut [T], frame: FrameValues) -> Result<()> {
+/// Writes one frame's values into its place in a volume: every value of `target`, or none counts (an error).
+fn copy_values<T: Sample>(target: &mut [MaybeUninit<T>], frame: FrameValues) -> Result<()> {
     if target.len() != frame.values.len() {
         bail!("Decoded pixel count differs from image dimensions");
     }
     for (target, value) in target.iter_mut().zip(frame.values) {
         if frame.allow_ieee && !value.is_finite() {
-            *target = T::from_ieee(value)?;
+            target.write(T::from_ieee(value)?);
             continue;
         }
         if T::IS_FLOAT32
@@ -763,7 +769,7 @@ fn copy_values<T: Sample>(target: &mut [T], frame: FrameValues) -> Result<()> {
         {
             return Err(Float64Required.into());
         }
-        *target = T::from_value(value)?;
+        target.write(T::from_value(value)?);
     }
     Ok(())
 }
@@ -786,14 +792,22 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
     {
         bail!("Volume exceeds the {VOLUME_LIMIT} decoded output limit");
     }
-    let mut output = Vec::new();
+    let mut output: Vec<T> = Vec::new();
     output.try_reserve_exact(count).map_err(|_| {
         coded!(
             "decode.noMemory",
             "Not enough memory for the decoded volume"
         )
     })?;
-    output.resize(count, T::default());
+    // The frames are written straight into the reserved space, which is not filled with zeros first: that would be a
+    // pass over the whole volume on one thread. Each frame is marked once it is written, and the volume gets its length
+    // only when every frame is.
+    let space = &mut output.spare_capacity_mut()[..count];
+    let written: Vec<AtomicBool> = source
+        .frames
+        .iter()
+        .map(|_| AtomicBool::new(false))
+        .collect();
     crate::progress::check()?;
     let mut groups: HashMap<&Path, Vec<usize>> = HashMap::new();
     for (index, frame) in source.frames.iter().enumerate() {
@@ -809,7 +823,7 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
     crate::parallel::try_for_each(
         "frame-decode",
         workers,
-        output.chunks_mut(per_frame).enumerate(),
+        space.chunks_mut(per_frame).enumerate(),
         |(index, target)| -> Result<()> {
             let frame = &source.frames[index];
             if groups[frame.source.path.as_path()].len() == 1 {
@@ -818,6 +832,7 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
                     target,
                     one_frame_values(source, frame, crate::progress::check)?,
                 )?;
+                written[index].store(true, Ordering::Relaxed);
                 crate::progress::step()?;
             }
             Ok(())
@@ -840,18 +855,20 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         if let Some(values) = special_scalar_values(source, &object, first)? {
             let first_index = indices[0];
             copy_values(
-                &mut output[first_index * per_frame..(first_index + 1) * per_frame],
+                &mut space[first_index * per_frame..(first_index + 1) * per_frame],
                 values,
             )?;
+            written[first_index].store(true, Ordering::Relaxed);
             crate::progress::step()?;
             for &index in &indices[1..] {
                 crate::progress::check()?;
                 let values = special_scalar_values(source, &object, &source.frames[index])?
                     .context("Inconsistent scalar pixel encoding")?;
                 copy_values(
-                    &mut output[index * per_frame..(index + 1) * per_frame],
+                    &mut space[index * per_frame..(index + 1) * per_frame],
                     values,
                 )?;
+                written[index].store(true, Ordering::Relaxed);
                 crate::progress::step()?;
             }
             continue;
@@ -878,18 +895,53 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
                 decoded_values(source, &object, &decoded, frame.index, frame)?
             };
             copy_values(
-                &mut output[index * per_frame..(index + 1) * per_frame],
+                &mut space[index * per_frame..(index + 1) * per_frame],
                 FrameValues {
                     values,
                     preserve_precision: false,
                     allow_ieee: frame.metadata.padding_is_nan,
                 },
             )?;
+            written[index].store(true, Ordering::Relaxed);
             crate::progress::step()?;
         }
     }
     crate::progress::check()?;
+    // The parallel run has ended, so every thread's marks are seen here.
+    anyhow::ensure!(
+        written.iter().all(|frame| frame.load(Ordering::Relaxed)),
+        "A frame of the volume was not decoded"
+    );
+    // Safety: `count` values were reserved, and all were written: the volume is its frames' `per_frame` values one after
+    // another, `copy_values` writes every value of a frame it returns Ok for, and every frame was marked after it.
+    unsafe { output.set_len(count) };
     Ok(output)
+}
+
+/// A float32 series whose values may all be whole: every frame's rescale is whole, and no padding is NaN.
+fn may_fit_integers(source: &SourceSeries) -> bool {
+    source.info.pixel_type == "float32"
+        && source.info.components == 1
+        && source.frames.iter().all(|frame| {
+            !frame.metadata.padding_is_nan
+                && frame.slope.fract() == 0.
+                && frame.intercept.fract() == 0.
+        })
+}
+
+/// The fewest bytes `decode_volume` can return for the series, by the type it tries first; it may widen that type. A
+/// cache can make room for this much before decoding the series. None for dimensions no volume is decoded for.
+pub fn least_volume_bytes(source: &SourceSeries) -> Option<usize> {
+    let sample = match source.info.pixel_type.as_str() {
+        "uint8" => 1,
+        "int16" | "uint16" => 2,
+        _ if may_fit_integers(source) => 2,
+        _ => 4,
+    };
+    frame_samples(source)
+        .ok()?
+        .checked_mul(source.frames.len())?
+        .checked_mul(sample)
 }
 
 pub fn decode_volume(source: &SourceSeries) -> Result<PixelBuffer> {
@@ -913,14 +965,7 @@ fn decode_volume_compact(source: &SourceSeries) -> Result<PixelBuffer> {
         crate::progress::step()?;
         return Ok(PixelBuffer::U8(pixels));
     }
-    if source.info.pixel_type == "float32"
-        && source.info.components == 1
-        && source.frames.iter().all(|frame| {
-            !frame.metadata.padding_is_nan
-                && frame.slope.fract() == 0.
-                && frame.intercept.fract() == 0.
-        })
-    {
+    if may_fit_integers(source) {
         // Header ranges can exceed i16 even when every stored physical value fits.
         // Check during the compact decode, without allocating a float volume first.
         match volume_as::<i16>(source) {

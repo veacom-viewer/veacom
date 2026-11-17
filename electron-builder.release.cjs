@@ -29,6 +29,9 @@ module.exports = {
     allowElevation: true,
     allowToChangeInstallationDirectory: true,
     buildUniversalInstaller: false,
+    // "Open with VEAcom" in Explorer for folders, drives, ZIP and DICOMDIR files, and VEAcom under "Open with" for
+    // .dcm files; the uninstaller removes them.
+    include: 'packaging/explorer-entries.nsh',
   },
   mac: {
     ...base.mac,

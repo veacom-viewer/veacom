@@ -186,6 +186,32 @@ node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
 
+## Comparison with an earlier study
+
+`check-comparison.cjs` covers [the comparison screen](../docs/arrangements.md#the-comparison-screen). It opens the
+synthetic patient from `fixtures/make-comparison-studies.mjs`: an earlier and a current brain MR and an earlier and a
+current chest CT, their dates interleaved. The two MRs name their series differently and record the body part as
+BRAIN and HEAD; the current MR has a FLAIR the earlier one lacks; each CT has a soft-tissue and a lung reconstruction.
+
+- Layout puts the earlier study's T2 on the left of the current T2, level with it, and the reader's pane keeps its view.
+- The two page, zoom and pan together. Each MR keeps its window; CT beside CT takes one.
+- A series picked into one pane changes that pane only; the other offers its counterpart, and an offer left alone clears itself.
+- Ctrl+Left and Ctrl+Right step both panes pair by pair, past the FLAIR.
+- The FLAIR leaves the earlier study's side empty.
+- A coronal reconstruction is compared in the same plane, and the earlier study with the later one on the right.
+- Another patient's series (the follow-up's earlier CT) put in a pane brings a warning, which goes when the panes show one patient again.
+
+A second launch opens the synthetic PET/CT follow-up. A fused PET/CT compared with the earlier CT alone keeps its
+fusion. With the earlier PET loaded too, Layout offers the PET follow-up and not the comparison.
+
+CI's desktop job, the Windows job and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-comparison-studies.mjs /tmp/comparison-studies
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/check-comparison.cjs /tmp/comparison-studies /tmp/pet-followup test-results/comparison
+```
+
 ## PET validation against the vendor workstation
 
 `pet-validation.cjs` is VEAcom's side of the [PET validation protocol](../docs/pet-validation.md), which compares VEAcom's PET
@@ -279,6 +305,37 @@ node tools/fixtures/make-nm-study.mjs /tmp/nm-study
 node tools/check-gamma-camera.cjs /tmp/nm-study test-results/gamma-camera
 ```
 
+## Deformity plan
+
+`make-longleg-study.mjs` writes a synthetic standing long-leg DX of both legs, drawn from chosen joint angles: a right leg
+with an 8° proximal tibia vara (its CORA 90 mm below the knee centre) and a left leg with a valgus distal femur. A
+25.0 mm ball and a ruler marked every 10 mm sit at the bones' depth, magnified 1.1 times. Each series carries the same
+pixels with other spacing tags (Pixel Spacing only, Imager Pixel Spacing only, with ERMF, equal, GEOMETRY, FIDUCIAL,
+differing without a type, none), and two more are mirrored (Patient Orientation R\F) or have no Patient Orientation.
+Its manifest gives every landmark in DICOM image-relative pixels and the values the angles imply, in closed form, before
+and after an 8° opening wedge HTO.
+
+`fixtures/fetch-mendeley-films.mjs` fetches two real standing long-leg films from Mendeley Data's High Tibial Osteotomy
+set (Przystalski et al., doi:10.17632/bpvj6xczm2.3, CC BY-NC 3.0), checks each against its pinned SHA-256, keeps it in
+`~/.cache/veacom-fixtures/mendeley` (`--cache=` for another folder) and wraps it as DX with the spacing read off its
+ruler: 49_0 shows both legs hip to ankle, 10_0 stops mid-tibia. They are never committed or kept as evidence.
+
+```sh
+node tools/fixtures/make-longleg-study.mjs /tmp/longleg [--variants=ips-only,none]
+node tools/fixtures/fetch-mendeley-films.mjs /tmp/mendeley
+node tools/check-deformity-plan.cjs /tmp/longleg /tmp/mendeley /tmp/deformity-plan
+```
+
+`check-deformity-plan.cjs` opens the films in the desktop app and clicks every landmark where the plan's drawing puts
+it. It checks the calibration each variant names and the femur's length it gives; on the Imager Pixel Spacing film,
+every angle of both legs to 0.1° and every length to 0.5 mm, the malalignment test and the tibial CORA; the HTO
+measured again, its wedge height, and the fragment drawn moved (bone where the talus went, dimmed where it was); ⌘Z
+and redo; MAD 0 solved; the plan saved (through a stubbed save dialog), opened again with identical values, and the
+report saved as an A4 PNG; the ball calibrating the film without spacing to the true 440 mm femur; the mirrored film
+giving the same angles under the same names; the film without Patient Orientation asking where the patient's
+right is before any medial or lateral value; and Suggest landmarks, not sure and suggesting nothing on the drawing and
+on 10_0, and suggesting all 14 landmarks on 49_0. CI runs it in the `screens` shard on llvmpipe.
+
 ## Pictures
 
 `node tools/check-pictures.cjs <DICOM series folder> <output>` checks picture imports in the desktop app.
@@ -303,4 +360,6 @@ The memory report identifies the running build by its engine and either its load
 
 ## Windows scripts
 
-`pwsh -NoProfile -File tools/check-powershell.ps1` parses every PowerShell script in the repository and rejects what Windows PowerShell 5.1 cannot run: syntax errors, PowerShell 7 operators and parameters, and non-ASCII characters. CI runs it on Linux. `tools/check-windows-package.ps1 -Action Package|Install|Uninstall` checks the packaged engine and runtime, then a silent install and uninstall, for the hosted Windows job. `tools/windows-vm/README.md` describes that job and the Tesla T4 checks on the Windows VM.
+`pwsh -NoProfile -File tools/check-powershell.ps1` parses every PowerShell script in the repository and rejects what Windows PowerShell 5.1 cannot run: syntax errors, PowerShell 7 operators and parameters, and non-ASCII characters. CI runs it on Linux. `tools/check-windows-package.ps1 -Action Package|Install|Uninstall` checks the packaged engine and runtime, then a silent install and uninstall, for the hosted Windows job. The install must leave Explorer's **Open with VEAcom** entries running the installed program, and the uninstall must remove them (`docs/electron-updates.md`).
+
+`node tools/check-open-with.cjs --study FOLDER --second FOLDER [--app PACKAGED_EXECUTABLE]` checks what those entries do while VEAcom runs: a later launch ends at once and the running window opens the study it named. It needs two different synthetic studies. With `--app` the second study is given as a bare argument, as Windows passes a file for **Open with**. `tools/windows-vm/README.md` describes that job and the Tesla T4 checks on the Windows VM.

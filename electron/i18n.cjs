@@ -10,9 +10,15 @@ const DEFAULT_LOCALE = 'tr';
 
 const en = {
   'startup.failed': 'VEAcom could not start',
+  'launch.cannotOpen': 'Could not open {path}.',
   'dialog.openStudy': 'Open imaging study',
   'dialog.archives': 'Archives',
   'dialog.exportFolder': 'Choose export folder',
+  'dialog.labelFolder': 'Choose a folder of long-leg films to label',
+  'label.invalidPlan': 'This is not a deformity plan, so it was not saved.',
+  'label.planChanged': 'The plan file beside this film was changed or added outside VEAcom since the folder was opened, so it was not replaced. Open the folder again.',
+  'label.notAPlan': 'The file beside this film named as its plan is not a VEAcom deformity plan, so it was not replaced.',
+  'label.expired': 'Choose the folder to label again.',
   'dialog.exportVideo': 'Export viewport video',
   'dialog.mp4': 'MP4 video',
   'dialog.exportIso': 'Export DICOM disc image',
@@ -138,9 +144,15 @@ const en = {
 
 const tr = {
   'startup.failed': 'VEAcom başlatılamadı',
+  'launch.cannotOpen': '{path} açılamadı.',
   'dialog.openStudy': 'DICOM içe aktar — klasör, dosya ya da arşiv seçin',
   'dialog.archives': 'Arşivler',
   'dialog.exportFolder': 'Dışa aktarma klasörünü seçin',
+  'dialog.labelFolder': 'İşaretlenecek uzun bacak grafilerinin klasörünü seçin',
+  'label.invalidPlan': 'Bu bir deformite planı değil; kaydedilmedi.',
+  'label.planChanged': 'Bu grafinin yanındaki plan dosyası, klasör açıldıktan sonra VEAcom dışında değiştirildi ya da eklendi; üzerine yazılmadı. Klasörü yeniden açın.',
+  'label.notAPlan': 'Bu grafinin yanında planı adını taşıyan dosya bir VEAcom deformite planı değil; üzerine yazılmadı.',
+  'label.expired': 'İşaretlenecek klasörü yeniden seçin.',
   'dialog.exportVideo': 'Kesit videosunu dışa aktar',
   'dialog.mp4': 'MP4 videosu',
   'dialog.exportIso': 'DICOM disk görüntüsünü dışa aktar',

@@ -17,6 +17,19 @@ Use `pnpm install --frozen-lockfile`, `pnpm run setup:runtime`, `pnpm run build:
 
 On Windows, run `scripts/windows-runtime.ps1` for the packaged native runtime. electron-builder installs apart from the root: run `pnpm --dir packaging install --frozen-lockfile`, then, from the repository root, `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --win nsis --x64 --publish never` or `node packaging/node_modules/electron-builder/cli.js --config electron-builder.release.cjs --mac dmg --arm64 --publish never`, only with the approved signing setup. Verify the packaged viewer and signatures before attaching installers. Signing or publishing a release requires owner approval.
 
+## Opening studies from Explorer
+
+The Windows installer adds VEAcom to Explorer (`packaging/explorer-entries.nsh`), and the uninstaller removes it again:
+
+- **Open with VEAcom** (**VEAcom ile aç** on a Turkish Windows) in the right-click menu of a folder, a drive, a ZIP file and a file named `DICOMDIR`. On Windows 11 it is under **Show more options**.
+- VEAcom under **Open with** for `.dcm` files. The installer never makes VEAcom the default program for them.
+
+The entries sit under `Software\Classes` of the install's own scope: the current user for the per-user install, so no administrator is needed. Each runs the installed program with `--study` and the path. A file named `DICOMDIR` opens the disc it indexes.
+
+When VEAcom is already running, the new launch hands its path to the running window and ends (`electron/launch-paths.cjs`, `electron/main.cjs`): the window comes forward and opens the study beside what it holds. An installed VEAcom also takes a path given as a bare argument, as Windows passes one for **Open with** and for a file dropped on the program's icon.
+
+`tools/check-windows-package.ps1` checks the entries after the silent install and their removal after the uninstall. `tools/check-open-with.cjs` checks that a later launch opens its study in the running window.
+
 ## If public in-app updates are enabled later
 
 `veacomPublicUpdates` in the packaged `package.json` defaults to `false`. Enable it only when this repository's release assets are available without credentials. The updater accepts only published `v<semver>` tags in this repository. The GitHub prerelease flag must agree with the version, and stable builds do not offer beta updates.

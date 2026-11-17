@@ -6,6 +6,7 @@ import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProject
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
+import { calibrationTag, projectionEdgeLabels, projectionLine } from '../imaging/radiograph';
 import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
@@ -18,7 +19,7 @@ import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
 import { wrapLabel } from '../ui/navigation';
 import { twoPointWorld } from '../ui/measureGesture';
 import { general, scannerLines, sliceDetail, topLeftLines, topRightLines, type CornerLine } from '../ui/overlayCorners';
-import { seriesName } from '../ui/seriesNames';
+import { fusionLine } from '../ui/seriesNames';
 import { presetFor } from '../ui/presets';
 import { hitAnnotation, leaderLine, movedHandle, screenPaths, type AnnotationPart, type HitTarget } from '../ui/annotationEdit';
 import { draggedFusion, petHasSuv } from '../imaging/fusion';
@@ -30,6 +31,7 @@ import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle, type InputKind } from '../usage/tracker';
 import { ValueReadout, type ReadoutSetter } from './ValueReadout';
+import { PlanDrawing, PlanLayers } from './DeformityOverlay';
 
 type Point2 = [number, number];
 interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean;
@@ -103,6 +105,9 @@ function usePatientCorners(series: Volume['series'], visible: boolean, hidePatie
     fontFamily,
     topLeft: visible ? fitCorners(topLeftLines(series, hidePatient, t), width, fontFamily) : [],
     topRight: visible ? fitCorners(topRightLines(series, hidePatient, nm, t), width, fontFamily) : [],
+    // The same corners as they read with patient details hidden, for a copied picture; none when they are hidden.
+    plainLeft: visible && !hidePatient ? fitCorners(topLeftLines(series, true, t), width, fontFamily) : [],
+    plainRight: visible && !hidePatient ? fitCorners(topRightLines(series, true, nm, t), width, fontFamily) : [],
   };
 }
 
@@ -488,10 +493,10 @@ export function Viewport(props: ViewportProps) {
   });
   useEffect(() => {
     const element = container.current!;
-    let resizeFrame: number | null = null;
+    const resizeState = { frame: null as number | null };
     const resize = () => {
-      if (resizeFrame !== null) return;
-      resizeFrame = requestAnimationFrame(() => { resizeFrame = null; resizePane(element); });
+      if (resizeState.frame !== null) return;
+      resizeState.frame = requestAnimationFrame(() => { resizeState.frame = null; resizePane(element); });
     };
     const observer = new ResizeObserver(resize); observer.observe(element); resize();
     const pick = (event: Event) => { if (!latest.current.hideMeasurements) setPicked((event as CustomEvent<string>).detail); };
@@ -505,7 +510,7 @@ export function Viewport(props: ViewportProps) {
       element.removeEventListener('wheel', wheel);
       window.removeEventListener('resize', resize);
       window.removeEventListener('veacom-gpu-restored', restore);
-      if (resizeFrame !== null) cancelAnimationFrame(resizeFrame);
+      if (resizeState.frame !== null) cancelAnimationFrame(resizeState.frame);
       if (raf.current !== null) { cancelAnimationFrame(raf.current); raf.current = null; }
     };
   }, []);
@@ -806,6 +811,8 @@ export function Viewport(props: ViewportProps) {
       event.preventDefault(); event.stopPropagation();
       const step = 40, [dx, dy] = { ArrowUp: [0, -step], ArrowDown: [0, step], ArrowLeft: [-step, 0], ArrowRight: [step, 0] }[event.key as 'ArrowUp'];
       changeView({ pan: [liveView.current.pan[0] + dx, liveView.current.pan[1] + dy] });
+    } else if ((event.ctrlKey || event.metaKey) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      // Ctrl + ← / → steps through the series: the workspace's key, not this pane's.
     } else {
       const delta = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1, PageUp: -10, PageDown: 10 }[event.key];
       if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); usage.action('key-slice', 'key', { burst: true }); pageBy(liveView.current, delta); }
@@ -881,22 +888,29 @@ export function Viewport(props: ViewportProps) {
   const source = usesSourceFrames(props.volume.series, overlayView);
   const displayedSeries = source ? sourceFrameSeries(props.volume.series, overlayView.slice) : props.volume.series;
   const nm = source ? props.volume.series.frameMetadata?.[overlayView.slice]?.nm : undefined;
-  const { fontFamily, topLeft, topRight } = usePatientCorners(props.volume.series, props.showOverlay !== false, props.hidePatientData === true, metadataWidth, t, nm);
+  const { fontFamily, topLeft, topRight, plainLeft, plainRight } = usePatientCorners(props.volume.series, props.showOverlay !== false, props.hidePatientData === true, metadataWidth, t, nm);
   // The thickness only where the acquired slices are shown: a reformatted plane is not that thick.
   const direction = props.volume.series.direction;
   const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
   const normalAxis = frame.normal.reduce((best, value, axis) => Math.abs(value) > Math.abs(frame.normal[best]) ? axis : best, 0);
   const location = displayedSeries.orientationKnown === true && displayedSeries.positionKnown !== false ? frame.center[normalAxis] : null;
-  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t);
-  const bottomRight = props.showOverlay === false ? [] : [...scannerLines(props.volume.series), ...(props.fusion ? [
-    t(props.fusion.volume.series.modality !== 'PT' ? 'viewport.fusionWith' : 'viewport.fusionSeries', { name: seriesName(props.fusion.volume.series) }),
+  // A projection film names its side and what its millimetres stand for there instead (imaging/radiograph.ts).
+  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t) || projectionLine(displayedSeries);
+  const scanner = scannerLines(props.volume.series);
+  const bottomRight = props.showOverlay === false ? [] : [...scanner, ...(props.fusion ? [
+    fusionLine(props.fusion.volume.series, props.hidePatientData === true, t),
     props.fusion.volume.series.modality !== 'PT' ? t('viewport.fusionOwnValues', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : petHasSuv(props.fusion.volume.series) ? t('viewport.fusionScale', { upper: general(props.fusion.upperSuv), opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : t('viewport.fusionScaleOwn', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) }),
   ] : [])].map(text => ({ text, fitted: fitWidth(text, lowerWidth, fontFamily) }));
+  // The fused series' name reads differently with patient details hidden (fusionLine): it is drawn with the patient corners,
+  // and its plain form with the plain corners, so a copied picture takes the plain one.
+  const fusionNameAt = props.fusion && props.showOverlay !== false ? scanner.length : -1;
+  const plainFusionName = props.fusion && fusionNameAt >= 0 && !props.hidePatientData ? fitWidth(fusionLine(props.fusion.volume.series, true, t), lowerWidth, fontFamily) : null;
   // The pointer's value takes the lowest lines of the bottom-right corner (the pane's own, then a fused PET's), kept for
   // it while the overlay shows, so labels and corner lines stay put as it comes and goes.
   const readoutLines = props.showOverlay === false || props.volume.series.components === 3 ? 0 : props.fusion && !projected ? 2 : 1;
+  const bottomRightY = (index: number) => dimensions[1] - 40 - (bottomRight.length - 1 - index + readoutLines) * 16;
   const keepOut = props.showOverlay === false || (!shownAnnotations.length && !draft) ? NO_BOXES : overlayKeepOut(dimensions[0], dimensions[1], metadataWidth,
     { topLeft: topLeft.length, topRight: topRight.length, bottomLeft: detailLine ? 3 : 2, bottomRight: bottomRight.length + readoutLines });
   // Labels avoid the overlay text and the chips placed before them (hard), and every shape on the slice (soft).
@@ -945,7 +959,7 @@ export function Viewport(props: ViewportProps) {
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
-    : { left: '', right: '', top: '', bottom: '' };
+    : projectionEdgeLabels(displayedSeries, mapping) ?? { left: '', right: '', top: '', bottom: '' };
   const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
     const theirs = getPlaneFrame(reference.series, reference.view);
     const segment = referenceSegment(frame, theirs);
@@ -983,6 +997,8 @@ export function Viewport(props: ViewportProps) {
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
     <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
+    <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
       {/* Segmentation masks (from main, #3) sit on the image, under every line, measurement and overlay text. */}
       {segmentationFrames.length > 0 && <g data-testid="segmentation-overlay" pointerEvents="none">
@@ -1014,10 +1030,19 @@ export function Viewport(props: ViewportProps) {
       {shownAnnotations.map((annotation, index) => <AnnotationDrawing key={annotation.id} annotation={annotation} shown={shown[index].points} dashed={shown[index].dashed}
         handles={!projected} mapping={mapping} layout={labelLayouts[index]} selected={selected === annotation.id} />)}
       {!props.hideMeasurements && draft && <AnnotationDrawing annotation={draft} shown={draftShown} mapping={mapping} layout={draftLayout} selected={false} />}
+      <PlanDrawing volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
       {/* Overlay text last: laterality and patient identification stay on top of everything else. */}
-      {props.showOverlay !== false && <g data-testid="patient-overlay" fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
+      {props.showOverlay !== false && <g data-testid="patient-overlay" data-patient-corners fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         {topLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16} data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}
         {topRight.map((line, index) => <text key={`r${index}`} x={dimensions[0] - 10} y={18 + index * 16} textAnchor="end" data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}
+        {fusionNameAt >= 0 && <text x={dimensions[0] - 14} y={bottomRightY(fusionNameAt)} fontSize={12} textAnchor="end"><title>{bottomRight[fusionNameAt].text}</title>{bottomRight[fusionNameAt].fitted}</text>}
+      </g>}
+      {/* The corners without patient details, never drawn here: a copied picture shows them in place of the ones above
+          (svgImage in export-video.ts), so a paste carries no name or number. */}
+      {props.showOverlay !== false && !props.hidePatientData && <g data-plain-corners display="none" aria-hidden="true" fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
+        {plainLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16}>{line.fitted}</text>)}
+        {plainRight.map((line, index) => <text key={`r${index}`} x={dimensions[0] - 10} y={18 + index * 16} textAnchor="end">{line.fitted}</text>)}
+        {plainFusionName !== null && <text x={dimensions[0] - 14} y={bottomRightY(fusionNameAt)} fontSize={12} textAnchor="end">{plainFusionName}</text>}
       </g>}
       {props.showOverlay !== false && <g data-testid="image-overlay" fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         <g className="orientation-labels" fontSize={13} fontWeight={600} strokeWidth={4}>
@@ -1029,9 +1054,9 @@ export function Viewport(props: ViewportProps) {
         {detailLine && <OverlayText text={detailLine} y={dimensions[1] - 45} width={Math.min(bottomWidth, lowerWidth)} fontFamily={fontFamily} className="slice-detail" />}
         <OverlayText text={windowLine} y={dimensions[1] - 29} width={bottomWidth} fontFamily={fontFamily} />
         <OverlayText text={sliceLine} y={dimensions[1] - 13} width={bottomWidth} fontFamily={fontFamily} />
-        {bottomRight.map((line, index) => <text key={`s${index}`} x={dimensions[0] - 14} y={dimensions[1] - 40 - (bottomRight.length - 1 - index + readoutLines) * 16} fontSize={12} textAnchor="end"><title>{line.text}</title>{line.fitted}</text>)}
+        {bottomRight.map((line, index) => index !== fusionNameAt && <text key={`s${index}`} x={dimensions[0] - 14} y={bottomRightY(index)} fontSize={12} textAnchor="end"><title>{line.text}</title>{line.fitted}</text>)}
         {props.showScale && <>
-        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}</text>
+        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}{measure.unit === 'mm' && calibrationTag(displayedSeries) ? ` · ${calibrationTag(displayedSeries)}` : ''}</text>
         <path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#000" strokeWidth={3} strokeLinecap="round" opacity={0.75} fill="none" /><path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#c9d3df" strokeWidth={1} fill="none" />
         </>}
       </g>}

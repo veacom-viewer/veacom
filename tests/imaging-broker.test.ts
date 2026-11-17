@@ -165,6 +165,17 @@ describe('main-only imaging broker', () => {
     assert.equal(f.calls().filter(([op]) => op === 'import').length, 3);
     f.broker.dispose();
   });
+  it('keeps both launches until the window takes each prefetch once', async () => {
+    const f = fixture();
+    const a = await f.broker.authorizeImportPaths(['/launch/first']);
+    const b = await f.broker.authorizeImportPaths(['/launch/second']);
+    f.broker.prefetchImport(a); f.broker.prefetchImport(b);
+    await f.broker.importSelected(a); await f.broker.importSelected(b);
+    assert.equal(f.calls().filter(([op]) => op === 'import').length, 2);
+    await assert.rejects(f.broker.importSelected(a), /invalid or expired/);
+    await assert.rejects(f.broker.importSelected(b), /invalid or expired/);
+    f.broker.dispose();
+  });
   it('warms the first series the viewer opens, not a segmentation drawn over it', async () => {
     const f = fixture();
     const series = [{ id: 'mask', dimensions: [2, 2, 8], segmentation: { segments: [] } }, { id: 'ct', dimensions: [2, 2, 8] }];

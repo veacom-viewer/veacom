@@ -150,6 +150,23 @@ async function main() {
     assert.equal(await cells.nth(2).locator('[data-testid="pointer-readout"][data-export-exclude]').count(), 1, 'Exports leave the readout out.');
     check('The overlay switch shows and hides the readout, and exports leave it out');
 
+    // The fused pane names its PET by the series' description. Where patient details are hidden it names it by its
+    // modality alone, as the top-right corner names a series then: with Shift+F12, and in a copied picture, which keeps
+    // the overlay with the plain corners in place of the patient corners (svgImage in src/export-video.ts).
+    const overlayLines = leftOut => cells.nth(2).getByTestId('annotation-overlay').evaluate((svg, group) => [...svg.querySelectorAll('text')]
+      .filter(text => !text.closest(group)).map(text => text.querySelector('title')?.textContent ?? text.textContent), leftOut);
+    const onScreen = await overlayLines('[data-plain-corners]'), copied = await overlayLines('[data-patient-corners]');
+    assert(onScreen.some(line => line.startsWith('PET: Synthetic PET/CT · PET')), `The fused pane names its PET: ${JSON.stringify(onScreen)}`);
+    assert(copied.includes('PET') && !copied.some(line => line.includes('Synthetic')), `A copy names the fused PET without its description: ${JSON.stringify(copied)}`);
+    await cells.nth(2).getByTestId('dicom-viewport').focus();
+    await page.keyboard.press('Shift+F12');
+    await cells.nth(2).locator('[data-plain-corners]').waitFor({ state: 'detached' });
+    const hidden = await overlayLines('[data-plain-corners]');
+    assert(hidden.includes('PET') && !hidden.some(line => line.includes('Synthetic')), `With patient details hidden the fused PET is named by its modality: ${JSON.stringify(hidden)}`);
+    await page.keyboard.press('Shift+F12');
+    await cells.nth(2).locator('[data-plain-corners]').waitFor({ state: 'attached' });
+    check('The fused pane names its PET without its description where patient details are hidden, and in a copy', { copied });
+
     // The PET acquisition panel, under the series details in Findings, for the PET pane and for the fused CT pane.
     await page.mouse.move(5, 5);
     await page.getByTestId('inspector-tab-measurements').click();
