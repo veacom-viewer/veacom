@@ -286,6 +286,7 @@ export const en = {
   'toolbar.annotations': 'Image annotations (F12)',
   'toolbar.annotationVisibility': 'Annotation visibility',
   'toolbar.showScale': 'Scale bar',
+  'toolbar.pointerValue': 'Pointer value',
   'toolbar.showOverlay': 'Image annotations',
   'toolbar.showReferences': 'Reference lines',
   'toolbar.hidePatientData': 'Hide patient information',

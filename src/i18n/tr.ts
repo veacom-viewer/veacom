@@ -289,6 +289,7 @@ export const tr: Record<keyof typeof en, string> = {
   'toolbar.annotations': 'Açıklamalar (F12)',
   'toolbar.annotationVisibility': 'Açıklamaların görünürlüğü',
   'toolbar.showScale': 'Ölçek çubuğu',
+  'toolbar.pointerValue': 'İmleçteki değer',
   'toolbar.showOverlay': 'Açıklamalar',
   'toolbar.showReferences': 'Kesişim çizgileri',
   'toolbar.hidePatientData': 'Hasta bilgilerini gizle',
