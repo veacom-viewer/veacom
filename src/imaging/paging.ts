@@ -1,4 +1,4 @@
-import type { Annotation, Series, ViewState } from '../model';
+import type { Annotation, Joined, Series, ViewState } from '../model';
 import { getPlaneFrame, sliceCount, sub } from './geometry';
 import { usesSourceFrames } from './viewState';
 
@@ -33,39 +33,64 @@ export function pagesBackwards(series: Series, view: Paged): boolean {
   return axis !== null && (axis === 2 ? step[2] > 0 : step[axis] < 0);
 }
 
-/** How the scanner numbered a stack's acquired images, where it numbered them 1 to N in the series' order (`up`) or
- * N to 1 (`down`). */
-const scannerNumbering = new WeakMap<object, 'up' | 'down' | null>();
-function ownNumbering(series: Series): 'up' | 'down' | null {
-  const frames = series.frameMetadata, count = series.dimensions[2];
-  if (!frames || count < 2 || frames.length !== count) return null;
-  let known = scannerNumbering.get(frames);
-  if (known === undefined) {
-    known = frames.every((frame, index) => frame.instanceNumber === index + 1) ? 'up'
-      : frames.every((frame, index) => frame.instanceNumber === count - index) ? 'down' : null;
-    scannerNumbering.set(frames, known);
-  }
-  return known;
+/** The step between consecutive Instance Numbers, or zero for missing or irregular numbering. */
+const steps = new WeakMap<object, number>();
+export function scannerStep(series: Series): number {
+  const frames = series.frameMetadata;
+  if (!frames || frames.length !== series.dimensions[2] || frames.length < 2) return 0;
+  const cached = steps.get(frames);
+  if (cached !== undefined) return cached;
+  const first = frames[0].instanceNumber, second = frames[1].instanceNumber;
+  const step = first === undefined || second === undefined ? 0 : second - first;
+  const result = first !== undefined && Math.abs(step) === 1 && frames.every((frame, i) => frame.instanceNumber === first + i * step) ? step : 0;
+  steps.set(frames, result);
+  return result;
 }
 
-/** True when the slice number shown falls as the slice index rises. Acquired images that the scanner numbered 1 to N in
- * their order show those numbers: the number on screen is then the image's number in a report or in another viewer, and
- * it may fall as the reader pages down. Everything else counts in paging order, 1 at the top of an axial stack. */
 export function numbersBackwards(series: Series, view: Paged): boolean {
-  const own = usesSourceFrames(series, view) ? ownNumbering(series) : null;
-  return own ? own === 'down' : pagesBackwards(series, view);
+  if (usesSourceFrames(series, view)) {
+    const step = scannerStep(series), first = series.frameMetadata?.[0]?.instanceNumber;
+    if (step === 1 && first === 1) return false;
+    if (step === -1 && first === series.dimensions[2]) return true;
+  }
+  return pagesBackwards(series, view);
 }
 
-/** The number shown for slice index `slice` of `count`, from 1 (see numbersBackwards). */
-export function shownSlice(series: Series, view: Paged, slice: number, count: number): number {
-  return numbersBackwards(series, view) ? count - slice : slice + 1;
+/** Where slice `slice` of `count` stands in paging order, from 0: an axial stack counts from the top. The slice at a
+ * place is found the same way, since the order is either the slices' own or its reverse. */
+export function pagingPlace(series: Series, view: Paged, slice: number, count: number): number {
+  return pagesBackwards(series, view) ? count - 1 - slice : slice;
 }
 
-/** The pane's number for an annotation on an acquired frame or reconstructed slice. */
-export function measuredSlice(series: Series, annotation: Pick<Annotation, 'plane' | 'slice' | 'oblique'>, frame?: number): number {
-  if (frame !== undefined) return shownSlice(series, { mode: 'source', plane: 'axial' }, frame, series.dimensions[2]);
+/** A pane's place in the sequence it pages, from 0, and that sequence's length. A series alone is its own sequence
+ * in paging order. A stack paged with its reference image counts that image too, at the end it stands at. */
+export function placeInSequence(series: Series, view: Paged, slice: number, count: number, joined?: Joined | null): { place: number; total: number } {
+  if (!joined) return { place: pagingPlace(series, view, slice, count), total: count };
+  if (joined.lead) return { place: joined.leadAt, total: joined.total };
+  return { place: pagingPlace(series, view, slice, count) + Number(joined.leadAt === 0), total: joined.total };
+}
+
+/** The slice of a stack at a place of the sequence it shares with its reference image (not that image's own place). */
+export function stackSliceAt(series: Series, view: Paged, place: number, count: number, joined: Joined): number {
+  return pagingPlace(series, view, place - Number(joined.leadAt === 0), count);
+}
+
+/** The number a slice shows and the total beside it: its place, from 1, in the sequence its pane pages. What numbers
+ * the slice a pane shows asks here, so that the number means one image in all of it: the pane's counter, the slice
+ * bar, the image corner, the export window, the tag panel, a checklist note and the measurement list (measuredSlice). */
+export function shownSlice(series: Series, view: Paged, slice: number, count: number, joined?: Joined | null): { number: number; total: number } {
+  const { place, total } = placeInSequence(series, view, slice, count, joined);
+  if (!joined) return { number: numbersBackwards(series, view) ? count - slice : slice + 1, total };
+  return { number: joined.reverseNumbers ? total - place : place + 1, total };
+}
+
+/** The number a pane's counter shows on the slice a measurement was drawn on, for a list that names the measurement by
+ * its slice: the acquired image at index `frame`, counted with the stack's reference image where the two are paged as
+ * one (`joined`), or, with no `frame`, the measurement's slice of the reconstructed plane it was drawn on. */
+export function measuredSlice(series: Series, annotation: Pick<Annotation, 'plane' | 'slice' | 'oblique'>, frame?: number, joined?: Joined | null): number {
+  if (frame !== undefined) return shownSlice(series, { mode: 'source', plane: 'axial' }, frame, series.dimensions[2], joined).number;
   const plane: Paged = { mode: 'mpr', plane: annotation.plane, oblique: annotation.oblique };
-  return shownSlice(series, plane, annotation.slice, sliceCount(series, plane));
+  return shownSlice(series, plane, annotation.slice, sliceCount(series, plane)).number;
 }
 
 /** A paging step (+1 is down the page) as a change of slice index. */
