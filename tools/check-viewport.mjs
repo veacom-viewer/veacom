@@ -104,6 +104,16 @@ try {
   const beforeSwipe=(await state()).view.slice;
   await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect();for(let part=0;part<4;part++){canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:20,wheelDeltaY:-24,clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true}));await new Promise(resolve=>setTimeout(resolve,8));}});await settle();
   check('Touchpad speed setting pages a swipe',(await state()).view.slice===beforeSwipe+10);
+  // A part of a swipe that moves nothing up or down (sideways) leaves what the swipe gathered: 10 + 10 px are 1.25 slices
+  // at the normal speed, so one slice pages.
+  await page.evaluate(()=>{window.viewportTest.setOptions({touchpadSpeed:1});window.viewportTest.reset();});await settle();
+  const beforeSideways=(await state()).view.slice;
+  await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect(),at={clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true};for(const part of [{deltaY:10,wheelDeltaY:-12},{deltaY:0,deltaX:30,wheelDeltaY:0,wheelDeltaX:-36},{deltaY:10,wheelDeltaY:-12}]){canvas.dispatchEvent(new WheelEvent('wheel',{...part,...at}));await new Promise(resolve=>setTimeout(resolve,40));}});await settle();
+  check('A sideways part of a swipe leaves the movement gathered before it',Math.abs((await state()).view.slice-beforeSideways)===1);
+  // Rotation goes by the wheel's own reading: a notch 100 ms after a part of a swipe turns 5°, not as part of the swipe.
+  await page.evaluate(()=>{window.viewportTest.setOptions({wheelAction:'rotate'});window.viewportTest.reset();});await settle();
+  await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect(),at={clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true};canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:25,wheelDeltaY:-30,...at}));await new Promise(resolve=>setTimeout(resolve,100));canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:100,wheelDeltaY:-120,...at}));});await settle();
+  check('Wheel rotation turns 5° a notch, also just after a touchpad swipe',(await state()).view.rotation===5);
   await page.evaluate(()=>{window.viewportTest.setOptions({});window.viewportTest.reset();});await settle();
   const cdp=await page.context().newCDPSession(page);
   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:250,y:300,id:1},{x:350,y:300,id:2}]});

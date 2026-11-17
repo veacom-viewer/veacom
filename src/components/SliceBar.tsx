@@ -62,6 +62,8 @@ export function SliceBar({ count, position, label, valueText, onPosition, touchp
   // a touchpad's swipe goes by the touchpad speed, as over the image.
   const wheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     const read = streamWheelSteps(event.nativeEvent, window.veacom?.zoomFactor?.() ?? 1, event.timeStamp, wheelStream.current);
+    // An event that moves nothing up or down (a sideways swipe) leaves what a swipe has gathered as it is.
+    if (read.steps === 0) return;
     if (!read.fine) wheelRest.current = 0;
     wheelRest.current += streamSlices(read, touchpadSpeed, event.timeStamp, wheelStream.current);
     const by = Math.trunc(wheelRest.current); wheelRest.current -= by;

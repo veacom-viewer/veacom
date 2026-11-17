@@ -12,7 +12,7 @@ import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFo
 import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
-import { streamSlices, streamWheelSteps, TOUCHPAD_SPEED, type WheelStream } from '../imaging/interaction';
+import { streamSlices, streamWheelSteps, TOUCHPAD_SPEED, wheelSteps, type WheelStream } from '../imaging/interaction';
 import { pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
@@ -486,8 +486,11 @@ export function Viewport(props: ViewportProps) {
       return;
     }
     // A mouse wheel pages a slice a notch whatever the setting; the touchpad speed scales a touchpad's swipe only, up to
-    // a pace (streamSlices).
-    const read = streamWheelSteps(event, window.veacom?.zoomFactor?.() ?? 1, event.timeStamp, wheelStream.current);
+    // a pace (streamSlices). Rotation goes by the wheel's own reading, 5° a notch, outside a swipe's reading.
+    const zoomFactor = window.veacom?.zoomFactor?.() ?? 1;
+    const read = action === 'rotate' ? wheelSteps(event, zoomFactor) : streamWheelSteps(event, zoomFactor, event.timeStamp, wheelStream.current);
+    // An event that moves nothing up or down (a sideways swipe) leaves what a swipe has gathered as it is.
+    if (read.steps === 0) return;
     // A notch starts from whole slices, so a fraction a swipe left behind can neither swallow it nor add to it.
     if (!read.fine) wheelAccumulator.current = 0;
     wheelAccumulator.current += (action === 'rotate' ? read.steps : streamSlices(read, props.touchpadSpeed ?? TOUCHPAD_SPEED.default, event.timeStamp, wheelStream.current)) * (props.reverseWheel ? -1 : 1);
