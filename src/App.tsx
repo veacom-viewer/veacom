@@ -1449,7 +1449,8 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [playing]);
   /** A click on a pane's plane name: the next plane in place, axial, coronal, sagittal (VEAcom 1.x); the plane the
-   * series was acquired in shows its own images. Only for a whole volume that can be reconstructed. */
+   * series was acquired in shows its own images, unless a thick slab is on: only a reconstruction draws one. Only for a
+   * whole volume that can be reconstructed. */
   const cyclePlane = (slotId: string) => {
     const slot = slotsRef.current.find(item => item.id === slotId), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
     if (!slot || !volume || !volume.series.canReconstruct || volume.series.sourceFramesOnly || volume.sourceFrameIndex !== undefined || isProjection(volume.series, slot.view)) return;
@@ -1457,7 +1458,7 @@ export default function App() {
     if (!current) return;
     const next = ({ axial: 'coronal', coronal: 'sagittal', sagittal: 'axial' } as const)[current];
     const center = getPlaneFrame(volume.series, slot.view).center;
-    const view: ViewState = next === acquired ? { ...slot.view, mode: 'source', plane: 'axial', oblique: undefined } : { ...slot.view, mode: 'mpr', plane: next, oblique: [0, 0] };
+    const view: ViewState = next === acquired && !slot.view.slab ? { ...slot.view, mode: 'source', plane: 'axial', oblique: undefined } : { ...slot.view, mode: 'mpr', plane: next, oblique: [0, 0] };
     updateView(slotId, { ...view, slice: sliceAtWorld(volume.series, view, center) });
   };
   /** Shown panes of one kind of plane that do not page together of themselves. */
@@ -2483,7 +2484,8 @@ export default function App() {
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
   const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
   /** In the MPR menu the plane the active series was acquired in shows the series' own images, as a click on the pane's
-   * plane name does (cyclePlane); the other planes are reconstructed. */
+   * plane name does (cyclePlane); the other planes are reconstructed, and so is that one while a thick slab is on. The
+   * series' own images draw no slab, so the slab stays on and drawn; turning it off brings them back (chooseSlab). */
   const activeAcquiredPlane = activeVolume ? acquiredPlane(activeVolume.series) : null;
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
   const showPlane =(plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
@@ -2606,9 +2608,9 @@ export default function App() {
       {menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
         <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !leadReconstructs && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
         <MenuDivider />
-        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action="menu-option" key={plane} kind="radio"
+        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action={`plane-${plane}`} key={plane} kind="radio"
           checked={Boolean(activeVolume && !activeDisplayView.oblique?.some(Boolean) && (usesSourceFrames(activeVolume.series, activeDisplayView) ? plane === activeAcquiredPlane : activeDisplayView.plane === plane))}
-          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
+          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane && !activeDisplayView.slab ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
         <MenuDivider />
         <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
       </Menu>}</div> },
