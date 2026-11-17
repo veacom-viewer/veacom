@@ -2,7 +2,7 @@ import { useDeferredValue, useEffect, useEffectEvent, useRef, useState } from 'r
 import type { ReactNode } from 'react';
 import { getTags } from '../api';
 import { useTranslation } from '../i18n/react';
-import { pagesBackwards } from '../imaging/paging';
+import { shownSlice } from '../imaging/paging';
 import type { Series } from '../model';
 import { usage } from '../usage/tracker';
 import { LoaderCircle, Search } from './icons';
@@ -65,7 +65,7 @@ function TagPanel({ series, frame, query, onQuery, onError }: TagSource & {
   const loading = Boolean(id && !displayed);
   return <div className="inspector-panel tags-panel" role="tabpanel" id="inspector-panel-tags" aria-labelledby="inspector-tab-tags" tabIndex={0} aria-busy={loading || query !== deferredQuery}>
     <div className="panel-heading"><h2>{t('inspector.metadata')}</h2>{tags.rows.length > 0 && <span className="count-badge">{tags.rows.length}</span>}</div>
-    {series && series.dimensions[2] > 1 && <p className="tags-frame">{t('inspector.tagsFrame', { frame: pagesBackwards(series, { mode: 'source', plane: 'axial', oblique: undefined }) ? series.dimensions[2] - frame : frame + 1, total: series.dimensions[2] })}</p>}
+    {series && series.dimensions[2] > 1 && <p className="tags-frame">{t('inspector.tagsFrame', { frame: shownSlice(series, { mode: 'source', plane: 'axial', oblique: undefined }, frame, series.dimensions[2]), total: series.dimensions[2] })}</p>}
     <label className="tag-search"><Search size={14} aria-hidden="true" /><input data-action="tags-search" aria-label={t('inspector.searchTags')} placeholder={t('inspector.searchPlaceholder')} value={query} onChange={event => onQuery(event.target.value)} /></label>
     {loading ? <div className="inspector-empty" role="status"><LoaderCircle className="spin" size={20} /><p>{t('inspector.readingMetadata')}</p></div> : <TagList tags={tags} query={deferredQuery} />}
   </div>;
