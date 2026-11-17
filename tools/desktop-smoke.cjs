@@ -162,7 +162,8 @@ async function main() {
     const feedbackBox = () => page.getByTestId('feedback-open').boundingBox();
     const feedback = await feedbackBox(), language = await page.getByTestId('tool-language').boundingBox(), cine = await page.locator('.status-play').boundingBox();
     assert(feedback.x > cine.x + cine.width, 'Feedback is to the right of the cine controls.');
-    assert(language.x - (feedback.x + feedback.width) <= 16, 'Feedback stands next to the language.');
+    const gap = language.x - (feedback.x + feedback.width);
+    assert(gap >= 0 && gap <= 16, `Feedback stands just before the language: ${gap} px between them.`);
     const stateText = await page.evaluate(() => { const status = document.querySelector('[data-testid="status-text"]'), text = status.textContent; status.textContent = `${text} ${text} ${text}`; return text; });
     const withLongerState = await feedbackBox();
     await page.evaluate(text => { document.querySelector('[data-testid="status-text"]').textContent = text; }, stateText);
