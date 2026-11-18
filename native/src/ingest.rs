@@ -2516,7 +2516,7 @@ pub fn import_session(
                     file_bytes: MAX_ARCHIVE_FILE_BYTES,
                     total_bytes: available_archive_bytes(),
                 };
-                crate::system_archive::extract_into(path, dir.path(), &limits, &mut |_| {})?;
+                crate::system_archive::extract_into(path, dir.path(), &limits)?;
                 collect_files(dir.path(), &mut files)?;
                 let root = ImageRoot::new(dir.path(), path.file_stem());
                 archives.push(dir);

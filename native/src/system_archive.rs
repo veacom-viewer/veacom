@@ -17,9 +17,9 @@ use std::{
     process::{Child, Command, ExitStatus, Stdio},
     sync::{
         Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 /// What one extraction may write, as for a ZIP.
@@ -35,8 +35,6 @@ const MAX_EXTENDED: u64 = 64 << 10;
 /// The folders above a file and the bytes of its whole name: a stream cannot make folders without end.
 const MAX_PARTS: usize = 32;
 const MAX_NAME: usize = 1024;
-/// A reader that writes nothing for this long is ended.
-const STALL: Duration = Duration::from_secs(60);
 /// The memory the reader may take (Windows): RAR's own dictionary is at most a quarter of this in common archives.
 #[cfg(windows)]
 const READER_MEMORY: usize = 1 << 30;
@@ -168,43 +166,50 @@ impl From<anyhow::Error> for Stop {
     }
 }
 
-/// Extracts every file of the RAR archive into `dir`, handing `extracted` each file's path once it is written whole.
-pub(crate) fn extract_into(
-    archive: &Path,
-    dir: &Path,
-    limits: &Limits,
-    extracted: &mut dyn FnMut(&Path),
-) -> Result<()> {
+/// Ends the reader. It may have ended already, which is all a failure here says.
+fn end(child: &Mutex<Child>) {
+    let _ = child
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .kill();
+}
+
+/// Extracts every file of the RAR archive into `dir`.
+pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Result<()> {
     let Some(program) = reader() else {
         bail!(coded!(
             "rar.noReader",
             "RAR archives cannot be opened on this computer. Extract the archive, then open the folder."
         ));
     };
-    let mut child =
-        start(&program, File::open(archive)?).context("Cannot start the archive reader")?;
+    let child = Mutex::new(
+        start(&program, File::open(archive)?).context("Cannot start the archive reader")?,
+    );
+    let pipes = {
+        let mut child = child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        child.stdout.take().zip(child.stderr.take())
+    };
     #[cfg(windows)]
-    let _job = match confine(&child) {
-        Ok(job) => job,
-        Err(error) => {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(error);
+    let job = confine(
+        &child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    );
+    #[cfg(not(windows))]
+    let job: Result<()> = Ok(());
+    let (stream, mut complaints, _job) = match (pipes, job) {
+        (Some((stream, complaints)), Ok(job)) => (stream, complaints, job),
+        (_, job) => {
+            // No reader runs unconfined, or with no way to hear from it.
+            end(&child);
+            job.map(|_| ())
+                .context("The archive reader cannot be started safely")?;
+            bail!("The archive reader has no output");
         }
     };
-    let (Some(stream), Some(mut complaints)) = (child.stdout.take(), child.stderr.take()) else {
-        let _ = child.kill();
-        let _ = child.wait();
-        bail!("The archive reader has no output");
-    };
-    let child = Mutex::new(child);
-    let end = |child: &Mutex<Child>| {
-        let _ = child
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .kill();
-    };
-    let (begun, beat, over) = (Instant::now(), AtomicU64::new(0), AtomicBool::new(false));
+    let over = AtomicBool::new(false);
     /// Tells the watch below that the reading is over, however it ended.
     struct Over<'a>(&'a AtomicBool);
     impl Drop for Over<'_> {
@@ -214,31 +219,33 @@ pub(crate) fn extract_into(
     }
     let (written, status, complaints) = std::thread::scope(|scope| {
         let _over = Over(&over);
-        // What the reader says of the archive, only to tell a protected one from a damaged one; never shown.
+        // What the reader says of the archive, only to tell a protected one from a damaged one. It is never shown,
+        // and a reader that says nothing readable is treated as one that said nothing.
         let said = scope.spawn(move || {
             let mut text = Vec::new();
             let _ = (&mut complaints).take(4096).read_to_end(&mut text);
             let _ = io::copy(&mut complaints, &mut io::sink());
             text
         });
+        // A reader that has stopped writing holds the reading below in a read no check can interrupt: a cancelled
+        // import ends the reader, and with it that read.
         scope.spawn(|| {
             while !over.load(Ordering::Acquire) {
-                std::thread::sleep(Duration::from_millis(50));
-                let idle = begun.elapsed().as_millis() as u64 - beat.load(Ordering::Acquire);
-                if idle > STALL.as_millis() as u64 {
+                if crate::progress::check().is_err() {
                     end(&child);
                     break;
                 }
+                std::thread::sleep(Duration::from_millis(50));
             }
         });
-        let alive = || beat.store(begun.elapsed().as_millis() as u64, Ordering::Release);
-        let written = write_entries(stream, dir, limits, extracted, &alive);
+        let written = write_entries(stream, dir, limits);
         if written.is_err() {
             end(&child);
         }
-        let status = wait(&child, &end);
+        let status = exit_of(&child);
         (written, status, said.join().unwrap_or_default())
     });
+    crate::progress::check()?;
     let protected = {
         let text = String::from_utf8_lossy(&complaints).to_ascii_lowercase();
         text.contains("encrypt") || text.contains("passphrase") || text.contains("password")
@@ -257,9 +264,9 @@ pub(crate) fn extract_into(
     }
 }
 
-/// The reader's exit, waited for a moment after its output ended; it is ended if it lingers.
-fn wait(child: &Mutex<Child>, end: &impl Fn(&Mutex<Child>)) -> Option<ExitStatus> {
-    let limit = Instant::now() + Duration::from_secs(10);
+/// How the reader ended, once its output has. Asked again and again rather than waited for, so that the watch can
+/// still end a reader that lingers when the import is cancelled.
+fn exit_of(child: &Mutex<Child>) -> Option<ExitStatus> {
     loop {
         let exited = child
             .lock()
@@ -267,15 +274,8 @@ fn wait(child: &Mutex<Child>, end: &impl Fn(&Mutex<Child>)) -> Option<ExitStatus
             .try_wait();
         match exited {
             Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < limit => std::thread::sleep(Duration::from_millis(5)),
-            _ => {
-                end(child);
-                let _ = child
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .wait();
-                return None;
-            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
+            Err(_) => return None,
         }
     }
 }
@@ -288,17 +288,11 @@ struct Entry {
     kind: u8,
 }
 
-fn write_entries(
-    mut stream: impl Read,
-    dir: &Path,
-    limits: &Limits,
-    extracted: &mut dyn FnMut(&Path),
-    alive: &dyn Fn(),
-) -> Result<(), Stop> {
+/// Writes each file of the tar stream below `dir`, within `limits`.
+fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<(), Stop> {
     let (mut files, mut remaining) = (0usize, limits.total_bytes);
     let mut buffer = vec![0u8; 256 << 10];
     while let Some(entry) = next_entry(&mut stream)? {
-        alive();
         crate::progress::check()?;
         if entry.kind == b'5' {
             continue;
@@ -359,14 +353,12 @@ fn write_entries(
                 .write_all(&buffer[..want])
                 .map_err(anyhow::Error::from)?;
             left -= want as u64;
-            alive();
             crate::progress::check()?;
         }
         output.flush().map_err(anyhow::Error::from)?;
         drop(output);
         remaining -= entry.size;
         skip(&mut stream, padding(entry.size))?;
-        extracted(&target);
     }
     Ok(())
 }
@@ -661,16 +653,25 @@ pub(crate) mod tests {
         file_bytes: 1 << 20,
         total_bytes: 4 << 20,
     };
+    /// Every file below `dir`, sorted.
+    fn files_in(dir: &Path) -> Vec<PathBuf> {
+        let (mut pending, mut found) = (vec![dir.to_owned()], Vec::new());
+        while let Some(next) = pending.pop() {
+            for entry in std::fs::read_dir(next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    found.push(path);
+                }
+            }
+        }
+        found.sort();
+        found
+    }
     fn written(stream: &[u8], dir: &Path, limits: &Limits) -> Result<Vec<PathBuf>> {
-        let mut found = Vec::new();
-        match write_entries(
-            stream,
-            dir,
-            limits,
-            &mut |path| found.push(path.to_owned()),
-            &|| {},
-        ) {
-            Ok(()) => Ok(found),
+        match write_entries(stream, dir, limits) {
+            Ok(()) => Ok(files_in(dir)),
             Err(Stop::Refused(error)) => Err(error),
             Err(Stop::Stream) => bail!("stream"),
         }
@@ -739,15 +740,14 @@ pub(crate) mod tests {
         ]
         .concat();
         let found = written(&stream, dir.path(), &ROOMY).unwrap();
-        assert_eq!(
-            found,
-            [
-                dir.path().join("study").join("a.dcm"),
-                dir.path().join(enclosed(&long).unwrap())
-            ]
+        let (plain, extended) = (
+            dir.path().join("study").join("a.dcm"),
+            dir.path().join(enclosed(&long).unwrap()),
         );
-        assert_eq!(std::fs::read(&found[0]).unwrap(), b"first");
-        assert_eq!(std::fs::read(&found[1]).unwrap(), [7u8; 700]);
+        // The file under the extended header took that header's name, not the short one in its own header.
+        assert_eq!(found, [extended.clone(), plain.clone()]);
+        assert_eq!(std::fs::read(plain).unwrap(), b"first");
+        assert_eq!(std::fs::read(extended).unwrap(), [7u8; 700]);
     }
 
     #[test]
@@ -830,11 +830,8 @@ pub(crate) mod tests {
             ("study/çğıöşü.txt", b"three"),
         ];
         let ran = with_rar(&stored_rar(&files), |archive, dir| {
-            let mut found = Vec::new();
-            extract_into(archive, dir, &ROOMY, &mut |path| {
-                found.push(path.to_owned())
-            })
-            .unwrap();
+            extract_into(archive, dir, &ROOMY).unwrap();
+            let found = files_in(dir);
             for (name, data) in files {
                 let target = dir.join(enclosed(name).unwrap());
                 assert!(found.contains(&target), "{name}");
@@ -851,7 +848,7 @@ pub(crate) mod tests {
     fn a_rar_archive_the_reader_cannot_read_or_that_asks_too_much_is_refused_with_its_reason() {
         let refused = |archive: Vec<u8>, limits: Limits| {
             with_rar(&archive, |archive, dir| {
-                let error = extract_into(archive, dir, &limits, &mut |_| {}).unwrap_err();
+                let error = extract_into(archive, dir, &limits).unwrap_err();
                 (code(&error).map(str::to_owned), error.to_string())
             })
         };

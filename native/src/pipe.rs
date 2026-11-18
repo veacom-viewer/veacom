@@ -722,6 +722,8 @@ pub fn stdio() -> io::Result<(std::fs::File, std::fs::File)> {
         }
         // The ends of main's pipes stay the engine's own: a program the engine starts (system_archive.rs) is handed
         // its three handles one by one and inherits none of these. The copies above were never inheritable.
+        // SAFETY: each is this process's own standard handle or the handle behind one of its first three descriptors;
+        // the call only clears a flag, and on a handle that is not open it fails and changes nothing.
         for handle in given {
             SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, 0);
         }
