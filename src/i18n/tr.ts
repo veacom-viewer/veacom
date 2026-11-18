@@ -237,7 +237,7 @@ export const tr: Record<keyof typeof en, string> = {
   'import.unreadable': 'Bu klasör okunamadı: {folder}',
   'toolbar.openFolder': 'Klasör aç',
   'toolbar.openFiles': 'DICOM dosyalarını aç',
-  'toolbar.openArchive': 'Arşiv aç (ZIP)',
+  'toolbar.openArchive': 'Arşiv aç',
   'toolbar.labelFolder': 'Uzun bacak grafisi klasörünü işaretle',
   'toolbar.openDisc': 'CD/DVD\'den içe aktar',
   'toolbar.export': 'Dışa aktar',
@@ -348,6 +348,7 @@ export const tr: Record<keyof typeof en, string> = {
   'welcome.reconnect': 'Yeniden bağlan',
   'welcome.title': 'Bir çalışma açın',
   'welcome.hint': 'Klasör, DICOM dosyaları, ZIP arşivi ya da CD/DVD (DICOMDIR) açın. Dosyaları buraya sürükleyip de bırakabilirsiniz.',
+  'welcome.hintRar': 'Klasör, DICOM dosyaları, ZIP ya da RAR arşivi ya da CD/DVD (DICOMDIR) açın. Dosyaları buraya sürükleyip de bırakabilirsiniz.',
 
   'inspector.label': 'Yan panel',
   'inspector.measurementsTab': 'Ölçümler paneli',

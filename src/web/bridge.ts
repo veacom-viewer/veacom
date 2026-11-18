@@ -469,7 +469,7 @@ export function createWebBridge(): DesktopBridge {
     // no self-update, and no feedback service the page may reach.
     // A page cannot find a disc or offer the import window; folders, files and ZIPs open through the browser's pickers
     // (a disc's folder among them).
-    features: { discBurning: false, usbExport: false, exportFolder: false, zipExport: false, importWindow: false, discImport: false, updates: false, feedback: false },
+    features: { discBurning: false, usbExport: false, exportFolder: false, zipExport: false, importWindow: false, discImport: false, updates: false, feedback: false, rarImport: false },
     get locale() { return locale; },
     async setLocale(value) { locale = value; try { localStorage.setItem(LOCALE_KEY, value); } catch { /* Not kept. */ } },
     takeStartupPaths: async () => [],

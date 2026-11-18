@@ -322,7 +322,9 @@ export type BridgeFeature =
   /** Checking for and installing updates. */
   | 'updates'
   /** Sending feedback to the team. */
-  | 'feedback';
+  | 'feedback'
+  /** Opening a RAR archive, which the engine reads through the system's own archive reader. */
+  | 'rarImport';
 /** A film of a folder being labelled, with the plan file beside it: its text, null when there is none, or `unreadable`. */
 export interface LabelFilm { name: string; plan: string | null; unreadable?: true }
 /** A folder chosen for labelling: `writes` says where Save and next puts a plan, beside its film or as a download (a

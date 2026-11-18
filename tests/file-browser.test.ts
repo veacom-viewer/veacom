@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createRequire } from 'node:module';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
 const { browse, chosenPaths, localPath } = require('../electron/file-browser.cjs');
@@ -37,6 +39,17 @@ describe('import window paths', () => {
       assert.throws(() => windows(value, [documents]), { message: /Invalid folder\./ }, value);
     }
     assert.throws(() => windows('\\\\?\\UNC\\files\\home$\\ayse\\Documents', [documents]), { message: /Invalid folder\./ });
+  });
+
+  it('lists a folder\'s folders and its ZIP and RAR archives, and counts its other files', async () => {
+    const folder = await realpath(await mkdtemp(path.join(tmpdir(), 'veacom-browse-test-')));
+    try {
+      await mkdir(path.join(folder, 'study'));
+      for (const name of ['b.ZIP', 'a.rar', 'notes.txt', 'IM0001', '.hidden.zip']) await writeFile(path.join(folder, name), '');
+      const listed = await browse(folder);
+      assert.deepEqual(listed.items.map((item: { name: string; kind: string }) => [item.name, item.kind]), [['study', 'folder'], ['a.rar', 'archive'], ['b.ZIP', 'archive']]);
+      assert.equal(listed.files, 2);
+    } finally { await rm(folder, { recursive: true, force: true }); }
   });
 
   it('lists no network folder', async () => {

@@ -21,7 +21,7 @@ On Windows, run `scripts/windows-runtime.ps1` for the packaged native runtime. e
 
 The Windows installer adds VEAcom to Explorer (`packaging/explorer-entries.nsh`), and the uninstaller removes it again:
 
-- **Open with VEAcom** (**VEAcom ile aç** on a Turkish Windows) in the right-click menu of a folder, a drive, a ZIP file and a file named `DICOMDIR`. On Windows 11 it is under **Show more options**.
+- **Open with VEAcom** (**VEAcom ile aç** on a Turkish Windows) in the right-click menu of a folder, a drive, a ZIP or RAR file and a file named `DICOMDIR`. On Windows 11 it is under **Show more options**.
 - VEAcom under **Open with** for `.dcm` files. The installer never makes VEAcom the default program for them.
 
 The entries sit under `Software\Classes` of the install's own scope: the current user for the per-user install, so no administrator is needed. Each runs the installed program with `--study` and the path. A file named `DICOMDIR` opens the disc it indexes.

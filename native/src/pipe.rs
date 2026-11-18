@@ -699,12 +699,19 @@ pub fn stdio() -> io::Result<(std::fs::File, std::fs::File)> {
 #[cfg(windows)]
 pub fn stdio() -> io::Result<(std::fs::File, std::fs::File)> {
     use std::os::windows::io::{AsHandle, AsRawHandle};
+    use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
     use windows_sys::Win32::System::Console::{STD_OUTPUT_HANDLE, SetStdHandle};
     unsafe extern "C" {
         fn _dup2(old: i32, new: i32) -> i32;
+        fn _get_osfhandle(descriptor: i32) -> isize;
     }
     let input = io::stdin().as_handle().try_clone_to_owned()?;
     let output = io::stdout().as_handle().try_clone_to_owned()?;
+    let given = [
+        io::stdin().as_raw_handle(),
+        io::stdout().as_raw_handle(),
+        io::stderr().as_raw_handle(),
+    ];
     // C codecs use CRT descriptor 1. Rust and Win32 callers use the process standard handle.
     unsafe {
         if _dup2(2, 1) != 0 {
@@ -712,6 +719,14 @@ pub fn stdio() -> io::Result<(std::fs::File, std::fs::File)> {
         }
         if SetStdHandle(STD_OUTPUT_HANDLE, io::stderr().as_raw_handle()) == 0 {
             return Err(io::Error::last_os_error());
+        }
+        // The ends of main's pipes stay the engine's own: a program the engine starts (system_archive.rs) is handed
+        // its three handles one by one and inherits none of these. The copies above were never inheritable.
+        for handle in given {
+            SetHandleInformation(handle as _, HANDLE_FLAG_INHERIT, 0);
+        }
+        for descriptor in 0..3 {
+            SetHandleInformation(_get_osfhandle(descriptor) as _, HANDLE_FLAG_INHERIT, 0);
         }
     }
     Ok((input.into(), output.into()))
