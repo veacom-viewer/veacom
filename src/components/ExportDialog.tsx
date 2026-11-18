@@ -60,7 +60,7 @@ export interface ExportDialogProps {
   /** Every pane on screen as one picture. */
   onPicture?: (format: 'png' | 'jpeg', layout: boolean) => void;
   /** Patient details are hidden in the viewer: the exported pictures show none, and their folder is not named after the patient. */
-  hidePatientData?: boolean;
+  hidePatientData: boolean;
 }
 
 const KINDS: Array<{ mode: ExportMode; label: 'export.kindDicom' | 'export.kindImages' | 'export.kindVideo' | 'export.kindMedia' }> = [
@@ -107,7 +107,7 @@ function PickAll({ ids, picked, action, onToggle }: { ids: string[]; picked: Rea
   return <input type="checkbox" data-action={action} checked={state.all} ref={box => { if (box) box.indeterminate = state.partial; }} onChange={() => onToggle(ids)} />;
 }
 
-export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture, hidePatientData = false }: ExportDialogProps) {
+export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture, hidePatientData }: ExportDialogProps) {
   const { locale, t } = useTranslation();
   const active = series.find(item => item.id === activeSeriesId);
   const isImages = mode === 'images', isVideo = mode === 'video', isMedia = mode === 'media', captures = isImages || isVideo;
