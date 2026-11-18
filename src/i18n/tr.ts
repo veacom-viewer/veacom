@@ -348,7 +348,7 @@ export const tr: Record<keyof typeof en, string> = {
   'welcome.reconnect': 'Yeniden bağlan',
   'welcome.title': 'Bir çalışma açın',
   'welcome.hint': 'Klasör, DICOM dosyaları, ZIP arşivi ya da CD/DVD (DICOMDIR) açın. Dosyaları buraya sürükleyip de bırakabilirsiniz.',
-  'welcome.hintRar': 'Klasör, DICOM dosyaları, ZIP ya da RAR arşivi ya da CD/DVD (DICOMDIR) açın. Dosyaları buraya sürükleyip de bırakabilirsiniz.',
+  'welcome.hintRar': 'Klasör, DICOM dosyaları, ZIP veya RAR arşivi ya da CD/DVD (DICOMDIR) açın. Dosyaları buraya sürükleyip de bırakabilirsiniz.',
 
   'inspector.label': 'Yan panel',
   'inspector.measurementsTab': 'Ölçümler paneli',
