@@ -9,7 +9,7 @@
 //! as a ZIP entry's is (ingest.rs): the reader's own checks are not relied on. On Windows it runs in a job that ends
 //! it with the engine, lets it start no program of its own and bounds its memory.
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
@@ -101,6 +101,7 @@ fn start(program: &Path, archive: File) -> io::Result<Child> {
 /// at most READER_MEMORY. The job lasts as long as the handle returned.
 #[cfg(windows)]
 fn confine(child: &Child) -> Result<std::os::windows::io::OwnedHandle> {
+    use anyhow::ensure;
     use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
