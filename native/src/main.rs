@@ -720,11 +720,15 @@ fn warm_volume(core: &App, request: &pipe::Request, id: String) -> ApiResult<Rep
     }
     Ok(Reply::json(202, &json!({ "warming": true })))
 }
-/// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed.
+/// Longer than any identifier a readable file gives an image: a DICOM UID has at most 64 characters.
+const MAX_HEADER_VALUE: usize = 1024;
+/// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed, and short enough that the reply's
+/// head stays within what main reads (MAX_HEAD in pipe.rs).
 fn header_value(value: &str) -> bool {
-    value
-        .bytes()
-        .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
+    value.len() <= MAX_HEADER_VALUE
+        && value
+            .bytes()
+            .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
 }
 fn frame(
     core: &App,
@@ -1801,6 +1805,31 @@ mod protocol_tests {
                 .is_some_and(|notes| notes.iter().any(|n| n["code"] == "import.patientConflict"));
             assert_eq!(warned, conflict, "{name}: {result}");
         }
+    }
+
+    #[test]
+    fn a_frame_named_longer_than_a_header_holds_fails_alone() {
+        use dicom_core::{Tag, VR};
+        let _turn = job_tests_progress();
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = super::job_tests::slice(temp.path(), "long.dcm", 11);
+        let mut file = dicom_object::open_file(&path).unwrap();
+        // No readable file names an image at this length: a DICOM UID has at most 64 characters.
+        file.put_str(
+            Tag(0x0008, 0x0018),
+            VR::UI,
+            format!("1.2.{}", "9".repeat(60_000)),
+        );
+        file.write_to_file(&path).unwrap();
+        let mut engine = Engine::start();
+        let (status, result) = engine.json(json!({"op":"import", "body":{"paths":[path]}}));
+        assert_eq!(status, 200, "{result}");
+        let id = &result["series"][0]["id"];
+        let (status, refused) = engine.json(json!({"op":"frame", "body":{"id":id, "index":0}}));
+        assert_eq!(status, 422, "{refused}");
+        // The engine and the series are still there.
+        let (status, listed) = engine.json(json!({"op":"series"}));
+        assert_eq!((status, &listed["series"][0]["id"]), (200, id));
     }
 
     #[test]
