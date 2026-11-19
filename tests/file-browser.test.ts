@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
-const { browse, chosenPaths, localPath } = require('../electron/file-browser.cjs');
+const { browse, chosenPaths, driveTypes, listedDrives, localPath } = require('../electron/file-browser.cjs');
 
 const windows = (value: string, places: string[] = []) => localPath(value, { places, paths: path.win32, platform: 'win32' });
 const mac = (value: string) => localPath(value, { platform: 'darwin', paths: path.posix });
@@ -49,5 +49,45 @@ describe('import window paths', () => {
     assert.deepEqual(chosenPaths([study, `${other}/../mr`, study]), [study, other]);
     const network = process.platform === 'win32' ? '\\\\attacker\\share' : process.platform === 'darwin' ? '/net/attacker' : 'relative';
     for (const paths of [[], 'C:\\', [study, network], [study, 'relative'], Array(4097).fill(study)]) assert.throws(() => chosenPaths(paths as string[]), { message: /^Invalid / });
+  });
+});
+
+describe('import window drives', () => {
+  /** An engine whose connection answers every request with `answer`, noting what it was asked in `seen`. */
+  const engine = (answer: unknown, seen: unknown[] = []) => ({
+    connection: () => ({ request: async (op: string, body: unknown) => { seen.push([op, body]); return answer instanceof Response ? answer : Response.json(answer); } }),
+  });
+
+  it('asks the engine for the kinds, and for the names of the drives that answer', async () => {
+    const seen: unknown[] = [];
+    const types = await driveTypes(engine({ drives: [{ letter: 'C', kind: 'fixed', label: 'Windows' }, { letter: 'E', kind: 'disc', label: '' }] }, seen), ['C']);
+    assert.deepEqual(seen, [['drives', { answering: ['C'] }]]);
+    assert.deepEqual(types, { C: { kind: 'fixed', label: 'Windows' }, E: { kind: 'disc', label: '' } });
+  });
+
+  it('takes from the engine only what a drive can be', async () => {
+    const types = await driveTypes(engine({ drives: [
+      { letter: 'CD', kind: 'fixed', label: 'x' }, { letter: 'c', kind: 'fixed', label: 'x' }, { letter: 7, kind: 'fixed' }, null,
+      { letter: 'D', kind: 'tape', label: 'x' }, { letter: 'F', kind: 'network', label: 42 }, { letter: 'G', kind: 'removable', label: 'N'.repeat(300) },
+    ] }), []);
+    assert.deepEqual(types, { F: { kind: 'network', label: '' }, G: { kind: 'removable', label: 'N'.repeat(261) } });
+  });
+
+  it('lists the drives by their letters alone when the engine does not answer', async () => {
+    const stopped = { connection: () => { throw new Error('The imaging engine is not ready.'); } };
+    for (const silent of [engine(new Response('busy', { status: 503 })), engine({ drives: 'none' }), engine({}), stopped]) {
+      assert.deepEqual(await driveTypes(silent, ['C']), {});
+    }
+    assert.deepEqual(listedDrives(['C'], {}), [{ path: 'C:\\', label: 'C:', kind: 'fixed', ready: true }]);
+  });
+
+  it('lists each drive that answers, and a disc drive with no disc in it', () => {
+    const types = { C: { kind: 'fixed', label: 'Windows' }, E: { kind: 'disc', label: '' }, F: { kind: 'disc', label: 'CT 2026' }, Z: { kind: 'network', label: 'Arşiv' } };
+    assert.deepEqual(listedDrives(['C', 'F', 'H'], types), [
+      { path: 'C:\\', label: 'Windows (C:)', kind: 'fixed', ready: true },
+      { path: 'E:\\', label: 'E:', kind: 'disc', ready: false },
+      { path: 'F:\\', label: 'CT 2026 (F:)', kind: 'disc', ready: true },
+      { path: 'H:\\', label: 'H:', kind: 'fixed', ready: true },
+    ]);
   });
 });
