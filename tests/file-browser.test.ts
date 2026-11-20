@@ -3,7 +3,7 @@ import { describe, it } from 'node:test';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 const require = createRequire(import.meta.url);
-const { browse, chosenPaths, driveTypes, listedDrives, localPath } = require('../electron/file-browser.cjs');
+const { browse, chosenPaths, driveTypes, listedDrives, localPath, readyDiscs } = require('../electron/file-browser.cjs');
 
 const windows = (value: string, places: string[] = []) => localPath(value, { places, paths: path.win32, platform: 'win32' });
 const mac = (value: string) => localPath(value, { platform: 'darwin', paths: path.posix });
@@ -89,5 +89,27 @@ describe('import window drives', () => {
       { path: 'F:\\', label: 'CT 2026 (F:)', kind: 'disc', ready: true },
       { path: 'H:\\', label: 'H:', kind: 'fixed', ready: true },
     ]);
+  });
+
+  it('finds the disc drives that hold a disc, waiting on each and on no other drive', async () => {
+    const drives = [{ letter: 'C', kind: 'fixed', label: '' }, ...['D', 'E', 'F'].map(letter => ({ letter, kind: 'disc', label: '' }))];
+    const asked: string[] = [];
+    // D holds a disc, E is empty and says so, F never answers.
+    const reach = (root: string) => {
+      asked.push(root);
+      return root === 'D:\\' ? Promise.resolve() : root === 'E:\\' ? Promise.reject(new Error('not ready')) : new Promise<void>(() => {});
+    };
+    const started = performance.now();
+    assert.deepEqual(await readyDiscs(engine({ drives }), { platform: 'win32', reach, wait: 60 }), ['D:\\']);
+    assert.deepEqual(asked, ['D:\\', 'E:\\', 'F:\\']);
+    assert.ok(performance.now() - started < 2000, 'the drive that never answers is waited for only as long as asked');
+    assert.deepEqual(await readyDiscs(engine({ drives: [drives[0]] }), { platform: 'win32', reach }), []);
+  });
+
+  it('does not say which drives hold a disc where that is not known', async () => {
+    const stopped = { connection: () => { throw new Error('The imaging engine is not ready.'); } };
+    assert.equal(await readyDiscs(stopped, { platform: 'win32' }), null);
+    const disc = engine({ drives: [{ letter: 'D', kind: 'disc', label: '' }] });
+    for (const platform of ['darwin', 'linux']) assert.equal(await readyDiscs(disc, { platform, reach: () => Promise.resolve() }), null);
   });
 });

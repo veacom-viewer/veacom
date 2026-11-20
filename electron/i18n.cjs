@@ -51,6 +51,7 @@ const en = {
   'broker.tooManySelections': 'Too many pending file selections.',
   'broker.seriesNotOpen': 'This series is not open in the current imaging engine.',
   'broker.tooManyImages': 'Too many pending image requests.',
+  'disc.none': 'There is no disc in the CD or DVD drive.',
 
   'video.alreadyRunning': 'Another video export is already running.',
   'video.frameRate': 'Choose a frame rate between 1 and 120.',
@@ -185,6 +186,7 @@ const tr = {
   'broker.tooManySelections': 'Bekleyen dosya seçimi çok fazla.',
   'broker.seriesNotOpen': 'Bu seri geçerli görüntüleme motorunda açık değil.',
   'broker.tooManyImages': 'Bekleyen görüntü isteği çok fazla.',
+  'disc.none': 'CD/DVD sürücüsünde disk yok.',
 
   'video.alreadyRunning': 'Başka bir video dışa aktarma sürüyor.',
   'video.frameRate': '1 ile 120 arasında bir kare hızı seçin.',

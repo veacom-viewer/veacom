@@ -186,6 +186,7 @@ export const en = {
 
   'status.connecting': 'Connecting to imaging service…',
   'status.reading': 'Reading DICOM studies…',
+  'status.disc': 'Looking for the disc…',
   'status.loadingSeries': 'Loading {count} series…',
   'status.serviceUnavailable': 'Service unavailable',
   'status.ready': 'Ready',
@@ -236,7 +237,7 @@ export const en = {
   'toolbar.openFiles': 'Open DICOM files',
   'toolbar.openArchive': 'Open archive',
   'toolbar.labelFolder': 'Label a folder of long-leg films',
-  'toolbar.openDisc': 'Open CD or DVD folder',
+  'toolbar.openDisc': 'Import from CD or DVD',
   'toolbar.export': 'Export',
   'toolbar.exportCurrentPng': 'Current image · PNG',
   'toolbar.exportCurrentJpeg': 'Current image · JPEG',
