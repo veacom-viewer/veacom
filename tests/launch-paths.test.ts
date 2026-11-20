@@ -41,6 +41,16 @@ describe('the paths a launch names', () => {
     assert.deepEqual(launchPaths(['VEAcom.exe', '"C:\\studies\\ct"'], { packaged: true, cwd }), ['C:\\studies\\ct']);
   });
 
+  it('reads a path with a drive and no folder from the launch\'s folder on that drive, or from the drive\'s root', { skip: process.platform !== 'win32' }, () => {
+    assert.deepEqual(launchPaths(['VEAcom.exe', '--study', 'C:scan'], { packaged: true, cwd: 'C:\\studies' }), ['C:\\studies\\scan']);
+    // The launch's folder is on another drive. This process has a folder of its own on its drive, which is not the
+    // launch's: the path is not read from there.
+    const own = process.cwd().slice(0, 2).toUpperCase(), other = own === 'Q:' ? 'R:' : 'Q:';
+    assert.match(own, /^[A-Z]:$/);
+    assert.deepEqual(launchPaths(['VEAcom.exe', '--study', `${own}scan`], { packaged: true, cwd: `${other}\\studies` }), [`${own}\\scan`]);
+    assert.deepEqual(launchPaths(['VEAcom.exe', `${own}`], { packaged: true, cwd: `${other}\\studies` }), [`${own}\\`]);
+  });
+
   it('ignores anything that is not a list of strings', () => {
     assert.deepEqual(launchPaths(undefined, { packaged: true, cwd }), []);
     assert.deepEqual(launchPaths(['VEAcom.exe', 7, null, 'ct'], { packaged: true, cwd }), [at('ct')]);
