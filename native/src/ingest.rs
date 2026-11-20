@@ -5350,10 +5350,11 @@ mod tests {
         let error = import(&[file.to_string_lossy().into_owned()])
             .err()
             .unwrap();
-        // Unreadable where the system has an archive reader; where it has none, the message says that instead.
+        // An archive that ends after its first bytes, where the system has an archive reader; where it has none, the
+        // message says that instead.
         let code = crate::message::coded(&error).map(|note| note.code);
         assert!(
-            matches!(code, Some("rar.unreadable" | "rar.noReader")),
+            matches!(code, Some("rar.damaged" | "rar.noReader")),
             "{code:?}"
         );
     }

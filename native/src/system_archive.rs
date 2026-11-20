@@ -1,13 +1,14 @@
 //! RAR archives, read by the system's own archive reader.
 //!
-//! VEAcom has no RAR reader of its own. bsdtar, which Windows 10 and later (as tar.exe) and macOS ship and keep up to
+//! VEAcom has no RAR decoder of its own. bsdtar, which Windows 10 and later (as tar.exe) and macOS ship and keep up to
 //! date, reads the archive in a process of its own and writes the archive's files to its standard output as a tar
 //! stream. This module reads that stream and writes the files into the import's extraction folder.
 //!
 //! The reader is given the archive as its standard input and nothing else: no file name, no folder to write to, an
 //! almost empty environment and no window. Every name and size in its stream is checked here before a file is made,
-//! as a ZIP entry's is (ingest.rs): the reader's own checks are not relied on. On Windows it runs in a job that ends
-//! it with the engine, lets it start no program of its own and bounds its memory.
+//! as a ZIP entry's is (ingest.rs): the reader's own checks are not relied on. The archive's own headers are walked
+//! first (rar_headers.rs), and each file written is compared with the CRC-32 they give. On Windows the reader runs in
+//! a job that ends it with the engine, lets it start no program of its own and bounds its memory.
 
 use anyhow::{Context, Result, bail};
 use std::{
@@ -183,9 +184,11 @@ pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Resul
             "RAR archives cannot be opened on this computer. Extract the archive, then open the folder."
         ));
     };
-    let child = Mutex::new(
-        start(&program, File::open(archive)?).context("Cannot start the archive reader")?,
-    );
+    // The reader is started only for a whole RAR archive, and what it hands over is compared with the checksums
+    // the archive's own headers give (rar_headers.rs).
+    let mut archive = File::open(archive)?;
+    let expected = crate::rar_headers::check(&mut archive, limits.files)?;
+    let child = Mutex::new(start(&program, archive).context("Cannot start the archive reader")?);
     let pipes = {
         let mut child = child
             .lock()
@@ -253,15 +256,14 @@ pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Resul
     };
     match written {
         Err(Stop::Refused(error)) => Err(error),
-        _ if protected => bail!(coded!(
-            "rar.protected",
-            "Password-protected RAR archives cannot be opened. Extract the archive, then open the folder."
-        )),
-        Ok(()) if status.is_some_and(|status| status.success()) => Ok(()),
-        _ => bail!(coded!(
-            "rar.unreadable",
-            "This RAR archive could not be read. Extract it, then open the folder."
-        )),
+        _ if protected => Err(crate::rar_headers::protected()),
+        Ok(written) if status.is_some_and(|status| status.success()) => {
+            if written != expected {
+                bail!(crate::rar_headers::damaged());
+            }
+            Ok(())
+        }
+        _ => Err(crate::rar_headers::unreadable()),
     }
 }
 
@@ -290,8 +292,8 @@ struct Entry {
 }
 
 /// Writes each file of the tar stream below `dir`, within `limits`.
-fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<(), Stop> {
-    let (mut files, mut remaining) = (0usize, limits.total_bytes);
+fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<Vec<u32>, Stop> {
+    let (mut files, mut remaining) = (Vec::new(), limits.total_bytes);
     let mut buffer = vec![0u8; 256 << 10];
     while let Some(entry) = next_entry(&mut stream)? {
         crate::progress::check()?;
@@ -305,13 +307,8 @@ fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<(
             ))
             .into());
         }
-        files += 1;
-        if files > limits.files {
-            return Err(anyhow::Error::from(coded!(
-                "rar.tooManyEntries",
-                "RAR contains too many entries"
-            ))
-            .into());
+        if files.len() == limits.files {
+            return Err(crate::rar_headers::too_many().into());
         }
         if entry.size > limits.file_bytes {
             return Err(anyhow::Error::from(coded!(
@@ -341,6 +338,7 @@ fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<(
             .create_new(true)
             .open(&target)
             .map_err(anyhow::Error::from)?;
+        let mut crc = flate2::Crc::new();
         let mut left = entry.size;
         while left > 0 {
             let want = buffer
@@ -353,15 +351,17 @@ fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<(
             output
                 .write_all(&buffer[..want])
                 .map_err(anyhow::Error::from)?;
+            crc.update(&buffer[..want]);
             left -= want as u64;
             crate::progress::check()?;
         }
         output.flush().map_err(anyhow::Error::from)?;
         drop(output);
+        files.push(crc.sum());
         remaining -= entry.size;
         skip(&mut stream, padding(entry.size))?;
     }
-    Ok(())
+    Ok(files)
 }
 
 /// The bytes after `size` bytes of data up to the next block.
@@ -572,7 +572,7 @@ pub(crate) mod tests {
     use super::*;
 
     /// A RAR 5 variable-length integer.
-    fn vint(mut value: u64) -> Vec<u8> {
+    pub(crate) fn vint(mut value: u64) -> Vec<u8> {
         let mut bytes = Vec::new();
         loop {
             let low = (value & 0x7f) as u8;
@@ -584,13 +584,13 @@ pub(crate) mod tests {
             bytes.push(low | 0x80);
         }
     }
-    fn crc(bytes: &[u8]) -> [u8; 4] {
+    pub(crate) fn crc(bytes: &[u8]) -> [u8; 4] {
         let mut crc = flate2::Crc::new();
         crc.update(bytes);
         crc.sum().to_le_bytes()
     }
     /// One RAR 5 header: the CRC-32 of what follows, its size, then its type, flags and fields.
-    fn header(kind: u64, flags: u64, fields: &[&[u8]]) -> Vec<u8> {
+    pub(crate) fn header(kind: u64, flags: u64, fields: &[&[u8]]) -> Vec<u8> {
         let mut body = [vint(kind), vint(flags)].concat();
         for field in fields {
             body.extend_from_slice(field);
@@ -672,12 +672,12 @@ pub(crate) mod tests {
     }
     fn written(stream: &[u8], dir: &Path, limits: &Limits) -> Result<Vec<PathBuf>> {
         match write_entries(stream, dir, limits) {
-            Ok(()) => Ok(files_in(dir)),
+            Ok(_) => Ok(files_in(dir)),
             Err(Stop::Refused(error)) => Err(error),
             Err(Stop::Stream) => bail!("stream"),
         }
     }
-    fn code(error: &anyhow::Error) -> Option<&str> {
+    pub(crate) fn code(error: &anyhow::Error) -> Option<&str> {
         crate::message::coded(error).map(|note| note.code)
     }
 
@@ -749,6 +749,11 @@ pub(crate) mod tests {
         assert_eq!(found, [extended.clone(), plain.clone()]);
         assert_eq!(std::fs::read(plain).unwrap(), b"first");
         assert_eq!(std::fs::read(extended).unwrap(), [7u8; 700]);
+        // Each file's CRC-32, in the stream's order, for the comparison with the archive's headers.
+        let again = crate::test_dir::tempdir().unwrap();
+        let sums = write_entries(&stream[..], again.path(), &ROOMY).ok();
+        let sum = |bytes: &[u8]| u32::from_le_bytes(crc(bytes));
+        assert_eq!(sums, Some(vec![sum(b"first"), sum(&[7u8; 700])]));
     }
 
     #[test]
@@ -846,6 +851,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_list_of_this_computers_files_named_rar_never_reaches_the_reader() {
+        let local = crate::test_dir::tempdir().unwrap();
+        let named = local.path().join("local.txt");
+        std::fs::write(&named, "not in any archive").unwrap();
+        // The reader's own list format: it would fetch the file named and hand it over as the archive's.
+        let list = format!(
+            "#mtree\n./pulled.txt type=file contents={}\n",
+            named.display().to_string().replace('\\', "/")
+        );
+        let ran = with_rar(list.as_bytes(), |archive, dir| {
+            let error = extract_into(archive, dir, &ROOMY).unwrap_err();
+            assert_eq!(code(&error), Some("rar.unreadable"));
+            assert_eq!(files_in(dir), Vec::<PathBuf>::new());
+        });
+        if ran.is_none() {
+            eprintln!("skipped: this system has no bsdtar");
+        }
+    }
+
+    #[test]
     fn a_rar_archive_the_reader_cannot_read_or_that_asks_too_much_is_refused_with_its_reason() {
         let refused = |archive: Vec<u8>, limits: Limits| {
             with_rar(&archive, |archive, dir| {
@@ -854,16 +879,53 @@ pub(crate) mod tests {
             })
         };
         let good = stored_rar(&[("a.dcm", &[1u8; 2000]), ("b.dcm", &[2u8; 2000])]);
-        let Some(cut) = refused(good[..good.len() / 2].to_vec(), ROOMY) else {
+        let end = header(5, 0, &[&vint(0)]).len();
+        // Cut between its two files, which the reader takes for an archive of one.
+        let one = stored_rar(&[("a.dcm", &[1u8; 2000])]);
+        let Some(cut) = refused(one[..one.len() - end].to_vec(), ROOMY) else {
             eprintln!("skipped: this system has no bsdtar");
             return;
         };
-        assert_eq!(cut.0.as_deref(), Some("rar.unreadable"));
+        assert_eq!(cut.0.as_deref(), Some("rar.damaged"));
         let coded = |archive: Vec<u8>, limits: Limits| refused(archive, limits).unwrap().0;
+        assert_eq!(
+            coded(good[..good.len() / 2].to_vec(), ROOMY).as_deref(),
+            Some("rar.damaged")
+        );
         assert_eq!(
             coded(b"not an archive at all".to_vec(), ROOMY).as_deref(),
             Some("rar.unreadable")
         );
+        // A stored file with one byte changed: the reader hands it over as it is, and its CRC-32 tells.
+        let mut changed = good.clone();
+        let last = good.len() - end - 1;
+        assert_eq!(changed[last], 2);
+        changed[last] = 3;
+        assert_eq!(coded(changed, ROOMY).as_deref(), Some("rar.damaged"));
+        // Whole headers around a file said to be compressed, whose bytes are nothing of the kind: the reader gives up.
+        let packed = [
+            SIGNATURE.to_vec(),
+            header(1, 0, &[&vint(0)]),
+            header(
+                2,
+                2,
+                &[
+                    &vint(64),
+                    &vint(4),
+                    &vint(9000),
+                    &vint(0x20),
+                    &crc(&[0x5a; 64]),
+                    &vint(3 << 7),
+                    &vint(0),
+                    &vint(1),
+                    b"p",
+                ],
+            ),
+            vec![0x5a; 64],
+            header(5, 0, &[&vint(0)]),
+        ]
+        .concat();
+        assert_eq!(coded(packed, ROOMY).as_deref(), Some("rar.unreadable"));
         // What a password-protected archive starts with: an encryption header (type 4), then bytes nobody can read.
         let protected = [
             SIGNATURE.to_vec(),

@@ -72,6 +72,8 @@
     "rar.noReader": "RAR arşivleri bu bilgisayarda açılamıyor. Arşivi çıkarıp klasörü açın.",
     "rar.protected": "Parolalı RAR arşivleri açılamaz. Arşivi çıkarıp klasörü açın.",
     "rar.unreadable": "Bu RAR arşivi okunamadı. Arşivi çıkarıp klasörü açın.",
+    "rar.damaged": "Bu RAR arşivi eksik veya bozuk. Arşivi yeniden alın ya da çıkarıp klasörü açın.",
+    "rar.part": "Bu RAR arşivi birkaç parçadan biri. Parçaları çıkarıp klasörü açın.",
     "rar.link": "RAR içindeki bağlantılar ve özel dosyalar kabul edilmez.",
     "rar.tooManyEntries": "RAR arşivinde çok fazla öğe var.",
     "rar.entryTooLarge": "RAR içindeki bir dosya, dosya başına sınırı aşıyor.",
