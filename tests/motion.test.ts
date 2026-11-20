@@ -12,7 +12,8 @@ it('has no animation that runs without end', () => {
   const sheets = readdirSync(source, { recursive: true, encoding: 'utf8' }).filter(file => file.endsWith('.css'));
   assert.ok(sheets.length > 0);
   for (const sheet of sheets) {
-    const endless = readFileSync(path.join(source, sheet), 'utf8').split('\n').filter(line => /\binfinite\b/.test(line));
+    // CSS keywords are read in any case.
+    const endless = readFileSync(path.join(source, sheet), 'utf8').split('\n').filter(line => /\binfinite\b/i.test(line));
     assert.deepEqual(endless, [], `${sheet} animates without end`);
   }
 });
