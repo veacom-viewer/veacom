@@ -3,7 +3,7 @@
 ; current user for a per-user install, the machine for an all-users one.
 ;
 ;   folder, drive     right-click, "Open with VEAcom"
-;   ZIP file          right-click, "Open with VEAcom", whatever program owns .zip
+;   ZIP or RAR file   right-click, "Open with VEAcom", whatever program owns .zip or .rar
 ;   DICOMDIR file     right-click, "Open with VEAcom": the disc it indexes opens
 ;   .dcm file         VEAcom is listed under "Open with"; the default program stays as it is
 ;
@@ -47,6 +47,7 @@
   !insertmacro veacomVerb "Directory" "%1"
   !insertmacro veacomVerb "Drive" "%1."
   !insertmacro veacomVerb "SystemFileAssociations\.zip" "%1"
+  !insertmacro veacomVerb "SystemFileAssociations\.rar" "%1"
   !insertmacro veacomVerb "*" "%1"
   WriteRegStr SHELL_CONTEXT "${VEACOM_CLASSES}\*\shell\${VEACOM_VERB}" "AppliesTo" 'System.FileName:="DICOMDIR"'
   ; A .dcm file lists VEAcom under "Open with". The extension's own default value is not written.
@@ -68,6 +69,7 @@
   !insertmacro veacomRemoveVerb "Directory"
   !insertmacro veacomRemoveVerb "Drive"
   !insertmacro veacomRemoveVerb "SystemFileAssociations\.zip"
+  !insertmacro veacomRemoveVerb "SystemFileAssociations\.rar"
   DeleteRegKey /ifempty SHELL_CONTEXT "${VEACOM_CLASSES}\SystemFileAssociations"
   !insertmacro veacomRemoveVerb "*"
   DeleteRegValue SHELL_CONTEXT "${VEACOM_CLASSES}\.dcm\OpenWithProgids" "${VEACOM_PROGID}"

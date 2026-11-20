@@ -7,8 +7,8 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
 
-// RAR archives are not listed: the engine refuses them (see native/src/ingest.rs).
-const ARCHIVES = /\.zip$/i;
+// ZIP and RAR archives. The engine reads a RAR through the system's own archive reader (native/src/system_archive.rs).
+const ARCHIVES = /\.(zip|rar)$/i;
 const MAX_ENTRIES = 5000;
 const collator = new Intl.Collator('tr', { numeric: true, sensitivity: 'base' });
 const withTimeout = (promise, ms, fallback) => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(fallback), ms))]);

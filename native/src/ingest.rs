@@ -2456,6 +2456,13 @@ pub fn is_zip_file(path: &Path) -> bool {
         && fs::is_file(path)
 }
 
+/// A RAR import asks the system's archive reader for a file with a .rar extension (system_archive.rs).
+fn is_rar_file(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("rar"))
+        && fs::is_file(path)
+}
+
 pub fn import_session(
     paths: &[String],
     early: Option<EarlySink>,
@@ -2492,14 +2499,29 @@ pub fn import_session(
             extractions.push((path.to_owned(), dir.path().to_owned(), entries));
             archives.push(dir);
             root
-        } else if path
-            .extension()
-            .is_some_and(|x| x.eq_ignore_ascii_case("rar"))
-        {
+        } else if is_rar_file(path) {
+            // The browser has no archive reader of the system's to ask.
+            #[cfg(target_arch = "wasm32")]
             bail!(coded!(
                 "rar.unsupported",
                 "RAR archives cannot be opened. Extract the archive, then open the folder."
             ));
+            // A RAR's files are not listed before they arrive (system_archive.rs): the archive is extracted now, then
+            // read as a folder is.
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                let dir = crate::archive_temp::create("veacom-import-")?;
+                let limits = crate::system_archive::Limits {
+                    files: MAX_FILES,
+                    file_bytes: MAX_ARCHIVE_FILE_BYTES,
+                    total_bytes: available_archive_bytes(),
+                };
+                crate::system_archive::extract_into(path, dir.path(), &limits)?;
+                collect_files(dir.path(), &mut files)?;
+                let root = ImageRoot::new(dir.path(), path.file_stem());
+                archives.push(dir);
+                root
+            }
         } else if fs::is_file(path)
             && path
                 .file_name()
@@ -5321,16 +5343,63 @@ mod tests {
         assert_eq!(suv_factor(&obj).0.map(|f| f.bw), Some(1.));
     }
     #[test]
-    fn rar_archives_are_refused_with_a_message() {
+    fn a_rar_archive_that_cannot_be_read_is_refused_with_a_message() {
         let temp = crate::test_dir::tempdir().unwrap();
         let file = temp.path().join("study.rar");
         fs::write(&file, b"Rar!\x1a\x07\x00").unwrap();
         let error = import(&[file.to_string_lossy().into_owned()])
             .err()
             .unwrap();
+        // An archive that ends after its first bytes, where the system has an archive reader; where it has none, the
+        // message says that instead.
+        let code = crate::message::coded(&error).map(|note| note.code);
+        assert!(
+            matches!(code, Some("rar.damaged" | "rar.noReader")),
+            "{code:?}"
+        );
+    }
+    /// The folder as a RAR archive whose files are stored (system_archive.rs).
+    fn rar_folder(folder: &Path, file: &Path) {
+        let mut pending = vec![folder.to_owned()];
+        let mut files = Vec::new();
+        while let Some(next) = pending.pop() {
+            for entry in fs::read_dir(&next).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else {
+                    let name = path.strip_prefix(folder).unwrap().to_string_lossy();
+                    files.push((name.replace('\\', "/"), fs::read(&path).unwrap()));
+                }
+            }
+        }
+        files.sort();
+        let entries: Vec<(&str, &[u8])> = files
+            .iter()
+            .map(|(name, data)| (name.as_str(), data.as_slice()))
+            .collect();
+        fs::write(file, crate::system_archive::tests::stored_rar(&entries)).unwrap();
+    }
+    #[test]
+    fn a_rar_archive_gives_its_folder_catalogue_where_the_system_reads_rar() {
+        let study = two_series_study();
+        let archive = crate::test_dir::tempdir().unwrap();
+        let file = archive.path().join("study.rar");
+        rar_folder(study.path(), &file);
+        let from_archive = match import(&[file.to_string_lossy().into_owned()]) {
+            Ok(imported) => imported,
+            // A system without bsdtar (a Linux that never installed libarchive's tools) says so.
+            Err(error) => {
+                let code = crate::message::coded(&error).map(|note| note.code);
+                assert_eq!(code, Some("rar.noReader"));
+                return;
+            }
+        };
+        let from_folder = import(&[study.path().to_string_lossy().into_owned()]).unwrap();
+        assert_eq!(from_folder.sources.len(), 2);
         assert_eq!(
-            crate::message::coded(&error).map(|note| note.code),
-            Some("rar.unsupported")
+            summary(&from_archive, &archive_root(&from_archive)),
+            summary(&from_folder, study.path())
         );
     }
     #[test]

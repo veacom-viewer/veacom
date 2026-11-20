@@ -268,7 +268,7 @@ app.whenReady().then(async () => {
     const finish = kind === 'files' ? pictureDecoder.prepareFileDialog() : undefined;
     let paths = [];
     try {
-      const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip'] }] } : {}) });
+      const selected = await dialog.showOpenDialog(window, { title: t('dialog.openStudy'), properties: kind === 'folder' ? ['openDirectory'] : ['openFile', 'multiSelections'], ...(kind === 'archive' ? { filters: [{ name: t('dialog.archives'), extensions: ['zip', 'rar'] }] } : {}) });
       if (!selected.canceled) paths = selected.filePaths;
       return paths.length ? imaging.authorizeImportPaths(paths) : [];
     } finally { finish?.(paths); }

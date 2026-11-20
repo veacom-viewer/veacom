@@ -44,7 +44,7 @@ function Wait-Until([scriptblock]$Condition, [int]$Seconds) {
 # Explorer's entries (packaging/explorer-entries.nsh) under the current user's classes. A key can hold `*`, so every
 # path is taken literally.
 $Classes = 'Registry::HKEY_CURRENT_USER\Software\Classes'
-$ExplorerVerbs = @('Directory', 'Drive', 'SystemFileAssociations\.zip', '*')
+$ExplorerVerbs = @('Directory', 'Drive', 'SystemFileAssociations\.zip', 'SystemFileAssociations\.rar', '*')
 function Get-ClassValue([string]$Key, [string]$Name = '') {
     $Item = Get-Item -LiteralPath "$Classes\$Key" -ErrorAction SilentlyContinue
     if ($Item) { return $Item.GetValue($Name) }
@@ -102,7 +102,7 @@ elseif ($Action -eq 'Install') {
     # its path ends in a backslash). A .dcm file lists VEAcom under "Open with" and keeps its default program.
     $Open = "`"$Executable`" --study `"%1`""
     $Commands = [ordered]@{ 'Directory\shell\VEAcom\command' = $Open; 'Drive\shell\VEAcom\command' = "`"$Executable`" --study `"%1.`""
-        'SystemFileAssociations\.zip\shell\VEAcom\command' = $Open; '*\shell\VEAcom\command' = $Open; 'VEAcom.dcm\shell\open\command' = $Open }
+        'SystemFileAssociations\.zip\shell\VEAcom\command' = $Open; 'SystemFileAssociations\.rar\shell\VEAcom\command' = $Open; '*\shell\VEAcom\command' = $Open; 'VEAcom.dcm\shell\open\command' = $Open }
     foreach ($Key in $Commands.Keys) {
         $Command = Get-ClassValue $Key
         if ($Command -cne $Commands[$Key]) { throw "Explorer's entry $Key runs '$Command', not '$($Commands[$Key])'." }

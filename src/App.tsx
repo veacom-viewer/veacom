@@ -2712,7 +2712,7 @@ export default function App() {
           <div className="welcome-card">
             <span className="welcome-icon" aria-hidden="true"><FolderOpen size={26} strokeWidth={1.6} /></span>
             <h1>{t('welcome.title')}</h1>
-            <p>{t('welcome.hint')}</p>
+            <p>{t(bridgeCan('rarImport') ? 'welcome.hintRar' : 'welcome.hint')}</p>
             <div className="welcome-actions">
               <button type="button" className="primary-button" data-testid="welcome-open-folder" disabled={Boolean(busy)} onClick={() => void open('folder')}><FolderOpen size={16} /> {t('toolbar.openFolder')}<kbd className="button-kbd">{combo(mod, 'O')}</kbd></button>
               <button type="button" className="secondary-button" data-testid="welcome-open-files" disabled={Boolean(busy)} onClick={() => void open('files')}><Files size={16} /> {t('toolbar.openFiles')}</button>

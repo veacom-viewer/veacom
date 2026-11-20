@@ -12,6 +12,7 @@ const { EngineChannel } = require('../electron/engine-pipe.cjs');
 
 const binary = path.resolve(__dirname, '../native/target/release', process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core');
 const makeStudy = path.join(__dirname, 'fixtures/make-smoke-study.mjs');
+const makeRar = path.join(__dirname, 'fixtures/make-rar-archive.mjs');
 
 async function checkArchiveCleanup(connection, directory) {
   const study = path.join(directory, 'archive-source'), output = path.join(directory, 'zip-output');
@@ -29,6 +30,25 @@ async function checkArchiveCleanup(connection, directory) {
   assert.ok(!(await fs.readdir(scratch)).some(name => name.startsWith('veacom-import-')),
     'the standalone checker must wait for its archive extraction to be removed');
   return { archive, scratch, env };
+}
+
+// The same small study as a RAR archive whose files are stored (fixtures/make-rar-archive.mjs): the engine asks the
+// system's own archive reader for its files. A system without one (a Linux with no bsdtar) says so and opens nothing.
+async function checkRarImport(connection, directory) {
+  const archive = path.join(directory, 'study.rar');
+  execFileSync(process.execPath, [makeRar, path.join(directory, 'archive-source'), archive]);
+  const response = await connection.request('import', { paths: [archive] });
+  const result = await response.json();
+  if (response.status !== 200) {
+    assert.equal(result.note?.code, 'rar.noReader', result.error);
+    console.log('No system archive reader here: RAR import says so.');
+    return;
+  }
+  assert.equal(result.series.length, 1);
+  assert.deepEqual(result.series[0].dimensions, [128, 128, 100]);
+  const frame = await connection.request('frame', { id: result.series[0].id, index: 0 });
+  assert.equal((await frame.arrayBuffer()).byteLength, 128 * 128 * 2);
+  console.log('Verified a RAR archive read through the system\'s archive reader.');
 }
 
 // Replace the last indexed regular file with a FIFO. The reader must reject it without
@@ -124,6 +144,7 @@ async function main() {
     assert.deepEqual((await (await fresh.request('series')).json()).series, []);
     assert.equal((await (await fresh.request('import', { paths: [study] })).json()).series.length, 1);
     const { archive, scratch, env } = await checkArchiveCleanup(fresh, directory);
+    await checkRarImport(fresh, directory);
     if (process.platform !== 'win32') await checkSpecialFileRollback(fresh, directory, study);
     await checkShutdownRollback(manager, fresh, directory, study);
     await manager.stop();

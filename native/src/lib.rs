@@ -42,9 +42,13 @@ pub mod pictures;
 pub mod progress;
 pub mod projection;
 pub mod random;
+#[cfg(not(target_arch = "wasm32"))]
+mod rar_headers;
 pub mod rle_guard;
 pub mod sampling;
 pub mod source_file;
+#[cfg(not(target_arch = "wasm32"))]
+mod system_archive;
 pub mod tags;
 /// Private temporary folders, for the engine's tests and the desktop transport's.
 #[doc(hidden)]

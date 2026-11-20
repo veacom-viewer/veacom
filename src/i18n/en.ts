@@ -345,6 +345,7 @@ export const en = {
   'welcome.reconnect': 'Reconnect',
   'welcome.title': 'Open a study',
   'welcome.hint': 'Open a folder, DICOM files, a ZIP archive, or a CD/DVD (DICOMDIR). You can also drop them here.',
+  'welcome.hintRar': 'Open a folder, DICOM files, a ZIP or RAR archive, or a CD/DVD (DICOMDIR). You can also drop them here.',
 
   'inspector.label': 'Inspector',
   'inspector.measurementsTab': 'Measurements panel',
