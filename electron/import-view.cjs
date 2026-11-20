@@ -7,6 +7,7 @@
 const path = require('node:path');
 const { WebContentsView, ipcMain, session } = require('electron');
 const fileBrowser = require('./file-browser.cjs');
+const { t } = require('./i18n.cjs');
 
 // The window's clicks, relayed to the application page's usage timings (electron/usage-schema.json).
 const ACTIONS = new Set(['import-cancel', 'import-list', 'import-open', 'import-pin', 'import-place', 'import-up']);
@@ -61,11 +62,33 @@ function createImportView({ app, engine, window: applicationWindow, devUrl, loca
     resolve(capabilities);
   }
 
-  /** Shows the window, starting at a disc drive for 'disc'; resolves to the capabilities opened there, or [] when closed. */
-  function open(start) {
+  let seeking = false;
+  /**
+   * What the application's request to import gives it: the capabilities for what the user opened in the window, or []
+   * when the window was closed. The disc button asks for the disc itself ('disc'): where the system tells which
+   * drives hold a disc and one does, that disc is opened with no window, since there is nothing to choose.
+   */
+  async function open(start) {
     const window = applicationWindow();
     if (!window || window.isDestroyed()) throw new Error('The application window is closed.');
     if (now() - lastInput > INPUT_MS) throw new Error('The import window opens only from a click or key press in the application.');
+    if (start === 'disc') {
+      // A drive can take a while to answer for a disc it was just given: a second press meanwhile asks for nothing more.
+      if (seeking) return [];
+      seeking = true;
+      let discs;
+      try { discs = await fileBrowser.readyDiscs(engine); } finally { seeking = false; }
+      if (discs?.length === 1) return authorize(discs);
+      if (discs && !discs.length) throw new Error(t('disc.none'));
+      // Several discs, or a system that does not tell them apart: the window shows the places to choose from.
+    }
+    return show(start);
+  }
+
+  /** Shows the window, starting at a disc drive for 'disc'; resolves when it closes, to what was opened there. */
+  function show(start) {
+    const window = applicationWindow();
+    if (!window || window.isDestroyed()) throw new Error('The application window is closed.');
     // One window at a time: what it opens goes to the request that showed it.
     if (current) { current.view.webContents.focus(); return Promise.resolve([]); }
     const view = new WebContentsView({ webPreferences: { session: importSession, preload: path.join(__dirname, 'import-preload.cjs'), contextIsolation: true, nodeIntegration: false,

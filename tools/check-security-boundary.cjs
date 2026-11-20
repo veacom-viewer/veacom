@@ -81,6 +81,26 @@ async function main() {
     assert((await page.evaluate(caps=>window.veacom.importSelected(caps),opened)).series.length);
     assert.equal(await desktop.evaluate(({webContents})=>webContents.getAllWebContents().some(item=>item.getURL().startsWith('veacom://import/')&&!item.isDestroyed())),false);
     check('What the user opens in the import window reaches the application as one-use capabilities');
+    // The disc button asks for the disc itself (electron/import-view.cjs). The study stands in for what this computer's
+    // drives hold: one disc is opened with no window, only after a click or key press, and no disc is said so.
+    const mainModule=name=>path.join(repo,'electron',name);
+    const discs=found=>desktop.evaluate((_electron,[browser,found])=>{process.mainModule.require(browser).readyDiscs=async()=>found;},[mainModule('file-browser.cjs'),found]);
+    const importWindows=()=>desktop.evaluate(({webContents})=>webContents.getAllWebContents().filter(item=>!item.isDestroyed()&&item.getURL().startsWith('veacom://import/')).length);
+    const pressDisc=()=>page.evaluate(()=>window.veacom.openImportWindow('disc').then(opened=>opened,error=>error.message));
+    await discs([study]);
+    await new Promise(resolve=>setTimeout(resolve,1700));
+    assert.match(await within(pressDisc(),5000,'The disc button\'s request was not answered.'),/click or key press/);
+    await within(page.keyboard.press('Shift'),10000,'The check\'s key press did not reach the application window.');
+    const disc=await within(pressDisc(),15000,'The disc was not opened.');
+    assert(Array.isArray(disc)&&disc.length===1&&disc[0].startsWith('import:')&&!disc[0].includes(study),String(disc));
+    assert.equal(await importWindows(),0);
+    assert((await page.evaluate(caps=>window.veacom.importSelected(caps),disc)).series.length);
+    await discs([]);
+    await within(page.keyboard.press('Shift'),10000,'The check\'s key press did not reach the application window.');
+    const none=await within(pressDisc(),15000,'The disc button\'s request was not answered.');
+    assert(typeof none==='string'&&none.includes(await desktop.evaluate((_electron,texts)=>process.mainModule.require(texts).t('disc.none'),mainModule('i18n.cjs'))),String(none));
+    assert.equal(await importWindows(),0);
+    check('The disc button opens the one disc with no window, only after a click or key press, and says when there is none');
     const network=process.platform==='win32'?['\\\\127.0.0.1\\veacom-check']:process.platform==='darwin'?['/net/127.0.0.1','/NET/127.0.0.1']:[];
     if(network.length){
       let waiting;({view,request:waiting}=await userOpens());
