@@ -115,6 +115,17 @@ fn discs_read_once(on_disc: &[Option<Disc>], room: Option<u64>) -> Vec<Option<Di
         .collect()
 }
 
+/// For each Series Instance UID of a plan, whether every file its discs' indexes list under it was read whole: each
+/// one finished with (read, or failing on its own; see `finish`), none left unread because its disc was taken out.
+fn whole_series(plan: &Plan) -> HashMap<&str, bool> {
+    let mut whole: HashMap<&str, bool> = HashMap::new();
+    for (series, finished) in plan.series.iter().zip(&plan.finished) {
+        let done = finished.load(std::sync::atomic::Ordering::Acquire) >= series.files;
+        *whole.entry(series.uid.as_str()).or_insert(true) &= done;
+    }
+    whole
+}
+
 /// What stops an import whose disc was taken out of its drive, or replaced, before it was read whole.
 fn disc_removed() -> anyhow::Error {
     anyhow::anyhow!(coded!(
@@ -2850,7 +2861,10 @@ pub fn import_session_from(
     // The DICOM files that a disc's index does not list and that were copied all the same.
     let unlisted = std::sync::atomic::AtomicUsize::new(0);
     let (spools_ref, slots_ref, unlisted_ref, finish_ref) = (&spools, &slots, &unlisted, &finish);
-    let plan_ref = &plan;
+    // The discs taken out of their drives (or replaced) before they were read whole.
+    let removed: Vec<std::sync::atomic::AtomicBool> =
+        spools.iter().map(|_| Default::default()).collect();
+    let (plan_ref, removed_ref) = (&plan, &removed);
     let extract = move || -> Result<()> {
         for (archive, dir, _) in extractions_ref {
             extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| {
@@ -2868,11 +2882,21 @@ pub fn import_session_from(
         // The discs, after the archives: one reader on a disc, each file once, in the order planned but for the series
         // the viewer asks for (SpoolQueue).
         let mut block = vec![0; 1 << 20];
-        for spool in spools_ref {
+        for (spool, removed) in spools_ref.iter().zip(removed_ref) {
             // The copies take no more than the disc says it holds.
             let mut allowance = spool.disc.size;
             let mut queue = SpoolQueue::new(&spool.files);
             let mut looked = std::time::Instant::now();
+            // A disc taken out (or replaced) before it is read whole is read no further. With an index, the series it
+            // lists that were read whole stay (see `whole_series`); without one there is no telling which those are,
+            // and the import stops.
+            let gone = || -> Result<()> {
+                if !spool.planned() {
+                    return Err(disc_removed());
+                }
+                removed.store(true, std::sync::atomic::Ordering::Relaxed);
+                Ok(())
+            };
             while let Some(at) = queue.next(plan_ref.as_deref()) {
                 let file = &spool.files[at];
                 crate::progress::check()?;
@@ -2881,7 +2905,8 @@ pub fn import_session_from(
                 if looked.elapsed() >= std::time::Duration::from_secs(1) {
                     looked = std::time::Instant::now();
                     if !spool.same_disc() {
-                        return Err(disc_removed());
+                        gone()?;
+                        break;
                     }
                 }
                 // The copies leave this computer room: if something else fills its disk meanwhile, the import stops.
@@ -2907,11 +2932,12 @@ pub fn import_session_from(
                         let _ = crate::progress::step();
                     }
                     // A file the disc does not give fails alone, as an unreadable file of a folder does, and counts
-                    // as read. With the disc gone (or another in its place) there is no more to wait for, and what was
-                    // read is not the study.
+                    // as read. With the disc gone (or another in its place) there is no more to wait for: this file is
+                    // not counted, and its series is not read whole.
                     Copied::Unreadable(error) => {
                         if !fs::exists(&spool.folder) || !spool.same_disc() {
-                            return Err(disc_removed());
+                            gone()?;
+                            break;
                         }
                         let _ = slots_ref[index].set(Some(Err(error)));
                         finish_ref(index);
@@ -3034,6 +3060,27 @@ pub fn import_session_from(
                 .map(|result| (file.as_path(), result))
         })
         .collect();
+    // Of a disc taken out before it was read whole, only the series its index lists that were read whole stay, each with
+    // every file of it; the rest of what it gave is left out.
+    let taken_out: Vec<&Spool> = (spools.iter().zip(&removed))
+        .filter(|(_, removed)| removed.load(std::sync::atomic::Ordering::Relaxed))
+        .map(|(spool, _)| spool)
+        .collect();
+    let whole = plan.as_deref().map(whole_series).unwrap_or_default();
+    let is_whole = |series: Option<usize>| {
+        let uid = series
+            .zip(plan.as_deref())
+            .map(|(series, plan)| plan.series[series].uid.as_str());
+        uid.is_some_and(|uid| whole.get(uid) == Some(&true))
+    };
+    let taken_files: HashSet<&Path> = (taken_out.iter().flat_map(|spool| &spool.files))
+        .map(|file| file.to.as_path())
+        .collect();
+    let left: HashSet<&Path> = (taken_out.iter().flat_map(|spool| &spool.files))
+        .filter(|file| !is_whole(file.series))
+        .map(|file| file.to.as_path())
+        .collect();
+    read.retain(|(path, _)| !left.contains(path));
     let unplanned = unplanned.into_inner().unwrap();
     for path in unplanned.iter().filter(|path| is_candidate(path)) {
         read.push((path.as_path(), read_one(path)));
@@ -3083,10 +3130,38 @@ pub fn import_session_from(
         ));
     }
     let Catalogue {
-        sources,
+        mut sources,
         mut warnings,
         unreadable,
     } = catalogue(read, true, revision)?;
+    if !taken_out.is_empty() {
+        // A series made of a kept file that the index lists under another series than its own goes too.
+        let from_disc = |source: &Arc<SourceSeries>| {
+            let file = |path: &Path| taken_files.contains(path);
+            source.frames.iter().any(|frame| file(&frame.source.path))
+                || source.documents.iter().any(|document| file(&document.path))
+        };
+        sources.retain(|source| {
+            !from_disc(source) || whole.get(source.info.uid.as_str()) == Some(&true)
+        });
+        if sources.is_empty() {
+            return Err(disc_removed());
+        }
+        // The series the taken-out discs list, by Series Instance UID, and those of them read whole.
+        let listed: HashSet<&str> = (taken_out.iter().flat_map(|spool| &spool.files))
+            .filter_map(|file| Some(plan.as_deref()?.series[file.series?].uid.as_str()))
+            .collect();
+        let kept = listed
+            .iter()
+            .filter(|uid| whole.get(**uid) == Some(&true))
+            .count();
+        noted.push(note!(
+            "import.discRemovedPart",
+            "The disc was removed before all of it was read: {kept} of its {listed} series were read whole and are open.",
+            kept = kept.to_string(),
+            listed = listed.len().to_string()
+        ));
+    }
     warnings.extend(noted);
     if sources.is_empty() {
         bail!(coded!(
@@ -3975,6 +4050,11 @@ struct Spool {
 }
 
 impl Spool {
+    /// Whether the disc's index lists series of the import's plan (see `Plan`).
+    fn planned(&self) -> bool {
+        self.files.iter().any(|file| file.series.is_some())
+    }
+
     /// Whether the disc in the drive is no other than the one the import began with (see `Disc::serial`). A drive that
     /// does not answer is taken at its files: a disc taken out gives none.
     fn same_disc(&self) -> bool {
@@ -7015,10 +7095,13 @@ mod tests {
         let twice = import_session_from(&paths, None, 0, &on(serial)).unwrap();
         assert!(twice.archives.is_empty());
         assert_eq!(frames(&twice), 8);
-        // A file the disc does not give, with another disc in the drive by then: the import stops there.
+        // A file the disc does not give, with another disc in the drive by then: the import reads no further. Here the
+        // first one it asks for (none of the disc's images is left), so no series was read whole.
         let mut listed = Vec::new();
         collect_files(&disc.join("DICOM"), &mut listed).unwrap();
-        fs::remove_file(&listed[0]).unwrap();
+        for file in &listed {
+            fs::remove_file(file).unwrap();
+        }
         let paths = [disc.to_string_lossy().into_owned()];
         let error = import_session_from(&paths, None, 0, &on(serial ^ 1))
             .err()
@@ -7027,9 +7110,60 @@ mod tests {
             crate::message::coded(&error).map(|note| note.code),
             Some("import.discRemoved")
         );
-        // With the same disc in the drive, that file fails alone.
+        // With the same disc in the drive, a file it does not give fails alone.
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_two_series(out.path());
+        let mut listed = Vec::new();
+        collect_files(&disc.join("DICOM"), &mut listed).unwrap();
+        fs::remove_file(&listed[0]).unwrap();
+        let paths = [disc.to_string_lossy().into_owned()];
         let read = import_session_from(&paths, None, 0, &on(serial)).unwrap();
         assert_eq!((read.archives.len(), frames(&read)), (1, 7));
+    }
+
+    #[test]
+    fn a_disc_taken_out_keeps_the_series_its_index_lists_that_were_read_whole() {
+        // Two discs with an index each, read one after the other: the second goes once their series are listed,
+        // before any of their files is copied, so the first is read whole and the second not at all.
+        let out = crate::test_dir::tempdir().unwrap();
+        let first = indexed_two_series(out.path());
+        let study = crate::test_dir::tempdir().unwrap();
+        for index in 0..3 {
+            let mut obj = classic_slice(index + 1, index as f64 * 2.);
+            obj.put_str(Tag(0x0020, 0x000e), VR::UI, "1.2.3.9.1");
+            obj.put_str(Tag(0x0008, 0x0018), VR::UI, format!("1.2.3.9.1.{index}"));
+            write_metadata(obj, &study.path().join(format!("IM{index}")));
+        }
+        let mut files = Vec::new();
+        collect_files(study.path(), &mut files).unwrap();
+        let other = crate::test_dir::tempdir().unwrap();
+        let opts = serde_json::json!({"directory": other.path(), "dicomdir": true});
+        let media = crate::export::export_series(&files, &serde_json::from_value(opts).unwrap());
+        let second = PathBuf::from(media.unwrap().directory);
+        let sink = |handed: HandOver| {
+            if matches!(handed, HandOver::Plan(_)) {
+                fs::remove_dir_all(&second).unwrap();
+            }
+        };
+        let paths = [&first, &second].map(|disc| disc.to_string_lossy().into_owned());
+        let imported = import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC)).unwrap();
+        // The first disc's two series, every image of each, and nothing of the second; and what happened is said.
+        let mut series: Vec<_> = (imported.sources.iter())
+            .map(|source| (source.info.uid.as_str(), source.frames.len()))
+            .collect();
+        series.sort();
+        assert_eq!(series, [("1.2.3.4.1", 4), ("1.2.3.4.2", 4)]);
+        let said = imported
+            .warnings
+            .iter()
+            .find(|note| note.code == "import.discRemovedPart");
+        assert!(
+            said.is_some_and(|note| note.text.contains("0 of its 1 series")),
+            "{:?}",
+            imported.warnings
+        );
+        // A disc taken out before any of its series was read whole gives nothing, and the import stops: see
+        // a_disc_taken_out_before_it_is_read_whole_stops_the_import_and_says_so (main.rs).
     }
 
     /// The folder zipped as an archiver writes it: a folder entry, then its files, names with forward slashes.

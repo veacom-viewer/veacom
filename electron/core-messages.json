@@ -60,6 +60,7 @@
     "import.discUnlisted": "DICOMDIR dosyasında yer almayan {count} dosya da okundu.",
     "import.discIndexDiffers": "DICOMDIR dosyası {count} dosyayı yanlış tanımlıyor; dosyaların kendisi okundu.",
     "import.discRemoved": "Disk, tamamı okunmadan çıkarıldı.",
+    "import.discRemovedPart": "Disk, tamamı okunmadan çıkarıldı: {listed} serinin tam okunan {kept} tanesi açıldı.",
     "import.noRoom": "Bilgisayarın diski dolmak üzere olduğu için disk sonuna kadar okunmadı.",
 
     "file.notDicom": "DICOM dosyası değil (DICOM başlığı yok)",
