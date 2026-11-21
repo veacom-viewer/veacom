@@ -836,10 +836,11 @@ export default function App() {
   // In the status bar, where it does not push the image down: what is being done, how far, how long it has taken and
   // about how long is left. A series loading shows its bar alone, as it comes and goes with every series opened.
   const progressTimes = progress?.elapsed === undefined ? ''
-    : progress.remaining === undefined ? t('status.progressElapsed', { elapsed: clockText(progress.elapsed) })
+    : progress.remaining === undefined ? clockText(progress.elapsed)
     : t('status.progressTimes', { elapsed: clockText(progress.elapsed), remaining: clockText(progress.remaining) });
-  const progressText = progress && progress.stage !== 'decode'
-    ? [`${stageLabel(progress.stage)}${progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}`, progressTimes].filter(Boolean).join(' · ') : '';
+  // The stage is the status text then (Taranıyor), and its bar says how far it is: the times beside it are enough.
+  const progressStage = progress && progress.stage !== 'decode' ? stageLabel(progress.stage) : '';
+  const progressText = progressStage ? progressTimes : '';
   const hasWork = Boolean(busy || loadingIds.size || importing);
   useEffect(() => {
     if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
@@ -996,7 +997,8 @@ export default function App() {
       return item ? { ...slot, view: { ...slot.view, slice: placeIn(item, slot.view.slice) } } : slot;
     }));
     followAnnotations(grown);
-    for (const item of grown) if (!item.reading && slotsRef.current.some(slot => slot.seriesId === item.id)) loadPaneImage(item);
+    // A pane on it asks again once it is read whole, or now if it has no image yet (its request went to an earlier self).
+    for (const item of grown) if (slotsRef.current.some(slot => slot.seriesId === item.id) && (!item.reading || !volumesRef.current.has(item.id))) loadPaneImage(item);
   };
 
   const acquireVolume = (item: Series): Promise<Volume> => {
@@ -1014,7 +1016,7 @@ export default function App() {
     };
     // A series still being read from a disc is shown a source frame at a time: its volume would have to be loaded again
     // each time it grows (followGrowth). Read whole, it is loaded as any series is.
-    if (item.reading) return frameCache.get(item, openingSlice(item)).then(async volume => {
+    if (item.reading) return cached ? Promise.resolve(cached) : frameCache.get(item, openingSlice(item)).then(async volume => {
       await prepareSourceProgram(volume);
       if (mounted.current && isCurrent()) storeVolume(volume);
       return volume;
@@ -1122,7 +1124,8 @@ export default function App() {
           || current?.seriesId !== base.series.id || current.view.slice !== index || generation !== (volumeGenerations.current.get(base.series.id) ?? 0)) return;
         setSlotFrames(values => ({ ...values, [slot.id]: frame }));
       }).catch(error => {
-        if (!request.controller.signal.aborted && frameRequests.current.get(slot.id) === request) setNotice({ message: errorText(error), kind: 'error' });
+        // As in loadPaneImage: a frame of a series' earlier self, while the series is read from a disc, is refused.
+        if (!request.controller.signal.aborted && frameRequests.current.get(slot.id) === request && !base.series.reading) setNotice({ message: errorText(error), kind: 'error' });
       }).finally(() => { if (frameRequests.current.get(slot.id) === request) frameRequests.current.delete(slot.id); });
     }
     const stale = Object.entries(slotFrames).filter(([id, volume]) => fullyLoaded.current.has(volume.series.id) || !slots.some(slot => slot.id === id && slot.seriesId === volume.series.id));
@@ -1134,7 +1137,9 @@ export default function App() {
   }, [slots, volumes, slotFrames, frameCache, importing]);
 
   const loadPaneImage = (item?: Series) => {
-    if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
+    // A series still being read from a disc grows meanwhile, and a request for its earlier self is refused: its grown
+    // self is asked for in turn (followGrowth), so that is not shown as an error.
+    if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => { if (!item.reading) setNotice({ message: errorText(error), kind: 'error' }); });
   };
   /** Puts a series in a pane, which becomes the active one unless `activate` is false. */
   const assignSeries = (slotId: string, item: Series, activate = true) => {
@@ -3013,7 +3018,7 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
