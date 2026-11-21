@@ -111,7 +111,9 @@ struct EarlyImport {
     /// Counts imports, so a reader can tell one import's series from the next one's.
     import: u64,
     request_id: String,
-    series: Vec<model::Series>,
+    /// The series in the order they were handed over, a series that came again at each of its places: every place of
+    /// one series holds it as it came last, once in memory (see `early_series`).
+    series: Vec<Arc<model::Series>>,
     /// The ids this import added to the catalogue ahead of its end.
     added: Vec<String>,
     /// The series the DICOMDIR of a disc it reads lists (see ingest::Plan).
@@ -526,12 +528,16 @@ fn import_series(
                     continue;
                 }
                 Arc::make_mut(&mut source).info.catalog_revision = next_revision();
+                let info = Arc::new(source.info.clone());
                 if again {
                     grown.push(id.clone());
+                    for place in early.series.iter_mut().filter(|series| series.id == id) {
+                        *place = info.clone();
+                    }
                 } else {
                     early.added.push(id.clone());
                 }
-                early.series.push(source.info.clone());
+                early.series.push(info);
                 sources.insert(id, source);
             }
             drop((sources, early));
@@ -634,6 +640,9 @@ struct EarlyQuery {
     /// Whether to give the series a disc's DICOMDIR lists as well.
     #[serde(default)]
     planned: bool,
+    /// Whether to give how far each of those series is read (see `EarlyList::finished`).
+    #[serde(default)]
+    finished: bool,
     /// How many of the plan's pictures the reader has (see `EarlyList::previews`).
     #[serde(default)]
     previews_after: usize,
@@ -646,23 +655,36 @@ struct EarlyList {
     /// The series the DICOMDIR of a disc being read lists, as they stand, when asked for (see ingest::Plan).
     #[serde(skip_serializing_if = "Option::is_none")]
     planned: Option<Vec<model::PlannedSeries>>,
+    /// How many files of each of those series are read, in the plan's order, when asked for: the series once given,
+    /// only this changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished: Option<Vec<usize>>,
     /// Pictures for the plan's series, from the `previewsAfter`th on (see ingest::HandOver::Preview).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     previews: Vec<model::PlannedPreview>,
 }
-/// The series the import under way has handed over early, from the `after`th on (see ingest::import_with).
+/// The series the import under way has handed over early, from the `after`th on (see ingest::import_with). A series
+/// that came again since is given once, at the first of its places, as it came last.
 fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
     let early = core.early.lock().unwrap();
     let from = query.after.min(early.series.len());
     let current = query.request_id == early.request_id;
     let series = if current {
-        early.series[from..].to_vec()
+        let mut given = HashSet::new();
+        early.series[from..]
+            .iter()
+            .filter(|series| given.insert(series.id.as_str()))
+            .map(|series| (**series).clone())
+            .collect()
     } else {
         Vec::new()
     };
     let planned = (early.plan.as_ref())
         .filter(|_| current && query.planned)
         .map(|plan| plan.series());
+    let finished = (early.plan.as_ref())
+        .filter(|_| current && query.finished)
+        .map(|plan| plan.finished());
     let from = query.previews_after.min(early.previews.len());
     let previews = if current {
         let picture = |(planned, series): &(usize, Arc<SourceSeries>)| model::PlannedPreview {
@@ -677,6 +699,7 @@ fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
         import: early.import,
         series,
         planned,
+        finished,
         previews,
     }
 }
@@ -1530,7 +1553,7 @@ mod job_tests {
             let mut early = core.early.lock().unwrap();
             early.import = 1;
             early.request_id = "startup-import".into();
-            early.series.push(series.info.clone());
+            early.series.push(Arc::new(series.info.clone()));
         }
         for (request_id, after, count) in [
             ("startup-import", 0, 1),
@@ -1543,6 +1566,41 @@ mod job_tests {
             let result = early_series(&core, query);
             assert_eq!(result.series.len(), count, "{request_id} at {after}");
         }
+    }
+
+    #[test]
+    fn a_series_that_came_again_is_given_once_as_it_came_last_and_a_plans_counts_when_asked() {
+        let core = core();
+        let series = |id: &str, revision: u64| {
+            Arc::new(model::Series {
+                id: id.into(),
+                catalog_revision: revision,
+                ..Default::default()
+            })
+        };
+        let planned = model::PlannedSeries {
+            files: 3,
+            ..Default::default()
+        };
+        {
+            let mut early = core.early.lock().unwrap();
+            early.request_id = "disc-import".into();
+            // "a" came, then "b", then "a" again: each of its places holds it as it came last (see hand_over).
+            let again = series("a", 3);
+            early.series = vec![again.clone(), series("b", 2), again];
+            early.plan = Some(Arc::new(ingest::Plan::new(vec![planned])));
+        }
+        let given = |after: usize, finished: bool| {
+            let query = json!({ "requestId": "disc-import", "after": after, "finished": finished });
+            let list = early_series(&core, serde_json::from_value(query).unwrap());
+            let series: Vec<_> = (list.series.iter())
+                .map(|series| (series.id.clone(), series.catalog_revision))
+                .collect();
+            (series, list.finished)
+        };
+        let (a, b) = (("a".to_owned(), 3), ("b".to_owned(), 2));
+        assert_eq!(given(0, false), (vec![a.clone(), b], None));
+        assert_eq!(given(2, true), (vec![a], Some(vec![0])));
     }
 
     #[test]
@@ -1629,10 +1687,15 @@ mod job_tests {
         let note = imported.warnings.iter().find(|note| note.code == code)?;
         Some(note.text.clone())
     }
+    /// A test's folder read as a disc: no drive is asked about it, and its copies may take any room.
+    const ANY_DISC: ingest::Disc = ingest::Disc {
+        size: u64::MAX,
+        serial: None,
+    };
     /// Imports `path` as a disc is imported: read once, into the import's own folder.
     fn read_once(path: &std::path::Path) -> anyhow::Result<ingest::Imported> {
         let paths = [path.to_string_lossy().into_owned()];
-        ingest::import_session_from(&paths, None, 0, &|_| true)
+        ingest::import_session_from(&paths, None, 0, &|_| Some(ANY_DISC))
     }
 
     #[test]
@@ -1757,19 +1820,16 @@ mod job_tests {
 
     #[test]
     fn a_disc_taken_out_before_it_is_read_whole_stops_the_import_and_says_so() {
-        let first = crate::test_dir::tempdir().unwrap();
-        let second = crate::test_dir::tempdir().unwrap();
-        write_slice(first.path(), "IM1", 11);
-        write_slice(second.path(), "IM2", 12);
-        let paths = [first.path(), second.path()].map(|path| path.to_string_lossy().into_owned());
-        // The first disc is planned by the time the second is asked about. It goes then, before a file of it is copied.
-        let gone = |folder: &std::path::Path| {
-            if folder == second.path() {
-                std::fs::remove_dir_all(first.path()).unwrap();
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // The disc goes once its series are listed, before a file of it is copied.
+        let sink = |handed_over: ingest::HandOver| {
+            if matches!(handed_over, ingest::HandOver::Plan(_)) {
+                std::fs::remove_dir_all(&disc).unwrap();
             }
-            true
         };
-        let error = ingest::import_session_from(&paths, None, 0, &gone)
+        let paths = [disc.to_string_lossy().into_owned()];
+        let error = ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC))
             .err()
             .unwrap();
         assert_eq!(
@@ -1792,7 +1852,8 @@ mod job_tests {
             handed.lock().unwrap().push((handed_over, finished));
         };
         let paths = [disc.to_string_lossy().into_owned()];
-        let imported = ingest::import_session_from(&paths, Some(&sink), 0, &|_| true).unwrap();
+        let imported =
+            ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC)).unwrap();
         let handed = handed.into_inner().unwrap();
         let Some(((ingest::HandOver::Plan(plan), 0), after)) = handed.split_first() else {
             panic!("the plan is handed over first, before any of its files is read");

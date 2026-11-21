@@ -61,14 +61,14 @@ describe('main-only imaging broker', () => {
     const capabilities = await f.broker.authorizeImportPaths(['/selected/disc']);
     const picture = { id: 'preview:a', dimensions: [2, 2, 1] }, planned = [{ uid: '1.2', files: 4, finished: 1 }];
     f.request.mock.mockImplementation(async op => op === 'import' ? finished.promise
-      : Response.json({ import: 2, series: [], planned, previews: [{ planned: 0, series: picture }] }));
+      : Response.json({ import: 2, series: [], planned, finished: [1], previews: [{ planned: 0, series: picture }] }));
     const importing = f.broker.importSelected(capabilities);
-    const result = await f.broker.importEarly(capabilities, 0, { planned: true, previewsAfter: 0 });
+    const result = await f.broker.importEarly(capabilities, 0, { planned: true, finished: true, previewsAfter: 0 });
     const request = f.calls()[0][1] as { requestId: string };
-    assert.deepEqual(f.calls()[1], ['importEarly', { after: 0, requestId: request.requestId, planned: true, previewsAfter: 0 }]);
-    assert.deepEqual(result, { import: 2, series: [], planned, previews: [{ planned: 0, series: { ...picture, engineGeneration: 1 } }] });
+    assert.deepEqual(f.calls()[1], ['importEarly', { after: 0, requestId: request.requestId, planned: true, finished: true, previewsAfter: 0 }]);
+    assert.deepEqual(result, { import: 2, series: [], planned, finished: [1], previews: [{ planned: 0, series: { ...picture, engineGeneration: 1 } }] });
     assert.match(f.broker.getPixels({ seriesId: 'preview:a', generation: 1, index: 0 }).url, /^veacom:\/\/app\/_imaging\/frame\//);
-    for (const options of [null, 'yes', { planned: 1 }, { previewsAfter: -1 }, { previewsAfter: 1.5 }]) {
+    for (const options of [null, 'yes', { planned: 1 }, { finished: 'yes' }, { previewsAfter: -1 }, { previewsAfter: 1.5 }]) {
       await assert.rejects(f.broker.importEarly(capabilities, 0, options), { message: /Invalid request\./ });
     }
     finished.resolve(Response.json({ series: [], warnings: [] }));

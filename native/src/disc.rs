@@ -1,24 +1,31 @@
-//! Discs (CD, DVD) on Windows: whether a path is on one, and the room this computer has for a copy of it. Elsewhere a
-//! disc is one more mounted volume, and nothing tells it from the others.
+//! Discs (CD, DVD) on Windows: whether a path is on one, which disc it is, and the room this computer has for a copy
+//! of it. Elsewhere a disc is one more mounted volume, and nothing tells it from the others.
 
 use std::{
     os::windows::ffi::OsStrExt,
     path::{Component, Path, Prefix},
 };
-use windows_sys::Win32::Storage::FileSystem::{GetDiskFreeSpaceExW, GetDriveTypeW};
+use windows_sys::Win32::Storage::FileSystem::{
+    GetDiskFreeSpaceExW, GetDriveTypeW, GetVolumeInformationW,
+};
 
 // GetDriveTypeW's answer for a CD or DVD drive (winbase.h).
 const DRIVE_CDROM: u32 = 5;
 
-/// The size in bytes of the disc `path` is on; None where it is not on a CD or DVD drive, or the drive is empty.
-pub fn size(path: &Path) -> Option<u64> {
+/// The root of the drive `path` is on (as "F:\", NUL-terminated); None for a path that names no drive letter.
+fn root(path: &Path) -> Option<[u16; 4]> {
     let Some(Component::Prefix(prefix)) = path.components().next() else {
         return None;
     };
     let (Prefix::Disk(letter) | Prefix::VerbatimDisk(letter)) = prefix.kind() else {
         return None;
     };
-    let root = [u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0];
+    Some([u16::from(letter), u16::from(b':'), u16::from(b'\\'), 0])
+}
+
+/// The size in bytes of the disc `path` is on; None where it is not on a CD or DVD drive, or the drive is empty.
+pub fn size(path: &Path) -> Option<u64> {
+    let root = root(path)?;
     // SAFETY: the root is a NUL-terminated string that lives through the call.
     if unsafe { GetDriveTypeW(root.as_ptr()) } != DRIVE_CDROM {
         return None;
@@ -34,6 +41,28 @@ pub fn size(path: &Path) -> Option<u64> {
         )
     };
     (asked != 0).then_some(total)
+}
+
+/// The serial number of the volume `path` is on: another disc put in the drive has another one. None where the drive
+/// is empty or names no letter.
+pub fn serial(path: &Path) -> Option<u32> {
+    let root = root(path)?;
+    let mut serial = 0;
+    // SAFETY: the root is a NUL-terminated string that lives through the call; the serial number is written to a u32
+    // of ours, and nothing else is asked for (null buffers of length 0).
+    let asked = unsafe {
+        GetVolumeInformationW(
+            root.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            &mut serial,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    (asked != 0).then_some(serial)
 }
 
 /// The bytes this user may still write where the folder `directory` is.
@@ -65,5 +94,15 @@ mod tests {
         assert_eq!(size(Path::new("\\\\server\\share\\folder")), None);
         assert!(free(&temp).is_some_and(|bytes| bytes > 0));
         assert_eq!(free(&temp.join("no such folder here")), None);
+    }
+
+    #[test]
+    fn a_volume_keeps_its_serial_number_and_a_path_without_a_drive_has_none() {
+        let temp = std::env::temp_dir();
+        let volume = serial(&temp);
+        assert!(volume.is_some());
+        assert_eq!(serial(&temp.join("no such folder here")), volume);
+        assert_eq!(serial(Path::new("relative\\folder")), None);
+        assert_eq!(serial(Path::new("\\\\server\\share\\folder")), None);
     }
 }

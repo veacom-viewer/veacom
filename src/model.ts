@@ -374,8 +374,9 @@ export interface DesktopBridge {
   importSelected(capabilities: string[]): Promise<ImportResult>;
   getProgress(): Promise<{ id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean }>;
   /** Series this selection's import has already published, from the `after`th on; with `planned`, also the series a disc's
-   * DICOMDIR lists, and the pictures of those series from the `previewsAfter`th on. */
-  importEarly(capabilities: string[], after: number, options?: { planned: boolean; previewsAfter: number }): Promise<{ import: number; series: Series[]; planned?: PlannedSeries[]; previews?: PlannedPreview[] }>;
+   * DICOMDIR lists; with `finished`, how many files of each are read; and the pictures of those series from the
+   * `previewsAfter`th on. */
+  importEarly(capabilities: string[], after: number, options?: { planned: boolean; finished: boolean; previewsAfter: number }): Promise<{ import: number; series: Series[]; planned?: PlannedSeries[]; finished?: number[]; previews?: PlannedPreview[] }>;
   /** Has this selection's import read the series `planned` of its disc's plan next: the series the reader opened. */
   prioritiseImport?(capabilities: string[], planned: number): Promise<{ wanted: boolean }>;
   cancelOperation(id?: number): Promise<{ requested: boolean }>;

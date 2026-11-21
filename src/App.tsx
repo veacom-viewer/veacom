@@ -1205,21 +1205,30 @@ export default function App() {
     // importEarly). They are asked for until they come, then about every half second, for how far each one is read.
     const disc: { paths: string[]; cards: WaitingSeries[]; wanted: string | null } = { paths, cards: [], wanted: null };
     discImport.current = disc;
-    const pictureOf = (uid: string) => disc.cards.find(card => card.info.uid === uid)?.preview;
+    // A series read takes its card's picture only if the picture is of that series (the engine gives none other).
+    const pictureOf = (uid: string) => {
+      const picture = disc.cards.find(card => card.info.uid === uid)?.preview;
+      return picture?.uid === uid ? picture : undefined;
+    };
     void (async () => {
       let after = 0, previewsAfter = 0, polls = 0;
       while (stillWatching()) {
         await new Promise(resolve => setTimeout(resolve, 40));
         if (!stillWatching()) return;
         let reply: EarlyImport;
-        const planned = !disc.cards.length || polls % 12 === 0;
-        try { reply = await importEarly(paths, after, { planned, previewsAfter }); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        // The series come once; after that, about every half second, how far each of them is read.
+        const planned = !disc.cards.length, finished = !planned && polls % 12 === 0;
+        try { reply = await importEarly(paths, after, { planned, finished, previewsAfter }); } catch { return; /* An engine restart: the import's own result reports it. */ }
         polls += 1;
         if (!stillWatching()) return;
         const found = reply.series;
         after += found.length; previewsAfter += reply.previews.length;
-        if (reply.planned || reply.previews.length) {
-          const listed = reply.planned ?? disc.cards.map(card => card.info);
+        const listed = reply.planned ?? disc.cards.map((card, index) => {
+          const read = reply.finished?.[index];
+          return read === undefined || read === card.info.finished ? card.info : { ...card.info, finished: read };
+        });
+        const recounted = !reply.planned && listed.some((info, index) => info !== disc.cards[index]?.info);
+        if (reply.planned || reply.previews.length || recounted) {
           const pictures = new Map(reply.previews.map(preview => [preview.planned, preview.series]));
           disc.cards = listed.map((info, index) => ({ index, info, preview: pictures.get(index) ?? disc.cards[index]?.preview }));
           setWaiting(disc.cards);

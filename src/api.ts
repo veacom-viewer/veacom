@@ -96,14 +96,14 @@ export async function importPaths(capabilities: string[]): Promise<ImportResult>
 }
 export async function listSeries(): Promise<ImportResult> { return catalog(bridge => bridge.listSeries()); }
 /** What this selection's import has given before its end: its early series and, for a disc read once, the series its
- * DICOMDIR lists and pictures of them. */
-export interface EarlyImport { series: Series[]; planned?: PlannedSeries[]; previews: PlannedPreview[] }
+ * DICOMDIR lists, how many files of each are read (in the same order), and pictures of them. */
+export interface EarlyImport { series: Series[]; planned?: PlannedSeries[]; finished?: number[]; previews: PlannedPreview[] }
 /** Early series for this selection only, including when its import was prefetched at startup. */
-export async function importEarly(capabilities: string[], after: number, options?: { planned: boolean; previewsAfter: number }): Promise<EarlyImport> {
+export async function importEarly(capabilities: string[], after: number, options?: { planned: boolean; finished: boolean; previewsAfter: number }): Promise<EarlyImport> {
   return brokerRequest(async (bridge, generation) => {
-    const { series, planned, previews = [] } = await bridge.importEarly(capabilities, after, options);
+    const { series, planned, finished, previews = [] } = await bridge.importEarly(capabilities, after, options);
     if ([...series, ...previews.map(preview => preview.series)].some(item => item.engineGeneration !== generation)) throw new Error(restartedMessage());
-    return { series, planned, previews };
+    return { series, planned, finished, previews };
   });
 }
 /** The disc this selection's import reads has the series `planned` of its plan read next (the series the reader opened). */

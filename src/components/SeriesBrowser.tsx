@@ -349,7 +349,11 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const unread = searching ? [] : (waiting ?? []).filter(card => !readUids.has(card.info.uid));
   const shownStudies = new Set(studies.flatMap(patient => patient.studies.map(study => study.first.studyUid)));
   const waitingStudies = new Map<string, WaitingSeries[]>();
-  for (const card of unread) if (!shownStudies.has(card.info.studyUid)) waitingStudies.set(card.info.studyUid, [...(waitingStudies.get(card.info.studyUid) ?? []), card]);
+  for (const card of unread) {
+    if (shownStudies.has(card.info.studyUid)) continue;
+    const cards = waitingStudies.get(card.info.studyUid);
+    if (cards) cards.push(card); else waitingStudies.set(card.info.studyUid, [card]);
+  }
 
   // Ctrl and Shift pick several cards, as in a folder; dragging one of them drags them all, in the order
   // they were picked, and they open side by side (VEAcom 1.x). A plain click picks one and opens it.

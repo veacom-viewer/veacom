@@ -129,7 +129,10 @@ fn read_index(
     file: File,
 ) -> Result<(DefaultDicomObject, BTreeMap<PathBuf, Reference>)> {
     let (_, _, header) = SourceFile::dicom_handle(index, file)?;
-    let obj = dicom_object::OpenFileOptions::new().from_reader(header)?;
+    // An index has no image: what follows the records is not read.
+    let obj = dicom_object::OpenFileOptions::new()
+        .read_until(Tag(0x7fe0, 0x0010))
+        .from_reader(header)?;
     ensure!(
         obj.meta().media_storage_sop_class_uid()
             == dicom_dictionary_std::uids::MEDIA_STORAGE_DIRECTORY_STORAGE,
@@ -214,11 +217,29 @@ fn link(record: &InMemDicomObject, tag: Tag) -> Option<u32> {
 const NEXT: Tag = Tag(0x0004, 0x1400);
 const LOWER: Tag = Tag(0x0004, 0x1420);
 
+/// The most series a DICOMDIR's tree may describe (see `series_tree`): far more than a disc holds, and few enough that
+/// the list the viewer is given stays small however the index is written.
+const MAX_LISTED_SERIES: usize = 2_000;
+/// The most characters kept of a text a record gives: more than any of the attributes read may hold.
+const MAX_TEXT: usize = 256;
+/// The most characters a UID may have (PS3.5 6.2).
+const MAX_UID: usize = 64;
+
+/// `text`, cut to MAX_TEXT characters.
+fn short(record: &InMemDicomObject, tag: Tag) -> String {
+    let mut value = text(record, tag);
+    if let Some((at, _)) = value.char_indices().nth(MAX_TEXT) {
+        value.truncate(at);
+    }
+    value
+}
+
 /// The series a DICOMDIR's records describe, from each patient down. The records are followed along their links,
 /// which are the offsets they start at (PS3.3 F.3), and not in the order they are written in, which the standard
 /// leaves free. None when the links do not make one tree: a link that leads to no record or to a record reached
 /// before, or a record without its links. Records marked inactive are left out with what lies under them, and so are
-/// series without a Series Instance UID or without files.
+/// series without a Series Instance UID (or with one too long to be one) or without files. None as well when the tree
+/// describes more than MAX_LISTED_SERIES series. Texts are cut to MAX_TEXT characters.
 fn series_tree(
     obj: &DefaultDicomObject,
     offsets: &[u64],
@@ -245,10 +266,15 @@ fn series_tree(
         if !entity(patient, "PATIENT") {
             continue;
         }
+        // What a patient's and a study's records say is read once for all of their series.
+        let patient_id = short(patient, Tag(0x0010, 0x0020));
+        let patient_name = short(patient, Tag(0x0010, 0x0010));
         for study in tree.chain(link(patient, LOWER)?)? {
             if !entity(study, "STUDY") {
                 continue;
             }
+            let study_uid = short(study, Tag(0x0020, 0x000d));
+            let study_date = short(study, Tag(0x0008, 0x0020));
             for record in tree.chain(link(study, LOWER)?)? {
                 if !entity(record, "SERIES") {
                     continue;
@@ -261,17 +287,17 @@ fn series_tree(
                     }
                 }
                 let uid = text(record, Tag(0x0020, 0x000e));
-                if files.is_empty() || uid.is_empty() {
+                if files.is_empty() || uid.is_empty() || uid.chars().count() > MAX_UID {
                     continue;
                 }
                 let info = PlannedSeries {
                     uid,
-                    study_uid: text(study, Tag(0x0020, 0x000d)),
-                    patient_id: text(patient, Tag(0x0010, 0x0020)),
-                    patient_name: text(patient, Tag(0x0010, 0x0010)),
-                    study_date: text(study, Tag(0x0008, 0x0020)),
-                    description: text(record, Tag(0x0008, 0x103e)),
-                    modality: text(record, Tag(0x0008, 0x0060)),
+                    study_uid: study_uid.clone(),
+                    patient_id: patient_id.clone(),
+                    patient_name: patient_name.clone(),
+                    study_date: study_date.clone(),
+                    description: short(record, Tag(0x0008, 0x103e)),
+                    modality: short(record, Tag(0x0008, 0x0060)),
                     series_number: number(record, Tag(0x0020, 0x0011)).map(|n| n as i32),
                     files: files.len(),
                     finished: 0,
@@ -285,6 +311,9 @@ fn series_tree(
                     files,
                     middle,
                 });
+                if series.len() > MAX_LISTED_SERIES {
+                    return None;
+                }
             }
         }
     }
@@ -859,6 +888,66 @@ mod tests {
         assert_eq!(series.len(), 1);
         assert_eq!(places(&series[0], media.path()), ["DICOM/IM1A"]);
         assert_eq!(series[0].info.files, 1);
+    }
+
+    #[test]
+    fn a_dicomdirs_long_texts_are_cut_short_and_a_series_with_too_long_a_uid_is_left_out() {
+        let mut records = study();
+        let long: &'static str = "A".repeat(1000).leak();
+        records[0].fields[0].2 = long;
+        records[2].fields[1].2 = long;
+        // The second series' UID is longer than any UID may be.
+        records[4].fields[2].2 = "1.2.".repeat(20).leak();
+        let media = crate::test_dir::tempdir().unwrap();
+        let listing = listing(media.path(), &records);
+        assert_eq!(listing.files.len(), 3);
+        let series = listing.series.unwrap();
+        assert_eq!(series.len(), 1);
+        let info = &series[0].info;
+        assert_eq!(info.uid, "1.2.3.1.1");
+        assert_eq!(info.patient_name, "A".repeat(MAX_TEXT));
+        assert_eq!(info.description, "A".repeat(MAX_TEXT));
+        assert_eq!(info.patient_id, "ID1");
+    }
+
+    #[test]
+    fn a_dicomdir_that_describes_more_series_than_a_disc_holds_gives_no_series() {
+        // A patient and a study with `count` series of one image each, every image the same file.
+        let many = |count: usize| {
+            let patient = vec![(Tag(0x0010, 0x0020), b"LO", "ID1")];
+            let mut records = vec![
+                record("PATIENT", patient),
+                record("STUDY", vec![(Tag(0x0020, 0x000d), b"UI", "1.2.3.1")]),
+            ];
+            records[0].lower = Some(1);
+            records[1].lower = Some(2);
+            for number in 0..count {
+                let at = records.len();
+                let mut series = record("SERIES", vec![(Tag(0x0020, 0x000e), b"UI", "1.2.3.1.1")]);
+                series.lower = Some(at + 1);
+                series.next = (number + 1 < count).then_some(at + 2);
+                records.push(series);
+                records.push(record(
+                    "IMAGE",
+                    vec![
+                        (Tag(0x0004, 0x1500), b"CS", "DICOM\\IM1"),
+                        (Tag(0x0004, 0x1510), b"UI", "1.2.840.10008.5.1.4.1.1.2"),
+                        (Tag(0x0004, 0x1511), b"UI", "1.2.3.1.1.1"),
+                    ],
+                ));
+            }
+            records
+        };
+        let media = crate::test_dir::tempdir().unwrap();
+        let most = listing(media.path(), &many(MAX_LISTED_SERIES));
+        assert_eq!(
+            most.series.map(|series| series.len()),
+            Some(MAX_LISTED_SERIES)
+        );
+        let media = crate::test_dir::tempdir().unwrap();
+        let more = listing(media.path(), &many(MAX_LISTED_SERIES + 1));
+        assert_eq!(more.files.len(), 1);
+        assert!(more.series.is_none());
     }
 
     #[test]
