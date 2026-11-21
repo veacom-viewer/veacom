@@ -29,7 +29,7 @@ export interface SeriesBrowserProps {
 /** A series that a disc's DICOMDIR lists and that the import is still reading: its place in the index's list, what the
  * index says of it, and the picture made from its middle image once that is read. */
 export interface WaitingSeries { index: number; info: PlannedSeries; preview?: Series }
-interface SeriesActions { select: (series: Series) => void; remove: (ids: string[]) => void }
+interface SeriesActions { select: (series: Series) => void; remove: (ids: string[]) => void; open: (card: WaitingSeries) => void }
 
 /** A drag of several picked cards carries their ids here, in the order they were picked. */
 export const SERIES_LIST_DRAG = 'application/x-veacom-series-list';
@@ -150,13 +150,13 @@ function Preview({ id, empty, failed }: { id: string; empty: boolean; failed: bo
 }
 
 /** A series still being read from a disc: its middle image once that is read, and a line along the picture's foot for
- * how much of it is read. It can be opened once the series itself is read. */
-function WaitingCard({ card }: { card: WaitingSeries }) {
+ * how much of it is read. Pressed, the disc reads it next and it opens as far as it is read (App's openWaiting). */
+function WaitingCard({ card, onOpen }: { card: WaitingSeries; onOpen: (card: WaitingSeries) => void }) {
   const { t } = useTranslation();
   const { info, preview } = card;
   const description = info.description || t('series.untitled');
   const read = info.files > 0 ? Math.min(1, info.finished / info.files) : 0;
-  return <button type="button" className="series-card is-waiting" aria-disabled="true" data-tooltip={t('series.waiting')} data-testid={`series-waiting-${card.index}`}
+  return <button type="button" className="series-card is-waiting" data-tooltip={t('series.waiting')} data-testid={`series-waiting-${card.index}`} data-action="series-wait" onClick={() => onOpen(card)}
     aria-label={t('series.waitingLabel', { description, modality: info.modality, count: info.files })}>
     <span className="series-card-description">{description}</span>
     <span className="series-preview">
@@ -168,7 +168,7 @@ function WaitingCard({ card }: { card: WaitingSeries }) {
 }
 
 /** A study of a disc with no series read yet: its patient and date as the disc's DICOMDIR gives them, and its cards. */
-function WaitingStudy({ cards }: { cards: readonly WaitingSeries[] }) {
+function WaitingStudy({ cards, onOpen }: { cards: readonly WaitingSeries[]; onOpen: (card: WaitingSeries) => void }) {
   const { t } = useTranslation();
   const first = cards[0].info;
   const modalities = [...new Set(cards.map(card => card.info.modality).filter(Boolean))].join('/');
@@ -184,7 +184,7 @@ function WaitingStudy({ cards }: { cards: readonly WaitingSeries[] }) {
         <strong>{dateLabel(first.studyDate, t)}</strong>
         <span className="series-study-details"><small>{t('series.studySummary', { modalities: modalities || 'DICOM', count: cards.length })}</small></span>
       </div>
-      <div className="series-study-items">{ordered.map(card => <WaitingCard key={`waiting:${card.info.uid}`} card={card} />)}</div>
+      <div className="series-study-items">{ordered.map(card => <WaitingCard key={`waiting:${card.info.uid}`} card={card} onOpen={onOpen} />)}</div>
     </section>
   </section>;
 }
@@ -309,11 +309,11 @@ function storeGuessNames(enabled: boolean) {
 export function SeriesBrowser({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
   return <div className="series-browser-slot" inert={inert || undefined}>
     <SeriesList series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedIds} waiting={waiting}
-      onSelect={item => actionsRef.current.select(item)} onRemove={ids => actionsRef.current.remove(ids)} />
+      onSelect={item => actionsRef.current.select(item)} onRemove={ids => actionsRef.current.remove(ids)} onOpen={card => actionsRef.current.open(card)} />
   </div>;
 }
 
-function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, onSelect, onRemove }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove'] }) {
+function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, onSelect, onRemove, onOpen }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove']; onOpen: SeriesActions['open'] }) {
   const { locale, t } = useTranslation();
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -434,7 +434,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
 
   return <aside className="series-browser" aria-label={t('series.browser')}>
     <div className="series-browser-scroll" ref={scroller} onContextMenu={event => openMenu(event, {})}>
-      {[...waitingStudies].map(([key, cards]) => <WaitingStudy key={`waiting:${key}`} cards={cards} />)}
+      {[...waitingStudies].map(([key, cards]) => <WaitingStudy key={`waiting:${key}`} cards={cards} onOpen={onOpen} />)}
       {studies.map(patient => {
         const patientHidden = collapsed.has(patient.key) && !search;
         const patientName = patient.first.patientName.replaceAll('^', ' ').trim();
@@ -455,7 +455,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
             <span className="series-study-details">{study.first.studyDescription && <span title={study.first.studyDescription}>{study.first.studyDescription}</span>}<small>{t('series.studySummary', { modalities: modalities || 'DICOM', count: study.items.length })}</small></span>
           </button>
           {!hidden && <div className="series-study-items">{withWaiting(study.items, unread, study.first.studyUid).map(entry => {
-            if (entry.kind === 'waiting') return <WaitingCard key={`waiting:${entry.card.info.uid}`} card={entry.card} />;
+            if (entry.kind === 'waiting') return <WaitingCard key={`waiting:${entry.card.info.uid}`} card={entry.card} onOpen={onOpen} />;
             const item = entry.item;
             if (item.segmentation) return <SegmentationCard key={item.id} item={item} series={series} shown={shownSegmentationIds?.has(item.id) ?? false} onSelect={onSelect} onMenu={event => openMenu(event, { item })} />;
             const loading = loadingIds.has(item.id);
@@ -468,7 +468,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               key={item.id}
               className={`series-card${active ? ' is-active' : ''}${several ? ' is-picked' : ''}`}
               aria-pressed={active}
-              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
+              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: `${item.warnings.length ? t('series.cardWarnings') : ''}${item.reading ? t('series.cardReading') : ''}` })}
               aria-busy={loading}
               aria-describedby={item.warnings.length ? `series-warnings-${item.id}` : undefined}
               data-testid={`series-${item.id}`}
@@ -486,7 +486,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               <span className="series-preview">
                 <Preview id={item.id} empty={item.dimensions[2] === 0} failed={Boolean(failedIds?.has(item.id) && !loading)} />
                 {item.warnings.length > 0 && <span className="series-warning" aria-hidden="true" data-tooltip={warningTexts(item, locale).join(' · ')}><TriangleAlert size={11} /></span>}
-                <span className="series-image-count">{item.dimensions[2] + Number(reference !== undefined)}</span>
+                <span className="series-image-count">{item.reading ? `${item.dimensions[2]} / ${item.reading.files}` : item.dimensions[2] + Number(reference !== undefined)}</span>
+                {item.reading && <span className="series-reading" style={{ width: `${Math.round(Math.min(1, item.reading.read / Math.max(1, item.reading.files)) * 100)}%` }} aria-hidden="true" />}
                 {several && <span className="sr-only">{t('series.picked', { number: picked.indexOf(item.id) + 1, count: picked.length })}</span>}
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
               </span>

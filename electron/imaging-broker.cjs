@@ -143,6 +143,15 @@ class ImagingBroker {
     }
     return reply;
   }
+  /** Has this selection's import read the series `planned` of its disc's plan next (the engine's importPrioritise): the
+   * series the reader opened, which the import then hands over as far as it is read. */
+  async prioritiseImport(capabilities, planned) {
+    if (!Array.isArray(capabilities) || !capabilities.length || capabilities.length > 4096 || capabilities.some(value => typeof value !== 'string')) throw new Error('Invalid request.');
+    if (!Number.isSafeInteger(planned) || planned < 0 || planned > 100_000) throw new Error('Invalid request.');
+    const requestId = this.activeImports.get(importKey(capabilities));
+    if (!requestId) return { wanted: false };
+    return (await this.requestJson('importPrioritise', { requestId, planned })).value;
+  }
   /** The pictures registered for an import's disc series go when the import ends: the engine serves them no longer. */
   forgetPictures(key) {
     for (const id of this.pictures.get(key) ?? []) { this.series.delete(id); this.revokePixels(id); }

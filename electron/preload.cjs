@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('veacom', {
   importSelected: capabilities => invoke('imaging:import', capabilities),
   getProgress: () => invoke('imaging:progress'),
   importEarly: (capabilities, after, options) => invoke('imaging:early', capabilities, after, options),
+  prioritiseImport: (capabilities, planned) => invoke('imaging:prioritise', capabilities, planned),
   cancelOperation: id => invoke('imaging:cancel', id),
   cancelExport: () => invoke('dicom:cancel'),
   measure: (id, generation, revision, operation) => invoke('imaging:measure', id, generation, revision, operation),

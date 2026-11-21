@@ -93,6 +93,8 @@ export interface Series {
   /** What stored PET values are multiplied by for SUVbw (1 for values already in SUV); for SUL and SUVbsa, where the
    * patient's height (and, for SUL, sex) are recorded. */
   suvFactor: number | null; sulFactor?: number | null; suvBsaFactor?: number | null;
+  /** Set while the series is still being read from a disc: it is shown as far as it is read, and grows. */
+  reading?: { read: number; files: number };
   canReconstruct: boolean; warnings: string[];
   /** The same warnings as engine messages, for translation (src/i18n/core.ts). */
   warningNotes?: CoreNote[];
@@ -374,6 +376,8 @@ export interface DesktopBridge {
   /** Series this selection's import has already published, from the `after`th on; with `planned`, also the series a disc's
    * DICOMDIR lists, and the pictures of those series from the `previewsAfter`th on. */
   importEarly(capabilities: string[], after: number, options?: { planned: boolean; previewsAfter: number }): Promise<{ import: number; series: Series[]; planned?: PlannedSeries[]; previews?: PlannedPreview[] }>;
+  /** Has this selection's import read the series `planned` of its disc's plan next: the series the reader opened. */
+  prioritiseImport?(capabilities: string[], planned: number): Promise<{ wanted: boolean }>;
   cancelOperation(id?: number): Promise<{ requested: boolean }>;
   /** Stops the DICOM, USB or folder export under way. */
   cancelExport?: () => Promise<void>;

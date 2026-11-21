@@ -106,6 +106,10 @@ export async function importEarly(capabilities: string[], after: number, options
     return { series, planned, previews };
   });
 }
+/** The disc this selection's import reads has the series `planned` of its plan read next (the series the reader opened). */
+export async function prioritiseImport(capabilities: string[], planned: number): Promise<void> {
+  await brokerRequest(async bridge => { await bridge.prioritiseImport?.(capabilities, planned); });
+}
 /** `id` names the engine job shown, so a cancel reaches that job and no other. */
 export interface CoreProgress { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean; }
 export async function getProgress(): Promise<CoreProgress> { return brokerRequest(bridge => bridge.getProgress()); }

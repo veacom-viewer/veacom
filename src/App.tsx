@@ -8,7 +8,7 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries, type EarlyImport } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, prioritiseImport, removeSeries, type CoreProgress, type EarlyImport } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
@@ -143,6 +143,12 @@ const measureIcon = (tool: Tool, size = 18, tagged = false) => { const Icon = ME
 const kebab = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 // The engine reports progress by stage name; unknown stages are shown as reported.
 const STAGES: Partial<Record<string, MessageKey>> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
+/** A duration as m:ss, or h:mm:ss from an hour on. */
+function clockText(ms: number) {
+  const seconds = Math.max(0, Math.round(ms / 1000)), hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return hours ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
 const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
 const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
 /** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
@@ -386,7 +392,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} joined={joined} onCross={cross} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
-      {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
+      {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{metadata?.reading ? t('viewport.reading', { read: metadata.reading.read, count: metadata.reading.files }) : volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
       {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
@@ -515,7 +521,9 @@ export default function App() {
   const [importing, setImporting] = useState(0);
   const importCount = useRef(0);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number } | null>(null);
+  // `elapsed`: how long the operation has run; `remaining`: an estimate of what is left of its stage (both in ms).
+  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number; elapsed?: number; remaining?: number } | null>(null);
+  const progressClock = useRef<{ id?: number; stage: string; began: number; stageBegan: number; stageDone: number } | null>(null);
   // The engine job Cancel was pressed for: "Cancelling…" shows while that job is the one in progress, not for the next.
   const [cancelledId, setCancelledId] = useState<number | null>(null);
   const cancelling = progress !== null && cancelledId !== null && progress.id === cancelledId;
@@ -630,6 +638,8 @@ export default function App() {
   const [failedPreviews, setFailedPreviews] = useState<ReadonlySet<string>>(() => new Set());
   // The series of a disc being read, as its DICOMDIR lists them, with their pictures (importStudies).
   const [waiting, setWaiting] = useState<WaitingSeries[]>([]);
+  // The disc being read (importStudies): what to name it by, its cards, and the series the reader opened from one.
+  const discImport = useRef<{ paths: string[]; cards: WaitingSeries[]; wanted: string | null } | null>(null);
   // The thick slab's thickness, kept while no slab is shown (as in VEAcom Next, 10 mm to begin with).
   const [slabThickness, setSlabThickness] = useState<number>(DEFAULT_SLAB_THICKNESS);
   const [fusionOpacity, setFusionOpacity] = useState(0.45);
@@ -817,13 +827,35 @@ export default function App() {
     for (const request of frameRequests.current.values()) request.controller.abort();
     frameRequests.current.clear();
   } });
+  // In the status bar, where it does not push the image down: what is being done, how far, how long it has taken and
+  // about how long is left. A series loading shows its bar alone, as it comes and goes with every series opened.
+  const progressTimes = progress?.elapsed === undefined ? ''
+    : progress.remaining === undefined ? t('status.progressElapsed', { elapsed: clockText(progress.elapsed) })
+    : t('status.progressTimes', { elapsed: clockText(progress.elapsed), remaining: clockText(progress.remaining) });
+  const progressText = progress && progress.stage !== 'decode'
+    ? [`${stageLabel(progress.stage)}${progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}`, progressTimes].filter(Boolean).join(' · ') : '';
   const hasWork = Boolean(busy || loadingIds.size || importing);
   useEffect(() => {
-    if (!hasWork) { setProgress(null); setCancelledId(null); return; }
+    if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
     const pollState = { disposed: false, polling: false };
+    // How long the operation shown has run and, once its stage has run a few seconds, what is left of that stage at
+    // the pace it has kept so far. A new operation, or a new stage of it, starts its own count.
+    const timed = (value: CoreProgress) => {
+      const now = performance.now(), clock = progressClock.current;
+      const same = clock !== null && clock.id === value.id, sameStage = same && clock.stage === value.stage;
+      const next = { id: value.id, stage: value.stage, began: same ? clock.began : now, stageBegan: sameStage ? clock.stageBegan : now, stageDone: sameStage ? clock.stageDone : value.completed };
+      progressClock.current = next;
+      const done = value.completed - next.stageDone, spent = now - next.stageBegan;
+      const remaining = value.total > 0 && done > 0 && spent >= 3000 ? spent / done * Math.max(0, value.total - value.completed) : undefined;
+      return { ...value, elapsed: now - next.began, remaining };
+    };
     const poll = async () => {
       if (pollState.polling) return; pollState.polling = true;
-      await getProgress().then(value => { if (!pollState.disposed) setProgress(value.running ? value : null); })
+      await getProgress().then(value => {
+        if (pollState.disposed) return;
+        if (!value.running) progressClock.current = null;
+        setProgress(value.running ? timed(value) : null);
+      })
         .catch(() => { /* The initiating operation reports connection errors. */ })
         .finally(() => { pollState.polling = false; });
     };
@@ -917,6 +949,50 @@ export default function App() {
     setLoadErrors(current => { const updated = { ...current }; for (const id of ids) delete updated[id]; return updated; });
   };
 
+  /** Measurements drawn on source images keep their image when a series' images move: an import that read it again, or
+   * a series being read that grew. */
+  const followAnnotations = (moved: readonly Series[]) => setAnnotations(current => {
+    const next = { ...current }; let changed = false;
+    for (const item of moved) {
+      if (!Object.hasOwn(current, item.id)) continue;
+      const kept = current[item.id];
+      const placed = kept.map(annotation => {
+        if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
+        const index = annotationSourceIndex(annotation, item);
+        if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
+        return { ...annotation, sourceFrame: index, slice: index };
+      });
+      if (placed.some((annotation, i) => annotation !== kept[i])) { next[item.id] = placed; changed = true; }
+    }
+    return changed ? next : current;
+  });
+  /** A series still being read from a disc grew (importStudies): it takes its earlier self's place without being loaded
+   * again. Each pane on it keeps the image it shows, now at that image's place in the grown series, and so does each
+   * measurement. Read whole, a series shown in a pane is loaded as any series is. */
+  const followGrowth = (grown: readonly Series[]) => {
+    const before = new Map(seriesRef.current.map(item => [item.id, item]));
+    const placeIn = (item: Series, index: number) => {
+      const uid = before.get(item.id)?.frameMetadata?.[index]?.sopInstanceUid;
+      const at = uid === undefined ? -1 : (item.frameMetadata ?? []).findIndex(frame => frame.sopInstanceUid === uid);
+      return at >= 0 ? at : Math.max(0, Math.min(index, item.dimensions[2] - 1));
+    };
+    const byId = new Map(grown.map(item => [item.id, item]));
+    frameCache.invalidate([...byId.keys()]);
+    for (const [slotId, request] of frameRequests.current) if (byId.has(request.seriesId)) { request.controller.abort(); frameRequests.current.delete(slotId); }
+    const moved = (volume: Volume) => {
+      const item = byId.get(volume.series.id);
+      return item && volume.sourceFrameIndex !== undefined ? { ...volume, series: item, sourceFrameIndex: placeIn(item, volume.sourceFrameIndex) } : volume;
+    };
+    publishVolumes(new Map([...volumesRef.current].map(([id, volume]) => [id, moved(volume)])));
+    setSlotFrames(current => Object.fromEntries(Object.entries(current).map(([id, volume]) => [id, moved(volume)])));
+    setSlots(current => current.map(slot => {
+      const item = slot.seriesId ? byId.get(slot.seriesId) : undefined;
+      return item ? { ...slot, view: { ...slot.view, slice: placeIn(item, slot.view.slice) } } : slot;
+    }));
+    followAnnotations(grown);
+    for (const item of grown) if (!item.reading && slotsRef.current.some(slot => slot.seriesId === item.id)) loadPaneImage(item);
+  };
+
   const acquireVolume = (item: Series): Promise<Volume> => {
     requestedPins.current.add(item.id);
     volumeAccess.current.set(item.id, ++accessClock.current);
@@ -930,6 +1006,13 @@ export default function App() {
       publishVolumes(next);
       keepThumbnail(volume);
     };
+    // A series still being read from a disc is shown a source frame at a time: its volume would have to be loaded again
+    // each time it grows (followGrowth). Read whole, it is loaded as any series is.
+    if (item.reading) return frameCache.get(item, openingSlice(item)).then(async volume => {
+      await prepareSourceProgram(volume);
+      if (mounted.current && isCurrent()) storeVolume(volume);
+      return volume;
+    });
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     const load = { complete: false };
@@ -1113,7 +1196,8 @@ export default function App() {
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
     // A disc read once: the series its DICOMDIR lists, each with its picture once its middle image is read (the engine's
     // importEarly). They are asked for until they come, then about every half second, for how far each one is read.
-    const disc: { cards: WaitingSeries[] } = { cards: [] };
+    const disc: { paths: string[]; cards: WaitingSeries[]; wanted: string | null } = { paths, cards: [], wanted: null };
+    discImport.current = disc;
     const pictureOf = (uid: string) => disc.cards.find(card => card.info.uid === uid)?.preview;
     void (async () => {
       let after = 0, previewsAfter = 0, polls = 0;
@@ -1135,15 +1219,26 @@ export default function App() {
           // Drawn as any card's picture is. One that fails leaves its card's placeholder until its series is read.
           for (const picture of pictures.values()) frameCache.get(picture, 0).then(keepThumbnail, () => {});
         }
+        // A series handed over before comes again as it grows: one the reader opened from a disc still being read.
+        const grown = found.filter(item => early.has(item.id) && early.get(item.id)?.catalogRevision !== item.catalogRevision);
+        if (grown.length) {
+          followGrowth(grown);
+          for (const item of grown) early.set(item.id, item);
+          setSeries(current => withFound(current, grown, listedBefore));
+        }
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
         for (const item of images) { const picture = pictureOf(item.uid); if (picture) adoptThumbnail(picture.id, item.id); }
+        // The series the reader opened from its waiting card opens as soon as part of it is read.
+        const opened = images.find(item => item.uid === disc.wanted);
+        if (opened) disc.wanted = null;
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
         const first = early.size === 0;
         for (const item of images) { early.set(item.id, item); earlySeries.current.add(item.id); }
         setSeries(current => withFound(current, images, listedBefore));
-        if (first) assignSeries(activeIdRef.current, images[0]);
+        if (opened) assignSeries(activeIdRef.current, opened);
+        else if (first) assignSeries(activeIdRef.current, images[0]);
       }
     })();
     return importPaths(paths).then(result => {
@@ -1161,21 +1256,7 @@ export default function App() {
       const reimported = new Set(result.series.map(item => item.id));
       for (const id of reimported) maskRequests.current.delete(id);
       setSegmentationMasks(current => [...current.keys()].some(id => reimported.has(id)) ? new Map([...current].filter(([id]) => !reimported.has(id))) : current);
-      setAnnotations(current => {
-        const next = { ...current }; let changed = false;
-        for (const item of result.series) {
-          if (!Object.hasOwn(current, item.id)) continue;
-          const kept = current[item.id];
-          const moved = kept.map(annotation => {
-            if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
-            const index = annotationSourceIndex(annotation, item);
-            if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
-            return { ...annotation, sourceFrame: index, slice: index };
-          });
-          if (moved.some((annotation, i) => annotation !== kept[i])) { next[item.id] = moved; changed = true; }
-        }
-        return changed ? next : current;
-      });
+      followAnnotations(result.series);
       const visibleIds = new Set([...slotsRef.current.map(slot => slot.seriesId), fusionIdRef.current, ...assessmentPinnedIds.current]);
       for (const item of result.series) if (visibleIds.has(item.id) && !settled.has(item.id)) loadPaneImage(item);
       // The study just opened leads the list (src/ui/seriesOrder.ts): its new series, those opened early among them,
@@ -1217,6 +1298,7 @@ export default function App() {
       earlyWatch.abort();
       for (const id of early.keys()) earlySeries.current.delete(id);
       // The disc's cards go with its import: its series are the list's own now, with the pictures they took.
+      if (discImport.current === disc) discImport.current = null;
       const pictures = disc.cards.flatMap(card => card.preview ? [card.preview.id] : []);
       for (const id of pictures) forgetThumbnail(id);
       frameCache.invalidate(pictures);
@@ -1669,10 +1751,20 @@ export default function App() {
   };
   const selectSeries = (item: Series) => {
     if (item.segmentation) { toggleSegmentation(item, activeIdRef.current); return; }
+    // A series still being read from a disc is read next, as it opens.
+    const disc = discImport.current, card = item.reading ? disc?.cards.find(value => value.info.uid === item.uid) : undefined;
+    if (disc && card) void prioritiseImport(disc.paths, card.index).catch(() => { /* The import's own result reports a stopped engine. */ });
     if (beforeMpr.current) endMpr.current();
     putSeries(activeIdRef.current, item);
   };
   const selectFromMenu = (item: Series) => { selectSeries(item); setMenu(null); };
+  /** A waiting card is pressed: the disc being read reads its series next, and the series opens in the active pane as
+   * soon as part of it is read (importStudies). */
+  const openWaiting = (card: WaitingSeries) => {
+    const disc = discImport.current; if (!disc) return;
+    disc.wanted = card.info.uid;
+    void prioritiseImport(disc.paths, card.index).catch(() => { /* The import's own result reports a stopped engine. */ });
+  };
   /** Several series picked together: a layout with a pane for each, the first picked first (VEAcom 1.x). */
   const openSideBySide = (ids: string[]) => {
     const picked = ids.map(id => seriesRef.current.find(value => value.id === id)).filter((item): item is Series => Boolean(item));
@@ -2403,10 +2495,10 @@ export default function App() {
     } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
   };
 
-  const seriesActions = useRef({ select: selectSeries, remove: removeFromList });
+  const seriesActions = useRef({ select: selectSeries, remove: removeFromList, open: openWaiting });
   // Pending engine work and input handlers read the last committed workspace.
   useLayoutEffect(() => {
-    seriesActions.current = { select: selectSeries, remove: removeFromList };
+    seriesActions.current = { select: selectSeries, remove: removeFromList, open: openWaiting };
     seriesRef.current = series;
     slotsRef.current = slots;
     activeIdRef.current = activeId;
@@ -2718,9 +2810,6 @@ export default function App() {
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
         {usageConsent === null && <div className="notice usage-consent" role="region" aria-label={t('usage.title')} data-testid="usage-consent"><span>{t('usage.question')}</span><span className="usage-consent-actions"><button type="button" className="secondary-button compact" data-testid="usage-consent-share" onClick={() => void chooseUsage('granted')}>{t('usage.share')}</button><button type="button" className="secondary-button compact" data-testid="usage-consent-decline" onClick={() => void chooseUsage('denied')}>{t('usage.decline')}</button></span></div>}
-        {/* Not while a series loads: a strip above the image would push the image down and back up for every series
-            opened. That progress, and its Cancel, are in the status bar instead. */}
-        {progress && progress.stage !== 'decode' && <div className="operation-progress"><LoaderCircle size={12} className="spin" /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
         {/* From main (#7): no usable graphics driver, or WebGL drawn in software. */}
         {graphicsNoticeOpen && graphicsError != null && <div className="notice error" role="alert" data-testid="graphics-unavailable-notice"><span>{errorText(graphicsError)}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
         {graphicsNoticeOpen && graphics?.software && <div className="notice warning" role="status" data-testid="software-rendering-notice"><span>{t('gpu.softwareNotice')} <span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
@@ -2918,7 +3007,7 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress?.stage === 'decode' && <span className="status-export"><progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
