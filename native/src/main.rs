@@ -99,6 +99,9 @@ struct Core {
     catalog_bytes: Mutex<BTreeMap<String, usize>>,
     cache: Mutex<Cache>,
     archives: Mutex<Vec<archive_temp::ArchiveTempDir>>,
+    /// The discs those of `archives` that hold a disc's copy are of, for a later import of the same disc (see
+    /// ingest::DiscCopy). Kept and let go with `archives`.
+    disc_copies: Mutex<Vec<ingest::DiscCopy>>,
     jobs: Queue,
     frames: Queue,
     samples: Queue,
@@ -111,9 +114,16 @@ struct EarlyImport {
     /// Counts imports, so a reader can tell one import's series from the next one's.
     import: u64,
     request_id: String,
-    series: Vec<model::Series>,
+    /// The series in the order they were handed over, a series that came again at each of its places: every place of
+    /// one series holds it as it came last, once in memory (see `early_series`).
+    series: Vec<Arc<model::Series>>,
     /// The ids this import added to the catalogue ahead of its end.
     added: Vec<String>,
+    /// The series the DICOMDIR of a disc it reads lists (see ingest::Plan).
+    plan: Option<Arc<ingest::Plan>>,
+    /// Pictures for the plan's series, in the order the import handed them over, each with its series' place in the
+    /// plan (see ingest::HandOver::Preview). `frame` serves them while the import runs.
+    previews: Vec<(usize, Arc<SourceSeries>)>,
 }
 /// An HTTP-like status and the message: `error` is the English text; `note`, when the message is coded, lets the
 /// interface translate it.
@@ -321,6 +331,7 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
                 import_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
             }
             "importEarly" => ok(&early_series(core, body(call.body)?)),
+            "importPrioritise" => ok(&prioritise_import(core, body(call.body)?)),
             "removeSeries" => {
                 remove_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
             }
@@ -485,31 +496,69 @@ fn import_series(
         early.request_id = request.request_id;
         early.series.clear();
         early.added.clear();
+        early.plan = None;
+        early.previews.clear();
         early.import
     };
     turn.job(|| {
         // A series handed over early goes into the catalogue at once, so its frames can be shown while the rest is
         // read (frame does not wait for imports). Only series not open already: those stay as they are to the end.
-        let hand_over = |found: Vec<Arc<SourceSeries>>| {
+        let hand_over = |handed: ingest::HandOver| {
+            let found = match handed {
+                ingest::HandOver::Series(found) => found,
+                ingest::HandOver::Plan(plan) => {
+                    core.early.lock().unwrap().plan = Some(plan);
+                    return;
+                }
+                ingest::HandOver::Preview {
+                    planned,
+                    mut series,
+                } => {
+                    Arc::make_mut(&mut series).info.catalog_revision = next_revision();
+                    core.early.lock().unwrap().previews.push((planned, series));
+                    return;
+                }
+            };
             let mut sources = core.sources.write().unwrap();
             let mut early = core.early.lock().unwrap();
+            // A series this import handed over already comes again as it grows (ingest::PlanWatch): it takes its
+            // earlier self's place, and what was decoded of that goes.
+            let mut grown = Vec::new();
             for mut source in found {
-                if sources.contains_key(&source.info.id) {
+                let id = source.info.id.clone();
+                let again = early.added.contains(&id);
+                if sources.contains_key(&id) && !again {
                     continue;
                 }
                 Arc::make_mut(&mut source).info.catalog_revision = next_revision();
-                early.added.push(source.info.id.clone());
-                early.series.push(source.info.clone());
-                sources.insert(source.info.id.clone(), source);
+                let info = Arc::new(source.info.clone());
+                if again {
+                    grown.push(id.clone());
+                    for place in early.series.iter_mut().filter(|series| series.id == id) {
+                        *place = info.clone();
+                    }
+                } else {
+                    early.added.push(id.clone());
+                }
+                early.series.push(info);
+                sources.insert(id, source);
+            }
+            drop((sources, early));
+            let mut cache = core.cache.lock().unwrap();
+            for id in &grown {
+                cache.remove(id);
             }
         };
-        let imported = ingest::import_session(&request.paths, Some(&hand_over), revision);
+        let earlier = core.disc_copies.lock().unwrap().clone();
+        let imported = ingest::import_session(&request.paths, Some(&hand_over), revision, &earlier);
         let result = finish_import(core, imported);
         // Commit or retract early series while the work holds its turn, even if main cancelled the request.
         let added = {
             let mut early = core.early.lock().unwrap();
             early.series.clear();
             early.request_id.clear();
+            early.plan = None;
+            early.previews.clear();
             std::mem::take(&mut early.added)
         };
         if !added.is_empty() {
@@ -583,6 +632,7 @@ fn finish_import(
         }
     }
     core.archives.lock().unwrap().extend(imported.archives);
+    core.disc_copies.lock().unwrap().extend(imported.discs);
     Ok(result)
 }
 #[derive(Deserialize)]
@@ -592,26 +642,90 @@ struct EarlyQuery {
     after: usize,
     #[serde(default)]
     request_id: String,
+    /// Whether to give the series a disc's DICOMDIR lists as well.
+    #[serde(default)]
+    planned: bool,
+    /// Whether to give how far each of those series is read (see `EarlyList::finished`).
+    #[serde(default)]
+    finished: bool,
+    /// How many of the plan's pictures the reader has (see `EarlyList::previews`).
+    #[serde(default)]
+    previews_after: usize,
 }
 /// Written as import writes its series, so an early series and the final one compare field by field.
 #[derive(Serialize)]
 struct EarlyList {
     import: u64,
     series: Vec<model::Series>,
+    /// The series the DICOMDIR of a disc being read lists, as they stand, when asked for (see ingest::Plan).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planned: Option<Vec<model::PlannedSeries>>,
+    /// How many files of each of those series are read, in the plan's order, when asked for: the series once given,
+    /// only this changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    finished: Option<Vec<usize>>,
+    /// Pictures for the plan's series, from the `previewsAfter`th on (see ingest::HandOver::Preview).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    previews: Vec<model::PlannedPreview>,
 }
-/// The series the import under way has handed over early, from the `after`th on (see ingest::import_with).
+/// The series the import under way has handed over early, from the `after`th on (see ingest::import_with). A series
+/// that came again since is given once, at the first of its places, as it came last.
 fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
     let early = core.early.lock().unwrap();
     let from = query.after.min(early.series.len());
-    let series = if query.request_id == early.request_id {
-        early.series[from..].to_vec()
+    let current = query.request_id == early.request_id;
+    let series = if current {
+        let mut given = HashSet::new();
+        early.series[from..]
+            .iter()
+            .filter(|series| given.insert(series.id.as_str()))
+            .map(|series| (**series).clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let planned = (early.plan.as_ref())
+        .filter(|_| current && query.planned)
+        .map(|plan| plan.series());
+    let finished = (early.plan.as_ref())
+        .filter(|_| current && query.finished)
+        .map(|plan| plan.finished());
+    let from = query.previews_after.min(early.previews.len());
+    let previews = if current {
+        let picture = |(planned, series): &(usize, Arc<SourceSeries>)| model::PlannedPreview {
+            planned: *planned,
+            series: series.info.clone(),
+        };
+        early.previews[from..].iter().map(picture).collect()
     } else {
         Vec::new()
     };
     EarlyList {
         import: early.import,
         series,
+        planned,
+        finished,
+        previews,
     }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrioritiseQuery {
+    request_id: String,
+    /// The series' place in the plan of the disc being read.
+    planned: usize,
+}
+/// Has the import under way read the files of one of its disc's series next (ingest::Plan::want): the series the viewer
+/// opened, which it then hands over as far as it is read.
+fn prioritise_import(core: &App, query: PrioritiseQuery) -> Value {
+    let early = core.early.lock().unwrap();
+    let current = query.request_id == early.request_id;
+    let wanted = current
+        && early
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.want(query.planned));
+    json!({ "wanted": wanted })
 }
 #[derive(Deserialize)]
 struct RemoveRequest {
@@ -644,6 +758,7 @@ fn remove_series(core: &App, cancelled: &AtomicBool, request: RemoveRequest) -> 
     };
     if remaining == 0 {
         core.archives.lock().unwrap().clear();
+        core.disc_copies.lock().unwrap().clear();
     }
     Ok(json!({"removed": removed, "remaining": remaining}))
 }
@@ -720,6 +835,18 @@ fn warm_volume(core: &App, request: &pipe::Request, id: String) -> ApiResult<Rep
     }
     Ok(Reply::json(202, &json!({ "warming": true })))
 }
+/// A series of the catalogue, or a picture of a series that the import under way is still reading (see
+/// EarlyImport::previews), whose one frame its card shows.
+fn frame_source(core: &App, id: &str) -> ApiResult<Arc<SourceSeries>> {
+    source(core, id).or_else(|missing| {
+        let early = core.early.lock().unwrap();
+        let picture = early
+            .previews
+            .iter()
+            .find(|(_, series)| series.info.id == id);
+        picture.map(|(_, series)| series.clone()).ok_or(missing)
+    })
+}
 /// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed.
 fn header_value(value: &str) -> bool {
     value
@@ -733,7 +860,7 @@ fn frame(
     index: usize,
     revision: Option<u64>,
 ) -> ApiResult<Reply> {
-    let series = source(core, id)?;
+    let series = frame_source(core, id)?;
     check_revision(&series, revision)?;
     let components = series.info.components;
     if index >= series.frames.len() {
@@ -747,7 +874,7 @@ fn frame(
         ));
     }
     // As the catalogue has the series now: an import may have replaced it while this request waited.
-    let series = source(core, id)?;
+    let series = frame_source(core, id)?;
     check_revision(&series, revision)?;
     if index >= series.frames.len() {
         return Err(ApiError(404, "Frame index is out of bounds".into()));
@@ -1014,6 +1141,7 @@ fn new_core(cache_limit: usize) -> App {
             handoff: None,
         }),
         archives: Mutex::new(Vec::new()),
+        disc_copies: Mutex::new(Vec::new()),
         jobs: Queue::new(),
         frames: Queue::new(),
         samples: Queue::new(),
@@ -1053,6 +1181,7 @@ fn main() -> anyhow::Result<()> {
     core.catalog_bytes.lock().unwrap().clear();
     core.cache.lock().unwrap().clear();
     core.archives.lock().unwrap().clear();
+    core.disc_copies.lock().unwrap().clear();
     server.finish(Duration::from_secs(1));
     Ok(())
 }
@@ -1432,7 +1561,7 @@ mod job_tests {
             let mut early = core.early.lock().unwrap();
             early.import = 1;
             early.request_id = "startup-import".into();
-            early.series.push(series.info.clone());
+            early.series.push(Arc::new(series.info.clone()));
         }
         for (request_id, after, count) in [
             ("startup-import", 0, 1),
@@ -1445,6 +1574,41 @@ mod job_tests {
             let result = early_series(&core, query);
             assert_eq!(result.series.len(), count, "{request_id} at {after}");
         }
+    }
+
+    #[test]
+    fn a_series_that_came_again_is_given_once_as_it_came_last_and_a_plans_counts_when_asked() {
+        let core = core();
+        let series = |id: &str, revision: u64| {
+            Arc::new(model::Series {
+                id: id.into(),
+                catalog_revision: revision,
+                ..Default::default()
+            })
+        };
+        let planned = model::PlannedSeries {
+            files: 3,
+            ..Default::default()
+        };
+        {
+            let mut early = core.early.lock().unwrap();
+            early.request_id = "disc-import".into();
+            // "a" came, then "b", then "a" again: each of its places holds it as it came last (see hand_over).
+            let again = series("a", 3);
+            early.series = vec![again.clone(), series("b", 2), again];
+            early.plan = Some(Arc::new(ingest::Plan::new(vec![planned])));
+        }
+        let given = |after: usize, finished: bool| {
+            let query = json!({ "requestId": "disc-import", "after": after, "finished": finished });
+            let list = early_series(&core, serde_json::from_value(query).unwrap());
+            let series: Vec<_> = (list.series.iter())
+                .map(|series| (series.id.clone(), series.catalog_revision))
+                .collect();
+            (series, list.finished)
+        };
+        let (a, b) = (("a".to_owned(), 3), ("b".to_owned(), 2));
+        assert_eq!(given(0, false), (vec![a.clone(), b], None));
+        assert_eq!(given(2, true), (vec![a], Some(vec![0])));
     }
 
     #[test]
@@ -1513,6 +1677,293 @@ mod job_tests {
                 0,
                 "nothing written (zip: {zip})"
             );
+        }
+    }
+
+    /// The SOP Instance UIDs an import found, sorted.
+    fn imported_images(imported: &ingest::Imported) -> Vec<String> {
+        let mut found: Vec<_> = imported
+            .sources
+            .iter()
+            .flat_map(|source| &source.frames)
+            .map(|frame| frame.sop_uid.clone())
+            .collect();
+        found.sort();
+        found
+    }
+    fn noted(imported: &ingest::Imported, code: &str) -> Option<String> {
+        let note = imported.warnings.iter().find(|note| note.code == code)?;
+        Some(note.text.clone())
+    }
+    /// A test's folder read as a disc: no drive is asked about it, and its copies may take any room.
+    const ANY_DISC: ingest::Disc = ingest::Disc {
+        size: u64::MAX,
+        serial: None,
+    };
+    /// Imports `path` as a disc is imported: read once, into the import's own folder.
+    fn read_once(path: &std::path::Path) -> anyhow::Result<ingest::Imported> {
+        let paths = [path.to_string_lossy().into_owned()];
+        ingest::import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &[])
+    }
+
+    #[test]
+    fn a_disc_read_once_opens_as_its_folder_does_and_then_needs_the_disc_no_more() {
+        let disc = crate::test_dir::tempdir().unwrap();
+        let study = disc.path().join("study");
+        std::fs::create_dir(&study).unwrap();
+        write_slice(&study, "IM1", 11);
+        write_slice(&study, "IM2", 12);
+        // A DICOM file under a document's name is an image all the same; a program and a picture are not.
+        write_slice(&study, "IM3.txt", 13);
+        std::fs::write(study.join("viewer.exe"), b"a program, not an image").unwrap();
+        std::fs::write(study.join("photo.png"), b"a picture beside a study").unwrap();
+        let in_place = ingest::import(&[disc.path().to_string_lossy().into_owned()]).unwrap();
+        let once = read_once(disc.path()).unwrap();
+        assert_eq!(imported_images(&once), ["2.25.11", "2.25.12", "2.25.13"]);
+        assert_eq!(imported_images(&once), imported_images(&in_place));
+        // Every image is read from the import's own folder, which holds the images alone.
+        assert_eq!(once.archives.len(), 1);
+        let copies = once.archives[0].path().join("study");
+        let frames: Vec<_> = once.sources.iter().flat_map(|s| &s.frames).collect();
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.source.path.starts_with(&copies))
+        );
+        assert!(!copies.join("viewer.exe").exists() && !copies.join("photo.png").exists());
+        // The disc is taken out: the images still open.
+        drop(disc);
+        for frame in frames {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut frame.source.open().unwrap(), &mut bytes).unwrap();
+            assert!(!bytes.is_empty());
+        }
+    }
+
+    /// A folder laid out as a disc with an index: the engine's own DICOMDIR export of two slices.
+    fn indexed_disc(out: &std::path::Path) -> std::path::PathBuf {
+        let source = crate::test_dir::tempdir().unwrap();
+        let slices =
+            [11, 12].map(|value| write_slice(source.path(), &format!("{value}.dcm"), value));
+        let opts = serde_json::from_value(json!({"directory": out, "dicomdir": true})).unwrap();
+        let media = export::export_series(&slices.map(Into::into), &opts).unwrap();
+        std::path::PathBuf::from(media.directory)
+    }
+
+    #[test]
+    fn a_disc_with_an_index_gives_every_image_it_holds_and_says_which_the_index_leaves_out() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // An image beside the listed ones that the index leaves out, and a viewer's folder with a sample image.
+        write_slice(&disc.join("DICOM"), "EXTRA", 22);
+        std::fs::create_dir(disc.join("Viewer")).unwrap();
+        std::fs::write(disc.join("Viewer").join("viewer.bin"), [7; 4096]).unwrap();
+        write_slice(&disc.join("Viewer"), "sample.dcm", 33);
+        let once = read_once(&disc).unwrap();
+        assert_eq!(
+            imported_images(&once),
+            ["2.25.11", "2.25.12", "2.25.22", "2.25.33"]
+        );
+        assert!(
+            noted(&once, "import.discUnlisted").is_some_and(|text| text.starts_with("2 files"))
+        );
+        assert_eq!(noted(&once, "import.discIndexUnreadable"), None);
+        // Of the viewer's folder only the image is copied.
+        let viewer = once.archives[0].path().join("Viewer");
+        assert!(viewer.join("sample.dcm").exists() && !viewer.join("viewer.bin").exists());
+        assert_eq!(noted(&once, "import.discIndexDiffers"), None);
+        // A listed file that holds another image than the index says is read all the same, as it is when the disc is
+        // read as a folder, and the difference is said.
+        write_slice(&disc.join("DICOM"), "IM000002", 44);
+        let differing = read_once(&disc).unwrap();
+        assert_eq!(
+            imported_images(&differing),
+            ["2.25.11", "2.25.22", "2.25.33", "2.25.44"]
+        );
+        assert!(
+            noted(&differing, "import.discIndexDiffers")
+                .is_some_and(|text| text.contains("1 files"))
+        );
+    }
+
+    #[test]
+    fn a_disc_whose_index_lists_a_missing_file_or_cannot_be_read_still_opens_what_it_holds() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // A listed file is gone: the other opens, and the import says that a file could not be read.
+        std::fs::remove_file(disc.join("DICOM").join("IM000002")).unwrap();
+        let once = read_once(&disc).unwrap();
+        assert_eq!(imported_images(&once), ["2.25.11"]);
+        assert!(
+            noted(&once, "import.fileUnreadable").is_some_and(|text| text.contains("IM000002"))
+        );
+        // An index that is no index: the disc is read as a folder is, and that is said once.
+        std::fs::write(disc.join("DICOMDIR"), b"not an index").unwrap();
+        let walked = read_once(&disc).unwrap();
+        assert_eq!(imported_images(&walked), ["2.25.11"]);
+        assert!(noted(&walked, "import.discIndexUnreadable").is_some());
+        assert_eq!(walked.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_discs_index_opened_by_itself_gives_the_images_it_lists_alone() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        write_slice(&disc.join("DICOM"), "EXTRA", 22);
+        let once = read_once(&disc.join("DICOMDIR")).unwrap();
+        assert_eq!(imported_images(&once), ["2.25.11", "2.25.12"]);
+        assert_eq!(noted(&once, "import.discUnlisted"), None);
+        let copies = once.archives[0].path().join("DICOM");
+        assert!(copies.join("IM000001").exists() && !copies.join("EXTRA").exists());
+        // Here a file has to be the image the index says, as when the index is read where it lies.
+        write_slice(&disc.join("DICOM"), "IM000002", 44);
+        let strict = read_once(&disc.join("DICOMDIR")).unwrap();
+        assert_eq!(imported_images(&strict), ["2.25.11"]);
+        assert!(
+            noted(&strict, "import.fileUnreadable").is_some_and(|text| text.contains("IM000002"))
+        );
+        std::fs::write(disc.join("DICOMDIR"), b"not an index").unwrap();
+        assert!(read_once(&disc.join("DICOMDIR")).is_err());
+    }
+
+    #[test]
+    fn a_disc_taken_out_before_it_is_read_whole_stops_the_import_and_says_so() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // The disc goes once its series are listed, before a file of it is copied.
+        let sink = |handed_over: ingest::HandOver| {
+            if matches!(handed_over, ingest::HandOver::Plan(_)) {
+                std::fs::remove_dir_all(&disc).unwrap();
+            }
+        };
+        let paths = [disc.to_string_lossy().into_owned()];
+        let error = ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC), &[])
+            .err()
+            .unwrap();
+        assert_eq!(
+            message::coded(&error).map(|note| note.code),
+            Some("import.discRemoved")
+        );
+    }
+
+    #[test]
+    fn a_disc_with_an_index_hands_over_its_series_before_their_images_and_counts_their_files() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // Each hand-over, with how many of the plan's files were finished when it came.
+        let handed = Mutex::new(Vec::new());
+        let sink = |handed_over: ingest::HandOver| {
+            let finished = match &handed_over {
+                ingest::HandOver::Plan(plan) => plan.series().iter().map(|s| s.finished).sum(),
+                ingest::HandOver::Series(_) | ingest::HandOver::Preview { .. } => 0,
+            };
+            handed.lock().unwrap().push((handed_over, finished));
+        };
+        let paths = [disc.to_string_lossy().into_owned()];
+        let imported =
+            ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC), &[]).unwrap();
+        let handed = handed.into_inner().unwrap();
+        let Some(((ingest::HandOver::Plan(plan), 0), after)) = handed.split_first() else {
+            panic!("the plan is handed over first, before any of its files is read");
+        };
+        let not_a_plan = |(handed_over, _): &(ingest::HandOver, usize)| {
+            !matches!(handed_over, ingest::HandOver::Plan(_))
+        };
+        assert!(after.iter().all(not_a_plan));
+        let planned = plan.series();
+        let read = &imported.sources[0].info;
+        assert_eq!(planned.len(), 1);
+        assert_eq!(
+            (
+                planned[0].uid.as_str(),
+                planned[0].patient_name.as_str(),
+                planned[0].modality.as_str(),
+                planned[0].files,
+                planned[0].finished
+            ),
+            (read.uid.as_str(), "SYNTHETIC", "MR", 2, 2)
+        );
+        assert_eq!(noted(&imported, "import.discIndexDiffers"), None);
+    }
+
+    #[test]
+    fn a_picture_of_a_series_still_being_read_is_served_to_its_import_until_the_import_ends() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let mut picture = import_one(write_slice(temp.path(), "middle.dcm", 100));
+        Arc::make_mut(&mut picture).info.id = "preview:middle".into();
+        let core = core();
+        {
+            let mut early = core.early.lock().unwrap();
+            early.import = 1;
+            early.request_id = "disc-import".into();
+            early.previews.push((3, picture));
+        }
+        let cancelled = AtomicBool::new(false);
+        assert!(frame(&core, &cancelled, "preview:middle", 0, None).is_ok());
+        for (request_id, after, given) in [
+            ("disc-import", 0, vec![3]),
+            ("disc-import", 1, vec![]),
+            ("other-import", 0, vec![]),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "previewsAfter": after }));
+            let previews = early_series(&core, query.unwrap()).previews;
+            let planned: Vec<_> = previews.iter().map(|preview| preview.planned).collect();
+            assert_eq!(planned, given, "{request_id} after {after}");
+        }
+        core.early.lock().unwrap().previews.clear();
+        assert!(frame(&core, &cancelled, "preview:middle", 0, None).is_err());
+    }
+
+    #[test]
+    fn a_series_is_asked_for_only_by_the_import_that_reads_its_disc() {
+        let core = core();
+        let plan = Arc::new(ingest::Plan::new(vec![model::PlannedSeries::default(); 2]));
+        {
+            let mut early = core.early.lock().unwrap();
+            early.request_id = "disc-import".into();
+            early.plan = Some(plan);
+        }
+        for (request_id, planned, wanted) in [
+            ("disc-import", 1, true),
+            ("disc-import", 2, false),
+            ("other-import", 0, false),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "planned": planned }));
+            let answer = prioritise_import(&core, query.unwrap());
+            assert_eq!(
+                answer,
+                json!({ "wanted": wanted }),
+                "{request_id}, series {planned}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_discs_series_go_only_to_the_import_that_reads_the_disc_and_only_when_asked_for() {
+        let core = core();
+        {
+            let mut early = core.early.lock().unwrap();
+            early.import = 1;
+            early.request_id = "disc-import".into();
+            let planned = model::PlannedSeries {
+                uid: "2.25.2".into(),
+                files: 2,
+                ..Default::default()
+            };
+            early.plan = Some(Arc::new(ingest::Plan::new(vec![planned])));
+        }
+        for (request_id, asked, given) in [
+            ("disc-import", true, true),
+            ("disc-import", false, false),
+            ("other-import", true, false),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "planned": asked }))
+                    .unwrap();
+            let planned = early_series(&core, query).planned;
+            assert_eq!(planned.is_some(), given, "{request_id}, asked: {asked}");
         }
     }
 }
