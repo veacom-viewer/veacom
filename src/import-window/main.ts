@@ -146,7 +146,8 @@ function renderPath() {
   const isPinned = Boolean(here && pinned.includes(here.path));
   pathRow.replaceChildren(
     button({ className: 'icon-button', 'data-action': 'import-up', 'aria-label': t('import.up'), disabled: !here?.parent }, () => { if (here?.parent) void go(here.parent); }, icon('arrowUp', 16)),
-    h('span', { className: 'import-current', title: here?.path }, here?.path ?? '…'),
+    // Cut at its start (src/styles.css), the path itself is read left to right: a drive's root is "E:\", not "\:E".
+    h('span', { className: 'import-current', title: here?.path }, h('bdi', { dir: 'ltr' }, here?.path ?? '…')),
     button({ className: 'icon-button', 'data-action': 'import-pin', 'aria-pressed': String(isPinned), 'aria-label': isPinned ? t('import.unpinHere') : t('import.pinHere'), disabled: !here },
       togglePin, icon(isPinned ? 'pinOff' : 'pin', 16)));
 }
