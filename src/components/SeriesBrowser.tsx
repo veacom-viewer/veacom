@@ -490,7 +490,8 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               <span className="series-preview">
                 <Preview id={item.id} empty={item.dimensions[2] === 0} failed={Boolean(failedIds?.has(item.id) && !loading)} />
                 {item.warnings.length > 0 && <span className="series-warning" aria-hidden="true" data-tooltip={warningTexts(item, locale).join(' · ')}><TriangleAlert size={11} /></span>}
-                <span className="series-image-count">{item.reading ? `${item.dimensions[2]} / ${item.reading.files}` : item.dimensions[2] + Number(reference !== undefined)}</span>
+                {/* While it is read, how many of the files the disc's index lists for it are read, as the status bar says. */}
+                <span className="series-image-count">{item.reading ? `${item.reading.read} / ${item.reading.files}` : item.dimensions[2] + Number(reference !== undefined)}</span>
                 {item.reading && <span className="series-reading" style={{ width: `${Math.round(Math.min(1, item.reading.read / Math.max(1, item.reading.files)) * 100)}%` }} aria-hidden="true" />}
                 {several && <span className="sr-only">{t('series.picked', { number: picked.indexOf(item.id) + 1, count: picked.length })}</span>}
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
