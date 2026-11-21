@@ -326,6 +326,7 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
                 import_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
             }
             "importEarly" => ok(&early_series(core, body(call.body)?)),
+            "importPrioritise" => ok(&prioritise_import(core, body(call.body)?)),
             "removeSeries" => {
                 remove_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
             }
@@ -515,14 +516,28 @@ fn import_series(
             };
             let mut sources = core.sources.write().unwrap();
             let mut early = core.early.lock().unwrap();
+            // A series this import handed over already comes again as it grows (ingest::PlanWatch): it takes its
+            // earlier self's place, and what was decoded of that goes.
+            let mut grown = Vec::new();
             for mut source in found {
-                if sources.contains_key(&source.info.id) {
+                let id = source.info.id.clone();
+                let again = early.added.contains(&id);
+                if sources.contains_key(&id) && !again {
                     continue;
                 }
                 Arc::make_mut(&mut source).info.catalog_revision = next_revision();
-                early.added.push(source.info.id.clone());
+                if again {
+                    grown.push(id.clone());
+                } else {
+                    early.added.push(id.clone());
+                }
                 early.series.push(source.info.clone());
-                sources.insert(source.info.id.clone(), source);
+                sources.insert(id, source);
+            }
+            drop((sources, early));
+            let mut cache = core.cache.lock().unwrap();
+            for id in &grown {
+                cache.remove(id);
             }
         };
         let imported = ingest::import_session(&request.paths, Some(&hand_over), revision);
@@ -664,6 +679,25 @@ fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
         planned,
         previews,
     }
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PrioritiseQuery {
+    request_id: String,
+    /// The series' place in the plan of the disc being read.
+    planned: usize,
+}
+/// Has the import under way read the files of one of its disc's series next (ingest::Plan::want): the series the viewer
+/// opened, which it then hands over as far as it is read.
+fn prioritise_import(core: &App, query: PrioritiseQuery) -> Value {
+    let early = core.early.lock().unwrap();
+    let current = query.request_id == early.request_id;
+    let wanted = current
+        && early
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.want(query.planned));
+    json!({ "wanted": wanted })
 }
 #[derive(Deserialize)]
 struct RemoveRequest {
@@ -1810,6 +1844,31 @@ mod job_tests {
         }
         core.early.lock().unwrap().previews.clear();
         assert!(frame(&core, &cancelled, "preview:middle", 0, None).is_err());
+    }
+
+    #[test]
+    fn a_series_is_asked_for_only_by_the_import_that_reads_its_disc() {
+        let core = core();
+        let plan = Arc::new(ingest::Plan::new(vec![model::PlannedSeries::default(); 2]));
+        {
+            let mut early = core.early.lock().unwrap();
+            early.request_id = "disc-import".into();
+            early.plan = Some(plan);
+        }
+        for (request_id, planned, wanted) in [
+            ("disc-import", 1, true),
+            ("disc-import", 2, false),
+            ("other-import", 0, false),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "planned": planned }));
+            let answer = prioritise_import(&core, query.unwrap());
+            assert_eq!(
+                answer,
+                json!({ "wanted": wanted }),
+                "{request_id}, series {planned}"
+            );
+        }
     }
 
     #[test]

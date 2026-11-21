@@ -341,6 +341,15 @@ pub struct PlannedSeries {
     pub finished: usize,
 }
 
+/// How far a series that is still being read from a disc is read (see ingest::PlanWatch).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Reading {
+    /// Its files read so far, and the files its disc's DICOMDIR lists for it.
+    pub read: usize,
+    pub files: usize,
+}
+
 /// A picture for a series of a disc's plan, before the series is read whole: the series as made from its middle file
 /// alone (see ingest::HandOver::Preview). It is shown on the series' card and nowhere else.
 #[derive(Clone, Debug, Serialize)]
@@ -387,6 +396,10 @@ pub struct Series {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub suv_bsa_factor: Option<f64>,
     pub can_reconstruct: bool,
+    /// Set while the series is still being read from a disc and is shown as far as it is read: it grows, and it is not
+    /// reconstructed until it is read whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reading: Option<Reading>,
     /// Serialized as `warnings` (English texts) and `warningNotes` (the same, for translation).
     #[serde(flatten)]
     pub warnings: crate::message::Notes,

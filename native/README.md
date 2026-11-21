@@ -27,6 +27,7 @@ Dedicated workers handle catalog changes, volume reads, frames, control calls, t
 | `health` | Version, protocol and codec/import capabilities |
 | `import`, `{paths: string[], requestId?}` | `{series, warnings}`; local files, folders, and ZIP archives |
 | `importEarly`, `{after, requestId, planned?, previewsAfter?}` | The series the running import has published so far, from the `after`th; with `planned`, also the series the DICOMDIR of a disc it reads once lists, with how many of each one's files it has read; and pictures of those series, each made from its middle file, from the `previewsAfter`th (`frame` serves them until the import ends) |
+| `importPrioritise`, `{requestId, planned}` | `{wanted}`; the running import reads that series of its disc's plan next, and hands it over as far as it is read, marked `reading`, again as it grows |
 | `series` | `{series, warnings}` for imported series |
 | `removeSeries`, `{ids}` | `{removed, remaining}`; forgets the series and their decoded volumes |
 | `frame`, `{id, index}` | One frame, with an independent decode permit |

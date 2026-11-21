@@ -1653,6 +1653,7 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
         sul_factor: None,
         suv_bsa_factor: None,
         can_reconstruct: false,
+        reading: None,
         warnings: vec![note!(
             "series.ordinaryImage",
             "Ordinary image: physical spacing and patient geometry are unavailable",
@@ -2207,6 +2208,7 @@ fn read_frames_budget(
                 .and_then(|factors| factors.bsa)
                 .filter(|_| lut_suv_compatible),
             can_reconstruct: false,
+            reading: None,
             warnings,
             photometric_interpretation: text(&obj, Tag(0x0028, 0x0004)),
             frame_of_reference_uid: text(&obj, Tag(0x0020, 0x0052)),
@@ -2482,12 +2484,34 @@ pub type EarlySink<'a> = &'a (dyn Fn(HandOver) + Sync);
 pub struct Plan {
     series: Vec<crate::model::PlannedSeries>,
     finished: Vec<std::sync::atomic::AtomicUsize>,
+    /// The series the viewer asked for (see `want`), the last one asked for first.
+    wanted: std::sync::Mutex<Vec<usize>>,
 }
 
 impl Plan {
     pub fn new(series: Vec<crate::model::PlannedSeries>) -> Self {
         let finished = series.iter().map(|_| Default::default()).collect();
-        Self { series, finished }
+        let wanted = Default::default();
+        Self {
+            series,
+            finished,
+            wanted,
+        }
+    }
+    /// Has the files of the plan's series `series` read next, before every other file the import has still to read,
+    /// and the series handed over as far as it is read, again as it grows (see PlanWatch): the series the viewer
+    /// opened. The series asked for last goes first. False when the plan has no such series.
+    pub fn want(&self, series: usize) -> bool {
+        if series >= self.series.len() {
+            return false;
+        }
+        let mut wanted = self.wanted.lock().unwrap();
+        wanted.retain(|&other| other != series);
+        wanted.insert(0, series);
+        true
+    }
+    fn wanted(&self) -> Vec<usize> {
+        self.wanted.lock().unwrap().clone()
     }
     /// The series as they stand.
     pub fn series(&self) -> Vec<crate::model::PlannedSeries> {
@@ -2689,6 +2713,13 @@ pub fn import_session_from(
         .filter(|file| file.first)
         .filter_map(|file| Some((file.series?, slot_of[file.to.as_path()])))
         .collect();
+    // Each series of the plan with its files' places among `files` (see PlanWatch).
+    let mut plan_files = vec![Vec::new(); plan.as_ref().map_or(0, |plan| plan.series.len())];
+    for file in spooled() {
+        if let Some(series) = file.series {
+            plan_files[series].push(slot_of[file.to.as_path()]);
+        }
+    }
     // A picture only takes its share of the budget here: its size is asked for below, once it is known that no file
     // held DICOM (beside DICOM, pictures are not series: see catalogue).
     let read_one = |path: &Path| {
@@ -2733,6 +2764,7 @@ pub fn import_session_from(
     // The DICOM files that a disc's index does not list and that were copied all the same.
     let unlisted = std::sync::atomic::AtomicUsize::new(0);
     let (spools_ref, slots_ref, unlisted_ref, finish_ref) = (&spools, &slots, &unlisted, &finish);
+    let plan_ref = &plan;
     let extract = move || -> Result<()> {
         for (archive, dir, _) in extractions_ref {
             extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| {
@@ -2747,11 +2779,14 @@ pub fn import_session_from(
                 }
             })?;
         }
-        // The discs, after the archives: one reader on a disc, each file once, in the order planned.
+        // The discs, after the archives: one reader on a disc, each file once, in the order planned but for the series
+        // the viewer asks for (SpoolQueue).
         let mut block = vec![0; 1 << 20];
         for spool in spools_ref {
             let mut allowance = MAX_ARCHIVE_BYTES;
-            for file in &spool.files {
+            let mut queue = SpoolQueue::new(&spool.files);
+            while let Some(at) = queue.next(plan_ref.as_deref()) {
+                let file = &spool.files[at];
                 crate::progress::check()?;
                 let index = slot_of_ref[file.to.as_path()];
                 match copy_from_disc(file, &mut allowance, &mut block)? {
@@ -2813,15 +2848,31 @@ pub fn import_session_from(
             if let Some(sink) = early {
                 let mut watch = EarlyWatch::new(&files);
                 let mut previews = PreviewWatch { waiting: middles };
+                // The plan's series go by their files (PlanWatch), not by their folders.
+                let mut planned = plan.as_ref().map(|plan| (plan, PlanWatch::new(plan_files)));
+                if let Some((plan, _)) = &planned {
+                    watch.planned = plan
+                        .series
+                        .iter()
+                        .map(|series| series.uid.clone())
+                        .collect();
+                }
                 while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
                     reading_over.recv_timeout(std::time::Duration::from_millis(20))
                 {
                     previews.publish(&files, &slots, sink, revision);
+                    if let Some((plan, series)) = &mut planned {
+                        series.publish(plan, &files, &slots, sink, revision);
+                    }
                     watch.publish(&files, &slots, sink, revision);
                 }
                 // Tests read small studies before the first look: one more, so they see the hand-over too.
                 #[cfg(test)]
                 previews.publish(&files, &slots, sink, revision);
+                #[cfg(test)]
+                if let Some((plan, series)) = &mut planned {
+                    series.publish(plan, &files, &slots, sink, revision);
+                }
                 #[cfg(test)]
                 watch.publish(&files, &slots, sink, revision);
             }
@@ -3313,6 +3364,144 @@ fn catalogue(
     })
 }
 
+/// How long a series the viewer asked for stays as it was handed over before it is handed over again, grown.
+const GROWTH_PAUSE: std::time::Duration = std::time::Duration::from_millis(750);
+
+/// Hands over each series of a disc's plan once every file its DICOMDIR lists for it is read, whatever folder they are
+/// in; and a series the viewer asked for (Plan::want) as far as it is read, and again as it grows. Such a series is
+/// marked as still being read (`Series::reading`) and is not reconstructed: the viewer shows its images one by one,
+/// as many as are read. The catalogue the import ends with is built from every file, as without this.
+struct PlanWatch {
+    /// Each series' files, as places among the import's files.
+    files: Vec<Vec<usize>>,
+    /// How many of its files each series had read when it was last handed over, and when.
+    shown: Vec<Option<(usize, std::time::Instant)>>,
+    /// The series handed over whole.
+    whole: Vec<bool>,
+}
+
+impl PlanWatch {
+    fn new(files: Vec<Vec<usize>>) -> Self {
+        let count = files.len();
+        Self {
+            files,
+            shown: vec![None; count],
+            whole: vec![false; count],
+        }
+    }
+
+    fn publish(
+        &mut self,
+        plan: &Plan,
+        files: &[PathBuf],
+        slots: &[Slot],
+        sink: EarlySink,
+        revision: u64,
+    ) {
+        let wanted = plan.wanted();
+        for (series, places) in self.files.iter().enumerate() {
+            if self.whole[series] {
+                continue;
+            }
+            let done = places
+                .iter()
+                .filter(|&&index| slots[index].get().is_some())
+                .count();
+            let whole = done == places.len();
+            let grown = |(shown, at): (usize, std::time::Instant)| {
+                done > shown && at.elapsed() >= GROWTH_PAUSE
+            };
+            let growing = wanted.contains(&series) && self.shown[series].is_none_or(grown);
+            if !whole && !growing {
+                continue;
+            }
+            let read: Vec<_> = places
+                .iter()
+                .filter_map(|&index| match slots[index].get() {
+                    Some(Some(Ok(file @ IndexedFile::Images(_)))) => {
+                        Some((files[index].as_path(), Ok(file.clone())))
+                    }
+                    _ => None,
+                })
+                .collect();
+            // What cannot be made into a series now is not handed over early; the import's own catalogue says why.
+            let made = catalogue(read, false, revision).map(|made| made.sources);
+            let usable = |source: &Arc<SourceSeries>| {
+                source.info.segmentation.is_none()
+                    && source
+                        .frames
+                        .first()
+                        .is_some_and(|frame| !frame.ordinary_image)
+            };
+            let mut ready: Vec<_> = made
+                .unwrap_or_default()
+                .into_iter()
+                .filter(usable)
+                .collect();
+            if !whole {
+                for source in &mut ready {
+                    let info = &mut Arc::make_mut(source).info;
+                    info.can_reconstruct = false;
+                    info.reading = Some(crate::model::Reading {
+                        read: done,
+                        files: places.len(),
+                    });
+                }
+            }
+            self.shown[series] = Some((done, std::time::Instant::now()));
+            self.whole[series] = whole;
+            if !ready.is_empty() {
+                sink(HandOver::Series(ready));
+            }
+        }
+    }
+}
+
+/// The order a disc's files are copied in: as planned, but the files of a series the viewer asks for (Plan::want) go
+/// next, the series asked for last first.
+struct SpoolQueue {
+    next: usize,
+    copied: Vec<bool>,
+    of_series: HashMap<usize, std::collections::VecDeque<usize>>,
+}
+
+impl SpoolQueue {
+    fn new(files: &[SpoolFile]) -> Self {
+        let mut of_series: HashMap<usize, std::collections::VecDeque<usize>> = HashMap::new();
+        for (at, file) in files.iter().enumerate() {
+            if let Some(series) = file.series {
+                of_series.entry(series).or_default().push_back(at);
+            }
+        }
+        Self {
+            next: 0,
+            copied: vec![false; files.len()],
+            of_series,
+        }
+    }
+
+    /// The place of the file to copy next, among the disc's files.
+    fn next(&mut self, plan: Option<&Plan>) -> Option<usize> {
+        for series in plan.map(Plan::wanted).unwrap_or_default() {
+            if let Some(waiting) = self.of_series.get_mut(&series) {
+                while let Some(at) = waiting.pop_front() {
+                    if !std::mem::replace(&mut self.copied[at], true) {
+                        return Some(at);
+                    }
+                }
+            }
+        }
+        while self.next < self.copied.len() {
+            let at = self.next;
+            self.next += 1;
+            if !std::mem::replace(&mut self.copied[at], true) {
+                return Some(at);
+            }
+        }
+        None
+    }
+}
+
 /// Hands over a picture of each series of a disc's plan once its middle file is read (see `HandOver::Preview`).
 struct PreviewWatch {
     /// The plan's series still without a picture, each with its middle file's place among the import's files.
@@ -3370,6 +3559,8 @@ struct EarlyWatch {
     folders_of: HashMap<String, HashSet<usize>>,
     /// The series handed over already, by id.
     handed: HashSet<String>,
+    /// The Series Instance UIDs of a disc's plan, whose series go by their files instead (PlanWatch).
+    planned: HashSet<String>,
 }
 
 impl EarlyWatch {
@@ -3396,6 +3587,7 @@ impl EarlyWatch {
             done: HashSet::new(),
             folders_of: HashMap::new(),
             handed: HashSet::new(),
+            planned: HashSet::new(),
         }
     }
 
@@ -3459,6 +3651,7 @@ impl EarlyWatch {
                     .is_some_and(|frame| frame.ordinary_image)
                     && source.info.segmentation.is_none()
                     && !self.handed.contains(&source.info.id)
+                    && !self.planned.contains(&source.info.uid)
                     && self
                         .folders_of
                         .get(&source.info.uid)
@@ -3802,6 +3995,12 @@ fn plan_spool(
     // Each series' middle file first, in the disc's order, so that every card has its picture long before the series
     // are read whole; then the rest, in the disc's order.
     let (mut ordered, rest): (Vec<_>, Vec<_>) = spool.into_iter().partition(|file| file.first);
+    // The middle files in the order the series list shows the cards they are for: by study, then series number.
+    let study = |uid: &str| planned.iter().position(|series| series.study_uid == uid);
+    ordered.sort_by_key(|file| {
+        let series = file.series.map(|series| &planned[series]);
+        series.map(|series| (study(&series.study_uid), series.series_number.unwrap_or(0)))
+    });
     ordered.extend(rest);
     let spool = Spool {
         folder: folder.to_owned(),
@@ -6294,6 +6493,106 @@ mod tests {
         assert_eq!(order[..2], [(true, Some(0)), (true, Some(1))]);
         assert!(order[2..].iter().all(|(first, _)| !first));
         assert_eq!(order.len(), 8);
+    }
+
+    #[test]
+    fn a_series_the_viewer_asks_for_is_copied_next_and_the_rest_as_planned() {
+        let file = |series: Option<usize>| SpoolFile {
+            from: PathBuf::new(),
+            to: PathBuf::new(),
+            take: Take::IfDicom,
+            listed: None,
+            series,
+            first: false,
+        };
+        let files = [Some(0), Some(1), Some(0), Some(1), None, Some(1)].map(file);
+        let plan = Plan::new(vec![crate::model::PlannedSeries::default(); 2]);
+        let mut queue = SpoolQueue::new(&files);
+        let mut order = vec![queue.next(Some(&plan)).unwrap()];
+        assert!(plan.want(1) && !plan.want(2));
+        order.extend(std::iter::from_fn(|| queue.next(Some(&plan))));
+        // The first file was on its way; then the series asked for, then the rest, each file once.
+        assert_eq!(order, [0, 1, 3, 5, 2, 4]);
+    }
+
+    #[test]
+    fn a_series_the_viewer_asks_for_is_handed_over_as_far_as_it_is_read_and_whole_once_read() {
+        let study = two_series_study();
+        let mut files = Vec::new();
+        collect_files(study.path(), &mut files).unwrap();
+        files.sort();
+        let slots: Vec<Slot> = files.iter().map(|_| OnceLock::new()).collect();
+        let read = |index: usize| {
+            let _ = slots[index].set(Some(read_frames_budget(
+                &files[index],
+                &crate::import_budget::ImportBudget::default(),
+                None,
+                None,
+                true,
+            )));
+        };
+        let of = |uid: &str| -> Vec<usize> {
+            (0..files.len())
+                .filter(|&index| files[index].to_string_lossy().contains(uid))
+                .collect()
+        };
+        // The study's files are named by folder: Seri1 holds the first series, Seri2 the second.
+        let (first, second) = (of("Seri1"), of("Seri2"));
+        assert_eq!((first.len(), second.len()), (4, 4));
+        let plan = Plan::new(vec![crate::model::PlannedSeries::default(); 2]);
+        let mut watch = PlanWatch::new(vec![first.clone(), second.clone()]);
+        let handed = std::sync::Mutex::new(Vec::new());
+        let sink = |handed_over: HandOver| {
+            if let HandOver::Series(found) = handed_over {
+                handed.lock().unwrap().extend(found);
+            }
+        };
+        let take = || std::mem::take(&mut *handed.lock().unwrap());
+        // Two files of the second series read, and it is asked for: it goes as far as it is read.
+        read(second[0]);
+        read(second[1]);
+        watch.publish(&plan, &files, &slots, &sink, 0);
+        assert!(
+            take().is_empty(),
+            "nothing goes in part unless it is asked for"
+        );
+        plan.want(1);
+        watch.publish(&plan, &files, &slots, &sink, 0);
+        let part = take();
+        assert_eq!(part.len(), 1);
+        assert_eq!(part[0].frames.len(), 2);
+        let reading = Some(crate::model::Reading { read: 2, files: 4 });
+        assert_eq!(part[0].info.reading, reading);
+        assert!(!part[0].info.can_reconstruct);
+        // Not again until it has grown and a pause has passed.
+        read(second[2]);
+        watch.publish(&plan, &files, &slots, &sink, 0);
+        assert!(take().is_empty());
+        // Read whole, it goes at once, whole, and never again.
+        read(second[3]);
+        watch.publish(&plan, &files, &slots, &sink, 0);
+        let whole = take();
+        assert_eq!(
+            (whole.len(), whole[0].frames.len(), whole[0].info.reading),
+            (1, 4, None)
+        );
+        assert_eq!(whole[0].info.id, part[0].info.id);
+        watch.publish(&plan, &files, &slots, &sink, 0);
+        assert!(take().is_empty());
+        // A series nobody asked for goes once it is read whole.
+        for &index in &first {
+            read(index);
+        }
+        watch.publish(&plan, &files, &slots, &sink, 0);
+        let other = take();
+        assert_eq!(
+            (
+                other.len(),
+                other[0].frames.len(),
+                other[0].info.uid.as_str()
+            ),
+            (1, 4, "1.2.3.4.1")
+        );
     }
 
     #[test]

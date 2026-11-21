@@ -681,6 +681,7 @@ mod tests {
             sul_factor: None,
             suv_bsa_factor: None,
             can_reconstruct: geometry.can_reconstruct,
+            reading: None,
             warnings: Default::default(),
             photometric_interpretation: "MONOCHROME2".into(),
             frame_of_reference_uid: "1.4".into(),
