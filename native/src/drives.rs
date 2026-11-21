@@ -12,6 +12,8 @@ const DRIVE_REMOTE: u32 = 4;
 const DRIVE_CDROM: u32 = 5;
 /// MAX_PATH + 1 UTF-16 units, the longest volume name GetVolumeInformationW gives.
 const NAME_UNITS: usize = 261;
+/// How long the names are waited for, together: within main's 1.5 s for the whole answer.
+const NAMES_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Serialize)]
 pub struct Drive {
@@ -28,19 +30,52 @@ pub struct Drive {
 /// A volume's name is read from the volume, and that waits on a drive that does not answer. It is read only for the
 /// letters in `answering`, which the caller has just reached; the others are listed without one.
 pub fn list(answering: &[char]) -> Vec<Drive> {
+    list_with(answering, label, NAMES_WAIT)
+}
+
+/// `list`, with the names read by `read` and waited for `wait` at most. Each name is read on a thread of its own: a
+/// drive that stops answering holds that thread, not the engine's worker that asked, and its letter is listed without
+/// a name. A thread that cannot be started gives no name either.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "a volume's name waits on its drive for as long as the drive takes, which no pool's worker may be held for"
+)]
+fn list_with(
+    answering: &[char],
+    read: fn(char) -> String,
+    wait: std::time::Duration,
+) -> Vec<Drive> {
     // SAFETY: the call takes no arguments.
     let present = unsafe { GetLogicalDrives() };
-    ('A'..='Z')
+    let letters: Vec<char> = ('A'..='Z')
         .enumerate()
         .filter(|(bit, _)| present & (1 << bit) != 0)
-        .map(|(_, letter)| Drive {
+        .map(|(_, letter)| letter)
+        .collect();
+    let until = std::time::Instant::now() + wait;
+    let asked: Vec<_> = (letters.iter())
+        .filter(|letter| answering.contains(letter))
+        .map(|&letter| {
+            let (send, name) = std::sync::mpsc::channel();
+            let _ = std::thread::Builder::new()
+                .name(format!("drive-name-{letter}"))
+                .spawn(move || {
+                    let _ = send.send(read(letter));
+                });
+            (letter, name)
+        })
+        .collect();
+    let mut names: std::collections::HashMap<char, String> = (asked.into_iter())
+        .map(|(letter, name)| {
+            let left = until.saturating_duration_since(std::time::Instant::now());
+            (letter, name.recv_timeout(left).unwrap_or_default())
+        })
+        .collect();
+    (letters.into_iter())
+        .map(|letter| Drive {
             letter,
             kind: kind(letter),
-            label: if answering.contains(&letter) {
-                label(letter)
-            } else {
-                String::new()
-            },
+            label: names.remove(&letter).unwrap_or_default(),
         })
         .collect()
 }
@@ -142,6 +177,21 @@ mod tests {
         let Some(free) = free else { return };
         assert!(list(&[free]).iter().all(|drive| drive.letter != free));
         assert_eq!(label(free), "");
+    }
+
+    #[test]
+    fn a_drive_whose_name_does_not_come_in_time_is_listed_without_one_and_the_list_comes_all_the_same()
+     {
+        fn stalled(_: char) -> String {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            "late".to_owned()
+        }
+        let system = system_letter();
+        let started = std::time::Instant::now();
+        let listed = list_with(&[system], stalled, std::time::Duration::from_millis(200));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let found = listed.iter().find(|drive| drive.letter == system).unwrap();
+        assert_eq!((found.kind, found.label.as_str()), ("fixed", ""));
     }
 
     #[test]
