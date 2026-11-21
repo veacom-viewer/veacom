@@ -317,6 +317,21 @@ fn series_tree(
             }
         }
     }
+    // Every record in use that names a file is reached from the root along the links, whatever the records on the
+    // way: links that leave one out would give fewer series than the index lists files for.
+    let mut all = Tree {
+        records,
+        at: tree.at,
+        seen: HashSet::new(),
+    };
+    all.reach(link(obj, Tag(0x0004, 0x1200))?)?;
+    let names_file =
+        |record: &InMemDicomObject| active(record) && record.get(Tag(0x0004, 0x1500)).is_some();
+    if (records.iter().enumerate())
+        .any(|(at, record)| names_file(record) && !all.seen.contains(&at))
+    {
+        return None;
+    }
     Some(series)
 }
 
@@ -345,6 +360,17 @@ impl<'a> Tree<'a> {
             offset = link(&records[index], NEXT)?;
         }
         Some(found)
+    }
+
+    /// Reaches every record under the one at `first` along both links, whatever the records are. None as `chain`.
+    fn reach(&mut self, first: u32) -> Option<()> {
+        let mut pending = vec![first];
+        while let Some(first) = pending.pop() {
+            for record in self.chain(first)? {
+                pending.extend(link(record, LOWER).filter(|&lower| lower != 0));
+            }
+        }
+        Some(())
     }
 }
 
@@ -869,7 +895,10 @@ mod tests {
         looped[6].next = Some(3);
         let mut nowhere = study();
         nowhere[4].lower = Some(NOWHERE);
-        for records in [looped, nowhere] {
+        // The first series links to no next one: the second, and its image, are reached by nothing.
+        let mut cut = study();
+        cut[2].next = None;
+        for records in [looped, nowhere, cut] {
             let media = crate::test_dir::tempdir().unwrap();
             let listing = listing(media.path(), &records);
             assert_eq!(listing.files.len(), 3);
