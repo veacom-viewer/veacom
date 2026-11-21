@@ -4,6 +4,7 @@ use serde::Serialize;
 use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
+use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 
 // GetDriveTypeW's answers (winbase.h).
 const DRIVE_REMOVABLE: u32 = 2;
@@ -60,11 +61,26 @@ fn kind(letter: char) -> &'static str {
     }
 }
 
+/// `read`, with Windows' critical-error message off for this thread while it runs, and the thread's mode as it was
+/// after. Asked for the name of a drive whose disc was just taken out, Windows would otherwise ask in a window of its
+/// own for a disc to be put in, and the call would wait for that window to be answered.
+fn without_disc_prompt<T>(read: impl FnOnce() -> T) -> T {
+    let mut before = 0;
+    // SAFETY: the old mode is written to a local that lives through the call.
+    let set = unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, &mut before) } != 0;
+    let result = read();
+    if set {
+        // SAFETY: a null pointer asks for no old mode, which the call accepts.
+        unsafe { SetThreadErrorMode(before, std::ptr::null_mut()) };
+    }
+    result
+}
+
 fn label(letter: char) -> String {
     let mut name = [0u16; NAME_UNITS];
     // SAFETY: the root is NUL-terminated, the name's buffer is passed with its length in units, and each fact that
     // is not asked for is a null pointer, which the call accepts.
-    let read = unsafe {
+    let read = without_disc_prompt(|| unsafe {
         GetVolumeInformationW(
             root(letter).as_ptr(),
             name.as_mut_ptr(),
@@ -75,7 +91,7 @@ fn label(letter: char) -> String {
             std::ptr::null_mut(),
             0,
         )
-    };
+    });
     if read == 0 {
         // No disc or card in the drive, or a volume that cannot be read: it has no name to show.
         return String::new();
@@ -126,5 +142,16 @@ mod tests {
         let Some(free) = free else { return };
         assert!(list(&[free]).iter().all(|drive| drive.letter != free));
         assert_eq!(label(free), "");
+    }
+
+    #[test]
+    fn a_name_is_read_with_the_disc_prompt_off_and_the_threads_mode_as_it_was_after() {
+        use windows_sys::Win32::System::Diagnostics::Debug::GetThreadErrorMode;
+        // SAFETY: the call takes no arguments.
+        let mode = || unsafe { GetThreadErrorMode() };
+        let before = mode();
+        let during = without_disc_prompt(mode);
+        assert_eq!(during & SEM_FAILCRITICALERRORS, SEM_FAILCRITICALERRORS);
+        assert_eq!(mode(), before);
     }
 }
