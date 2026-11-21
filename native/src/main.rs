@@ -1515,6 +1515,170 @@ mod job_tests {
             );
         }
     }
+
+    /// The SOP Instance UIDs an import found, sorted.
+    fn imported_images(imported: &ingest::Imported) -> Vec<String> {
+        let mut found: Vec<_> = imported
+            .sources
+            .iter()
+            .flat_map(|source| &source.frames)
+            .map(|frame| frame.sop_uid.clone())
+            .collect();
+        found.sort();
+        found
+    }
+    fn noted(imported: &ingest::Imported, code: &str) -> Option<String> {
+        let note = imported.warnings.iter().find(|note| note.code == code)?;
+        Some(note.text.clone())
+    }
+    /// Imports `path` as a disc is imported: read once, into the import's own folder.
+    fn read_once(path: &std::path::Path) -> anyhow::Result<ingest::Imported> {
+        let paths = [path.to_string_lossy().into_owned()];
+        ingest::import_session_from(&paths, None, 0, &|_| true)
+    }
+
+    #[test]
+    fn a_disc_read_once_opens_as_its_folder_does_and_then_needs_the_disc_no_more() {
+        let disc = crate::test_dir::tempdir().unwrap();
+        let study = disc.path().join("study");
+        std::fs::create_dir(&study).unwrap();
+        write_slice(&study, "IM1", 11);
+        write_slice(&study, "IM2", 12);
+        // A DICOM file under a document's name is an image all the same; a program and a picture are not.
+        write_slice(&study, "IM3.txt", 13);
+        std::fs::write(study.join("viewer.exe"), b"a program, not an image").unwrap();
+        std::fs::write(study.join("photo.png"), b"a picture beside a study").unwrap();
+        let in_place = ingest::import(&[disc.path().to_string_lossy().into_owned()]).unwrap();
+        let once = read_once(disc.path()).unwrap();
+        assert_eq!(imported_images(&once), ["2.25.11", "2.25.12", "2.25.13"]);
+        assert_eq!(imported_images(&once), imported_images(&in_place));
+        // Every image is read from the import's own folder, which holds the images alone.
+        assert_eq!(once.archives.len(), 1);
+        let copies = once.archives[0].path().join("study");
+        let frames: Vec<_> = once.sources.iter().flat_map(|s| &s.frames).collect();
+        assert!(
+            frames
+                .iter()
+                .all(|frame| frame.source.path.starts_with(&copies))
+        );
+        assert!(!copies.join("viewer.exe").exists() && !copies.join("photo.png").exists());
+        // The disc is taken out: the images still open.
+        drop(disc);
+        for frame in frames {
+            let mut bytes = Vec::new();
+            std::io::Read::read_to_end(&mut frame.source.open().unwrap(), &mut bytes).unwrap();
+            assert!(!bytes.is_empty());
+        }
+    }
+
+    /// A folder laid out as a disc with an index: the engine's own DICOMDIR export of two slices.
+    fn indexed_disc(out: &std::path::Path) -> std::path::PathBuf {
+        let source = crate::test_dir::tempdir().unwrap();
+        let slices =
+            [11, 12].map(|value| write_slice(source.path(), &format!("{value}.dcm"), value));
+        let opts = serde_json::from_value(json!({"directory": out, "dicomdir": true})).unwrap();
+        let media = export::export_series(&slices.map(Into::into), &opts).unwrap();
+        std::path::PathBuf::from(media.directory)
+    }
+
+    #[test]
+    fn a_disc_with_an_index_gives_every_image_it_holds_and_says_which_the_index_leaves_out() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // An image beside the listed ones that the index leaves out, and a viewer's folder with a sample image.
+        write_slice(&disc.join("DICOM"), "EXTRA", 22);
+        std::fs::create_dir(disc.join("Viewer")).unwrap();
+        std::fs::write(disc.join("Viewer").join("viewer.bin"), [7; 4096]).unwrap();
+        write_slice(&disc.join("Viewer"), "sample.dcm", 33);
+        let once = read_once(&disc).unwrap();
+        assert_eq!(
+            imported_images(&once),
+            ["2.25.11", "2.25.12", "2.25.22", "2.25.33"]
+        );
+        assert!(
+            noted(&once, "import.discUnlisted").is_some_and(|text| text.starts_with("2 files"))
+        );
+        assert_eq!(noted(&once, "import.discIndexUnreadable"), None);
+        // Of the viewer's folder only the image is copied.
+        let viewer = once.archives[0].path().join("Viewer");
+        assert!(viewer.join("sample.dcm").exists() && !viewer.join("viewer.bin").exists());
+        assert_eq!(noted(&once, "import.discIndexDiffers"), None);
+        // A listed file that holds another image than the index says is read all the same, as it is when the disc is
+        // read as a folder, and the difference is said.
+        write_slice(&disc.join("DICOM"), "IM000002", 44);
+        let differing = read_once(&disc).unwrap();
+        assert_eq!(
+            imported_images(&differing),
+            ["2.25.11", "2.25.22", "2.25.33", "2.25.44"]
+        );
+        assert!(
+            noted(&differing, "import.discIndexDiffers")
+                .is_some_and(|text| text.contains("1 files"))
+        );
+    }
+
+    #[test]
+    fn a_disc_whose_index_lists_a_missing_file_or_cannot_be_read_still_opens_what_it_holds() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // A listed file is gone: the other opens, and the import says that a file could not be read.
+        std::fs::remove_file(disc.join("DICOM").join("IM000002")).unwrap();
+        let once = read_once(&disc).unwrap();
+        assert_eq!(imported_images(&once), ["2.25.11"]);
+        assert!(
+            noted(&once, "import.fileUnreadable").is_some_and(|text| text.contains("IM000002"))
+        );
+        // An index that is no index: the disc is read as a folder is, and that is said once.
+        std::fs::write(disc.join("DICOMDIR"), b"not an index").unwrap();
+        let walked = read_once(&disc).unwrap();
+        assert_eq!(imported_images(&walked), ["2.25.11"]);
+        assert!(noted(&walked, "import.discIndexUnreadable").is_some());
+        assert_eq!(walked.warnings.len(), 1);
+    }
+
+    #[test]
+    fn a_discs_index_opened_by_itself_gives_the_images_it_lists_alone() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        write_slice(&disc.join("DICOM"), "EXTRA", 22);
+        let once = read_once(&disc.join("DICOMDIR")).unwrap();
+        assert_eq!(imported_images(&once), ["2.25.11", "2.25.12"]);
+        assert_eq!(noted(&once, "import.discUnlisted"), None);
+        let copies = once.archives[0].path().join("DICOM");
+        assert!(copies.join("IM000001").exists() && !copies.join("EXTRA").exists());
+        // Here a file has to be the image the index says, as when the index is read where it lies.
+        write_slice(&disc.join("DICOM"), "IM000002", 44);
+        let strict = read_once(&disc.join("DICOMDIR")).unwrap();
+        assert_eq!(imported_images(&strict), ["2.25.11"]);
+        assert!(
+            noted(&strict, "import.fileUnreadable").is_some_and(|text| text.contains("IM000002"))
+        );
+        std::fs::write(disc.join("DICOMDIR"), b"not an index").unwrap();
+        assert!(read_once(&disc.join("DICOMDIR")).is_err());
+    }
+
+    #[test]
+    fn a_disc_taken_out_before_it_is_read_whole_stops_the_import_and_says_so() {
+        let first = crate::test_dir::tempdir().unwrap();
+        let second = crate::test_dir::tempdir().unwrap();
+        write_slice(first.path(), "IM1", 11);
+        write_slice(second.path(), "IM2", 12);
+        let paths = [first.path(), second.path()].map(|path| path.to_string_lossy().into_owned());
+        // The first disc is planned by the time the second is asked about. It goes then, before a file of it is copied.
+        let gone = |folder: &std::path::Path| {
+            if folder == second.path() {
+                std::fs::remove_dir_all(first.path()).unwrap();
+            }
+            true
+        };
+        let error = ingest::import_session_from(&paths, None, 0, &gone)
+            .err()
+            .unwrap();
+        assert_eq!(
+            message::coded(&error).map(|note| note.code),
+            Some("import.discRemoved")
+        );
+    }
 }
 
 #[cfg(test)]

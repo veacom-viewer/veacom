@@ -18,7 +18,7 @@ impl MediaRoot {
     /// In a browser the files are the ones the page handed over (memory_fs): no links, junctions or devices, so a
     /// directory is all a media root has to be.
     #[cfg(target_arch = "wasm32")]
-    fn open(path: &Path) -> Result<Arc<Self>> {
+    pub(crate) fn open(path: &Path) -> Result<Arc<Self>> {
         ensure!(
             crate::vfs::metadata(path)?.is_dir(),
             "DICOMDIR root is not a directory"
@@ -29,7 +29,7 @@ impl MediaRoot {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn open(path: &Path) -> Result<Arc<Self>> {
+    pub(crate) fn open(path: &Path) -> Result<Arc<Self>> {
         let mut options = OpenOptions::new();
         options.read(true);
         #[cfg(unix)]
@@ -55,6 +55,11 @@ impl MediaRoot {
             directory,
         }))
     }
+
+    /// Where the media is.
+    pub(crate) fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 pub struct Reference {
@@ -76,7 +81,18 @@ pub fn references(index: &Path, root: &Path) -> Result<BTreeMap<PathBuf, Referen
     let index = root
         .path
         .join(index.file_name().context("Missing DICOMDIR name")?);
-    let (_, _, header) = SourceFile::dicom_handle(&index, open_referenced(&root, &index)?)?;
+    let file = open_referenced(&root, &index)?;
+    references_in(&root, &index, file)
+}
+
+/// The files that the index open as `file` lists, as their places under `root`. `index` is the path `file` was
+/// opened at: the index on the media, or a copy of it.
+pub(crate) fn references_in(
+    root: &Arc<MediaRoot>,
+    index: &Path,
+    file: File,
+) -> Result<BTreeMap<PathBuf, Reference>> {
+    let (_, _, header) = SourceFile::dicom_handle(index, file)?;
     let obj = dicom_object::OpenFileOptions::new().from_reader(header)?;
     ensure!(
         obj.meta().media_storage_sop_class_uid()
