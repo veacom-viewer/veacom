@@ -3457,44 +3457,77 @@ impl PlanWatch {
     }
 }
 
-/// The order a disc's files are copied in: as planned, but the files of a series the viewer asks for (Plan::want) go
-/// next, the series asked for last first.
+/// The order a disc's files are copied in: as planned (the series' middle files first, for their cards' pictures),
+/// but for a series the viewer asks for (Plan::want). Its middle file goes next, so that it opens at once; the other
+/// middle files still go before the rest of it, as they are few and every card waits for one; then the rest of it,
+/// before every other file. The series asked for last goes first.
 struct SpoolQueue {
     next: usize,
     copied: Vec<bool>,
+    /// How many files at the start are middle files (see `SpoolFile::first`).
+    middles: usize,
+    middle_of: HashMap<usize, usize>,
     of_series: HashMap<usize, std::collections::VecDeque<usize>>,
 }
 
 impl SpoolQueue {
     fn new(files: &[SpoolFile]) -> Self {
         let mut of_series: HashMap<usize, std::collections::VecDeque<usize>> = HashMap::new();
+        let mut middle_of = HashMap::new();
         for (at, file) in files.iter().enumerate() {
             if let Some(series) = file.series {
                 of_series.entry(series).or_default().push_back(at);
+                if file.first {
+                    middle_of.insert(series, at);
+                }
             }
         }
         Self {
             next: 0,
             copied: vec![false; files.len()],
+            middles: files.iter().take_while(|file| file.first).count(),
+            middle_of,
             of_series,
         }
     }
 
+    /// Marks the file at `at` copied; whether it was not yet.
+    fn take(&mut self, at: usize) -> bool {
+        !std::mem::replace(&mut self.copied[at], true)
+    }
+
     /// The place of the file to copy next, among the disc's files.
     fn next(&mut self, plan: Option<&Plan>) -> Option<usize> {
-        for series in plan.map(Plan::wanted).unwrap_or_default() {
-            if let Some(waiting) = self.of_series.get_mut(&series) {
-                while let Some(at) = waiting.pop_front() {
-                    if !std::mem::replace(&mut self.copied[at], true) {
-                        return Some(at);
-                    }
+        let wanted = plan.map(Plan::wanted).unwrap_or_default();
+        for series in &wanted {
+            if let Some(&at) = self.middle_of.get(series)
+                && self.take(at)
+            {
+                return Some(at);
+            }
+        }
+        while self.next < self.middles {
+            let at = self.next;
+            self.next += 1;
+            if self.take(at) {
+                return Some(at);
+            }
+        }
+        for series in wanted {
+            while let Some(at) = self
+                .of_series
+                .get_mut(&series)
+                .and_then(|waiting| waiting.pop_front())
+            {
+                if self.take(at) {
+                    return Some(at);
                 }
             }
         }
         while self.next < self.copied.len() {
             let at = self.next;
             self.next += 1;
-            if !std::mem::replace(&mut self.copied[at], true) {
+            if self.take(at) {
                 return Some(at);
             }
         }
@@ -6513,6 +6546,26 @@ mod tests {
         order.extend(std::iter::from_fn(|| queue.next(Some(&plan))));
         // The first file was on its way; then the series asked for, then the rest, each file once.
         assert_eq!(order, [0, 1, 3, 5, 2, 4]);
+        // With middle files at the start (the cards' pictures): the middle file of the series asked for first, the
+        // other middle files next, then the rest of that series, then the rest.
+        let middle = |series: usize| SpoolFile {
+            first: true,
+            ..file(Some(series))
+        };
+        let files = [
+            middle(0),
+            middle(1),
+            middle(2),
+            file(Some(0)),
+            file(Some(2)),
+            file(Some(2)),
+            file(None),
+        ];
+        let plan = Plan::new(vec![crate::model::PlannedSeries::default(); 3]);
+        let mut queue = SpoolQueue::new(&files);
+        plan.want(2);
+        let order: Vec<_> = std::iter::from_fn(|| queue.next(Some(&plan))).collect();
+        assert_eq!(order, [2, 0, 1, 4, 5, 3, 6]);
     }
 
     #[test]
