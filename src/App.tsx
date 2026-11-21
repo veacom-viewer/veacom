@@ -705,13 +705,9 @@ export default function App() {
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
   const activeVolume = volumeForSlot(activeSlot);
-  // What the active pane shows while its series is not loaded whole, in the status bar: over the image it covered the
-  // text in the image's corner. A series still being read from a disc says how far it is read.
-  const activeRequested = activeVolume ? resolveView(activeVolume, activeSlot.view) : null;
-  const paneState = activeVolume?.sourceFrameIndex === undefined || !activeRequested ? ''
-    : activeSeries?.reading ? t('viewport.reading', { read: activeSeries.reading.read, count: activeSeries.reading.files })
-    : activeVolume.sourceFrameIndex !== activeRequested.slice ? t('viewport.loadingFrame', { number: activeRequested.slice + 1 })
-    : activeSeries && loadingIds.has(activeSeries.id) ? t('viewport.loadingVolume') : t('viewport.sourcePreview');
+  // A series still being read from a disc says how far it is read, in the status bar: nothing else shows that it is not
+  // whole. A series loading needs no words.
+  const paneState = activeSeries?.reading ? t('viewport.reading', { read: activeSeries.reading.read, count: activeSeries.reading.files }) : '';
   if (activeVolume?.series.sourceFramesOnly) {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
