@@ -189,6 +189,7 @@ export const tr: Record<keyof typeof en, string> = {
 
   'status.connecting': 'Görüntüleme motoruna bağlanılıyor…',
   'status.reading': 'DICOM çalışmaları okunuyor…',
+  'status.disc': 'Disk aranıyor…',
   'status.loadingSeries': '{count} seri yükleniyor…',
   'status.serviceUnavailable': 'Görüntüleme motoru kullanılamıyor',
   'status.ready': 'Hazır',

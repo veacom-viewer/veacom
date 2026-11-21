@@ -1209,8 +1209,12 @@ export default function App() {
     // Like the native dialogs, the window is what this action does, and nothing in the app's state shows it.
     usage.touch('dialog');
     const trigger = start === 'disc' ? 'disc' : 'folder';
+    // The disc button opens the disc itself where the system knows which drive holds one (electron/import-view.cjs),
+    // and a drive can take a while to answer for a disc it was just given.
+    if (start === 'disc') setBusy('status.disc');
     try { await importStudies(await window.veacom.openImportWindow(start), trigger); }
     catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+    if (start === 'disc') setBusy(importCount.current ? 'status.reading' : null);
   };
   useEffect(() => window.veacom?.onImportAction?.((id, input) => usage.action(id, input)), []);
   const open = async (kind: 'files' | 'folder' | 'archive', trigger: string = kind) => {
