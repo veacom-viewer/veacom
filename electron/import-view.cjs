@@ -14,6 +14,9 @@ const ACTIONS = new Set(['import-cancel', 'import-list', 'import-open', 'import-
 const INPUTS = new Set(['mouse', 'key', 'touch']);
 // The user's own input in the application window, which page JavaScript cannot make.
 const USER_INPUT = new Set(['mouseDown', 'rawKeyDown', 'keyDown', 'touchStart', 'gestureTap']);
+// Of that input, a press of the mouse or a touch: the only one after which the disc button opens a disc with no window.
+// A reader holds keys down as they page through images, far more often than they click.
+const PRESS = new Set(['mouseDown', 'touchStart', 'gestureTap']);
 const INPUT_MS = 1500;
 const address = value => { const url = new URL(value); return `${url.protocol}//${url.host}${url.pathname}`; };
 
@@ -28,8 +31,12 @@ function createImportView({ app, engine, window: applicationWindow, devUrl, loca
     const requested = new URL(request.url);
     return requested.host === 'import' ? serve(requested) : new Response('Not found', { status: 404 });
   });
-  let current = null, lastInput = -Infinity;
-  applicationWindow().webContents.on('input-event', (_event, input) => { if (USER_INPUT.has(input.type)) lastInput = now(); });
+  let current = null, lastInput = -Infinity, lastPress = -Infinity;
+  applicationWindow().webContents.on('input-event', (_event, input) => {
+    if (!USER_INPUT.has(input.type)) return;
+    lastInput = now();
+    if (PRESS.has(input.type)) lastPress = lastInput;
+  });
 
   // Only the open view's own page, at its own address, reaches the folder browser.
   function validate(event) {
@@ -66,13 +73,14 @@ function createImportView({ app, engine, window: applicationWindow, devUrl, loca
   /**
    * What the application's request to import gives it: the capabilities for what the user opened in the window, or []
    * when the window was closed. The disc button asks for the disc itself ('disc'): where the system tells which
-   * drives hold a disc and one does, that disc is opened with no window, since there is nothing to choose.
+   * drives hold a disc and one does, that disc is opened with no window, since there is nothing to choose; but only
+   * right after a press of the mouse or a touch. After a key press the window shows the disc's drive, to open there.
    */
   async function open(start) {
     const window = applicationWindow();
     if (!window || window.isDestroyed()) throw new Error('The application window is closed.');
     if (now() - lastInput > INPUT_MS) throw new Error('The import window opens only from a click or key press in the application.');
-    if (start === 'disc') {
+    if (start === 'disc' && now() - lastPress <= INPUT_MS) {
       // A drive can take a while to answer for a disc it was just given: a second press meanwhile asks for nothing more.
       if (seeking) return [];
       seeking = true;
