@@ -95,6 +95,8 @@ pub fn references(index: &Path, root: &Path) -> Result<BTreeMap<PathBuf, Referen
 pub(crate) struct ListedSeries {
     pub info: PlannedSeries,
     pub files: Vec<PathBuf>,
+    /// Which of `files` is the series' middle image by Instance Number: the one its card shows.
+    pub middle: usize,
 }
 
 /// What a DICOMDIR lists: every file it references, as `references` gives them, and the series its records describe
@@ -251,10 +253,11 @@ fn series_tree(
                 if !entity(record, "SERIES") {
                     continue;
                 }
-                let mut files = Vec::new();
+                let (mut files, mut instances) = (Vec::new(), Vec::new());
                 for leaf in tree.chain(link(record, LOWER)?)? {
                     if let (true, Some(id)) = (active(leaf), leaf.get(Tag(0x0004, 0x1500))) {
                         files.push(referenced_path(&root.path, &id.to_str().ok()?).ok()?);
+                        instances.push(number(leaf, Tag(0x0020, 0x0013)).unwrap_or(f64::MAX));
                     }
                 }
                 let uid = text(record, Tag(0x0020, 0x000e));
@@ -273,7 +276,15 @@ fn series_tree(
                     files: files.len(),
                     finished: 0,
                 };
-                series.push(ListedSeries { info, files });
+                // By Instance Number, as the series' images are ordered; a file without one goes after those with one.
+                let mut order: Vec<usize> = (0..files.len()).collect();
+                order.sort_by(|a, b| instances[*a].total_cmp(&instances[*b]));
+                let middle = order[(order.len() - 1) / 2];
+                series.push(ListedSeries {
+                    info,
+                    files,
+                    middle,
+                });
             }
         }
     }
@@ -712,13 +723,14 @@ mod tests {
     /// A patient, a study and two series, written out of order: the second image of the first series comes last,
     /// after the second series. The study and that image are written with undefined lengths.
     fn study() -> Vec<Record> {
-        let image = |file: &'static str, instance: &'static str| {
+        let image = |file: &'static str, instance: &'static str, number: &'static str| {
             record(
                 "IMAGE",
                 vec![
                     (Tag(0x0004, 0x1500), b"CS", file),
                     (Tag(0x0004, 0x1510), b"UI", "1.2.840.10008.5.1.4.1.1.2"),
                     (Tag(0x0004, 0x1511), b"UI", instance),
+                    (Tag(0x0020, 0x0013), b"IS", number),
                 ],
             )
         };
@@ -745,10 +757,10 @@ mod tests {
             record("PATIENT", patient),
             record("STUDY", study),
             series("1.2.3.1.1", "3", "Chest"),
-            image("DICOM\\IM1A", "1.2.3.1.1.1"),
+            image("DICOM\\IM1A", "1.2.3.1.1.1", "2"),
             series("1.2.3.1.2", "4", "Abdomen"),
-            image("DICOM\\IM2A", "1.2.3.1.2.1"),
-            image("DICOM\\IM1B", "1.2.3.1.1.2"),
+            image("DICOM\\IM2A", "1.2.3.1.2.1", "1"),
+            image("DICOM\\IM1B", "1.2.3.1.1.2", "1"),
         ];
         records[0].lower = Some(1);
         records[1].lower = Some(2);
@@ -818,6 +830,8 @@ mod tests {
             )
         );
         assert_eq!(series[1].info.description, "Abdomen");
+        // The first series' middle image by Instance Number is IM1B, linked second.
+        assert_eq!((series[0].middle, series[1].middle), (1, 0));
     }
 
     #[test]

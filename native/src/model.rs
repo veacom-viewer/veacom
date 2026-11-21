@@ -341,6 +341,16 @@ pub struct PlannedSeries {
     pub finished: usize,
 }
 
+/// A picture for a series of a disc's plan, before the series is read whole: the series as made from its middle file
+/// alone (see ingest::HandOver::Preview). It is shown on the series' card and nowhere else.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedPreview {
+    /// The series' place in the plan.
+    pub planned: usize,
+    pub series: Series,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Series {

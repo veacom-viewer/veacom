@@ -116,6 +116,9 @@ struct EarlyImport {
     added: Vec<String>,
     /// The series the DICOMDIR of a disc it reads lists (see ingest::Plan).
     plan: Option<Arc<ingest::Plan>>,
+    /// Pictures for the plan's series, in the order the import handed them over, each with its series' place in the
+    /// plan (see ingest::HandOver::Preview). `frame` serves them while the import runs.
+    previews: Vec<(usize, Arc<SourceSeries>)>,
 }
 /// An HTTP-like status and the message: `error` is the English text; `note`, when the message is coded, lets the
 /// interface translate it.
@@ -488,6 +491,7 @@ fn import_series(
         early.series.clear();
         early.added.clear();
         early.plan = None;
+        early.previews.clear();
         early.import
     };
     turn.job(|| {
@@ -498,6 +502,14 @@ fn import_series(
                 ingest::HandOver::Series(found) => found,
                 ingest::HandOver::Plan(plan) => {
                     core.early.lock().unwrap().plan = Some(plan);
+                    return;
+                }
+                ingest::HandOver::Preview {
+                    planned,
+                    mut series,
+                } => {
+                    Arc::make_mut(&mut series).info.catalog_revision = next_revision();
+                    core.early.lock().unwrap().previews.push((planned, series));
                     return;
                 }
             };
@@ -521,6 +533,7 @@ fn import_series(
             early.series.clear();
             early.request_id.clear();
             early.plan = None;
+            early.previews.clear();
             std::mem::take(&mut early.added)
         };
         if !added.is_empty() {
@@ -606,6 +619,9 @@ struct EarlyQuery {
     /// Whether to give the series a disc's DICOMDIR lists as well.
     #[serde(default)]
     planned: bool,
+    /// How many of the plan's pictures the reader has (see `EarlyList::previews`).
+    #[serde(default)]
+    previews_after: usize,
 }
 /// Written as import writes its series, so an early series and the final one compare field by field.
 #[derive(Serialize)]
@@ -615,6 +631,9 @@ struct EarlyList {
     /// The series the DICOMDIR of a disc being read lists, as they stand, when asked for (see ingest::Plan).
     #[serde(skip_serializing_if = "Option::is_none")]
     planned: Option<Vec<model::PlannedSeries>>,
+    /// Pictures for the plan's series, from the `previewsAfter`th on (see ingest::HandOver::Preview).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    previews: Vec<model::PlannedPreview>,
 }
 /// The series the import under way has handed over early, from the `after`th on (see ingest::import_with).
 fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
@@ -629,10 +648,21 @@ fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
     let planned = (early.plan.as_ref())
         .filter(|_| current && query.planned)
         .map(|plan| plan.series());
+    let from = query.previews_after.min(early.previews.len());
+    let previews = if current {
+        let picture = |(planned, series): &(usize, Arc<SourceSeries>)| model::PlannedPreview {
+            planned: *planned,
+            series: series.info.clone(),
+        };
+        early.previews[from..].iter().map(picture).collect()
+    } else {
+        Vec::new()
+    };
     EarlyList {
         import: early.import,
         series,
         planned,
+        previews,
     }
 }
 #[derive(Deserialize)]
@@ -742,6 +772,18 @@ fn warm_volume(core: &App, request: &pipe::Request, id: String) -> ApiResult<Rep
     }
     Ok(Reply::json(202, &json!({ "warming": true })))
 }
+/// A series of the catalogue, or a picture of a series that the import under way is still reading (see
+/// EarlyImport::previews), whose one frame its card shows.
+fn frame_source(core: &App, id: &str) -> ApiResult<Arc<SourceSeries>> {
+    source(core, id).or_else(|missing| {
+        let early = core.early.lock().unwrap();
+        let picture = early
+            .previews
+            .iter()
+            .find(|(_, series)| series.info.id == id);
+        picture.map(|(_, series)| series.clone()).ok_or(missing)
+    })
+}
 /// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed.
 fn header_value(value: &str) -> bool {
     value
@@ -755,7 +797,7 @@ fn frame(
     index: usize,
     revision: Option<u64>,
 ) -> ApiResult<Reply> {
-    let series = source(core, id)?;
+    let series = frame_source(core, id)?;
     check_revision(&series, revision)?;
     let components = series.info.components;
     if index >= series.frames.len() {
@@ -769,7 +811,7 @@ fn frame(
         ));
     }
     // As the catalogue has the series now: an import may have replaced it while this request waited.
-    let series = source(core, id)?;
+    let series = frame_source(core, id)?;
     check_revision(&series, revision)?;
     if index >= series.frames.len() {
         return Err(ApiError(404, "Frame index is out of bounds".into()));
@@ -1711,7 +1753,7 @@ mod job_tests {
         let sink = |handed_over: ingest::HandOver| {
             let finished = match &handed_over {
                 ingest::HandOver::Plan(plan) => plan.series().iter().map(|s| s.finished).sum(),
-                ingest::HandOver::Series(_) => 0,
+                ingest::HandOver::Series(_) | ingest::HandOver::Preview { .. } => 0,
             };
             handed.lock().unwrap().push((handed_over, finished));
         };
@@ -1721,10 +1763,10 @@ mod job_tests {
         let Some(((ingest::HandOver::Plan(plan), 0), after)) = handed.split_first() else {
             panic!("the plan is handed over first, before any of its files is read");
         };
-        let series_only = |(handed_over, _): &(ingest::HandOver, usize)| {
-            matches!(handed_over, ingest::HandOver::Series(_))
+        let not_a_plan = |(handed_over, _): &(ingest::HandOver, usize)| {
+            !matches!(handed_over, ingest::HandOver::Plan(_))
         };
-        assert!(after.iter().all(series_only));
+        assert!(after.iter().all(not_a_plan));
         let planned = plan.series();
         let read = &imported.sources[0].info;
         assert_eq!(planned.len(), 1);
@@ -1739,6 +1781,35 @@ mod job_tests {
             (read.uid.as_str(), "SYNTHETIC", "MR", 2, 2)
         );
         assert_eq!(noted(&imported, "import.discIndexDiffers"), None);
+    }
+
+    #[test]
+    fn a_picture_of_a_series_still_being_read_is_served_to_its_import_until_the_import_ends() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let mut picture = import_one(write_slice(temp.path(), "middle.dcm", 100));
+        Arc::make_mut(&mut picture).info.id = "preview:middle".into();
+        let core = core();
+        {
+            let mut early = core.early.lock().unwrap();
+            early.import = 1;
+            early.request_id = "disc-import".into();
+            early.previews.push((3, picture));
+        }
+        let cancelled = AtomicBool::new(false);
+        assert!(frame(&core, &cancelled, "preview:middle", 0, None).is_ok());
+        for (request_id, after, given) in [
+            ("disc-import", 0, vec![3]),
+            ("disc-import", 1, vec![]),
+            ("other-import", 0, vec![]),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "previewsAfter": after }));
+            let previews = early_series(&core, query.unwrap()).previews;
+            let planned: Vec<_> = previews.iter().map(|preview| preview.planned).collect();
+            assert_eq!(planned, given, "{request_id} after {after}");
+        }
+        core.early.lock().unwrap().previews.clear();
+        assert!(frame(&core, &cancelled, "preview:middle", 0, None).is_err());
     }
 
     #[test]
