@@ -850,7 +850,7 @@ export const tr: Record<keyof typeof en, string> = {
   'series.waitingLabel': '{description}, {modality}, {count} görüntü, okunuyor',
   'series.cardLabel': '{description}{phase}, {modality}, {count} görüntü{warnings}',
   'series.cardWarnings': ', uyarı var',
-  'series.cardReading': ', okunuyor',
+  'series.cardReading': ', okunuyor ({read} / {files} dosya)',
   'series.loading': 'Seri yükleniyor',
   'series.hasWarnings': 'Seride uyarı var',
   'series.noMatch': 'Eşleşen seri yok',

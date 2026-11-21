@@ -975,13 +975,17 @@ export default function App() {
    * measurement. Read whole, a series shown in a pane is loaded as any series is. */
   const followGrowth = (grown: readonly Series[]) => {
     const before = new Map(seriesRef.current.map(item => [item.id, item]));
+    // The same frame of the same file: a file of many frames holds several of a series' images.
     const placeIn = (item: Series, index: number) => {
-      const uid = before.get(item.id)?.frameMetadata?.[index]?.sopInstanceUid;
-      const at = uid === undefined ? -1 : (item.frameMetadata ?? []).findIndex(frame => frame.sopInstanceUid === uid);
+      const shown = before.get(item.id)?.frameMetadata?.[index];
+      const at = shown?.sopInstanceUid === undefined ? -1 : (item.frameMetadata ?? [])
+        .findIndex(frame => frame.sopInstanceUid === shown.sopInstanceUid && frame.sourceFrameNumber === shown.sourceFrameNumber);
       return at >= 0 ? at : Math.max(0, Math.min(index, item.dimensions[2] - 1));
     };
     const byId = new Map(grown.map(item => [item.id, item]));
     frameCache.invalidate([...byId.keys()]);
+    // What was asked of its earlier self is not kept when it comes (acquireVolume): its images are in another order.
+    for (const id of byId.keys()) volumeGenerations.current.set(id, (volumeGenerations.current.get(id) ?? 0) + 1);
     for (const [slotId, request] of frameRequests.current) if (byId.has(request.seriesId)) { request.controller.abort(); frameRequests.current.delete(slotId); }
     const moved = (volume: Volume) => {
       const item = byId.get(volume.series.id);
@@ -989,10 +993,14 @@ export default function App() {
     };
     publishVolumes(new Map([...volumesRef.current].map(([id, volume]) => [id, moved(volume)])));
     setSlotFrames(current => Object.fromEntries(Object.entries(current).map(([id, volume]) => [id, moved(volume)])));
-    setSlots(current => current.map(slot => {
+    const follow = (slot: Slot) => {
       const item = slot.seriesId ? byId.get(slot.seriesId) : undefined;
       return item ? { ...slot, view: { ...slot.view, slice: placeIn(item, slot.view.slice) } } : slot;
-    }));
+    };
+    setSlots(current => current.map(follow));
+    // And the panes kept aside to come back: those a maximized pane hides, and those the three-plane MPR took the place of.
+    hiddenSlots.current = hiddenSlots.current.map(follow);
+    if (beforeMpr.current) beforeMpr.current = { ...beforeMpr.current, slots: beforeMpr.current.slots.map(follow) };
     followAnnotations(grown);
     // A pane on it asks again once it is read whole, or now if it has no image yet (its request went to an earlier self).
     for (const item of grown) if (slotsRef.current.some(slot => slot.seriesId === item.id) && (!item.reading || !volumesRef.current.has(item.id))) loadPaneImage(item);
@@ -1266,16 +1274,52 @@ export default function App() {
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
       const settled = new Set(result.series.filter(same).map(item => item.id));
       const dropped = new Set([...early.keys()].filter(id => !result.series.some(item => item.id === id)));
+      // A series opened while it was read can come out of the import as more than one (the phases of one Series Instance
+      // UID). A pane on it goes to the series that holds the image it showed, at that image, and so does each measurement.
+      const holding = (sopInstanceUid: string | undefined, sourceFrameNumber: number | undefined) => {
+        if (sopInstanceUid === undefined) return undefined;
+        for (const item of result.series) {
+          const at = (item.frameMetadata ?? []).findIndex(frame => frame.sopInstanceUid === sopInstanceUid && frame.sourceFrameNumber === sourceFrameNumber);
+          if (at >= 0) return { item, at };
+        }
+        return undefined;
+      };
+      const carried = new Map<string, { item: Series; at: number } | undefined>();
+      for (const slot of [...slotsRef.current, ...hiddenSlots.current]) {
+        if (!slot.seriesId || !dropped.has(slot.seriesId)) continue;
+        const shown = early.get(slot.seriesId)?.frameMetadata?.[slot.view.slice];
+        carried.set(slot.id, holding(shown?.sopInstanceUid, shown?.sourceFrameNumber));
+      }
+      const carry = (slot: Slot): Slot => {
+        if (!carried.has(slot.id) || !slot.seriesId || !dropped.has(slot.seriesId)) return slot;
+        const to = carried.get(slot.id);
+        return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : { ...slot, seriesId: null };
+      };
+      hiddenSlots.current = hiddenSlots.current.map(carry).filter(slot => slot.seriesId);
+      if (dropped.size) setAnnotations(current => {
+        const from = [...dropped].filter(id => Object.hasOwn(current, id));
+        if (!from.length) return current;
+        const next = { ...current };
+        for (const id of from) {
+          for (const annotation of current[id]) {
+            const to = annotation.mode === 'source' ? holding(annotation.sourceSopInstanceUid, annotation.sourceFrameNumber) : undefined;
+            if (to) next[to.item.id] = [...(next[to.item.id] ?? []), { ...annotation, sourceFrame: to.at, slice: to.at }];
+          }
+          delete next[id];
+        }
+        return next;
+      });
       const images = result.series.filter(item => !item.segmentation);
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0),
         source: result.source, result: images.length ? 'ok' : 'empty' }, result.series.map(item => item.id));
       invalidateVolumes([...result.series.map(item => item.id).filter(id => !settled.has(id)), ...dropped]);
-      if (dropped.size) setSlots(current => current.map(slot => slot.seriesId && dropped.has(slot.seriesId) ? { ...slot, seriesId: null } : slot));
+      if (dropped.size) setSlots(current => current.map(slot => slot.seriesId && dropped.has(slot.seriesId) ? (carried.has(slot.id) ? carry(slot) : { ...slot, seriesId: null }) : slot));
       const reimported = new Set(result.series.map(item => item.id));
       for (const id of reimported) maskRequests.current.delete(id);
       setSegmentationMasks(current => [...current.keys()].some(id => reimported.has(id)) ? new Map([...current].filter(([id]) => !reimported.has(id))) : current);
       followAnnotations(result.series);
       const visibleIds = new Set([...slotsRef.current.map(slot => slot.seriesId), fusionIdRef.current, ...assessmentPinnedIds.current]);
+      for (const to of carried.values()) if (to) visibleIds.add(to.item.id);
       for (const item of result.series) if (visibleIds.has(item.id) && !settled.has(item.id)) loadPaneImage(item);
       // The study just opened leads the list (src/ui/seriesOrder.ts): its new series, those opened early among them,
       // in the import's catalogue order rather than the order they were found in. Series listed before it follow
@@ -1294,7 +1338,9 @@ export default function App() {
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
       // PET/CT screen) is laid out now that every series is known.
       const shownEarly = slotsRef.current.flatMap(slot => slot.seriesId && early.has(slot.seriesId) ? [slot.seriesId] : []);
-      const keep = shownEarly.length > 0 && shownEarly.every(id => settled.has(id)) && !shownEarly.some(id => stackOf.has(id));
+      // A pane carried to the series that holds its image counts as kept.
+      const keptPane = (id: string) => settled.has(id) || slotsRef.current.every(slot => slot.seriesId !== id || carried.get(slot.id) !== undefined);
+      const keep = shownEarly.length > 0 && shownEarly.every(keptPane) && !shownEarly.some(id => stackOf.has(id));
       // A reference image shown since the study began to open gives way in its own pane, whichever pane the reader is
       // in by now.
       const referencePane = slotsRef.current.find(slot => slot.seriesId && early.has(slot.seriesId) && stackOf.has(slot.seriesId))?.id;

@@ -847,7 +847,7 @@ export const en = {
   'series.waitingLabel': '{description}, {modality}, {count} images, being read',
   'series.cardLabel': '{description}{phase}, {modality}, {count} images{warnings}',
   'series.cardWarnings': ', has warnings',
-  'series.cardReading': ', being read',
+  'series.cardReading': ', being read ({read} of {files} files)',
   'series.loading': 'Loading series',
   'series.hasWarnings': 'Series has warnings',
   'series.noMatch': 'No matching series',

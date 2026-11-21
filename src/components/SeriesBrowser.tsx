@@ -472,7 +472,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               key={item.id}
               className={`series-card${active ? ' is-active' : ''}${several ? ' is-picked' : ''}`}
               aria-pressed={active}
-              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: `${item.warnings.length ? t('series.cardWarnings') : ''}${item.reading ? t('series.cardReading') : ''}` })}
+              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: `${item.warnings.length ? t('series.cardWarnings') : ''}${item.reading ? t('series.cardReading', { read: item.reading.read, files: item.reading.files }) : ''}` })}
               aria-busy={loading}
               aria-describedby={item.warnings.length ? `series-warnings-${item.id}` : undefined}
               data-testid={`series-${item.id}`}
