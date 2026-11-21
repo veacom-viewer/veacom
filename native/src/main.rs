@@ -99,6 +99,9 @@ struct Core {
     catalog_bytes: Mutex<BTreeMap<String, usize>>,
     cache: Mutex<Cache>,
     archives: Mutex<Vec<archive_temp::ArchiveTempDir>>,
+    /// The discs those of `archives` that hold a disc's copy are of, for a later import of the same disc (see
+    /// ingest::DiscCopy). Kept and let go with `archives`.
+    disc_copies: Mutex<Vec<ingest::DiscCopy>>,
     jobs: Queue,
     frames: Queue,
     samples: Queue,
@@ -546,7 +549,8 @@ fn import_series(
                 cache.remove(id);
             }
         };
-        let imported = ingest::import_session(&request.paths, Some(&hand_over), revision);
+        let earlier = core.disc_copies.lock().unwrap().clone();
+        let imported = ingest::import_session(&request.paths, Some(&hand_over), revision, &earlier);
         let result = finish_import(core, imported);
         // Commit or retract early series while the work holds its turn, even if main cancelled the request.
         let added = {
@@ -628,6 +632,7 @@ fn finish_import(
         }
     }
     core.archives.lock().unwrap().extend(imported.archives);
+    core.disc_copies.lock().unwrap().extend(imported.discs);
     Ok(result)
 }
 #[derive(Deserialize)]
@@ -753,6 +758,7 @@ fn remove_series(core: &App, cancelled: &AtomicBool, request: RemoveRequest) -> 
     };
     if remaining == 0 {
         core.archives.lock().unwrap().clear();
+        core.disc_copies.lock().unwrap().clear();
     }
     Ok(json!({"removed": removed, "remaining": remaining}))
 }
@@ -1135,6 +1141,7 @@ fn new_core(cache_limit: usize) -> App {
             handoff: None,
         }),
         archives: Mutex::new(Vec::new()),
+        disc_copies: Mutex::new(Vec::new()),
         jobs: Queue::new(),
         frames: Queue::new(),
         samples: Queue::new(),
@@ -1174,6 +1181,7 @@ fn main() -> anyhow::Result<()> {
     core.catalog_bytes.lock().unwrap().clear();
     core.cache.lock().unwrap().clear();
     core.archives.lock().unwrap().clear();
+    core.disc_copies.lock().unwrap().clear();
     server.finish(Duration::from_secs(1));
     Ok(())
 }
@@ -1695,7 +1703,7 @@ mod job_tests {
     /// Imports `path` as a disc is imported: read once, into the import's own folder.
     fn read_once(path: &std::path::Path) -> anyhow::Result<ingest::Imported> {
         let paths = [path.to_string_lossy().into_owned()];
-        ingest::import_session_from(&paths, None, 0, &|_| Some(ANY_DISC))
+        ingest::import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &[])
     }
 
     #[test]
@@ -1829,7 +1837,7 @@ mod job_tests {
             }
         };
         let paths = [disc.to_string_lossy().into_owned()];
-        let error = ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC))
+        let error = ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC), &[])
             .err()
             .unwrap();
         assert_eq!(
@@ -1853,7 +1861,7 @@ mod job_tests {
         };
         let paths = [disc.to_string_lossy().into_owned()];
         let imported =
-            ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC)).unwrap();
+            ingest::import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC), &[]).unwrap();
         let handed = handed.into_inner().unwrap();
         let Some(((ingest::HandOver::Plan(plan), 0), after)) = handed.split_first() else {
             panic!("the plan is handed over first, before any of its files is read");

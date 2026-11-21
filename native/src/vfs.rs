@@ -5,7 +5,7 @@
 #[cfg(not(target_arch = "wasm32"))]
 pub use std::fs::{
     DirEntry, File, OpenOptions, create_dir, create_dir_all, metadata, read_dir, remove_dir_all,
-    remove_file,
+    remove_file, symlink_metadata,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use std::{
@@ -31,3 +31,10 @@ pub use crate::memory_fs::{
     DirEntry, File, OpenOptions, canonicalize, create_dir, create_dir_all, exists, is_file,
     metadata, read_dir, remove_dir_all, remove_file,
 };
+/// The files a page hands over hold no links: what is at a path is the file itself.
+#[cfg(target_arch = "wasm32")]
+pub fn symlink_metadata(
+    path: impl AsRef<std::path::Path>,
+) -> std::io::Result<crate::memory_fs::Metadata> {
+    metadata(path)
+}

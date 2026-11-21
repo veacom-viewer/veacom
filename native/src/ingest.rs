@@ -40,6 +40,13 @@ fn index_readers() -> usize {
 /// The room the discs' private copies have to leave free on this computer.
 const SPARE_BYTES: u64 = 1 << 30;
 
+/// The disc `plan_spool` plans the reading of, and the copies earlier imports of this session made (see `DiscCopy`).
+#[derive(Clone, Copy)]
+struct DiscToRead<'a> {
+    disc: Disc,
+    earlier: &'a [DiscCopy],
+}
+
 /// A disc that an import can read once into a private copy (see `plan_spool`), as this computer reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Disc {
@@ -138,6 +145,25 @@ pub struct Imported {
     pub sources: Vec<Arc<SourceSeries>>,
     pub archives: Vec<ArchiveTempDir>,
     pub warnings: Vec<crate::message::Note>,
+    /// The copies this import made of the discs it read once, which a later import of the same disc can take its
+    /// files from while they are kept (see `DiscCopy`).
+    pub discs: Vec<DiscCopy>,
+}
+
+/// A disc's copy that an import made in its folder (one of `Imported::archives`), and the disc it is of. A later import
+/// that opens the same disc at the same folder, with the same index, reads the files copied here, as they are and
+/// where they are, instead of reading them from the disc again: each one the disc still holds at the same length. A
+/// disc taken out half read and put back is read on from where it stopped, and one opened again at once. The copies
+/// go together, when the viewer's list is emptied (main.rs), so an earlier one outlives the series read from it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscCopy {
+    pub disc: Disc,
+    /// The folder that was opened on it.
+    pub folder: PathBuf,
+    /// The SHA-256 of its index (DICOMDIR), where it has one.
+    pub index: Option<[u8; 32]>,
+    /// Where its files were copied to.
+    pub copy: PathBuf,
 }
 
 pub fn text(obj: &InMemDicomObject, tag: Tag) -> String {
@@ -2532,7 +2558,7 @@ pub fn display_window(values: impl Iterator<Item = f64> + Clone) -> Option<(f64,
 /// `import_session` without early series, at source revision 0: for the tests, the desktop transport's among them
 /// (which build this library without `cfg(test)`).
 pub fn import(paths: &[String]) -> Result<Imported> {
-    import_session(paths, None, 0)
+    import_session(paths, None, 0, &[])
 }
 
 /// What an import hands over before it ends (see `import_with`).
@@ -2623,7 +2649,7 @@ impl Plan {
 /// once hands over the series its DICOMDIR lists first, before any of their images is read (see `Plan`).
 #[cfg(test)]
 pub fn import_with(paths: &[String], early: Option<EarlySink>) -> Result<Imported> {
-    import_session(paths, early, 0)
+    import_session(paths, early, 0, &[])
 }
 
 /// A ZIP import extracts a file with a .zip extension.
@@ -2633,12 +2659,14 @@ pub fn is_zip_file(path: &Path) -> bool {
         && fs::is_file(path)
 }
 
+/// `earlier` are the copies earlier imports of this session made of their discs, kept still (see `DiscCopy`).
 pub fn import_session(
     paths: &[String],
     early: Option<EarlySink>,
     revision: u64,
+    earlier: &[DiscCopy],
 ) -> Result<Imported> {
-    import_session_from(paths, early, revision, &read_once)
+    import_session_from(paths, early, revision, &read_once, earlier)
 }
 
 /// `import_session`, with `read_once` saying which disc a selection is on, if it is on one that can be read once into
@@ -2648,6 +2676,7 @@ pub fn import_session_from(
     early: Option<EarlySink>,
     revision: u64,
     read_once: &dyn Fn(&Path) -> Option<Disc>,
+    earlier: &[DiscCopy],
 ) -> Result<Imported> {
     if paths.is_empty() {
         bail!(coded!(
@@ -2713,7 +2742,7 @@ pub fn import_session_from(
                 let (dir, spool) = plan_spool(
                     parent,
                     Some(path),
-                    disc,
+                    DiscToRead { disc, earlier },
                     &mut files,
                     &mut media_files,
                     &mut planned,
@@ -2750,7 +2779,7 @@ pub fn import_session_from(
                 let (dir, spool) = plan_spool(
                     path,
                     None,
-                    disc,
+                    DiscToRead { disc, earlier },
                     &mut files,
                     &mut media_files,
                     &mut planned,
@@ -2921,7 +2950,9 @@ pub fn import_session_from(
                 let most = crate::input_guard::MAX_FILE_SIZE;
                 match copy_from_disc(file, most, &mut allowance, &mut block)? {
                     Copied::Whole => {
-                        if spool.indexed && matches!(file.take, Take::IfDicom) {
+                        let unlisted =
+                            matches!(file.take, Take::IfDicom | Take::Kept { unlisted: true });
+                        if spool.indexed && unlisted {
                             unlisted_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         }
                         let _ = send.send(index);
@@ -3170,10 +3201,12 @@ pub fn import_session_from(
             details = Vec::from_iter(unreadable)
         ));
     }
+    let discs = spools.iter().map(|spool| spool.copy.clone()).collect();
     Ok(Imported {
         sources,
         archives,
         warnings,
+        discs,
     })
 }
 
@@ -4047,6 +4080,8 @@ struct Spool {
     indexed: bool,
     /// The disc, as it was when the import began.
     disc: Disc,
+    /// What the import copies the disc to, for a later import of the same disc (see `DiscCopy`).
+    copy: DiscCopy,
 }
 
 impl Spool {
@@ -4088,6 +4123,9 @@ enum Take {
     IfDicom,
     /// Not at all: this computer cannot keep a file of its name (see `keeps_name`).
     Unkept,
+    /// Not at all: an earlier import of this session copied it from the same disc, and its copy there, untouched, is
+    /// read (see `DiscCopy`). `unlisted` is whether the disc's index leaves the file out.
+    Kept { unlisted: bool },
 }
 
 /// What became of a disc's file.
@@ -4119,12 +4157,13 @@ enum Copied {
 fn plan_spool(
     folder: &Path,
     index: Option<&Path>,
-    disc: Disc,
+    reading: DiscToRead<'_>,
     files: &mut Vec<PathBuf>,
     media_files: &mut HashMap<PathBuf, crate::media_directory::Reference>,
     planned: &mut Vec<crate::model::PlannedSeries>,
     noted: &mut Vec<crate::message::Note>,
 ) -> Result<(ArchiveTempDir, Spool)> {
+    let DiscToRead { disc, earlier } = reading;
     let dir = crate::archive_temp::create("veacom-import-")?;
     let is_index = |file: &Path| {
         file.file_name()
@@ -4160,7 +4199,22 @@ fn plan_spool(
     let DiscIndex {
         files: mut listed,
         series,
+        hash: index_hash,
     } = read.unwrap_or_default();
+    // What this import copies the disc to; and the copies earlier imports of this session made of the same disc, opened
+    // at the same folder with the same index, the latest first, whose files are read instead of the disc's (see
+    // `DiscCopy`).
+    let copied = DiscCopy {
+        disc,
+        folder: folder.to_owned(),
+        index: index_hash,
+        copy: dir.path().to_owned(),
+    };
+    let same = |earlier: &&DiscCopy| {
+        (earlier.disc, &earlier.folder, earlier.index)
+            == (copied.disc, &copied.folder, copied.index)
+    };
+    let earlier: Vec<&DiscCopy> = earlier.iter().rev().filter(same).collect();
     // Each listed file's series in the plan, and each series' middle file. A file that the index puts in two series
     // counts in the first.
     let (mut series_of, mut middles) = (HashMap::new(), HashSet::new());
@@ -4188,7 +4242,15 @@ fn plan_spool(
         .collect();
     let mut spool = Vec::new();
     let mut copy = |from: PathBuf, inside: &Path, take: Take, reference| {
-        let to = dir.path().join(inside);
+        // A file an earlier import of this session copied from this same disc, which the disc still holds at that
+        // copy's length, is read from that copy as it is, and not copied again (see `DiscCopy`).
+        let on_disc = (!earlier.is_empty()).then(|| file_length(&from)).flatten();
+        let kept = on_disc.and_then(|on_disc| {
+            (earlier.iter())
+                .map(|earlier| earlier.copy.join(inside))
+                .find(|kept| file_length(kept) == Some(on_disc))
+        });
+        let to = kept.clone().unwrap_or_else(|| dir.path().join(inside));
         let listed = match (&take, reference) {
             (Take::Listed(_), Some(reference)) => {
                 media_files.insert(to.clone(), reference);
@@ -4199,7 +4261,10 @@ fn plan_spool(
             }
         };
         files.push(to.clone());
-        let take = if keeps_name(inside) {
+        let unlisted = matches!(take, Take::IfDicom);
+        let take = if kept.is_some() {
+            Take::Kept { unlisted }
+        } else if keeps_name(inside) {
             take
         } else {
             Take::Unkept
@@ -4285,6 +4350,7 @@ fn plan_spool(
         files: ordered,
         indexed,
         disc,
+        copy: copied,
     };
     Ok((dir, spool))
 }
@@ -4298,6 +4364,8 @@ struct DiscIndex {
     /// The series the index describes, each with its files' places in small letters and which of them is its middle
     /// image (see `ListedSeries`).
     series: Vec<(crate::model::PlannedSeries, Vec<String>, usize)>,
+    /// The SHA-256 of the index, which tells its disc from another (see `DiscCopy`).
+    hash: Option<[u8; 32]>,
 }
 
 /// The most bytes a disc's index may hold: as much as any DICOM file's own information may take (input_guard), with its
@@ -4324,10 +4392,13 @@ fn disc_index(dir: &Path, media: &Path, name: &std::ffi::OsStr) -> Result<DiscIn
         }
         let mut bytes = Vec::new();
         File::open(&copy.to)?.read_to_end(&mut bytes)?;
-        crate::media_directory::listing_in(&root, &copy.to, File::open(&copy.to)?, &bytes)
+        let hash: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
+        let listing =
+            crate::media_directory::listing_in(&root, &copy.to, File::open(&copy.to)?, &bytes);
+        listing.map(|listing| (listing, hash))
     })();
     let _ = fs::remove_file(&copy.to);
-    let listing = read?;
+    let (listing, hash) = read?;
     let place = |path: &Path| -> Result<String> {
         Ok(path
             .strip_prefix(root.path())?
@@ -4362,6 +4433,7 @@ fn disc_index(dir: &Path, media: &Path, name: &std::ffi::OsStr) -> Result<DiscIn
     Ok(DiscIndex {
         files: listed,
         series,
+        hash: Some(hash),
     })
 }
 
@@ -4395,6 +4467,14 @@ fn keeps_name(inside: &Path) -> bool {
     })
 }
 
+/// The length of the file at `path` itself, not of what a link there leads to; None for anything but a file.
+fn file_length(path: &Path) -> Option<u64> {
+    fs::symlink_metadata(path)
+        .ok()
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+}
+
 /// Copies one file of a disc into the import's folder: opened once and read through once, a block at a time. A file
 /// larger than `most` bytes is not copied. `allowance` is what the disc's copies may still take. An error is one that
 /// ends the import: the copy cannot be written, or the import was cancelled. A file the disc does not give is no error
@@ -4408,6 +4488,8 @@ fn copy_from_disc(
     // Where a DICOM file's marker ends, after its preamble.
     const START: usize = 132;
     let opened = match &file.take {
+        // An earlier import's copy, read where it is.
+        Take::Kept { .. } => return Ok(Copied::Whole),
         Take::Unkept => Err(anyhow::anyhow!(coded!(
             "file.nameUnusable",
             "This computer cannot hold a file of this name"
@@ -6577,7 +6659,10 @@ mod tests {
         let (dir, spool) = plan_spool(
             disc.path(),
             None,
-            ANY_DISC,
+            DiscToRead {
+                disc: ANY_DISC,
+                earlier: &[],
+            },
             &mut files,
             &mut media_files,
             &mut listed_series,
@@ -6591,6 +6676,7 @@ mod tests {
                 Take::Listed(_) => "through the index",
                 Take::IfDicom => "if DICOM",
                 Take::Unkept => "not at all",
+                Take::Kept { .. } => "from an earlier copy",
             };
             format!("{}: {take}", inside.to_string_lossy().replace('\\', "/"))
         };
@@ -6824,7 +6910,10 @@ mod tests {
         let (_dir, spool) = plan_spool(
             &disc,
             None,
-            ANY_DISC,
+            DiscToRead {
+                disc: ANY_DISC,
+                earlier: &[],
+            },
             &mut files,
             &mut media_files,
             &mut planned,
@@ -7047,7 +7136,8 @@ mod tests {
             }
         };
         let paths = [disc.to_string_lossy().into_owned()];
-        let imported = import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC)).unwrap();
+        let imported =
+            import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC), &[]).unwrap();
         let mut pictures = pictures.into_inner().unwrap();
         pictures.sort_by_key(|(planned, _)| *planned);
         assert_eq!(pictures.len(), 2);
@@ -7092,7 +7182,7 @@ mod tests {
         // Two selections on one disc: read where they are, as from any folder, each image once.
         let both = [disc.clone(), disc.join("DICOMDIR")];
         let paths = both.map(|path| path.to_string_lossy().into_owned());
-        let twice = import_session_from(&paths, None, 0, &on(serial)).unwrap();
+        let twice = import_session_from(&paths, None, 0, &on(serial), &[]).unwrap();
         assert!(twice.archives.is_empty());
         assert_eq!(frames(&twice), 8);
         // A file the disc does not give, with another disc in the drive by then: the import reads no further. Here the
@@ -7103,7 +7193,7 @@ mod tests {
             fs::remove_file(file).unwrap();
         }
         let paths = [disc.to_string_lossy().into_owned()];
-        let error = import_session_from(&paths, None, 0, &on(serial ^ 1))
+        let error = import_session_from(&paths, None, 0, &on(serial ^ 1), &[])
             .err()
             .unwrap();
         assert_eq!(
@@ -7117,7 +7207,7 @@ mod tests {
         collect_files(&disc.join("DICOM"), &mut listed).unwrap();
         fs::remove_file(&listed[0]).unwrap();
         let paths = [disc.to_string_lossy().into_owned()];
-        let read = import_session_from(&paths, None, 0, &on(serial)).unwrap();
+        let read = import_session_from(&paths, None, 0, &on(serial), &[]).unwrap();
         assert_eq!((read.archives.len(), frames(&read)), (1, 7));
     }
 
@@ -7146,7 +7236,8 @@ mod tests {
             }
         };
         let paths = [&first, &second].map(|disc| disc.to_string_lossy().into_owned());
-        let imported = import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC)).unwrap();
+        let imported =
+            import_session_from(&paths, Some(&sink), 0, &|_| Some(ANY_DISC), &[]).unwrap();
         // The first disc's two series, every image of each, and nothing of the second; and what happened is said.
         let mut series: Vec<_> = (imported.sources.iter())
             .map(|source| (source.info.uid.as_str(), source.frames.len()))
@@ -7164,6 +7255,60 @@ mod tests {
         );
         // A disc taken out before any of its series was read whole gives nothing, and the import stops: see
         // a_disc_taken_out_before_it_is_read_whole_stops_the_import_and_says_so (main.rs).
+    }
+
+    #[test]
+    fn a_disc_opened_again_takes_the_files_an_earlier_import_copied_of_it() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_two_series(out.path());
+        let paths = [disc.to_string_lossy().into_owned()];
+        let first = import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &[]).unwrap();
+        assert_eq!(first.discs.len(), 1);
+        // A file of the disc changes after it was copied, keeping its length: another image's UID of the same length.
+        let mut listed = Vec::new();
+        collect_files(&disc.join("DICOM"), &mut listed).unwrap();
+        let (old, new) = (b"1.2.3.4.1.0", b"1.2.3.4.1.9");
+        let changed = (listed.iter())
+            .find(|file| {
+                fs::read(file)
+                    .unwrap()
+                    .windows(old.len())
+                    .any(|bytes| bytes == old)
+            })
+            .unwrap();
+        let mut bytes = fs::read(changed).unwrap();
+        for at in 0..=bytes.len() - old.len() {
+            if &bytes[at..at + old.len()] == old {
+                bytes[at..at + old.len()].copy_from_slice(new);
+            }
+        }
+        fs::write(changed, bytes).unwrap();
+        let images = |imported: &Imported| -> Vec<String> {
+            let mut all: Vec<_> = (imported.sources.iter().flat_map(|source| &source.frames))
+                .map(|frame| frame.sop_uid.clone())
+                .collect();
+            all.sort();
+            all
+        };
+        // Opened again, the disc's files come from the earlier copy: the image as it was copied.
+        let again =
+            import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &first.discs).unwrap();
+        let taken = images(&again);
+        assert_eq!(taken.len(), 8);
+        assert!(
+            taken.contains(&"1.2.3.4.1.0".to_owned()) && !taken.contains(&"1.2.3.4.1.9".to_owned())
+        );
+        // Another disc (here, of another size) at the same place is read from the disc.
+        let another = Disc {
+            size: u64::MAX - 1,
+            serial: None,
+        };
+        let read = import_session_from(&paths, None, 0, &|_| Some(another), &first.discs).unwrap();
+        assert!(images(&read).contains(&"1.2.3.4.1.9".to_owned()));
+        // The earlier copy is read as it is, and its own import's images read on, unchanged for it.
+        for source in first.sources.iter().chain(&again.sources) {
+            crate::decode::decode_frame(source, 0).unwrap();
+        }
     }
 
     /// The folder zipped as an archiver writes it: a folder entry, then its files, names with forward slashes.
