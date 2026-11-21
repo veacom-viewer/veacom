@@ -6896,6 +6896,9 @@ mod tests {
         let study = two_series_study();
         let mut files = Vec::new();
         collect_files(study.path(), &mut files).unwrap();
+        // The export writes the index's records in the order it is given the files, and a folder lists its files in
+        // the file system's order (by name on Windows, not on Linux): in one order everywhere, Seri1's series first.
+        files.sort();
         let opts = serde_json::from_value(serde_json::json!({"directory": out, "dicomdir": true}));
         let media = crate::export::export_series(&files, &opts.unwrap()).unwrap();
         PathBuf::from(media.directory)
