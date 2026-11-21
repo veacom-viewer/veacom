@@ -321,6 +321,26 @@ pub struct Segmentation {
     pub segments: Vec<Segment>,
 }
 
+/// A series that a disc's DICOMDIR lists, known before its images are read: what the index says of it, and how far
+/// the import is with its files. It is no image: the series an import gives are made from the files themselves.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlannedSeries {
+    /// Series Instance UID: the series the import gives that have it are this one.
+    pub uid: String,
+    pub study_uid: String,
+    pub patient_id: String,
+    pub patient_name: String,
+    pub study_date: String,
+    pub description: String,
+    pub modality: String,
+    pub series_number: Option<i32>,
+    /// The files the index lists for it.
+    pub files: usize,
+    /// Of them, those the import has finished with: read, or found unreadable.
+    pub finished: usize,
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Series {

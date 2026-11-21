@@ -114,6 +114,8 @@ struct EarlyImport {
     series: Vec<model::Series>,
     /// The ids this import added to the catalogue ahead of its end.
     added: Vec<String>,
+    /// The series the DICOMDIR of a disc it reads lists (see ingest::Plan).
+    plan: Option<Arc<ingest::Plan>>,
 }
 /// An HTTP-like status and the message: `error` is the English text; `note`, when the message is coded, lets the
 /// interface translate it.
@@ -485,12 +487,20 @@ fn import_series(
         early.request_id = request.request_id;
         early.series.clear();
         early.added.clear();
+        early.plan = None;
         early.import
     };
     turn.job(|| {
         // A series handed over early goes into the catalogue at once, so its frames can be shown while the rest is
         // read (frame does not wait for imports). Only series not open already: those stay as they are to the end.
-        let hand_over = |found: Vec<Arc<SourceSeries>>| {
+        let hand_over = |handed: ingest::HandOver| {
+            let found = match handed {
+                ingest::HandOver::Series(found) => found,
+                ingest::HandOver::Plan(plan) => {
+                    core.early.lock().unwrap().plan = Some(plan);
+                    return;
+                }
+            };
             let mut sources = core.sources.write().unwrap();
             let mut early = core.early.lock().unwrap();
             for mut source in found {
@@ -510,6 +520,7 @@ fn import_series(
             let mut early = core.early.lock().unwrap();
             early.series.clear();
             early.request_id.clear();
+            early.plan = None;
             std::mem::take(&mut early.added)
         };
         if !added.is_empty() {
@@ -592,25 +603,36 @@ struct EarlyQuery {
     after: usize,
     #[serde(default)]
     request_id: String,
+    /// Whether to give the series a disc's DICOMDIR lists as well.
+    #[serde(default)]
+    planned: bool,
 }
 /// Written as import writes its series, so an early series and the final one compare field by field.
 #[derive(Serialize)]
 struct EarlyList {
     import: u64,
     series: Vec<model::Series>,
+    /// The series the DICOMDIR of a disc being read lists, as they stand, when asked for (see ingest::Plan).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    planned: Option<Vec<model::PlannedSeries>>,
 }
 /// The series the import under way has handed over early, from the `after`th on (see ingest::import_with).
 fn early_series(core: &App, query: EarlyQuery) -> EarlyList {
     let early = core.early.lock().unwrap();
     let from = query.after.min(early.series.len());
-    let series = if query.request_id == early.request_id {
+    let current = query.request_id == early.request_id;
+    let series = if current {
         early.series[from..].to_vec()
     } else {
         Vec::new()
     };
+    let planned = (early.plan.as_ref())
+        .filter(|_| current && query.planned)
+        .map(|plan| plan.series());
     EarlyList {
         import: early.import,
         series,
+        planned,
     }
 }
 #[derive(Deserialize)]
@@ -1678,6 +1700,72 @@ mod job_tests {
             message::coded(&error).map(|note| note.code),
             Some("import.discRemoved")
         );
+    }
+
+    #[test]
+    fn a_disc_with_an_index_hands_over_its_series_before_their_images_and_counts_their_files() {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_disc(out.path());
+        // Each hand-over, with how many of the plan's files were finished when it came.
+        let handed = Mutex::new(Vec::new());
+        let sink = |handed_over: ingest::HandOver| {
+            let finished = match &handed_over {
+                ingest::HandOver::Plan(plan) => plan.series().iter().map(|s| s.finished).sum(),
+                ingest::HandOver::Series(_) => 0,
+            };
+            handed.lock().unwrap().push((handed_over, finished));
+        };
+        let paths = [disc.to_string_lossy().into_owned()];
+        let imported = ingest::import_session_from(&paths, Some(&sink), 0, &|_| true).unwrap();
+        let handed = handed.into_inner().unwrap();
+        let Some(((ingest::HandOver::Plan(plan), 0), after)) = handed.split_first() else {
+            panic!("the plan is handed over first, before any of its files is read");
+        };
+        let series_only = |(handed_over, _): &(ingest::HandOver, usize)| {
+            matches!(handed_over, ingest::HandOver::Series(_))
+        };
+        assert!(after.iter().all(series_only));
+        let planned = plan.series();
+        let read = &imported.sources[0].info;
+        assert_eq!(planned.len(), 1);
+        assert_eq!(
+            (
+                planned[0].uid.as_str(),
+                planned[0].patient_name.as_str(),
+                planned[0].modality.as_str(),
+                planned[0].files,
+                planned[0].finished
+            ),
+            (read.uid.as_str(), "SYNTHETIC", "MR", 2, 2)
+        );
+        assert_eq!(noted(&imported, "import.discIndexDiffers"), None);
+    }
+
+    #[test]
+    fn a_discs_series_go_only_to_the_import_that_reads_the_disc_and_only_when_asked_for() {
+        let core = core();
+        {
+            let mut early = core.early.lock().unwrap();
+            early.import = 1;
+            early.request_id = "disc-import".into();
+            let planned = model::PlannedSeries {
+                uid: "2.25.2".into(),
+                files: 2,
+                ..Default::default()
+            };
+            early.plan = Some(Arc::new(ingest::Plan::new(vec![planned])));
+        }
+        for (request_id, asked, given) in [
+            ("disc-import", true, true),
+            ("disc-import", false, false),
+            ("other-import", true, false),
+        ] {
+            let query =
+                serde_json::from_value(json!({ "requestId": request_id, "planned": asked }))
+                    .unwrap();
+            let planned = early_series(&core, query).planned;
+            assert_eq!(planned.is_some(), given, "{request_id}, asked: {asked}");
+        }
     }
 }
 

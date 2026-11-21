@@ -2457,8 +2457,44 @@ pub fn import(paths: &[String]) -> Result<Imported> {
     import_session(paths, None, 0)
 }
 
-/// Where an import hands over the series it can show before it ends (see `import_with`).
-pub type EarlySink<'a> = &'a (dyn Fn(Vec<Arc<SourceSeries>>) + Sync);
+/// What an import hands over before it ends (see `import_with`).
+pub enum HandOver {
+    /// Series it can show while it reads the rest.
+    Series(Vec<Arc<SourceSeries>>),
+    /// The series that the DICOMDIRs of the discs it reads once list, before their images are read.
+    Plan(Arc<Plan>),
+}
+
+/// Where an import hands over what it can show before it ends (see `import_with`).
+pub type EarlySink<'a> = &'a (dyn Fn(HandOver) + Sync);
+
+/// The series that the DICOMDIRs of the discs an import reads once list (see `plan_spool`), known before any of their
+/// images is read, and how far the import is with each one's files. The index only says what is coming: every series
+/// the import gives is made from its own files.
+pub struct Plan {
+    series: Vec<crate::model::PlannedSeries>,
+    finished: Vec<std::sync::atomic::AtomicUsize>,
+}
+
+impl Plan {
+    pub fn new(series: Vec<crate::model::PlannedSeries>) -> Self {
+        let finished = series.iter().map(|_| Default::default()).collect();
+        Self { series, finished }
+    }
+    /// The series as they stand.
+    pub fn series(&self) -> Vec<crate::model::PlannedSeries> {
+        let stand = |(series, finished): (
+            &crate::model::PlannedSeries,
+            &std::sync::atomic::AtomicUsize,
+        )| {
+            crate::model::PlannedSeries {
+                finished: finished.load(std::sync::atomic::Ordering::Relaxed),
+                ..series.clone()
+            }
+        };
+        self.series.iter().zip(&self.finished).map(stand).collect()
+    }
+}
 
 /// Imports `paths` as `import` does. An archive's entries are read while the archive is still being extracted, each
 /// once it is written whole, rather than after the last one; the extraction checks every entry as it did.
@@ -2468,7 +2504,8 @@ pub type EarlySink<'a> = &'a (dyn Fn(Vec<Arc<SourceSeries>>) + Sync);
 /// series of a large study before the last folder is read. Such a series is provisional (one whose files are spread
 /// over folders read far apart could still grow): the catalogue returned is built from every file exactly as without
 /// `early`, and it is the final word. Pictures (PNG, JPEG, BMP) and segmentations are never handed over early: whether
-/// pictures count depends on the whole import, and a segmentation is drawn over its image series.
+/// pictures count depends on the whole import, and a segmentation is drawn over its image series. A disc that is read
+/// once hands over the series its DICOMDIR lists first, before any of their images is read (see `Plan`).
 #[cfg(test)]
 pub fn import_with(paths: &[String], early: Option<EarlySink>) -> Result<Imported> {
     import_session(paths, early, 0)
@@ -2508,9 +2545,10 @@ pub fn import_session_from(
     let mut archives = Vec::new();
     // Each archive still to extract: its file, its extraction folder, and the entries of it that are read.
     let mut extractions: Vec<(PathBuf, PathBuf, Vec<PathBuf>)> = Vec::new();
-    // The discs that are read once, and what planning them found to say.
+    // The discs that are read once, what planning them found to say, and the series their DICOMDIRs list.
     let mut spools: Vec<Spool> = Vec::new();
     let mut noted = Vec::new();
+    let mut planned = Vec::new();
     // Which opened folder or archive each ordinary image came from (see ImageRoot).
     let mut roots: HashMap<PathBuf, Arc<ImageRoot>> = HashMap::new();
     for raw in paths {
@@ -2546,8 +2584,14 @@ pub fn import_session_from(
         {
             let parent = path.parent().context("DICOMDIR has no parent directory")?;
             if read_once(parent) {
-                let (dir, spool) =
-                    plan_spool(parent, Some(path), &mut files, &mut media_files, &mut noted)?;
+                let (dir, spool) = plan_spool(
+                    parent,
+                    Some(path),
+                    &mut files,
+                    &mut media_files,
+                    &mut planned,
+                    &mut noted,
+                )?;
                 archives.push(dir);
                 spools.push(spool);
             } else {
@@ -2576,8 +2620,14 @@ pub fn import_session_from(
             ImageRoot::new(&folder, folder.file_name())
         } else {
             if read_once(path) {
-                let (dir, spool) =
-                    plan_spool(path, None, &mut files, &mut media_files, &mut noted)?;
+                let (dir, spool) = plan_spool(
+                    path,
+                    None,
+                    &mut files,
+                    &mut media_files,
+                    &mut planned,
+                    &mut noted,
+                )?;
                 archives.push(dir);
                 spools.push(spool);
             } else {
@@ -2591,6 +2641,11 @@ pub fn import_session_from(
         {
             roots.entry(file.clone()).or_insert_with(|| root.clone());
         }
+    }
+    // The discs' series go to the viewer before any of their images is read.
+    let plan = (!planned.is_empty()).then(|| Arc::new(Plan::new(planned)));
+    if let (Some(sink), Some(plan)) = (early, &plan) {
+        sink(HandOver::Plan(plan.clone()));
     }
     files.sort();
     files.dedup();
@@ -2611,6 +2666,16 @@ pub fn import_session_from(
         .collect();
     // A disc's copies are opened as files of this computer, not through the disc's media root.
     let copied: HashSet<&Path> = spooled().map(|file| file.to.as_path()).collect();
+    // Each file's series in the plan, by its place among `files`; a file that is finished with counts in its series.
+    let mut planned_of = vec![None; files.len()];
+    for file in spooled() {
+        planned_of[slot_of[file.to.as_path()]] = file.series;
+    }
+    let finish = |index: usize| {
+        if let (Some(plan), Some(series)) = (&plan, planned_of[index]) {
+            plan.finished[series].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    };
     // A picture only takes its share of the budget here: its size is asked for below, once it is known that no file
     // held DICOM (beside DICOM, pictures are not series: see catalogue).
     let read_one = |path: &Path| {
@@ -2641,6 +2706,7 @@ pub fn import_session_from(
             Some(read_one(path))
         };
         let _ = slots[index].set(result);
+        finish(index);
     };
     // Entries that landed where the plan did not expect them (a name the central directory spells differently):
     // read once the extraction ends, as every extracted file was before.
@@ -2653,7 +2719,7 @@ pub fn import_session_from(
     let (extractions_ref, slot_of_ref, unplanned_ref) = (&extractions, &slot_of, &unplanned);
     // The DICOM files that a disc's index does not list and that were copied all the same.
     let unlisted = std::sync::atomic::AtomicUsize::new(0);
-    let (spools_ref, slots_ref, unlisted_ref) = (&spools, &slots, &unlisted);
+    let (spools_ref, slots_ref, unlisted_ref, finish_ref) = (&spools, &slots, &unlisted, &finish);
     let extract = move || -> Result<()> {
         for (archive, dir, _) in extractions_ref {
             extract_zip_into(archive, dir, available_archive_bytes(), &mut |target| {
@@ -2684,6 +2750,7 @@ pub fn import_session_from(
                     }
                     Copied::NotDicom => {
                         let _ = slots_ref[index].set(None);
+                        finish_ref(index);
                         let _ = crate::progress::step();
                     }
                     // A file the disc does not give fails alone, as an unreadable file of a folder does, and counts
@@ -2696,6 +2763,7 @@ pub fn import_session_from(
                             ));
                         }
                         let _ = slots_ref[index].set(Some(Err(error)));
+                        finish_ref(index);
                         let _ = crate::progress::step();
                     }
                 }
@@ -2760,17 +2828,23 @@ pub fn import_session_from(
             count = unlisted.to_string()
         ));
     }
+    // Files that are another instance than the disc's index says, or in another series than it puts them in.
     let differing = spooled()
         .filter(|file| {
-            let read = slots[slot_of[file.to.as_path()]].get();
-            let (Some(instance), Some(Some(Ok(IndexedFile::Images(frames))))) =
-                (&file.listed, read)
+            let Some(Some(Ok(IndexedFile::Images(frames)))) =
+                slots[slot_of[file.to.as_path()]].get()
             else {
                 return false;
             };
-            frames
-                .iter()
-                .any(|(_, _, frame)| frame.sop_uid != *instance)
+            let series = (file.series)
+                .zip(plan.as_ref())
+                .map(|(series, plan)| plan.series[series].uid.as_str());
+            frames.iter().any(|(_, info, frame)| {
+                file.listed
+                    .as_ref()
+                    .is_some_and(|instance| frame.sop_uid != *instance)
+                    || series.is_some_and(|uid| info.uid != uid)
+            })
         })
         .count();
     if differing > 0 {
@@ -3336,7 +3410,7 @@ impl EarlyWatch {
         self.handed
             .extend(ready.iter().map(|source| source.info.id.clone()));
         if !ready.is_empty() {
-            sink(ready);
+            sink(HandOver::Series(ready));
         }
     }
 }
@@ -3477,6 +3551,8 @@ struct SpoolFile {
     /// The instance that the disc's index says a file found on the disc holds. The file is read whatever it holds;
     /// a difference is said.
     listed: Option<String>,
+    /// Where the disc's index puts the file in the import's plan (see `Plan`).
+    series: Option<usize>,
 }
 
 /// How a disc's file is taken.
@@ -3515,12 +3591,14 @@ enum Copied {
 /// as a DICOM file does, so a disc's own viewer costs one look at each of its files, and those looks come last. An
 /// index that cannot be read is said, and the disc is read as a folder is. An index that was itself opened is the
 /// whole of what is read, as it is from any other place. Pictures stay on the disc: they are read only when nothing
-/// opened held DICOM, as from any folder.
+/// opened held DICOM, as from any folder. The series the index describes go to `planned`, the import's plan (see
+/// `Plan`), with the files of theirs this disc gives.
 fn plan_spool(
     folder: &Path,
     index: Option<&Path>,
     files: &mut Vec<PathBuf>,
     media_files: &mut HashMap<PathBuf, crate::media_directory::Reference>,
+    planned: &mut Vec<crate::model::PlannedSeries>,
     noted: &mut Vec<crate::message::Note>,
 ) -> Result<(ArchiveTempDir, Spool)> {
     let dir = crate::archive_temp::create("veacom-import-")?;
@@ -3538,10 +3616,10 @@ fn plan_spool(
         let at_top = |file: &&PathBuf| file.parent() == Some(folder) && is_index(file);
         found.iter().find(at_top).map(PathBuf::as_path)
     });
-    let listed = match index_file.and_then(Path::file_name) {
+    let read = match index_file.and_then(Path::file_name) {
         None => None,
         Some(name) => match disc_index(dir.path(), &fs::canonicalize(folder)?, name) {
-            Ok(listed) => Some(listed),
+            Ok(read) => Some(read),
             // An index that was itself opened is all there is to read.
             Err(error) if index.is_some() => return Err(error),
             Err(error) => {
@@ -3554,8 +3632,26 @@ fn plan_spool(
             }
         },
     };
-    let indexed = listed.is_some();
-    let mut listed = listed.unwrap_or_default();
+    let indexed = read.is_some();
+    let DiscIndex {
+        files: mut listed,
+        series,
+    } = read.unwrap_or_default();
+    // Each listed file's series in the plan. A file that the index puts in two series counts in the first.
+    let mut series_of = HashMap::new();
+    for (mut info, places) in series {
+        let at = planned.len();
+        info.files = 0;
+        for place in places {
+            if let std::collections::hash_map::Entry::Vacant(free) = series_of.entry(place) {
+                free.insert(at);
+                info.files += 1;
+            }
+        }
+        if info.files > 0 {
+            planned.push(info);
+        }
+    }
     let folders: HashSet<String> = listed
         .values()
         .filter_map(|(inside, _)| inside.parent())
@@ -3579,11 +3675,13 @@ fn plan_spool(
         } else {
             Take::Unkept
         };
+        let series = series_of.get(&key(inside)).copied();
         spool.push(SpoolFile {
             from,
             to,
             take,
             listed,
+            series,
         });
     };
     let (mut pictures, mut rest) = (Vec::new(), Vec::new());
@@ -3642,32 +3740,55 @@ fn plan_spool(
     Ok((dir, spool))
 }
 
-/// What a disc's index lists: each file's place below the disc's top as the index spells it, and what the index says
-/// of the file, by that place in small letters. `name` is the index's own name at the top of `media`. The index is
-/// copied into the import's folder `dir` and read there, so the disc gives it once and in one piece; the copy does
-/// not stay.
-fn disc_index(
-    dir: &Path,
-    media: &Path,
-    name: &std::ffi::OsStr,
-) -> Result<HashMap<String, (PathBuf, crate::media_directory::Reference)>> {
+/// What a disc's index lists (see `disc_index`).
+#[derive(Default)]
+struct DiscIndex {
+    /// Each file's place below the disc's top as the index spells it, and what the index says of the file, by that
+    /// place in small letters.
+    files: HashMap<String, (PathBuf, crate::media_directory::Reference)>,
+    /// The series the index describes, each with its files' places in small letters.
+    series: Vec<(crate::model::PlannedSeries, Vec<String>)>,
+}
+
+/// What a disc's index lists. `name` is the index's own name at the top of `media`. The index is copied into the
+/// import's folder `dir` and read there, so the disc gives it once and in one piece; the copy does not stay.
+fn disc_index(dir: &Path, media: &Path, name: &std::ffi::OsStr) -> Result<DiscIndex> {
     let root = crate::media_directory::MediaRoot::open(media)?;
     let copy = SpoolFile {
         from: root.path().join(name),
         to: dir.join("DICOMDIR"),
         take: Take::Listed(root.clone()),
         listed: None,
+        series: None,
     };
     let read = (|| {
         let (mut allowance, mut block) = (crate::input_guard::MAX_FILE_SIZE, vec![0; 1 << 20]);
         if let Copied::Unreadable(error) = copy_from_disc(&copy, &mut allowance, &mut block)? {
             return Err(error);
         }
-        crate::media_directory::references_in(&root, &copy.to, File::open(&copy.to)?)
+        let mut bytes = Vec::new();
+        File::open(&copy.to)?.read_to_end(&mut bytes)?;
+        crate::media_directory::listing_in(&root, &copy.to, File::open(&copy.to)?, &bytes)
     })();
     let _ = fs::remove_file(&copy.to);
+    let listing = read?;
+    let place = |path: &Path| -> Result<String> {
+        Ok(path
+            .strip_prefix(root.path())?
+            .to_string_lossy()
+            .to_lowercase())
+    };
+    let mut series = Vec::new();
+    for listed in listing.series.unwrap_or_default() {
+        let places = listed
+            .files
+            .iter()
+            .map(|file| place(file))
+            .collect::<Result<_>>()?;
+        series.push((listed.info, places));
+    }
     let mut listed = HashMap::new();
-    for (path, reference) in read? {
+    for (path, reference) in listing.files {
         let inside = path.strip_prefix(root.path())?.to_owned();
         match listed.entry(inside.to_string_lossy().to_lowercase()) {
             std::collections::hash_map::Entry::Occupied(previous) => {
@@ -3682,7 +3803,10 @@ fn disc_index(
             }
         }
     }
-    Ok(listed)
+    Ok(DiscIndex {
+        files: listed,
+        series,
+    })
 }
 
 /// Whether this computer keeps a file under the name a disc gives it: every part of its place below the disc's top
@@ -5877,9 +6001,17 @@ mod tests {
                 ("DICOM\\GONE", "1.2.3.4.15"),
             ],
         );
-        let (mut files, mut media_files, mut noted) = (Vec::new(), HashMap::new(), Vec::new());
-        let (dir, spool) =
-            plan_spool(disc.path(), None, &mut files, &mut media_files, &mut noted).unwrap();
+        let (mut files, mut media_files, mut listed_series, mut noted) =
+            (Vec::new(), HashMap::new(), Vec::new(), Vec::new());
+        let (dir, spool) = plan_spool(
+            disc.path(),
+            None,
+            &mut files,
+            &mut media_files,
+            &mut listed_series,
+            &mut noted,
+        )
+        .unwrap();
         let planned = |file: &SpoolFile| {
             let inside = file.to.strip_prefix(dir.path()).unwrap();
             let take = match file.take {
@@ -5906,7 +6038,8 @@ mod tests {
                 "README.TXT: if DICOM",
             ]
         );
-        assert!(spool.indexed && noted.is_empty());
+        // An index without the links between its records (as this one is written) lists its files and no series.
+        assert!(spool.indexed && noted.is_empty() && listed_series.is_empty());
         // Only the file that the index alone names is held to the index's word; of the others it is kept for telling.
         assert_eq!(media_files.len(), 1);
         let said = |file: &&SpoolFile| file.listed.is_some();
@@ -6130,7 +6263,11 @@ mod tests {
         zip_folder(study.path(), &file);
         for path in [study.path().to_owned(), file] {
             let handed = std::sync::Mutex::new(Vec::new());
-            let sink = |found: Vec<Arc<SourceSeries>>| handed.lock().unwrap().extend(found);
+            let sink = |handed_over: HandOver| {
+                if let HandOver::Series(found) = handed_over {
+                    handed.lock().unwrap().extend(found);
+                }
+            };
             let paths = [path.to_string_lossy().into_owned()];
             let imported = import_with(&paths, Some(&sink)).unwrap();
             let handed = handed.into_inner().unwrap();
@@ -6206,7 +6343,11 @@ mod tests {
             )));
         };
         let handed = std::sync::Mutex::new(Vec::new());
-        let sink = |found: Vec<Arc<SourceSeries>>| handed.lock().unwrap().extend(found);
+        let sink = |handed_over: HandOver| {
+            if let HandOver::Series(found) = handed_over {
+                handed.lock().unwrap().extend(found);
+            }
+        };
         let mut watch = EarlyWatch::new(&files);
         // A is read whole, and one file of B that belongs to the same series: it is not whole yet.
         let in_b = files
@@ -6252,7 +6393,11 @@ mod tests {
         bytes[at + 8] = b'9';
         fs::write(&file, bytes).unwrap();
         let handed = std::sync::Mutex::new(Vec::new());
-        let sink = |found: Vec<Arc<SourceSeries>>| handed.lock().unwrap().extend(found);
+        let sink = |handed_over: HandOver| {
+            if let HandOver::Series(found) = handed_over {
+                handed.lock().unwrap().extend(found);
+            }
+        };
         assert!(import_with(&[file.to_string_lossy().into_owned()], Some(&sink)).is_err());
     }
 
