@@ -41,6 +41,7 @@ Dedicated workers handle catalog changes, volume reads, frames, control calls, t
 | `exportEstimate`, as `export` | Estimated ZIP size and time |
 | `exportCancel`, `{operation}` | `{requested}`; stop that export at its next file |
 | `processCounters` | This process's CPU time and resident memory |
+| `drives`, `{answering}` (Windows only) | `{drives}`: every drive letter in use as `{letter, kind, label}`. `kind` is `removable`, `fixed`, `network` or `disc`. `label` is the volume's name, read only for the letters in `answering` (those the caller has just reached) and empty otherwise |
 | `pictureNext` | Waits up to 20 seconds for a picture. The reply carries its ID and operation in `X-Picture-Id` and `X-Picture-Want`. A probe contains the first 64 KiB. Size and pixel requests carry the full file. An idle poll returns 204. |
 | `pictureAnswer`, `{id, width, height, offset, more}` or `{id, error}` | Main sends dimensions and, for pixels, RGBA in chunks of up to 1 MiB. Each successful chunk returns 204. An incomplete probe requests the full file. |
 

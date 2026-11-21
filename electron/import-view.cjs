@@ -16,7 +16,7 @@ const USER_INPUT = new Set(['mouseDown', 'rawKeyDown', 'keyDown', 'touchStart', 
 const INPUT_MS = 1500;
 const address = value => { const url = new URL(value); return `${url.protocol}//${url.host}${url.pathname}`; };
 
-function createImportView({ app, window: applicationWindow, devUrl, locale, authorize, serve, now = Date.now }) {
+function createImportView({ app, engine, window: applicationWindow, devUrl, locale, authorize, serve, now = Date.now }) {
   const url = devUrl ? new URL('import.html', devUrl).href : 'veacom://import/import.html';
   // A session of its own keeps the window's storage apart from the page's, in development too, where both come from
   // the same development server. It serves only the application's files under veacom://import.
@@ -39,7 +39,7 @@ function createImportView({ app, window: applicationWindow, devUrl, locale, auth
     return current;
   }
   const handle = (channel, fn) => ipcMain.handle(channel, (event, ...args) => fn(validate(event), ...args));
-  handle('importview:places', () => fileBrowser.places(app));
+  handle('importview:places', () => fileBrowser.places(app, engine));
   handle('importview:browse', (_asking, folder) => fileBrowser.browse(folder, fileBrowser.usualPlaces(app)));
   // What a window opened goes to the request that showed it, even if another has replaced it in the meantime.
   handle('importview:open', async (asking, paths) => { finish(asking, await authorize(fileBrowser.chosenPaths(paths, fileBrowser.usualPlaces(app)))); });
