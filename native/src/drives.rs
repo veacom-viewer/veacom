@@ -1,6 +1,7 @@
 //! The PC's drives, for the import window's list of places (electron/file-browser.cjs). Windows only.
 
 use serde::Serialize;
+use std::sync::atomic::{AtomicU32, Ordering};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
@@ -14,6 +15,8 @@ const DRIVE_CDROM: u32 = 5;
 const NAME_UNITS: usize = 261;
 /// How long the names are waited for, together: within main's 1.5 s for the whole answer.
 const NAMES_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+/// The letters whose name is being read, a bit each (A is the lowest).
+static READING: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Serialize)]
 pub struct Drive {
@@ -30,12 +33,14 @@ pub struct Drive {
 /// A volume's name is read from the volume, and that waits on a drive that does not answer. It is read only for the
 /// letters in `answering`, which the caller has just reached; the others are listed without one.
 pub fn list(answering: &[char]) -> Vec<Drive> {
-    list_with(answering, label, NAMES_WAIT)
+    list_with(answering, label, NAMES_WAIT, &READING)
 }
 
-/// `list`, with the names read by `read` and waited for `wait` at most. Each name is read on a thread of its own: a
-/// drive that stops answering holds that thread, not the engine's worker that asked, and its letter is listed without
-/// a name. A thread that cannot be started gives no name either.
+/// `list`, with the names read by `read`, waited for `wait` at most, and the letters being read kept in `reading`.
+/// Each name is read on a thread of its own: a drive that stops answering holds that thread, not the engine's worker
+/// that asked, and its letter is listed without a name. Until that read ends, the drive gets no second one and is
+/// listed without a name again, so a drive holds one thread at most however often the window opens. A thread that
+/// cannot be started gives no name either.
 #[allow(
     clippy::disallowed_methods,
     reason = "a volume's name waits on its drive for as long as the drive takes, which no pool's worker may be held for"
@@ -44,6 +49,7 @@ fn list_with(
     answering: &[char],
     read: fn(char) -> String,
     wait: std::time::Duration,
+    reading: &'static AtomicU32,
 ) -> Vec<Drive> {
     // SAFETY: the call takes no arguments.
     let present = unsafe { GetLogicalDrives() };
@@ -57,11 +63,19 @@ fn list_with(
         .filter(|letter| answering.contains(letter))
         .map(|&letter| {
             let (send, name) = std::sync::mpsc::channel();
-            let _ = std::thread::Builder::new()
-                .name(format!("drive-name-{letter}"))
-                .spawn(move || {
-                    let _ = send.send(read(letter));
-                });
+            let bit = 1_u32 << (u32::from(letter) - u32::from('A'));
+            // A letter already being read starts nothing: `send` goes unused, and its name comes back empty at once.
+            if (reading.fetch_or(bit, Ordering::AcqRel) & bit) == 0 {
+                // Dropped when the read ends, or with the thread's work if the thread cannot be started.
+                let ended = Ended { reading, bit };
+                let _ = std::thread::Builder::new()
+                    .name(format!("drive-name-{letter}"))
+                    .spawn(move || {
+                        let name = read(letter);
+                        drop(ended);
+                        let _ = send.send(name);
+                    });
+            }
             (letter, name)
         })
         .collect();
@@ -78,6 +92,18 @@ fn list_with(
             label: names.remove(&letter).unwrap_or_default(),
         })
         .collect()
+}
+
+/// A letter's read, which clears the letter's bit when it ends.
+struct Ended {
+    reading: &'static AtomicU32,
+    bit: u32,
+}
+
+impl Drop for Ended {
+    fn drop(&mut self) {
+        self.reading.fetch_and(!self.bit, Ordering::AcqRel);
+    }
 }
 
 /// `X:\`, NUL-terminated, for a letter A to Z.
@@ -182,16 +208,66 @@ mod tests {
     #[test]
     fn a_drive_whose_name_does_not_come_in_time_is_listed_without_one_and_the_list_comes_all_the_same()
      {
+        static READING_HERE: AtomicU32 = AtomicU32::new(0);
         fn stalled(_: char) -> String {
             std::thread::sleep(std::time::Duration::from_secs(5));
             "late".to_owned()
         }
         let system = system_letter();
         let started = std::time::Instant::now();
-        let listed = list_with(&[system], stalled, std::time::Duration::from_millis(200));
+        let wait = std::time::Duration::from_millis(200);
+        let listed = list_with(&[system], stalled, wait, &READING_HERE);
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let found = listed.iter().find(|drive| drive.letter == system).unwrap();
         assert_eq!((found.kind, found.label.as_str()), ("fixed", ""));
+    }
+
+    #[test]
+    fn a_drive_whose_name_is_still_being_read_gets_no_second_read_until_that_one_ends() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        static READING_HERE: AtomicU32 = AtomicU32::new(0);
+        static READS: AtomicUsize = AtomicUsize::new(0);
+        static ANSWERING: AtomicBool = AtomicBool::new(false);
+        fn held(_: char) -> String {
+            READS.fetch_add(1, Ordering::SeqCst);
+            while !ANSWERING.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            "named".to_owned()
+        }
+        let system = system_letter();
+        let name = |wait: u64| {
+            let listed = list_with(
+                &[system],
+                held,
+                std::time::Duration::from_millis(wait),
+                &READING_HERE,
+            );
+            listed
+                .into_iter()
+                .find(|drive| drive.letter == system)
+                .unwrap()
+                .label
+        };
+        // The first read outlasts its wait; asked again meanwhile, the drive is listed without a name at once.
+        assert_eq!(name(50), "");
+        let again = std::time::Instant::now();
+        assert_eq!(name(5_000), "");
+        assert!(again.elapsed() < std::time::Duration::from_secs(1));
+
+        // Once that read has ended, the drive is read again.
+        ANSWERING.store(true, Ordering::SeqCst);
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while READING_HERE.load(Ordering::SeqCst) != 0 {
+            assert!(
+                std::time::Instant::now() < until,
+                "the first read did not end"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(READS.load(Ordering::SeqCst), 1);
+        assert_eq!(name(5_000), "named");
+        assert_eq!(READS.load(Ordering::SeqCst), 2);
     }
 
     #[test]
