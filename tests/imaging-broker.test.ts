@@ -56,6 +56,26 @@ describe('main-only imaging broker', () => {
     assert.equal(f.request.mock.callCount(), calls);
     f.broker.dispose();
   });
+  it('gives a disc\'s planned series when asked, and registers their pictures until the import ends', async () => {
+    const f = fixture(), finished = deferred<Response>();
+    const capabilities = await f.broker.authorizeImportPaths(['/selected/disc']);
+    const picture = { id: 'preview:a', dimensions: [2, 2, 1] }, planned = [{ uid: '1.2', files: 4, finished: 1 }];
+    f.request.mock.mockImplementation(async op => op === 'import' ? finished.promise
+      : Response.json({ import: 2, series: [], planned, previews: [{ planned: 0, series: picture }] }));
+    const importing = f.broker.importSelected(capabilities);
+    const result = await f.broker.importEarly(capabilities, 0, { planned: true, previewsAfter: 0 });
+    const request = f.calls()[0][1] as { requestId: string };
+    assert.deepEqual(f.calls()[1], ['importEarly', { after: 0, requestId: request.requestId, planned: true, previewsAfter: 0 }]);
+    assert.deepEqual(result, { import: 2, series: [], planned, previews: [{ planned: 0, series: { ...picture, engineGeneration: 1 } }] });
+    assert.match(f.broker.getPixels({ seriesId: 'preview:a', generation: 1, index: 0 }).url, /^veacom:\/\/app\/_imaging\/frame\//);
+    for (const options of [null, 'yes', { planned: 1 }, { previewsAfter: -1 }, { previewsAfter: 1.5 }]) {
+      await assert.rejects(f.broker.importEarly(capabilities, 0, options), { message: /Invalid request\./ });
+    }
+    finished.resolve(Response.json({ series: [], warnings: [] }));
+    await importing;
+    assert.throws(() => f.broker.requireSeries('preview:a', 1));
+    f.broker.dispose();
+  });
   it('keeps startup and manual import previews scoped to their own requests', async () => {
     const f = fixture(), startup = deferred<Response>(), manual = deferred<Response>();
     const first = await f.broker.authorizeImportPaths(['/startup']), second = await f.broker.authorizeImportPaths(['/manual']);

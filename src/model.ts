@@ -292,6 +292,15 @@ export interface CoreState {
   status: 'starting' | 'ready' | 'restarting' | 'failed' | 'stopping' | 'stopped';
   generation: number; restartCount: number; message?: string;
 }
+/** A series that a disc's DICOMDIR lists, before it is read (the engine's PlannedSeries). */
+export interface PlannedSeries {
+  uid: string; studyUid: string; patientId: string; patientName: string; studyDate: string; description: string; modality: string;
+  seriesNumber: number | null;
+  /** The files the index lists for it, and how many of them the import has finished with. */
+  files: number; finished: number;
+}
+/** A picture for a planned series: the series as made from its middle file alone (the engine's PlannedPreview). */
+export interface PlannedPreview { planned: number; series: Series }
 /** `source`: where the selection came from (usage timings), never its path. */
 export interface ImportResult { series: Series[]; warnings: string[]; warningNotes?: CoreNote[]; source?: 'disk' | 'cd' | 'zip' | 'network'; }
 /** Usage timings (electron/usage.cjs): the user's answer, and whether a collector is configured. */
@@ -362,8 +371,9 @@ export interface DesktopBridge {
   listSeries(): Promise<ImportResult>;
   importSelected(capabilities: string[]): Promise<ImportResult>;
   getProgress(): Promise<{ id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean }>;
-  /** Series this selection's import has already published, from the `after`th on. */
-  importEarly(capabilities: string[], after: number): Promise<{ import: number; series: Series[] }>;
+  /** Series this selection's import has already published, from the `after`th on; with `planned`, also the series a disc's
+   * DICOMDIR lists, and the pictures of those series from the `previewsAfter`th on. */
+  importEarly(capabilities: string[], after: number, options?: { planned: boolean; previewsAfter: number }): Promise<{ import: number; series: Series[]; planned?: PlannedSeries[]; previews?: PlannedPreview[] }>;
   cancelOperation(id?: number): Promise<{ requested: boolean }>;
   /** Stops the DICOM, USB or folder export under way. */
   cancelExport?: () => Promise<void>;

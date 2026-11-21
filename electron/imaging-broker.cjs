@@ -14,6 +14,8 @@ class ImagingBroker {
     Object.assign(this, { engine, realpath, now, devOrigin, beforePixel, afterImport, preparePictures });
     this.imports = new Map(); this.activeImports = new Map(); this.pixels = new Map(); this.series = new Map();
     this.prefetched = new Map();
+    // The pictures registered for each import's disc series (importEarly), by import key.
+    this.pictures = new Map();
     this.epoch = new AbortController();
     this.generation = engine.state().generation;
     this.stateChanged = state => {
@@ -91,7 +93,7 @@ class ImagingBroker {
       this.afterImport?.(paths, result);
       // Where the study came from (disk, disc, archive, network) for usage timings; the path stays here.
       return { ...result, source: classifySource(paths) };
-    } finally { this.activeImports.delete(key); }
+    } finally { this.activeImports.delete(key); this.forgetPictures(key); }
   }
   requireSeries(id, generation) {
     if (typeof id !== 'string' || !id || id.length > 1024 || !Number.isSafeInteger(generation) || generation < 1) throw new Error('Invalid series request.');
@@ -113,16 +115,38 @@ class ImagingBroker {
   }
   async getProgress() { return (await this.requestJson('progress')).value; }
   /** The series this selection's import has published, from the `after`th on (the engine's importEarly).
-   * They are registered like a catalogue's, so their frames can be asked for before the import ends. */
-  async importEarly(capabilities, after) {
+   * They are registered like a catalogue's, so their frames can be asked for before the import ends. With `planned`,
+   * also the series the DICOMDIR of a disc it reads once lists; and the pictures of those series from the
+   * `previewsAfter`th on, each a series of one frame, registered too so that its card can ask for that frame until the
+   * import ends. */
+  async importEarly(capabilities, after, options) {
     if (!Array.isArray(capabilities) || !capabilities.length || capabilities.length > 4096 || capabilities.some(value => typeof value !== 'string')) throw new Error('Invalid request.');
     if (!Number.isSafeInteger(after) || after < 0 || after > 100_000) throw new Error('Invalid request.');
+    if (options !== undefined && (typeof options !== 'object' || options === null)) throw new Error('Invalid request.');
+    const { planned = false, previewsAfter = 0 } = options ?? {};
+    if (typeof planned !== 'boolean' || !Number.isSafeInteger(previewsAfter) || previewsAfter < 0 || previewsAfter > 100_000) throw new Error('Invalid request.');
     const key = importKey(capabilities), requestId = this.activeImports.get(key);
     if (!requestId) return { import: 0, series: [] };
-    const result = await this.requestJson('importEarly', { after, requestId });
+    const query = options === undefined ? { after, requestId } : { after, requestId, planned, previewsAfter };
+    const result = await this.requestJson('importEarly', query);
     // A late preview must not overwrite the final catalogue or revive a failed import.
     if (this.activeImports.get(key) !== requestId) return { import: result.value.import, series: [] };
-    return { import: result.value.import, series: this.catalog({ value: { series: result.value.series }, generation: result.generation }).series };
+    const reply = { import: result.value.import, series: this.catalog({ value: { series: result.value.series }, generation: result.generation }).series };
+    if (Array.isArray(result.value.planned)) reply.planned = result.value.planned;
+    const pictures = Array.isArray(result.value.previews) ? result.value.previews : [];
+    if (pictures.length) {
+      const registered = this.catalog({ value: { series: pictures.map(picture => picture.series) }, generation: result.generation }).series;
+      const ids = this.pictures.get(key) ?? new Set();
+      for (const series of registered) ids.add(series.id);
+      this.pictures.set(key, ids);
+      reply.previews = pictures.map((picture, index) => ({ planned: picture.planned, series: registered[index] }));
+    }
+    return reply;
+  }
+  /** The pictures registered for an import's disc series go when the import ends: the engine serves them no longer. */
+  forgetPictures(key) {
+    for (const id of this.pictures.get(key) ?? []) { this.series.delete(id); this.revokePixels(id); }
+    this.pictures.delete(key);
   }
   /** Cancels the engine job `id` names (from getProgress): what the progress bar showed, not a job begun since. */
   async cancelOperation(id) {

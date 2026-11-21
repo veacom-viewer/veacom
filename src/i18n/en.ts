@@ -844,6 +844,8 @@ export const en = {
   'series.patientId': 'Patient ID',
   'series.studySummary': '{modalities}: {count} series',
   'series.untitled': 'Untitled series',
+  'series.waiting': 'Being read',
+  'series.waitingLabel': '{description}, {modality}, {count} images, being read',
   'series.cardLabel': '{description}{phase}, {modality}, {count} images{warnings}',
   'series.cardWarnings': ', has warnings',
   'series.loading': 'Loading series',

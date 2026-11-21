@@ -8,11 +8,11 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries, type EarlyImport } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame } from './components/SeriesBrowser';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, type WaitingSeries } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
@@ -628,6 +628,8 @@ export default function App() {
   const fusionRequest = useRef(0);
   // Series whose preview could not be made: the series list shows a dash for them.
   const [failedPreviews, setFailedPreviews] = useState<ReadonlySet<string>>(() => new Set());
+  // The series of a disc being read, as its DICOMDIR lists them, with their pictures (importStudies).
+  const [waiting, setWaiting] = useState<WaitingSeries[]>([]);
   // The thick slab's thickness, kept while no slab is shown (as in VEAcom Next, 10 mm to begin with).
   const [slabThickness, setSlabThickness] = useState<number>(DEFAULT_SLAB_THICKNESS);
   const [fusionOpacity, setFusionOpacity] = useState(0.45);
@@ -1109,17 +1111,33 @@ export default function App() {
     // Asked after each wait: the import's own result ends the watch, and so does the app unmounting.
     const stillWatching = () => !earlyWatch.signal.aborted && mounted.current;
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
+    // A disc read once: the series its DICOMDIR lists, each with its picture once its middle image is read (the engine's
+    // importEarly). They are asked for until they come, then about every half second, for how far each one is read.
+    const disc: { cards: WaitingSeries[] } = { cards: [] };
+    const pictureOf = (uid: string) => disc.cards.find(card => card.info.uid === uid)?.preview;
     void (async () => {
-      let after = 0;
+      let after = 0, previewsAfter = 0, polls = 0;
       while (stillWatching()) {
         await new Promise(resolve => setTimeout(resolve, 40));
         if (!stillWatching()) return;
-        let found: Series[];
-        try { found = await importEarly(paths, after); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        let reply: EarlyImport;
+        const planned = !disc.cards.length || polls % 12 === 0;
+        try { reply = await importEarly(paths, after, { planned, previewsAfter }); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        polls += 1;
         if (!stillWatching()) return;
-        after += found.length;
+        const found = reply.series;
+        after += found.length; previewsAfter += reply.previews.length;
+        if (reply.planned || reply.previews.length) {
+          const listed = reply.planned ?? disc.cards.map(card => card.info);
+          const pictures = new Map(reply.previews.map(preview => [preview.planned, preview.series]));
+          disc.cards = listed.map((info, index) => ({ index, info, preview: pictures.get(index) ?? disc.cards[index]?.preview }));
+          setWaiting(disc.cards);
+          // Drawn as any card's picture is. One that fails leaves its card's placeholder until its series is read.
+          for (const picture of pictures.values()) frameCache.get(picture, 0).then(keepThumbnail, () => {});
+        }
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
+        for (const item of images) { const picture = pictureOf(item.uid); if (picture) adoptThumbnail(picture.id, item.id); }
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
         const first = early.size === 0;
@@ -1130,6 +1148,7 @@ export default function App() {
     })();
     return importPaths(paths).then(result => {
       earlyWatch.abort();
+      for (const item of result.series) { const picture = pictureOf(item.uid); if (picture) adoptThumbnail(picture.id, item.id); }
       // A series published early that came out the same keeps its pane, its view and the volume already loading.
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
       const settled = new Set(result.series.filter(same).map(item => item.id));
@@ -1197,6 +1216,11 @@ export default function App() {
     }).finally(() => {
       earlyWatch.abort();
       for (const id of early.keys()) earlySeries.current.delete(id);
+      // The disc's cards go with its import: its series are the list's own now, with the pictures they took.
+      const pictures = disc.cards.flatMap(card => card.preview ? [card.preview.id] : []);
+      for (const id of pictures) forgetThumbnail(id);
+      frameCache.invalidate(pictures);
+      setWaiting([]);
       importCount.current = Math.max(0, importCount.current - 1); setImporting(importCount.current); setBusy(null);
     });
   };
@@ -2689,7 +2713,7 @@ export default function App() {
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews}
+      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>

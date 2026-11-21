@@ -847,6 +847,8 @@ export const tr: Record<keyof typeof en, string> = {
   'series.patientId': 'Hasta no',
   'series.studySummary': '{modalities}: {count} seri',
   'series.untitled': 'Adsız seri',
+  'series.waiting': 'Okunuyor',
+  'series.waitingLabel': '{description}, {modality}, {count} görüntü, okunuyor',
   'series.cardLabel': '{description}{phase}, {modality}, {count} görüntü{warnings}',
   'series.cardWarnings': ', uyarı var',
   'series.loading': 'Seri yükleniyor',
