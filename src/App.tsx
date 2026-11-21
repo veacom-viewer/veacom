@@ -17,6 +17,7 @@ import { SliceBar } from './components/SliceBar';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
+import { holdsFrame } from './ui/discPictures';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
@@ -1205,10 +1206,10 @@ export default function App() {
     // importEarly). They are asked for until they come, then about every half second, for how far each one is read.
     const disc: { paths: string[]; cards: WaitingSeries[]; wanted: string | null } = { paths, cards: [], wanted: null };
     discImport.current = disc;
-    // A series read takes its card's picture only if the picture is of that series (the engine gives none other).
-    const pictureOf = (uid: string) => {
-      const picture = disc.cards.find(card => card.info.uid === uid)?.preview;
-      return picture?.uid === uid ? picture : undefined;
+    // A series read takes its card's picture only if the picture is one of its own images (see holdsFrame).
+    const pictureFor = (item: Series) => {
+      const picture = disc.cards.find(card => card.info.uid === item.uid)?.preview;
+      return picture?.uid === item.uid && holdsFrame(item, picture, thumbnailFrame(picture)) ? picture : undefined;
     };
     void (async () => {
       let after = 0, previewsAfter = 0, polls = 0;
@@ -1232,8 +1233,9 @@ export default function App() {
           const pictures = new Map(reply.previews.map(preview => [preview.planned, preview.series]));
           disc.cards = listed.map((info, index) => ({ index, info, preview: pictures.get(index) ?? disc.cards[index]?.preview }));
           setWaiting(disc.cards);
-          // Drawn as any card's picture is. One that fails leaves its card's placeholder until its series is read.
-          for (const picture of pictures.values()) frameCache.get(picture, 0).then(keepThumbnail, () => {});
+          // Drawn as any card's picture is, from its middle frame (a file of many frames has it there). One that fails
+          // leaves its card's placeholder until its series is read.
+          for (const picture of pictures.values()) frameCache.get(picture, thumbnailFrame(picture)).then(keepThumbnail, () => {});
         }
         // A series handed over before comes again as it grows: one the reader opened from a disc still being read.
         const grown = found.filter(item => early.has(item.id) && early.get(item.id)?.catalogRevision !== item.catalogRevision);
@@ -1244,7 +1246,7 @@ export default function App() {
         }
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
-        for (const item of images) { const picture = pictureOf(item.uid); if (picture) adoptThumbnail(picture.id, item.id); }
+        for (const item of images) { const picture = pictureFor(item); if (picture) adoptThumbnail(picture.id, item.id); }
         // The series the reader opened from its waiting card opens as soon as part of it is read.
         const opened = images.find(item => item.uid === disc.wanted);
         if (opened) disc.wanted = null;
@@ -1259,7 +1261,7 @@ export default function App() {
     })();
     return importPaths(paths).then(result => {
       earlyWatch.abort();
-      for (const item of result.series) { const picture = pictureOf(item.uid); if (picture) adoptThumbnail(picture.id, item.id); }
+      for (const item of result.series) { const picture = pictureFor(item); if (picture) adoptThumbnail(picture.id, item.id); }
       // A series published early that came out the same keeps its pane, its view and the volume already loading.
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
       const settled = new Set(result.series.filter(same).map(item => item.id));
