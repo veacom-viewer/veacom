@@ -12,6 +12,8 @@ use veacom_core::{
     modality_lut, model, note, palette, parallel, patient, pictures, progress, random, rle_guard,
     sampling, source_file, tags, test_dir, window,
 };
+#[cfg(windows)]
+mod drives;
 mod memory;
 mod pipe;
 mod resources;
@@ -279,6 +281,12 @@ fn body<T: DeserializeOwned>(body: Option<Value>) -> ApiResult<T> {
     serde_json::from_value(body.unwrap_or(Value::Null))
         .map_err(|e| ApiError(400, format!("Invalid request: {e}").into()))
 }
+/// The drive letters the import window has just reached: a volume's name is read only for those.
+#[cfg(windows)]
+#[derive(Deserialize)]
+struct DrivesCall {
+    answering: Vec<char>,
+}
 #[derive(Deserialize)]
 struct SeriesRef {
     id: String,
@@ -307,6 +315,11 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
         match call.op.as_str() {
             "health" => ok(&health()),
             "processCounters" => ok(&resources::snapshot()),
+            #[cfg(windows)]
+            "drives" => {
+                let call: DrivesCall = body(call.body)?;
+                ok(&json!({"drives": drives::list(&call.answering)}))
+            }
             "progress" => ok(&progress::snapshot()),
             "pictureNext" => Ok(next_picture(cancelled)),
             "pictureAnswer" => answer_picture(body(call.body)?, request.data()),
@@ -1724,6 +1737,18 @@ mod protocol_tests {
             json!([])
         );
         assert_eq!(engine.json(json!({"op": "processCounters"})).0, 200);
+        #[cfg(windows)]
+        {
+            let (status, listed) = engine.json(json!({"op": "drives", "body": {"answering": []}}));
+            assert_eq!(status, 200);
+            let fixed = |drive: &Value| drive["kind"] == "fixed" && drive["label"] == "";
+            assert!(listed["drives"].as_array().unwrap().iter().any(fixed));
+            assert_eq!(
+                engine.json(json!({"op": "drives"})).0,
+                400,
+                "the letters that answer are not optional"
+            );
+        }
         let (status, length) = engine.json(json!({"op": "measure", "body": {"seriesId": id, "points": [[0, 0, 0], [1, 0, 0]], "kind": "length"}}));
         assert_eq!((status, length["value"].clone()), (200, json!(1.0)));
         assert_eq!(
