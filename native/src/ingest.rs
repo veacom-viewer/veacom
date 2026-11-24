@@ -37,6 +37,9 @@ fn index_readers() -> usize {
     crate::parallel::available(2).min(8)
 }
 
+/// An archive's file this large has the room looked at before it is written (see extract_zip_into).
+#[cfg(windows)]
+const LARGE_ZIP_ENTRY: u64 = 64 * 1024 * 1024;
 /// The room the discs' private copies have to leave free on this computer.
 const SPARE_BYTES: u64 = 1 << 30;
 
@@ -165,6 +168,13 @@ fn disc_removed() -> anyhow::Error {
     anyhow::anyhow!(coded!(
         "import.discRemoved",
         "The disc was removed before all of it was read."
+    ))
+}
+
+fn zip_no_room() -> anyhow::Error {
+    anyhow::anyhow!(coded!(
+        "zip.noRoom",
+        "This computer's disk does not have room for this ZIP's files."
     ))
 }
 
@@ -2751,7 +2761,14 @@ pub fn import_session_from(
                 .and_then(read_once)
         })
         .collect();
-    let discs = discs_read_once(&on_disc, room());
+    let room_then = room();
+    let discs = discs_read_once(&on_disc, room_then);
+    // What the import's discs and archives take of that room, as each is planned: an archive is planned on what the
+    // ones before it leave.
+    let mut taken: u64 = (discs.iter().flatten())
+        .filter(|disc| disc.serial.is_some())
+        .map(|disc| disc.size)
+        .sum();
     let mut files = Vec::new();
     let mut media_files = HashMap::new();
     let mut archives = Vec::new();
@@ -2775,7 +2792,9 @@ pub fn import_session_from(
         }
         let before = files.len();
         let root = if is_zip_file(path) {
-            let (dir, entries) = plan_zip(path)?;
+            let room = room_then.map(|room| room.saturating_sub(taken));
+            let (dir, entries, listed) = plan_zip_within(path, available_archive_bytes(), room)?;
+            taken = taken.saturating_add(listed);
             files.extend(entries.iter().cloned());
             let root = ImageRoot::new(dir.path(), path.file_stem());
             extractions.push((path.to_owned(), dir.path().to_owned(), entries));
@@ -4686,11 +4705,24 @@ fn keep_copy(file: &SpoolFile, same: impl FnOnce() -> bool) -> Result<bool> {
     Ok(false)
 }
 
-/// An archive's extraction folder, made, and the files that will be read from it once extracted. Planned from the
-/// central directory alone, so a slow disc is not read twice: where each entry really goes is the extraction's to
-/// decide, and it checks every entry again (see extract_zip_into). Hidden entries and those in hidden folders are
-/// extracted but not read, as a folder's are never listed.
+/// `plan_zip_within` with the import's limit and this computer's room, as the tests plan an archive.
+#[cfg(test)]
 fn plan_zip(path: &Path) -> Result<(ArchiveTempDir, Vec<PathBuf>)> {
+    plan_zip_within(path, available_archive_bytes(), room()).map(|(dir, entries, _)| (dir, entries))
+}
+
+/// An archive's extraction folder, made, and the files that will be read from it once extracted, for an import that
+/// may extract `most` bytes on a computer whose temporary folder can take `room` more (None where nothing says), with
+/// the bytes the archive lists for its files. Planned from the central directory alone, so a slow disc is not read
+/// twice: where each entry really goes is the extraction's to decide, and it checks every entry again, with what each
+/// really holds (see extract_zip_into). Hidden entries and those in hidden folders are extracted but not read, as a
+/// folder's are never listed. The listed sizes are checked against `most` and `room` before anything is written: a ZIP
+/// too large for the import, or for the room less half of SPARE_BYTES, is refused at once.
+fn plan_zip_within(
+    path: &Path,
+    most: u64,
+    room: Option<u64>,
+) -> Result<(ArchiveTempDir, Vec<PathBuf>, u64)> {
     let archive = zip::ZipArchive::new(File::open(path)?)?;
     if archive.len() > MAX_FILES {
         bail!(coded!(
@@ -4698,12 +4730,29 @@ fn plan_zip(path: &Path) -> Result<(ArchiveTempDir, Vec<PathBuf>)> {
             "ZIP contains too many entries"
         ));
     }
+    let listing = archive.metadata();
+    let mut listed = 0u64;
+    for index in 0..listing.len() {
+        let entry = listing.entry(index)?;
+        if !entry.is_dir() {
+            listed = listed.saturating_add(entry.size());
+        }
+    }
+    if listed > most {
+        bail!(coded!(
+            "zip.tooLarge",
+            "ZIP expanded data exceeds the import limit"
+        ));
+    }
+    if room.is_some_and(|room| listed.saturating_add(SPARE_BYTES / 2) > room) {
+        bail!(zip_no_room());
+    }
     let dir = crate::archive_temp::create("veacom-import-")?;
     let entries = (0..archive.len())
         .filter_map(|index| planned_target(dir.path(), &archive.name_for_index(index)?.ok()?))
         .filter(|target| !hidden_entry(dir.path(), target))
         .collect();
-    Ok((dir, entries))
+    Ok((dir, entries, listed))
 }
 
 /// Where an entry called `name` is expected to land under `dir` ("Seri1/IM1" as dir/Seri1/IM1, in this system's
@@ -4809,6 +4858,10 @@ fn extract_zip_into(
             "ZIP contains too many entries"
         ));
     }
+    // The room is looked at before the first file, then once a second, and before any file large enough to take it.
+    // Only Windows tells it (see `room`).
+    #[cfg(windows)]
+    let mut looked: Option<std::time::Instant> = None;
     for index in 0..archive.len() {
         crate::progress::check()?;
         let mut entry = archive.by_index_with_options(
@@ -4830,6 +4883,18 @@ fn extract_zip_into(
                 "zip.tooLarge",
                 "ZIP expanded data exceeds the import limit"
             ));
+        }
+        // The files leave this computer room: if something else fills its disk meanwhile, the extraction stops. Looked
+        // at once a second at most, so that an archive of many small files is not slowed down, but before every large
+        // file, which could take the room by itself.
+        #[cfg(windows)]
+        if entry.size() >= LARGE_ZIP_ENTRY
+            || looked.is_none_or(|at| at.elapsed() >= std::time::Duration::from_secs(1))
+        {
+            looked = Some(std::time::Instant::now());
+            if room().is_some_and(|room| room < entry.size().saturating_add(SPARE_BYTES / 2)) {
+                bail!(zip_no_room());
+            }
         }
         fs::create_dir_all(target.parent().context("Invalid ZIP path")?)?;
         let mut output = File::options().write(true).create_new(true).open(&target)?;
@@ -6973,6 +7038,45 @@ mod tests {
         let (exact, _) = plan_zip(&file).unwrap();
         extract_zip_into(&file, exact.path(), 8, &mut |_| {}).unwrap();
         assert_eq!(fs::read(exact.path().join("second")).unwrap(), b"1234");
+    }
+
+    #[test]
+    fn a_zip_too_large_for_the_import_or_for_this_computers_room_is_refused_before_anything_is_written()
+     {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let file = temp.path().join("study.zip");
+        let mut zip = zip::ZipWriter::new(File::create(&file).unwrap());
+        zip.add_directory("Seri1/", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        for name in ["Seri1/first", "Seri1/second"] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(b"1234").unwrap();
+        }
+        drop(zip.finish().unwrap());
+        let code = |result: Result<(ArchiveTempDir, Vec<PathBuf>, u64)>| {
+            crate::message::coded(&result.err().unwrap()).map(|note| note.code)
+        };
+        // The files list 8 bytes in all: more than the import may take, or than the room leaves beside its spare.
+        assert_eq!(code(plan_zip_within(&file, 7, None)), Some("zip.tooLarge"));
+        let room = 8 + SPARE_BYTES / 2 - 1;
+        assert_eq!(
+            code(plan_zip_within(&file, 8, Some(room))),
+            Some("zip.noRoom")
+        );
+        // Just enough of both, or a computer that says nothing of its room: planned, and extracted whole.
+        let (dir, planned, listed) = plan_zip_within(&file, 8, Some(room + 1)).unwrap();
+        assert_eq!((planned.len(), listed), (2, 8));
+        drop(dir);
+        // A second archive of the import is planned on the room the first leaves: no room for it.
+        let left = Some(room + 1 - listed);
+        assert_eq!(code(plan_zip_within(&file, 8, left)), Some("zip.noRoom"));
+        let (dir, _, _) = plan_zip_within(&file, 8, None).unwrap();
+        extract_zip_into(&file, dir.path(), 8, &mut |_| {}).unwrap();
+        assert_eq!(
+            fs::read(dir.path().join("Seri1").join("second")).unwrap(),
+            b"1234"
+        );
     }
 
     #[test]

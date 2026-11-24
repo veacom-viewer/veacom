@@ -76,6 +76,7 @@
     "zip.symbolicLink": "ZIP içindeki sembolik bağlantılar kabul edilmez.",
     "zip.entryTooLarge": "ZIP içindeki bir dosya, dosya başına sınırı aşıyor.",
     "zip.tooLarge": "ZIP açıldığında içe aktarma sınırını aşıyor.",
+    "zip.noRoom": "Bu bilgisayarın diskinde bu ZIP'in dosyalarına yer yok.",
     "rar.unsupported": "RAR arşivleri açılamaz. Arşivi çıkarıp klasörü açın.",
     "pictures.browser": "PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.",
 
