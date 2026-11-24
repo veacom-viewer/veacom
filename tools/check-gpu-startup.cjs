@@ -21,8 +21,8 @@ async function main() {
     await ignoreOutsideInput(desktop);
     page.setDefaultTimeout(10_000);
     page.on('pageerror', error => errors.push(error.message));
-    // Install the probe before the viewer can cache a WebGL program or read the driver's completion state.
-    await page.addInitScript(() => {
+    await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.getAttribute('data-ready') === 'true');
+    await page.evaluate(() => {
       const proof = window.__gpuStartup = { hold: true, polls: 0, frames: [] };
       const original = WebGL2RenderingContext.prototype.getProgramParameter;
       WebGL2RenderingContext.prototype.getProgramParameter = function (program, parameter) {
@@ -31,8 +31,6 @@ async function main() {
       };
       document.addEventListener('veacom:frame', event => proof.frames.push(event.detail.seriesId));
     });
-    await page.reload();
-    await page.waitForFunction(() => document.querySelector('[data-testid="veacom-app"]')?.getAttribute('data-ready') === 'true');
     await privileged.importPaths(desktop, page, [path.resolve(process.argv[2])]);
     try {
       await page.waitForFunction(() => window.__gpuStartup.polls > 0);
