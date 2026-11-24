@@ -61,7 +61,7 @@ import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
 import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
-import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
+import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, overlayFor, SPECT_LOOK, studyOverlay } from './imaging/fusion';
 import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
 import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
 import { bestCounterpart } from './arrangements/counterpart';
@@ -1755,13 +1755,14 @@ export default function App() {
       if (!quiet || !own) say(own ? 'notice.fusionStarted' : 'notice.fusionNoSuv', 'info', { pet: seriesName(pet), ct: seriesName(ct) }, true);
     }).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
   };
-  /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET, over the CT acquired with it. */
-  const fuseInActive = (pet: Series) => {
+  /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET (or `onItsCt`), over the CT
+   * acquired with it. */
+  const fuseInActive = (pet: Series, onItsCt = false) => {
     const slotId = activeIdRef.current, slot = slotsRef.current.find(item => item.id === slotId);
     const shown = slot?.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
     if (!shown) return;
     // The fusion arrangement's roles (src/arrangements/builtin.ts): the CT acquired with the PET.
-    const base = fusesAsOverlay(shown) ? findRole(FUSION.roles.ct, seriesRef.current, pet) : shown;
+    const base = onItsCt || fusesAsOverlay(shown) ? findRole(FUSION.roles.ct, seriesRef.current, pet) : shown;
     if (!base) { say('notice.fusionNoCt', 'info', undefined, true); return; }
     if (base.id !== shown.id) assignSeries(slotId, base);
     // Asked for in this pane: it shows the fusion even where an arrangement kept it plain.
@@ -1789,9 +1790,12 @@ export default function App() {
       fusePet(before, after, target.id);
       return;
     }
-    const pet = fusesAsOverlay(shown) ? shown : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    // A PET shown is fused itself, or the corrected one of its frame for a NAC one; a series shown with none drawn over it
+    // (a CT scout, which is no volume) gives way to the study's own PET, over the CT acquired with it.
+    const own = fusesAsOverlay(shown) ? overlayFor(shown, seriesRef.current) : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    const pet = own ?? studyOverlay(shown, seriesRef.current);
     if (!pet) { say('notice.fusionNoPet', 'info', undefined, true); return; }
-    fuseInActive(pet);
+    fuseInActive(pet, !own);
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
