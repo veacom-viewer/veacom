@@ -1,9 +1,9 @@
-import { petStorageKeys, previousMeasurements, reconstructedSeriesDigest, keptAnnotations, mergeRestored, seriesRecord } from '../src/imaging/usePetStudies';
+import { movedForRestoration, petStorageKeys, previousMeasurements, reconstructedSeriesDigest, keptAnnotations, mergeRestored, seriesRecord } from '../src/imaging/usePetStudies';
 import { sphereOf } from '../src/imaging/voi';
 import type { Annotation, Series, Volume } from '../src/model';
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { patientDigest, priorRecord, readPetStudies, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withSeriesMoved, withStudyGlucose, type PetSeriesRecord } from '../src/domain/petStudies';
+import { patientDigest, priorRecord, readPetStudies, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withSeriesMoved, withStudyGlucose, type PetSeriesRecord, type PetStudyRecords } from '../src/domain/petStudies';
 
 const study = 'a'.repeat(64), series = 'b'.repeat(64), other = 'c'.repeat(64);
 const liver: PetSeriesRecord = { references: { liver: { center: [-80, -10, -218], radius: 15 } } };
@@ -53,6 +53,50 @@ describe('PET study records kept on this computer', () => {
     // A series-UID-only record there is offered for the reader to confirm, as other earlier ones are.
     const uid = await uidDigest(pet.uid);
     assert.deepEqual(previousMeasurements(withPetSeries({}, scopedStudy, uid, liver, 0), key), { study: scopedStudy, series: uid });
+  });
+
+  const joinedPet = { id: 'joined-reconstruction', studyScopedPetId: 'scoped-reconstruction', studyScopedPatientKey: 'e'.repeat(64), uid: '1.2.3.4',
+    studyUid: '1.2.3', patientId: 'P1', patientName: 'SENTETIK^HASTA', patientKey: 'f'.repeat(64), studyDate: '20000101' } as Series;
+
+  it('takes in what a study\'s own key kept once: cleared under the joined key, it does not come back', async () => {
+    const key = await petStorageKeys(joinedPet), from = { study: key.scopedStudy!, series: key.scopedSeries! };
+    const old: PetSeriesRecord = { ...liver, lesions: [{ name: 'L1', center: [0, 0, 0], radius: 5 }], limitedView: true };
+    const own: PetSeriesRecord = { references: { liver: { center: [-70, -10, -200], radius: 15 } } };
+    const earlier = withStudyGlucose(withPetSeries({}, from.study, from.series, old, 1), from.study, 6, 1);
+    // The joined key keeps measurements of its own: they stay, and the study's own key is emptied.
+    const moved = withSeriesMoved(withPetSeries(earlier, key.study, key.series, own, 2, key), from, key, 3, key);
+    assert.deepEqual(moved[key.study].series[key.series], own);
+    assert.equal(moved[key.study].glucose, 6);
+    assert.equal(moved[from.study], undefined);
+    // Cleared there, and the study opened again: nothing comes back.
+    const cleared = withPetSeries(moved, key.study, key.series, null, 4, key);
+    assert.equal(withSeriesMoved(cleared, from, key, 5, key)[key.study]?.series[key.series], undefined);
+    // Where the joined key keeps only the series' acquisition, the measurements join it.
+    const acquisition = { uptakeSeconds: 3600, scannerModel: 'SYNTHETIC' };
+    const joined = withSeriesMoved(withPetSeries(earlier, key.study, key.series, { references: {}, acquisition }, 2, key), from, key, 3, key);
+    assert.deepEqual(joined[key.study].series[key.series], { ...old, acquisition });
+    assert.equal(joined[from.study], undefined);
+  });
+
+  it('keeps the limit on kept studies once the moves are done, and moves nothing it cannot write', async () => {
+    const one = await petStorageKeys(joinedPet), two = await petStorageKeys({ ...joinedPet, id: 'joined-second', studyScopedPetId: 'scoped-second' });
+    // 299 other studies, saved after the one whose two series move: 300 in all.
+    let records: PetStudyRecords = {};
+    for (let index = 1; index < 300; index++) records = withPetSeries(records, index.toString(16).padStart(64, '0'), series, liver, 10 + index, {}, Infinity);
+    records = withPetSeries(records, one.scopedStudy!, one.scopedSeries!, liver, 1, {}, Infinity);
+    records = withPetSeries(records, two.scopedStudy!, two.scopedSeries!, liver, 1, {}, Infinity);
+    assert.equal(Object.keys(records).length, 300);
+    // Between the two moves there are 301 studies; after them, 300 again, and no other study has gone.
+    const written: PetStudyRecords[] = [];
+    const moved = movedForRestoration(records, [one, two], next => { written.push(next); return true; }, 500)!;
+    assert.equal(Object.keys(moved).length, 300);
+    assert.equal(Object.keys(records).filter(study => study !== one.scopedStudy).every(study => Object.hasOwn(moved, study)), true);
+    assert.deepEqual(Object.keys(moved[one.study].series).sort(), [one.series, two.series].sort());
+    assert.deepEqual(written, [moved]);
+    // A write that fails leaves the moves to the next time: nothing is put back from them.
+    assert.equal(movedForRestoration(records, [one, two], () => false, 500), null);
+    // With nothing to move, nothing is written.
+    assert.equal(movedForRestoration(records, [{ ...one, scopedStudy: undefined }], () => assert.fail('nothing to write'), 500), records);
   });
 
   it('stores each reconstructed phase separately and restores a 30 mm liver reference', async () => {

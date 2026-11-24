@@ -3,8 +3,8 @@
 // saved only after whatever was kept for it has been put back, so the first render after an import cannot overwrite it.
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { Annotation, Series, Volume } from '../model';
-import { patientDigest, PET_STUDIES_STORAGE, priorRecord, readPetStudies, REFERENCE_ROLES, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withSeriesMoved,
-  withStudyGlucose, type PetSeriesRecord, type PetStudyRecords, type StoredLesion } from '../domain/petStudies';
+import { patientDigest, PET_STUDIES_STORAGE, priorRecord, readPetStudies, REFERENCE_ROLES, sameSeriesRecord, storedAcquisition, uidDigest, withinStudyLimit, withPetSeries,
+  withSeriesMoved, withStudyGlucose, type PetSeriesRecord, type PetStudyRecords, type StoredLesion } from '../domain/petStudies';
 import { sliceAtWorld } from './geometry';
 import { isLesion, lesionValues, nameLesions, seriesRatios } from './lesions';
 import { comparisonTracer } from './petTracer';
@@ -56,6 +56,20 @@ export function previousMeasurements(records: PetStudyRecords, key: Keys) {
     const record = keptRecord(records, study, series);
     return record && (Object.keys(record.references).length || record.lesions?.length);
   });
+}
+
+/** The records the series of `found` are put back from: `stored`, with what builds before IDs without an issuer were
+ * joined across studies kept under a study's own key moved to the joined key, and written with `write`. The limit on
+ * kept studies is applied once, to what the moves leave, so that no study goes for a step between them. Null when the
+ * moves cannot be written: they are left to the next time, and nothing is put back from them meanwhile. */
+export function movedForRestoration(stored: PetStudyRecords, found: readonly Keys[], write: (records: PetStudyRecords) => boolean, now: number): PetStudyRecords | null {
+  let records = stored;
+  for (const own of found) {
+    if (own.scopedStudy && own.scopedSeries) records = withSeriesMoved(records, { study: own.scopedStudy, series: own.scopedSeries }, own, now, own, Infinity);
+  }
+  if (records === stored) return stored;
+  records = withinStudyLimit(records);
+  return write(records) ? records : null;
 }
 
 /** What a series' measurements keep: its reference spheres, and its lesions with their values (from `volume`, the
@@ -135,11 +149,8 @@ export function usePetRecords(series: readonly Series[], setAnnotations: Dispatc
       if (!stored) { setSaveFailed(true); return; }
       // Builds before IDs without an issuer were joined across studies kept a series under its study's own key: this
       // very study, with the name, ID and birth date as written, so what they kept moves here unasked.
-      let records = stored;
-      for (const { keys: own } of found) {
-        if (own.scopedStudy && own.scopedSeries) records = withSeriesMoved(records, { study: own.scopedStudy, series: own.scopedSeries }, own, Date.now(), own);
-      }
-      if (records !== stored && !writeRecords(records)) setSaveFailed(true);
+      const records = movedForRestoration(stored, found.map(item => item.keys), writeRecords, Date.now());
+      if (!records) { setSaveFailed(true); return; }
       const nextKeys = new Map(keys);
       for (const { item, keys: own } of found) {
         const record = keptRecord(records, own.study, own.series);

@@ -161,24 +161,40 @@ export function withStudyGlucose(records: PetStudyRecords, study: string, glucos
   return withStudy({ ...records }, study, { ...records[study]?.series }, glucose ?? undefined, now, info, limit);
 }
 
+/** Whether a series record holds measurements the reader made: reference spheres or lesions. */
+const measured = (record: PetSeriesRecord) => !!(record.lesions?.length || Object.keys(record.references).length);
+
 /** The records with what was kept for one series at `from` moved to `to`, with its study's typed glucose, and the
- * patient and date of `info` set; what `to` already keeps stays. */
+ * patient and date of `info` set, keeping at most `limit` studies. What `to` already keeps stays: measurements of its
+ * own, and its study's glucose. Where it keeps no measurements (its acquisition at most), those of `from` join it.
+ * `from` is emptied either way, so that nothing it kept comes back once `to` is cleared. */
 export function withSeriesMoved(records: PetStudyRecords, from: { study: string; series: string }, to: { study: string; series: string },
-  now: number, info: { patient?: string; date?: string } = {}): PetStudyRecords {
+  now: number, info: { patient?: string; date?: string } = {}, limit = PET_STUDIES_LIMIT): PetStudyRecords {
   const earlier = Object.hasOwn(records, from.study) ? records[from.study] : undefined;
-  if (!earlier) return records;
+  if (!earlier || (from.study === to.study && from.series === to.series)) return records;
   let next = records;
   const record = Object.hasOwn(earlier.series, from.series) ? earlier.series[from.series] : undefined;
-  const taken = Object.hasOwn(records, to.study) && Object.hasOwn(records[to.study].series, to.series);
-  if (record && !taken) {
-    next = withPetSeries(next, from.study, from.series, null, now);
-    next = withPetSeries(next, to.study, to.series, record, now, info);
+  if (record) {
+    const kept = Object.hasOwn(records, to.study) && Object.hasOwn(records[to.study].series, to.series) ? records[to.study].series[to.series] : undefined;
+    next = withPetSeries(next, from.study, from.series, null, now, {}, limit);
+    if (!kept || !measured(kept)) {
+      const joined: PetSeriesRecord = kept ? { ...record, ...(kept.acquisition ? { acquisition: kept.acquisition } : {}), ...(kept.limitedView ? { limitedView: true } : {}) } : record;
+      next = withPetSeries(next, to.study, to.series, joined, now, info, limit);
+    }
   }
-  if (earlier.glucose !== undefined && next[to.study]?.glucose === undefined) {
-    next = withStudyGlucose(next, from.study, null, now);
-    next = withStudyGlucose(next, to.study, earlier.glucose, now, info);
+  if (earlier.glucose !== undefined && from.study !== to.study) {
+    const own = next[to.study]?.glucose;
+    next = withStudyGlucose(next, from.study, null, now, {}, limit);
+    if (own === undefined) next = withStudyGlucose(next, to.study, earlier.glucose, now, info, limit);
   }
   return next;
+}
+
+/** The records with at most `limit` studies: the most recently saved. */
+export function withinStudyLimit(records: PetStudyRecords, limit = PET_STUDIES_LIMIT): PetStudyRecords {
+  const studies = Object.entries(records);
+  if (studies.length <= limit) return records;
+  return Object.fromEntries(studies.sort((a, b) => b[1].savedAt - a[1].savedAt).slice(0, limit));
 }
 
 /** `next` with a study's series and typed glucose, its patient and date set; the study goes when it keeps nothing. */
@@ -188,9 +204,7 @@ function withStudy(next: PetStudyRecords, study: string, entries: Record<string,
     const patient = Object.hasOwn(info, 'patient') ? info.patient : next[study]?.patient, date = info.date && DATE.test(info.date) ? info.date : next[study]?.date;
     next[study] = { savedAt: now, series: entries, ...(patient ? { patient } : {}), ...(date ? { date } : {}), ...(glucose !== undefined ? { glucose } : {}) };
   } else delete next[study];
-  const studies = Object.entries(next);
-  if (studies.length <= limit) return next;
-  return Object.fromEntries(studies.sort((a, b) => b[1].savedAt - a[1].savedAt).slice(0, limit));
+  return withinStudyLimit(next, limit);
 }
 
 /** Whether two series records hold the same spheres, lesions and values. */
