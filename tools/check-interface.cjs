@@ -24,7 +24,46 @@ async function main() {
   const settle = () => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   const active = () => page.evaluate(() => { const e = document.activeElement; return e?.dataset.testid || e?.getAttribute('aria-label') || e?.getAttribute('role') || e?.tagName; });
   const slice = () => page.evaluate(() => window.__VEACOM_TEST__.state().view.slice);
-  const size = (width, height) => desktop.evaluate(({ BrowserWindow }, [w, h]) => BrowserWindow.getAllWindows()[0].setContentSize(w, h), [width, height]);
+  // A resize settles in three steps, each at its own time (traced frame by frame on CI's Linux and Windows runners): the
+  // viewport takes the new size; the window controls overlay reports the room left for the caption buttons
+  // (env(titlebar-area-*), the toolbar's padding), on Linux in a second geometrychange 5 to 50 ms after the viewport in
+  // the traces; and the toolbar fits its items to its new content width, a render after its ResizeObserver. Between the
+  // last two the right-hand tools stand where the caption buttons go, so whatever measures the layout waits for all three.
+  const layoutNow = () => page.evaluate(() => {
+    const overlay = navigator.windowControlsOverlay?.visible ? navigator.windowControlsOverlay.getTitlebarAreaRect() : null;
+    const bar = document.querySelector('.toolbar[role="toolbar"]:not(.toolbar-second)'), style = bar && getComputedStyle(bar);
+    return { viewport: [innerWidth, innerHeight], ratio: devicePixelRatio,
+      overlay: overlay && { x: overlay.x, width: overlay.width, right: innerWidth - overlay.x - overlay.width },
+      fitted: bar ? Number(bar.dataset.fittedWidth) : null, content: bar ? bar.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) : null };
+  });
+  // The room the caption buttons take on the right, in device pixels, from the first settled layout: some on Windows and
+  // Linux, none on macOS (its traffic lights are on the left). Until it is known, only that rule. The overlay's
+  // rectangle is in whole CSS pixels, so at 150 % zoom its edge can miss by a pixel.
+  let captions = null;
+  const overlaySettled = ({ overlay, ratio }) => !overlay || (captions === null
+    ? (process.platform === 'darwin' ? Math.abs(overlay.right) <= 2 : overlay.right > 2)
+    : Math.abs(overlay.right - captions / ratio) <= 1.5);
+  const settledLayout = async viewport => {
+    for (const started = Date.now(); ;) {
+      const now = await layoutNow();
+      // The toolbar's content width has a fraction at zoom (its padding comes from 100vw), which can change with no
+      // resize of its content box, so the fit counts to within a pixel. The transient it waits out is about 113 px.
+      if ((!viewport || (now.viewport[0] === viewport[0] && now.viewport[1] === viewport[1])) && overlaySettled(now)
+        && now.fitted !== null && Math.abs(now.fitted - now.content) < 1) {
+        if (captions === null && now.overlay) captions = now.overlay.right * now.ratio;
+        return now;
+      }
+      if (Date.now() - started > 10_000) throw new Error(`The window and toolbar did not settle${viewport ? ` at ${viewport.join(' × ')}` : ''}: ${JSON.stringify({ ...now, captions })}`);
+      await settle();
+    }
+  };
+  // The size the window took (an operating system may hold it to the screen), once laid out at it. Only at zoom 100 %,
+  // where the window's content size in device-independent pixels is the viewport in CSS pixels.
+  const size = async (width, height) => settledLayout(await desktop.evaluate(({ BrowserWindow }, [w, h]) => {
+    const window = BrowserWindow.getAllWindows()[0];
+    window.setContentSize(w, h);
+    return window.getContentSize();
+  }, [width, height]));
   const unreachable = () => page.evaluate(() => [...document.querySelectorAll('button, input, select, [role="tab"]')].filter(element => {
     const r = element.getBoundingClientRect(), s = getComputedStyle(element);
     if (!r.width || !r.height || s.visibility === 'hidden') return false;
@@ -685,10 +724,10 @@ async function main() {
     await slider.press('Home'); await waitPosition(1);
     await page.mouse.move(x, thumb.y + thumb.height / 2); await page.mouse.down();
     await page.mouse.move(x, rail.y + rail.height - 1); await page.mouse.up(); await waitPosition(max);
-    await size(1280, 700); await settle();
+    await size(1280, 700);
     const shorterRail = await track.boundingBox(), last = await handle.boundingBox();
     assert(Math.abs(last.y + last.height - shorterRail.y - shorterRail.height) < 1, 'Last slice stays at the bottom after a resize.');
-    await size(1280, 800); await settle();
+    await size(1280, 800);
     await page.evaluate(value => window.__VEACOM_TEST__.setView({ slice: value }), originalSlice);
     await page.waitForFunction(value => window.__VEACOM_TEST__.state().view.slice === value, originalSlice);
     check('Slice bar pages, drags to the last slice, and follows pane resizing');
@@ -737,10 +776,27 @@ async function main() {
     }), 'The app writes pictures to a clipboard in memory.');
     const copies = () => desktop.evaluate(() => globalThis.veacomCheckPictures.length);
     const imagePane = page.locator('.viewport-cell.is-active [data-testid="dicom-viewport"]');
-    // A notice takes room above the images: each copy is made with none showing, so the copies are of one layout.
+    // A notice takes room above the images: each copy is made with none showing, so the copies are of one layout. When
+    // the notice goes the panes grow back at once, but each image and its overlay are drawn again for the new size a
+    // frame or more later (Viewport's measurePane). A copy in between is the old frame stretched, a pixel off at the
+    // edges and resampled, so the copy waits until every pane is drawn at the size it shows.
+    const panesNow = () => page.evaluate(() => [...document.querySelectorAll('.viewport-cell')].map(cell => {
+      const image = cell.querySelector('canvas[data-renderer]'), overlay = cell.querySelector('svg[data-testid="annotation-overlay"]');
+      if (!image || !overlay) return { drawn: true };
+      const shown = image.getBoundingClientRect(), box = overlay.getBoundingClientRect(), view = overlay.viewBox.baseVal;
+      const want = [Math.max(1, Math.round(shown.width * devicePixelRatio)), Math.max(1, Math.round(shown.height * devicePixelRatio))];
+      return { drawn: image.width === want[0] && image.height === want[1] && Math.abs(view.width - box.width) < 0.5 && Math.abs(view.height - box.height) < 0.5,
+        canvas: [image.width, image.height], want, viewBox: [view.width, view.height], box: [box.width, box.height] };
+    }));
     const noNotice = async () => {
       if (await page.getByTestId('notice').count()) await page.getByTestId('notice-dismiss').click();
       await page.getByTestId('notice').waitFor({ state: 'detached' });
+      for (const started = Date.now(); ;) {
+        const panes = await panesNow();
+        if (panes.every(pane => pane.drawn)) return;
+        if (Date.now() - started > 10_000) throw new Error(`The panes were not drawn again at their size: ${JSON.stringify(panes)}`);
+        await settle();
+      }
     };
     const copy = async (keys, said) => {
       const before = await copies();
@@ -846,7 +902,7 @@ async function main() {
       await dialogPlacement(() => page.keyboard.press('F1'), 'dialog.shortcuts-dialog', () => page.keyboard.press('Escape')),
       await dialogPlacement(() => page.keyboard.press('ControlOrMeta+Shift+E'), '.export-dialog', () => page.getByTestId('export-close').click()),
     ];
-    await size(900, 640); await settle();
+    await size(900, 640);
     assert.deepEqual(await unreachable(), [], 'Controls cut off at 900 × 640.');
     // The More arrow follows the last tool still shown on the left, where the folded tools come from, not the right-hand
     // tools at the window's edge; those keep their place at the right.
@@ -881,16 +937,16 @@ async function main() {
     await size(1280, 800);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1.5));
     await page.waitForFunction(() => innerWidth <= 854);
-    await settle();
+    await settledLayout();
     assert.deepEqual(await unreachable(), [], 'Controls cut off at 150 % zoom.');
     const dialogsAt150 = await dialogsClear();
     // 200 % is best effort (not a product target): reported, not asserted.
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(2));
     await page.waitForFunction(() => innerWidth <= 641);
-    await settle();
+    const settledAt200 = await settledLayout().then(() => true, error => error.message);
     const at200 = await unreachable();
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.setZoomFactor(1));
-    check('900 × 640 and 150 % zoom keep controls reachable; dialogs stay below the drag strip', { cutOffAt200: at200, dialogsAt900, dialogsAt150 });
+    check('900 × 640 and 150 % zoom keep controls reachable; dialogs stay below the drag strip', { cutOffAt200: at200, settledAt200, dialogsAt900, dialogsAt150 });
 
     // The assessment is for MR: a generated MR comes in through the real menu (the native dialog answers with its
     // folder). Letters typed in the assessment stay out of the image, the inspector can come in front of it without

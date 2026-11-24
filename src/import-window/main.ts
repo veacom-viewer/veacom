@@ -6,6 +6,7 @@
 // (tests/import-window.test.ts), so a compromised dependency of the application cannot drive it either.
 import { isLocale, setLocale, t, type MessageKey } from '../i18n';
 import { icon, type IconName } from './icons';
+import { filesText } from './filesText';
 import '../fonts.css';
 import '../theme.css';
 import '../styles.css';
@@ -146,7 +147,10 @@ function renderPath() {
   const isPinned = Boolean(here && pinned.includes(here.path));
   pathRow.replaceChildren(
     button({ className: 'icon-button', 'data-action': 'import-up', 'aria-label': t('import.up'), disabled: !here?.parent }, () => { if (here?.parent) void go(here.parent); }, icon('arrowUp', 16)),
-    h('span', { className: 'import-current', title: here?.path }, here?.path ?? '…'),
+    // Cut at its start (src/styles.css), the path is read left to right, each folder's name on its own: a drive's root
+    // is "E:\", not "\:E", and a name in a right-to-left script stays after the folder it is in.
+    h('span', { className: 'import-current', title: here?.path }, h('bdi', { dir: 'ltr' },
+      ...(here ? here.path.split(/([\\/])/).map((part, index) => index % 2 ? part : part && h('bdi', {}, part)) : ['…']))),
     button({ className: 'icon-button', 'data-action': 'import-pin', 'aria-pressed': String(isPinned), 'aria-label': isPinned ? t('import.unpinHere') : t('import.pinHere'), disabled: !here },
       togglePin, icon(isPinned ? 'pinOff' : 'pin', 16)));
 }
@@ -169,7 +173,7 @@ function renderFolder() {
   errorLine.textContent = error;
   list.replaceChildren(...(folder?.items ?? []).map(row), ...(folder && !folder.items.length ? [h('li', { className: 'import-none' }, t('import.noFolders'))] : []));
   filesLine.hidden = !folder;
-  filesLine.textContent = folder ? `${folder.dicomdir ? t('import.dicomdir', { count: folder.files }) : t('import.files', { count: folder.files })}${folder.truncated ? ` · ${t('import.truncated')}` : ''}` : '';
+  filesLine.textContent = folder ? `${filesText(folder.files, folder.dicomdir)}${folder.truncated ? ` · ${t('import.truncated')}` : ''}` : '';
 }
 
 function renderFooter() {

@@ -14,6 +14,18 @@ function unquoted(text) {
 }
 
 /**
+ * `text` as an absolute path, read from `cwd`. On Windows a path can name a drive and no folder on it (`C:scan`):
+ * that is read from `cwd` where `cwd` is on that drive, and from the drive's root otherwise. Node would read it from
+ * the folder this process has on that drive, which says nothing of the launch: VEAcom works from its own folder
+ * (main.cjs), and a later launch's arguments come from another process.
+ */
+function absolute(cwd, text) {
+  const drive = process.platform === 'win32' ? /^[A-Za-z]:(?![\\/])/.exec(text) : null;
+  if (drive && drive[0].toUpperCase() !== cwd.slice(0, 2).toUpperCase()) return path.resolve(`${drive[0]}\\`, text.slice(2));
+  return path.resolve(cwd, text);
+}
+
+/**
  * The paths a launch names, absolute, in the order given and without repeats.
  * - `argv`: the launch's arguments, the program first (`process.argv`, or a second launch's `argv`).
  * - `packaged`: an installed app; only then are bare arguments read as paths.
@@ -34,7 +46,7 @@ function launchPaths(argv, { packaged = false, cwd = process.cwd(), isFile = () 
   for (const given of named) {
     const text = unquoted(given);
     if (!text) continue;
-    let resolved = path.resolve(cwd, text);
+    let resolved = absolute(cwd, text);
     if (path.basename(resolved).toUpperCase() === 'DICOMDIR' && isFile(resolved)) resolved = path.dirname(resolved);
     if (!paths.includes(resolved)) paths.push(resolved);
   }

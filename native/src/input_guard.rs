@@ -19,7 +19,7 @@ use std::{
 
 pub(crate) const MAX_META: u64 = 32 * 1024 * 1024;
 const MAX_VALUE: u64 = 1024 * 1024;
-const MAX_FILE_META: u64 = 64 * 1024;
+pub(crate) const MAX_FILE_META: u64 = 64 * 1024;
 /// In WebAssembly everything shares 4 GB, so one file's pixel data may take a quarter of it there.
 const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") {
     1024 * 1024 * 1024
@@ -53,7 +53,6 @@ impl<T: Read + Seek> ReadSeek for T {}
 enum Source {
     Native {
         reader: Box<dyn ReadSeek>,
-        base: u64,
         length: u64,
     },
     Compressed(Box<dyn Read>),
@@ -162,19 +161,19 @@ impl Seek for GuardRead {
         if target < current || target > MAX_DATA {
             return Err(io::Error::other("DICOM value exceeds the input limit"));
         }
-        if let Source::Native {
-            reader,
-            base,
-            length,
-        } = &mut self.source
-        {
+        if let Source::Native { reader, length } = &mut self.source {
             if target > *length {
                 return Err(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "DICOM value extends beyond the file",
                 ));
             }
-            reader.seek(SeekFrom::Start(*base + target))?;
+            // The reader stands at `current`: every read of it goes through this guard. A step forward from there
+            // keeps what the reader has buffered, where a seek to a place throws it away: the scan skips most values,
+            // and each skip would otherwise send the next read back to the file for bytes it had just read.
+            let step = i64::try_from(target - current)
+                .map_err(|_| io::Error::other("Invalid DICOM seek"))?;
+            reader.seek_relative(step)?;
             self.position.set(target);
         } else {
             let mut scratch = [0; 8192];
@@ -501,7 +500,6 @@ fn inspect_stream(
         Codec::Dataset(None) => bail!("Unsupported encoded DICOM dataset"),
         _ => Source::Native {
             reader: Box::new(reader),
-            base: data_start,
             length: file_length - data_start,
         },
     };
@@ -1412,5 +1410,51 @@ mod tests {
                     .contains("nesting exceeds 32")
             );
         }
+    }
+
+    /// A source that counts the reads that reach it. On a disc or a network drive each one is a trip to the device,
+    /// and the engine checks around each that the file has not changed (source_file.rs).
+    struct Counted {
+        bytes: io::Cursor<Vec<u8>>,
+        reads: Rc<Cell<usize>>,
+    }
+    impl Read for Counted {
+        fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
+            self.reads.set(self.reads.get() + 1);
+            self.bytes.read(output)
+        }
+    }
+    impl Seek for Counted {
+        fn seek(&mut self, to: SeekFrom) -> io::Result<u64> {
+            self.bytes.seek(to)
+        }
+    }
+
+    #[test]
+    fn a_header_of_many_small_values_is_read_a_buffer_at_a_time_not_a_value_at_a_time() {
+        // 600 short values, 19 KiB of header: the scan skips each of them.
+        let mut dataset = Vec::new();
+        for index in 0..600 {
+            dataset.extend(element(
+                Tag(0x11, 0x1000 + index),
+                b"LO",
+                b"a value of some length  ",
+            ));
+        }
+        dataset.extend(image("1", &[1, 0]));
+        let bytes = file_bytes(&dataset, false, true);
+        let (length, reads) = (bytes.len(), Rc::new(Cell::new(0)));
+        let source = Counted {
+            bytes: io::Cursor::new(bytes),
+            reads: reads.clone(),
+        };
+        assert_eq!(inspect_reader(source, length as u64).unwrap().frames, 1);
+        // Three buffers of 8 KiB, a read for each value of the file meta group (the engine holds those bytes in memory)
+        // and one that finds the file's end: 9, where a read for every value would be over 600.
+        assert!(
+            reads.get() < 20,
+            "{} reads of a file of {length} bytes",
+            reads.get()
+        );
     }
 }

@@ -105,7 +105,7 @@ async function main() {
     await screenshot('after-measurement.png');
 
     // The MPR menu: the plane the CT was acquired in shows its own slices, and the other planes are reconstructions.
-    const planeItems = page.locator('[role="menu"] [data-action="menu-option"]');
+    const planeItems = page.locator('[role="menu"] [data-action^="plane-"]');
     await page.getByTestId('tool-mpr').click();
     assert.equal(await planeItems.count(), 3);
     assert.equal(await page.locator('[role="menu"] [data-action="toolbar-acquired-slices"]').count(), 0, 'The acquired slices have no entry of their own.');
@@ -116,6 +116,31 @@ async function main() {
     await planeItems.nth(0).click();
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.mode === 'source');
     check('In the MPR menu the acquired plane shows the CT\'s own slices; the others are reconstructed');
+
+    // With a thick slab on, the acquired plane is reconstructed too, since the CT's own slices draw no slab. Choosing it
+    // again in the MPR menu, or reaching it from the pane's plane name, keeps the slab on and drawn; turning the slab off
+    // brings the CT's own slices back.
+    const shownView = () => page.evaluate(() => { const view = window.__VEACOM_TEST__.state().view; return { mode: view.mode, plane: view.plane, slab: view.slab?.mode ?? null }; });
+    const axialMip = { mode: 'mpr', plane: 'axial', slab: 'mip' };
+    const slabItems = page.locator('[role="menu"] [role="menuitemradio"]');
+    await page.getByTestId('tool-slab').click();
+    await slabItems.nth(1).click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.slab?.mode === 'mip');
+    assert.deepEqual(await shownView(), axialMip);
+    await page.getByTestId('tool-mpr').click();
+    await planeItems.nth(0).click();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await shownView(), axialMip, 'Axial chosen again in the MPR menu keeps the slab.');
+    const pane = await canvas.boundingBox();
+    for (const plane of ['coronal', 'sagittal', 'axial']) {
+      await page.mouse.click(pane.x + 10, pane.y + pane.height - 10);
+      await page.waitForFunction(plane => window.__VEACOM_TEST__.state().view.plane === plane, plane);
+    }
+    assert.deepEqual(await shownView(), axialMip, 'The plane name returns to axial with the slab.');
+    await page.getByTestId('tool-slab').click();
+    await slabItems.nth(0).click();
+    await page.waitForFunction(() => { const view = window.__VEACOM_TEST__.state().view; return view.mode === 'source' && !view.slab; });
+    check('A thick slab stays on and drawn when the MPR menu or the plane name returns to the acquired plane');
 
     // A pane draws its overlay in a box of the pane's own size, which is one unit until the pane is measured. Shown then,
     // the handles on the plane lines cover the pane in their colours: note every frame that shows such an overlay.

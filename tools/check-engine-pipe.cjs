@@ -9,9 +9,17 @@ const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { EngineProcess } = require('../electron/engine-process.cjs');
 const { EngineChannel } = require('../electron/engine-pipe.cjs');
+const { driveTypes } = require('../electron/file-browser.cjs');
 
 const binary = path.resolve(__dirname, '../native/target/release', process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core');
 const makeStudy = path.join(__dirname, 'fixtures/make-smoke-study.mjs');
+
+// Windows: the import window's drives come from the engine. The drive Windows runs from is a fixed drive, whatever
+// else this PC has; without the engine's answer it would have no kind here.
+async function checkDrives(manager) {
+  const system = process.env.SystemDrive.charAt(0).toUpperCase();
+  assert.equal((await driveTypes(manager, [system]))[system]?.kind, 'fixed');
+}
 
 async function checkArchiveCleanup(connection, directory) {
   const study = path.join(directory, 'archive-source'), output = path.join(directory, 'zip-output');
@@ -72,6 +80,23 @@ async function checkShutdownRollback(manager, connection, directory, study) {
   assert.deepEqual(await fs.readdir(output), []);
 }
 
+// The engine runs below the priority of the process that started it, so that decoding a study does not hold back the
+// app's first picture (run_below_the_app in native/src/main.rs): 10 more on Linux and macOS, where 19 is the most, and
+// the next class down on Windows, where a process above normal starts its children at normal. On Linux each thread
+// carries a priority of its own: every thread the engine started must have it.
+async function checkPriority(pid) {
+  const own = os.getPriority(), engine = os.getPriority(pid);
+  const { PRIORITY_BELOW_NORMAL, PRIORITY_LOW } = os.constants.priority;
+  const expected = process.platform === 'win32' ? (own >= PRIORITY_BELOW_NORMAL ? PRIORITY_LOW : PRIORITY_BELOW_NORMAL) : Math.min(own + 10, PRIORITY_LOW);
+  assert.equal(engine, expected, `the engine runs at priority ${engine}, not at ${expected} under this process's ${own}`);
+  if (process.platform !== 'linux') return;
+  const threads = await fs.readdir(`/proc/${pid}/task`);
+  // Field 19 of a thread's stat is its nice value; the name before it may hold spaces, so count from its closing bracket.
+  const nice = async thread => Number((await fs.readFile(`/proc/${pid}/task/${thread}/stat`, 'utf8')).split(') ').at(-1).split(' ')[16]);
+  assert.ok(threads.length > 1, 'the engine has started its workers');
+  assert.deepEqual([...new Set(await Promise.all(threads.map(nice)))], [engine], 'every engine thread runs at the engine\'s priority');
+}
+
 async function main() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-pipe-'));
   const study = path.join(directory, 'study');
@@ -89,6 +114,7 @@ async function main() {
     execFileSync(process.execPath, [makeStudy, study, '--pipe-volume'], { stdio: 'inherit' });
     const { pixelSha256 } = JSON.parse(await fs.readFile(path.join(study, 'manifest.json'), 'utf8'));
     const connection = await manager.start();
+    await checkPriority(children[0].pid);
     const imported = await (await connection.request('import', { paths: [study] })).json();
     const { id } = imported.series[0];
     const volume = await connection.request('volume', { id });
@@ -105,6 +131,8 @@ async function main() {
     const open = await Promise.all(unread.slice(0, 4));
     assert.ok(open.every(r => r.ok));
     assert.equal((await connection.request('progress')).status, 200);
+    // The drives are listed while four volumes wait to be read.
+    if (process.platform === 'win32') await checkDrives(manager);
     const frame = await connection.request('frame', { id, index: 0 });
     assert.equal((await frame.arrayBuffer()).byteLength, 512 * 512 * 2);
     for (const controller of controls) controller.abort();

@@ -75,7 +75,7 @@ function TagPanel({ series, frame, joined, query, onQuery, onError }: TagSource 
     <div className="panel-heading"><h2>{t('inspector.metadata')}</h2>{tags.rows.length > 0 && <span className="count-badge">{tags.rows.length}</span>}</div>
     {series && (series.dimensions[2] > 1 || joined) && <p className="tags-frame">{t('inspector.tagsFrame', numbered(series, frame, joined))}</p>}
     <label className="tag-search"><Search size={14} aria-hidden="true" /><input data-action="tags-search" aria-label={t('inspector.searchTags')} placeholder={t('inspector.searchPlaceholder')} value={query} onChange={event => onQuery(event.target.value)} /></label>
-    {loading ? <div className="inspector-empty" role="status"><LoaderCircle className="spin" size={20} /><p>{t('inspector.readingMetadata')}</p></div> : <TagList tags={tags} query={deferredQuery} />}
+    {loading ? <div className="inspector-empty" role="status"><LoaderCircle size={20} /><p>{t('inspector.readingMetadata')}</p></div> : <TagList tags={tags} query={deferredQuery} />}
   </div>;
 }
 

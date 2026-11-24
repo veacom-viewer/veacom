@@ -34,9 +34,51 @@ impl Drop for ArchiveTempDir {
         // Windows must release the ownership handle before deleting its directory.
         drop(self.owner_lock.take());
         if let Some(directory) = self.directory.take() {
-            let _ = fs::remove_dir_all(directory);
+            let _ =
+                remove_contents(&directory).and_then(|()| remove_marker_and_directory(&directory));
         }
     }
+}
+
+/// Removes everything in an extraction directory but its marker. Its marker goes last (remove_marker_and_directory),
+/// so that a removal cut short (another program holding one of its files open) leaves a directory that the next
+/// start-up's cleanup knows as one of ours and finishes. What can be removed is, whatever else cannot.
+fn remove_contents(directory: &Path) -> std::io::Result<()> {
+    let mut failed = None;
+    for entry in fs::read_dir(directory)? {
+        let removed = entry.and_then(|entry| {
+            let path = entry.path();
+            let kind = entry.file_type()?;
+            if entry.file_name() == MARKER {
+                Ok(())
+            } else if kind.is_dir() {
+                // Never follows a link inside, on the supported platforms.
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path).or_else(|error| {
+                    // A link to a folder goes as a folder does on Windows.
+                    if kind.is_symlink() {
+                        fs::remove_dir(&path)
+                    } else {
+                        Err(error)
+                    }
+                })
+            }
+        });
+        if let Err(error) = removed {
+            failed.get_or_insert(error);
+        }
+    }
+    failed.map_or(Ok(()), Err)
+}
+
+/// Removes an extraction directory's marker, then the directory, emptied by remove_contents.
+fn remove_marker_and_directory(directory: &Path) -> std::io::Result<()> {
+    match fs::remove_file(directory.join(MARKER)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error),
+        _ => {}
+    }
+    fs::remove_dir(directory)
 }
 
 /// Extractions made before RAR import was removed can outlive a crash, and they hold patient files.
@@ -82,7 +124,8 @@ fn create_in(root: &Path, prefix: &str) -> Result<ArchiveTempDir> {
             .access_mode(FILE_ALL_ACCESS)
             .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
             .open(created.path())?;
-        crate::archive_owner_windows::assign_current_user(&handle)
+        // Only the user and the system may open it, whatever the temporary folder it is made in allows.
+        crate::archive_owner_windows::make_private(&handle)
             .context("Cannot establish private archive directory ownership")?;
     }
     let mut options = OpenOptions::new();
@@ -243,13 +286,10 @@ fn cleanup_in(root: &Path) -> Result<usize> {
         if owner.format != FORMAT || owner.directory != name || owner.nonce != nonce {
             continue;
         }
-        // remove_dir_all never follows nested symlinks on the supported platforms.
-        let result = fs::remove_dir_all(&path);
+        // Its files while the marker stays locked; the marker last, so that a removal cut short is finished next time.
+        let result = remove_contents(&path);
         drop(file);
-        let result = match result {
-            Ok(()) => Ok(()),
-            Err(_) => fs::remove_dir_all(&path),
-        };
+        let result = result.and_then(|()| remove_marker_and_directory(&path));
         match result {
             Ok(()) => removed += 1,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -303,6 +343,46 @@ mod tests {
         }
         fs::write(path.join("patient.dcm"), b"synthetic").unwrap();
         drop(directory);
+        assert!(!path.exists());
+    }
+    #[cfg(windows)]
+    #[test]
+    fn a_new_extraction_directory_and_what_is_made_in_it_let_in_the_user_and_the_system_alone() {
+        let root = crate::test_dir::tempdir().unwrap();
+        let directory = create_in(root.path(), "veacom-import-").unwrap();
+        let path = directory.path();
+        fs::create_dir(path.join("DICOM")).unwrap();
+        fs::write(path.join("DICOM").join("IM1"), b"synthetic").unwrap();
+        let access = |at: &Path| crate::archive_owner_windows::access_of(at).unwrap();
+        // The directory's own list, kept from its parent's; and those of what is made in it, from the directory's.
+        assert_eq!(access(path), (true, vec!["user", "system"]));
+        for inside in [MARKER, "DICOM", "DICOM/IM1"] {
+            let at = path.join(inside);
+            assert_eq!(access(&at), (false, vec!["user", "system"]), "{inside}");
+        }
+    }
+    #[cfg(windows)]
+    #[test]
+    fn a_removal_cut_short_keeps_the_marker_so_the_next_start_up_finishes_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let root = crate::test_dir::tempdir().unwrap();
+        let directory = create_in(root.path(), "veacom-import-").unwrap();
+        let path = directory.path().to_owned();
+        for name in ["a.dcm", "patient.dcm", "z.dcm"] {
+            fs::write(path.join(name), b"synthetic").unwrap();
+        }
+        // Another program holds one file open, and lets nobody remove it meanwhile.
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(path.join("patient.dcm"))
+            .unwrap();
+        drop(directory);
+        assert!(path.join(MARKER).is_file() && path.join("patient.dcm").exists());
+        // What could be removed was.
+        assert!(!path.join("a.dcm").exists() && !path.join("z.dcm").exists());
+        drop(held);
+        assert_eq!(cleanup_in(root.path()).unwrap(), 1);
         assert!(!path.exists());
     }
     #[test]
