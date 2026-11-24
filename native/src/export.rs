@@ -687,6 +687,7 @@ fn direct_identifier(tag: Tag) -> bool {
                 | 0x1110
                 | 0x1111
                 | 0x1120
+                | 0x4000
         ) | Tag(
             0x0010,
             0x0020
@@ -1602,6 +1603,7 @@ mod tests {
         fixture(&source, "2.25.301");
         let mut obj = open_file(&source).unwrap();
         let identifying_text = [
+            (Tag(0x0008, 0x4000), VR::LT, "SECRET_IDENTIFYING_COMMENT"),
             (Tag(0x0020, 0x4000), VR::LT, "SECRET_IMAGE_COMMENT"),
             (Tag(0x0040, 0x0280), VR::ST, "SECRET_PROCEDURE_COMMENT"),
             (Tag(0x0040, 0x1400), VR::LT, "SECRET_REQUEST_COMMENT"),
