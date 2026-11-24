@@ -22,6 +22,7 @@ crate charls-sys
 crate chrono
 crate cmake
 crate console_error_panic_hook
+crate constant_time_eq
 crate core-foundation-sys
 crate cpufeatures
 crate crc32fast
@@ -111,6 +112,8 @@ crate windows-link
 crate windows-result
 crate windows-strings
 crate windows-sys
+crate zeroize
+crate zeroize_derive
 crate zip
 crate zlib-rs
 crate zmij

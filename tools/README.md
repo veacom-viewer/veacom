@@ -103,7 +103,8 @@ node tools/check-click-budget.cjs ~/veacom-bench/studies/ct-small
 `desktop-smoke.cjs` budgets its own steps and checks the usage-timings consent (asked once on a fresh
 profile, saved, and switched off in the display panel). On a CT the assessment button opens the pre-op
 checklist, which the smoke test budgets. `check-click-budget.cjs` runs the canonical tasks on the
-synthetic CT, including a scripted "wanted view" (lung window at mid-chest), and opens a generated
+synthetic CT, including a scripted "wanted view" (lung window at mid-chest) and answering the whole sinus
+checklist by mouse (a click per side) and by keys (Alt+Shift and a digit per row), and opens a generated
 synthetic MR (`make-smoke-study.mjs --modality MR`) through the real menu. On an MR the button opens
 the lesion pre-diagnosis, which is switched off while its knowledge base is out of the repository: the
 check makes sure the disabled button says why and skips opening and closing it, which have no budget.
@@ -185,6 +186,30 @@ CI's desktop job, the Windows job and `tools/verify.sh` run it.
 node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
+
+## CLOSE calipers
+
+`check-close-calipers.cjs` opens the synthetic sinus CT from `fixtures/make-sinus-study.mjs`: 0.5 mm voxels with
+olfactory fossae, ethmoid artery canals, a bowed septum and a sellar sphenoid at known places, listed in its
+`manifest.json`. From the pre-operative checklist it measures each [CLOSE caliper](../docs/close-calipers.md) by clicking
+those landmarks and checks:
+
+- each value, answer and side in the checklist, and the near-limit word for a Keros depth near a type limit;
+- a roof point clicked in the air moves onto the bone;
+- moving a point measures again, and undo takes it back with its answer; a calibration changes the values and answers,
+  also of a record whose drawing was deleted or that Undo brings back after a Clear, and removing it changes them back;
+- started off its plane, a caliper turns its pane to that plane and the bone window, says so with Undo, and Undo puts
+  the pane back; Esc ends one;
+- "Copy for the report" in English and Turkish, with screenshots in both, and the count beside it of the rows it leaves
+  out, which goes to the first of them;
+- the theatre card on one A4 page, as a PDF of the page made in place of the print dialog, and a full card (every
+  side answered and noted, the measurements kept) on one page too, in both languages.
+
+CI's desktop job (screens shard) and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-sinus-study.mjs /tmp/sinus-study
+node tools/check-close-calipers.cjs /tmp/sinus-study test-results/close-calipers
 
 ## Comparison with an earlier study
 

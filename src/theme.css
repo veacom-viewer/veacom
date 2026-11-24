@@ -23,6 +23,10 @@
   --line-strong: #4a505c;
   --line-control: #6b7484;
   --line-control-hover: #8a93a3;
+  /* Paper (src/components/TheatreCard.css): ink for any printer. */
+  --print-ink: #111;
+  --print-muted: #4b5058;
+  --print-line: #b9bec6;
 
   --text-strong: #f4f6f9;
   --text: #e4e7ec;
