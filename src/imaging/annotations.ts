@@ -5,6 +5,7 @@ import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableV
 import { t } from '../i18n';
 import { isEmission, overlayKind, petHasSuv } from './emission';
 import { sulGluGlucose } from './glucose';
+import { calibrationTag } from './radiograph';
 import { applyPoint, type Matrix } from './rigid';
 
 export interface RoiStatistics {
@@ -100,6 +101,12 @@ export const quantityText = (value: number, unit: string) => `${format(value, qu
 /** A region on a reconstructed plane of a PET larger than this many voxels (a large oblique one) is described by
  * interpolated plane samples instead of its voxels. */
 export const PET_VOXEL_LIMIT = 4_000_000;
+
+/** A size on a projection film carries what its millimetres stand for (radiograph.ts): "412.5 mm · detector plane". */
+export function withCalibration(text: string, series: Series, unit: 'mm' | 'px'): string {
+  const tag = unit === 'mm' && text ? calibrationTag(series) : '';
+  return tag ? `${text} · ${tag}` : text;
+}
 
 export function measurementSpace(series: Series): { unit: 'mm' | 'px'; scale: number } {
   if (series.measurementUnits === 'px') return { unit: 'px', scale: 1 };
@@ -473,7 +480,7 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
   const measurePoints = measurement.unit === 'mm' ? points : points.map(point => worldToIndex(series, point));
   if (annotation.type === 'length' && points.length >= 2) {
     const length = distanceMm(measurePoints[0], measurePoints[1]);
-    return length == null ? t('annotation.invalidMeasurement') : `${format(length * measurement.scale)} ${measurement.unit}`;
+    return length == null ? t('annotation.invalidMeasurement') : withCalibration(`${format(length * measurement.scale)} ${measurement.unit}`, series, measurement.unit);
   }
   if (annotation.type === 'angle' && points.length >= 3) {
     const angularPoints = series.spacingKnown === true ? points : points.map(point => worldToIndex(series, point));
@@ -487,7 +494,7 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
   }
   if (annotation.type === 'polyline') {
     const length = polylineLengthMm(measurePoints);
-    return length == null ? '' : `${format(length * measurement.scale)} ${measurement.unit}`;
+    return length == null ? '' : withCalibration(`${format(length * measurement.scale)} ${measurement.unit}`, series, measurement.unit);
   }
   if (annotation.type === 'probe' && points.length) {
     if (series.components === 3) return t('annotation.noScalar');
@@ -512,7 +519,7 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
   if (['rectangle', 'ellipse', 'polygon'].includes(annotation.type)) {
     const stats = roiStatistics(annotation, volume);
     if (!stats) return points.length >= 3 ? t('annotation.noRoiSamples') : '';
-    return formatRoiStatistics(stats);
+    return withCalibration(formatRoiStatistics(stats), series, stats.spatialUnit);
   }
   return annotation.label || '';
 }

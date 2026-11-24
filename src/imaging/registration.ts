@@ -131,6 +131,12 @@ export function mapPoint(matrix: Matrix, point: Vec3): Vec3 {
   return found;
 }
 
+export function crosshairIn(alignments: readonly Alignment[], point: Vec3 | null, from?: Series, to?: Series): Vec3 | null {
+  if (!point || !from || !to) return null;
+  const transform = transformBetween(alignments, from, to);
+  return transform ? mapPoint(transform, point) : null;
+}
+
 /** A displayed plane taken into another frame of reference: where it lies and which way it faces there. */
 export const frameThrough = (frame: PlaneFrame, matrix: Matrix): PlaneFrame => ({ ...frame, center: applyPoint(matrix, frame.center),
   u: applyVector(matrix, frame.u), v: applyVector(matrix, frame.v), normal: applyVector(matrix, frame.normal) });

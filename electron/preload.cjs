@@ -25,7 +25,8 @@ contextBridge.exposeInMainWorld('veacom', {
   listSeries: () => invoke('imaging:series'),
   importSelected: capabilities => invoke('imaging:import', capabilities),
   getProgress: () => invoke('imaging:progress'),
-  importEarly: (capabilities, after) => invoke('imaging:early', capabilities, after),
+  importEarly: (capabilities, after, options) => invoke('imaging:early', capabilities, after, options),
+  prioritiseImport: (capabilities, planned) => invoke('imaging:prioritise', capabilities, planned),
   cancelOperation: id => invoke('imaging:cancel', id),
   cancelExport: () => invoke('dicom:cancel'),
   measure: (id, generation, revision, operation) => invoke('imaging:measure', id, generation, revision, operation),
@@ -37,7 +38,7 @@ contextBridge.exposeInMainWorld('veacom', {
   onOpened: listener => { const notify = () => listener(); ipcRenderer.on('files:opened', notify); return () => ipcRenderer.removeListener('files:opened', notify); },
   getCoreState: () => invoke('core:state'),
   getGraphicsStatus: () => invoke('gpu:status'),
-  // Page zoom (View > Zoom In/Out) shrinks a wheel notch's legacy units; wheelSliceSteps undoes it.
+  // Page zoom (View > Zoom In/Out) shrinks a wheel notch's legacy units; wheelSteps undoes it.
   zoomFactor: () => webFrame.getZoomFactor(),
   onCoreState: listener => { const notify = (_event, state) => listener(state); ipcRenderer.on('core:state', notify); return () => ipcRenderer.removeListener('core:state', notify); },
   openPaths: kind => invoke('files:open', kind),
@@ -52,6 +53,14 @@ contextBridge.exposeInMainWorld('veacom', {
   },
   openExternal: url => invoke('links:open', url),
   saveFile: (suggestedName, data) => invoke('files:save', suggestedName, data),
+  landmarkModel: (part, onProgress) => {
+    const notify = (_event, from, received) => { if (from === part) onProgress?.(received); };
+    ipcRenderer.on('landmarks:progress', notify);
+    return invoke('landmarks:model', part).then(bytes => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength))
+      .finally(() => ipcRenderer.removeListener('landmarks:progress', notify));
+  },
+  cancelLandmarkModel: () => invoke('landmarks:cancel'),
+  labelFolder: { open: () => invoke('label:open'), film: (token, index) => invoke('label:film', token, index), write: (token, index, text) => invoke('label:write', token, index, text) },
   exportDicom: (seriesId, options) => invoke('dicom:export', seriesId, options),
   sendFeedback: payload => invoke('feedback:send', payload),
   estimateExport: (seriesId, options) => invoke('dicom:estimate', seriesId, options),

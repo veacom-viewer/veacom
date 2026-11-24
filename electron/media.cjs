@@ -8,8 +8,8 @@ const { checkDecoderConfig, checkSample, mp4Header } = require('./mp4.cjs');
 
 const MAX_FRAMES = 60000;
 
-function launch(command, args) {
-  const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'] });
+function launch(command, args, env) {
+  const child = spawn(command, args, { windowsHide: true, stdio: ['pipe', 'ignore', 'pipe'], ...(env ? { env } : {}) });
   let stderr = '';
   child.stderr.on('data', chunk => { stderr = (stderr + chunk.toString()).slice(-8192); });
   child.stdin.on('error', () => {});
@@ -183,8 +183,15 @@ function createVideoExporter({ chooseDestination, idleTimeoutMs = 120000, onSave
   };
 }
 
-const isoScript = `param([string]$Source,[string]$Target,[string]$Label)
-$ErrorActionPreference="Stop"
+// Windows' own PowerShell, by its full path as updates.cjs and file-browser.cjs start it.
+const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+
+// Given to PowerShell as its command, with the folder, the file and the label in its environment, so no script file
+// is written anywhere. A command's errors would arrive as XML: the script writes its failure's own sentence instead.
+const isoScript = `$ErrorActionPreference="Stop"
+$ProgressPreference="SilentlyContinue"
+[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
+try {
 Add-Type -TypeDefinition @"
 using System;
 using System.IO;
@@ -211,10 +218,14 @@ public static class VeacomIso {
 $image=New-Object -ComObject IMAPI2FS.MsftFileSystemImage
 $image.ChooseImageDefaultsForMediaType(13)
 $image.FileSystemsToCreate=3
-$image.VolumeName=$Label
-$image.Root.AddTree($Source,$false)
+$image.VolumeName=$env:VEACOM_ISO_LABEL
+$image.Root.AddTree($env:VEACOM_ISO_SOURCE,$false)
 $result=$image.CreateResultImage()
-[VeacomIso]::Save($result.ImageStream,$Target)
+[VeacomIso]::Save($result.ImageStream,$env:VEACOM_ISO_TARGET)
+} catch {
+ [Console]::Error.WriteLine($_.Exception.Message)
+ exit 1
+}
 `;
 
 /** A file name from a series name: no path separators or characters Windows refuses, at most 80 long. */
@@ -274,13 +285,11 @@ function registerMediaHandlers({ handle, getWindow, exportDicomDirectory, dialog
       stopIfEnded(t('app.closing'));
       outputDirectory = await fs.mkdtemp(path.join(path.dirname(result.filePath), '.veacom-iso-'));
       const partial = path.join(outputDirectory, 'study.iso');
-      const script = path.join(outputDirectory, 'create-iso.ps1');
-      if (process.platform === 'win32') await fs.writeFile(script, isoScript, 'utf8');
       // Checked again with nothing awaited before the launch: dispose() and reset() kill only a child that exists.
       stopIfEnded(t('app.closing'));
       isoProcess = process.platform === 'win32'
-        ? launch('powershell.exe', ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-          '-File', script, '-Source', source, '-Target', partial, '-Label', label])
+        ? launch(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(isoScript, 'utf16le').toString('base64')],
+        { ...process.env, VEACOM_ISO_SOURCE: source, VEACOM_ISO_TARGET: partial, VEACOM_ISO_LABEL: label })
         : launch('/usr/bin/hdiutil', ['makehybrid', '-iso', '-joliet', '-default-volume-name', label, '-o', partial, source]);
       const current = isoProcess;
       current.child.stdin.end();

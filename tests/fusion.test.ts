@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
-import { afterContrast, bestPartner, contrastPair, DEVICE_LOOKS, deviceMaker, draggedFusion, fusesOver, fusionScaleMaxKey, mrPartner, petAutoLevel, petHasSuv, petScale } from '../src/imaging/fusion';
+import { afterContrast, bestPartner, contrastPair, DEVICE_LOOKS, deviceMaker, draggedFusion, fusesOver, fusionScaleMaxKey, mrPartner, overlayFor, petAutoLevel, petHasSuv, petScale, studyOverlay } from '../src/imaging/fusion';
 import { en } from '../src/i18n/en';
 import { tr } from '../src/i18n/tr';
 import type { Series } from '../src/model';
@@ -55,6 +55,28 @@ describe('PET/CT fusion as in VEAcom Next', () => {
     assert.equal(bestPartner(ct, [uncorrected], 'PT', () => true)?.id, 'nac');
     assert.equal(bestPartner(ct, [corrected], 'PT', () => false), null);
     assert.equal(bestPartner(ct, [other], 'PT', () => true), null);
+  });
+  describe('the fusion button, from the series the active pane shows', () => {
+    // One acquisition: the CT and both PETs in one frame of reference; a scout, which is no volume, in it too.
+    const framed = { orientationKnown: true, frameOfReferenceUid: 'synthetic-frame' } as const;
+    const corrected = pet('ac', { description: 'PET AC', ...framed }), uncorrected = pet('nac', { description: 'PET NAC', ...framed });
+    const acquired = series({ id: 'ct', ...framed }), scout = series({ id: 'scout', description: 'Topogram', canReconstruct: false, dimensions: [4, 4, 1], ...framed });
+    it('fuses a PET shown itself, but for a NAC one whose frame holds a corrected one', () => {
+      const study = [scout, uncorrected, acquired, corrected];
+      assert.equal(overlayFor(uncorrected, study).id, 'ac');
+      assert.equal(overlayFor(corrected, [...study, pet('longer', { description: 'PET AC 2', dimensions: [4, 4, 80], ...framed })]).id, 'ac');
+      assert.equal(overlayFor(uncorrected, [scout, uncorrected, acquired]).id, 'nac');
+      assert.equal(overlayFor(uncorrected, [...study.filter(item => item !== corrected), { ...corrected, frameOfReferenceUid: 'another-frame' }]).id, 'nac');
+      // A gate shown is fused itself.
+      const gate = pet('gate', { description: 'PET NAC gated', phase: { kind: 'timeSlot', value: '1', label: 'Gate 1/8', order: 1, gate: { slot: 1, slots: 8 } }, ...framed });
+      assert.equal(overlayFor(gate, study).id, 'gate');
+    });
+    it('fuses the study\'s corrected PET over its CT when no PET is drawn over the series shown, as a scout', () => {
+      assert.equal(studyOverlay(scout, [scout, uncorrected, acquired, corrected])?.id, 'ac');
+      // A PET with no CT of its frame, or of another study, is not one to fuse.
+      assert.equal(studyOverlay(scout, [scout, { ...corrected, frameOfReferenceUid: 'another-frame' }]), null);
+      assert.equal(studyOverlay(scout, [scout, acquired, { ...corrected, studyUid: 'other' }]), null);
+    });
   });
   it('finds the CT acquired with a PET: as many slices as far apart', () => {
     const p = pet('p');

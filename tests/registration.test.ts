@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import { facesSame, linkedSlice, type Pane } from '../src/imaging/linking';
-import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, currentAlignment, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
+import { alignedFusion, alignedTransform, alignmentCautions, alignmentFrom, alignmentOf, automatic, adjusted, crosshairIn, currentAlignment, frameOf, mapPoint, movement, NUDGE_DEGREES, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment } from '../src/imaging/registration';
 import { angleOf, applyPoint, applyVector, compose, IDENTITY, invert, isIdentity, rotation, translation } from '../src/imaging/rigid';
 import type { EngineRegistration, FusionSettings, Series, Vec3, ViewState } from '../src/model';
 
@@ -138,6 +138,14 @@ describe('aligned frames of reference', () => {
     assert.equal(alignedFusion(fusion, IDENTITY), fusion);
     assert.equal(alignedFusion(fusion, matrix), alignedFusion(fusion, matrix));
     assert.equal(alignedFusion(fusion, matrix).transform, matrix);
+  });
+
+  it('shows a crosshair only where its patient coordinates can be placed', () => {
+    const point: Vec3 = [1, 2, 3];
+    assert.equal(crosshairIn([], point, currentCt, currentCt), point);
+    assert.equal(crosshairIn([], point, currentCt, priorCt), null);
+    assert.equal(crosshairIn([aligned], point, currentCt, { ...priorCt, patientKey: 'another-patient' }), null);
+    assert.deepEqual(crosshairIn([aligned], point, priorCt, currentCt), [1, 2, -21]);
   });
 
   it('say when the measured match does not support the alignment', () => {

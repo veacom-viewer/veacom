@@ -1,7 +1,8 @@
 // Desktop check of arrangements (docs/arrangements.md) on the synthetic PET/CT of tools/fixtures/make-petct-study.mjs:
-// the study opens in one fused pane with no click. In the four-pane reading view a click on the MIP sends the linked panes
-// to the lesion; a pane moved and kept opens the next study so; Undo gives the study's first image and can be kept too;
-// Forget brings VEAcom's own screen back; a PET opened by hand is inverted grey with its window in SUV.
+// the study opens on its first image, unfused, and Fusion fuses it in one press. In the four-pane reading view a click on
+// the MIP sends the linked panes to the lesion; a pane moved and kept opens the next study so; Undo gives the study's
+// first image and can be kept too; Forget brings VEAcom's own opening back; a PET opened by hand is inverted grey with
+// its window in SUV.
 // usage: node tools/check-arrangements.cjs PETCT_STUDY [OUTPUT_DIR]
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
@@ -12,6 +13,7 @@ const privileged = require('./privileged-imaging.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { choosePetLayout, selectPetLayout } = require('./lib/pet-layout.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 
 async function main() {
   const study = path.resolve(process.argv[2]);
@@ -46,16 +48,25 @@ async function main() {
     const location = async index => Number((await cells.nth(index).locator('[data-testid="image-overlay"] .slice-detail').textContent()).match(/Loc: (-?[\d.]+)/)?.[1]);
     await settled();
 
-    // Opening: the PET/CT screen with no click, the attenuation-corrected PET, and nothing reported as pressed.
+    // Opening: the study's first image, unfused, as any study opens, with nothing arranged or reported as pressed.
     let s = await state();
     const ct = named(s, /· CT$/), pet = named(s, /PET AC$/);
     assert.deepEqual(s.layout, [1, 1]);
-    assert.deepEqual(s.panes.map(pane => [pane.seriesId, pane.unfused]), [[ct.id, false]]);
-    assert.equal(s.fusionId, pet.id);
+    assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id]);
+    assert.equal(s.fusionId, null);
+    assert.equal(await page.locator('[data-action="arrangement-undo"]').count(), 0, 'Nothing was arranged.');
     const actions = (await page.evaluate(() => window.__VEACOM_TEST__.usage())).filter(event => event.name === 'ux.action');
-    assert.deepEqual(actions, [], 'Opening the fused study requires no action.');
+    assert.deepEqual(actions, [], 'Opening the study requires no action.');
     await shot('1-opened');
-    check('PET/CT opens as one fused pane with the corrected PET over its CT');
+    check('PET/CT opens as any study does: its first image, unfused');
+    // One press of Fusion: the attenuation-corrected PET over its CT, in the same pane.
+    await page.getByTestId('tool-fusion').click();
+    await page.waitForFunction(id => window.__VEACOM_TEST__.state().fusionId === id, pet.id);
+    await settled();
+    s = await state();
+    assert.deepEqual(s.panes.map(pane => [pane.seriesId, pane.unfused]), [[ct.id, false]]);
+    await shot('1-fused');
+    check('One press of Fusion lays the corrected PET over its CT');
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: 13, zoom: 1.4, windowCenter: 53, windowWidth: 330 }));
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.slice === 13);
     const originalView = (await state()).view;
@@ -71,11 +82,11 @@ async function main() {
     assert.deepEqual(s.view, originalView);
     assert.equal(s.fusionId, pet.id);
     assert.equal(s.panes[0].unfused, false);
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 3);
     await choosePetLayout(page);
     await undoScreen(3);
-    await page.getByTestId('tool-mpr').click();
+    await toggleMpr(page);
     await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.length === 1);
     assert.deepEqual((await state()).view, originalView);
     check('Undo restores the fused view, including slice, window, zoom and the workspace saved by MPR');
@@ -153,7 +164,7 @@ async function main() {
     await shot('6-pet-alone');
     check('A PET opened by hand is inverted grey with its window in SUV');
 
-    // Forget: VEAcom's own PET/CT screen again.
+    // Forget: VEAcom's own opening again, the study's first image with nothing arranged.
     if (!await page.getByTestId('inspector-tab-display').isVisible()) await page.getByTestId('tool-inspector').click();
     await page.getByTestId('inspector-tab-display').click();
     if (await page.locator('#section-workspace-toggle').getAttribute('aria-expanded') !== 'true') await page.locator('#section-workspace-toggle').click();
@@ -164,8 +175,8 @@ async function main() {
     await reopen();
     s = await state();
     assert.deepEqual(s.panes.map(pane => pane.seriesId), [ct.id]);
-    assert.equal(s.fusionId, pet.id);
-    check('Forget brings the one-pane fused PET/CT screen back');
+    assert.equal(await page.locator('[data-action="arrangement-undo"]').count(), 0, 'Nothing was arranged.');
+    check('Forget brings VEAcom\'s own opening back: the study\'s first image, nothing arranged');
 
     // Paged while its PET is read again (a preview frame stands in for it), the MIP stays a MIP.
     const gate = await desktop.evaluate(({ app }) => app.__VEACOM_PRIVILEGED_TEST__.holdPixelRequests('volume'));
@@ -194,6 +205,19 @@ async function main() {
     assert.equal(s.panes[3].mode, 'mpr', 'The MIP pane is still a reconstruction.');
     assert.match(await cells.nth(3).locator('[data-testid="image-overlay"]').textContent(), /MIP · \d+°/);
     check('A MIP paged while its volume loads stays a MIP', { turn: s.panes[3].slice });
+
+    const ctCard = page.getByTestId('series-' + ct.id);
+    await ctCard.click();
+    await settled();
+    const previousPanes = (await state()).panes.map(pane => pane.seriesId);
+    await toggleMpr(page);
+    await page.waitForFunction(() => document.querySelectorAll('canvas[data-mode="mpr"]').length === 3);
+    await ctCard.click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().panes.every(pane => !pane.seriesId));
+    await toggleMpr(page);
+    assert.deepEqual((await state()).panes.map(pane => pane.seriesId), previousPanes.map(id => id === ct.id ? null : id));
+    check('The toolbar restores the previous panes after the MPR series is removed');
 
     assert.deepEqual(errors, [], 'No page errors.');
     await fs.writeFile(path.join(output, 'arrangement-checks.json'), JSON.stringify({ checks, errors }, null, 2));

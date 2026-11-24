@@ -1,4 +1,4 @@
-import type { BridgeFeature, CoreState, EngineRegistration, DesktopBridge, ImportResult, Series, Volume, PixelArray } from './model';
+import type { BridgeFeature, CoreState, DesktopBridge, ImportResult, PlannedPreview, PlannedSeries, Series, Volume, PixelArray, EngineRegistration } from './model';
 import { t } from './i18n';
 import { coreErrorText } from './i18n/core';
 import { takePixels } from './imaging/pixelHandoff';
@@ -95,13 +95,20 @@ export async function importPaths(capabilities: string[]): Promise<ImportResult>
   return catalog(bridge => bridge.importSelected(capabilities));
 }
 export async function listSeries(): Promise<ImportResult> { return catalog(bridge => bridge.listSeries()); }
+/** What this selection's import has given before its end: its early series and, for a disc read once, the series its
+ * DICOMDIR lists, how many files of each are read (in the same order), and pictures of them. */
+export interface EarlyImport { series: Series[]; planned?: PlannedSeries[]; finished?: number[]; previews: PlannedPreview[] }
 /** Early series for this selection only, including when its import was prefetched at startup. */
-export async function importEarly(capabilities: string[], after: number): Promise<Series[]> {
+export async function importEarly(capabilities: string[], after: number, options?: { planned: boolean; finished: boolean; previewsAfter: number }): Promise<EarlyImport> {
   return brokerRequest(async (bridge, generation) => {
-    const { series } = await bridge.importEarly(capabilities, after);
-    if (series.some(item => item.engineGeneration !== generation)) throw new Error(restartedMessage());
-    return series;
+    const { series, planned, finished, previews = [] } = await bridge.importEarly(capabilities, after, options);
+    if ([...series, ...previews.map(preview => preview.series)].some(item => item.engineGeneration !== generation)) throw new Error(restartedMessage());
+    return { series, planned, finished, previews };
   });
+}
+/** The disc this selection's import reads has the series `planned` of its plan read next (the series the reader opened). */
+export async function prioritiseImport(capabilities: string[], planned: number): Promise<void> {
+  await brokerRequest(async bridge => { await bridge.prioritiseImport?.(capabilities, planned); });
 }
 /** `id` names the engine job shown, so a cancel reaches that job and no other. */
 export interface CoreProgress { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean; }

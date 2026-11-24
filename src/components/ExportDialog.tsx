@@ -9,6 +9,7 @@ import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
 import { MAX_EXPORT_SERIES } from '../../electron/export-limits.mjs';
+import { imageExportName } from '../ui/exportName';
 import { pickState, togglePicked } from '../ui/exportSelection';
 import { phaseLabel } from '../ui/overlayCorners';
 import { exportedImages } from '../ui/seriesNames';
@@ -34,8 +35,11 @@ export interface ExportDialogProps {
     setSlice: (slice: number) => void | Promise<void>;
     /** The series' own pixel size, for 1:1 pictures. */
     nativeSize?: { width: number; height: number };
-    /** The pane pages against the slice order (an axial stack stored from the feet up): what it shows as slice 1 is the last index. */
+    /** The pane pages against the slice order (an axial stack stored from the feet up): down the page is a lower index. */
     backwards?: boolean;
+    /** What the pane adds to a slice's own number, and the total it shows beside it: a stack paged with its reference
+     * image counts that image too (imaging/paging.ts). */
+    numberOffset?: number; numberTotal?: number; numbersBackwards?: boolean;
   };
   /** The acquired slice on screen (its file), for "current slice" DICOM. */
   currentFrame?: number;
@@ -55,6 +59,9 @@ export interface ExportDialogProps {
   unavailable?: Partial<Record<ExportMode, string>>;
   /** Every pane on screen as one picture. */
   onPicture?: (format: 'png' | 'jpeg', layout: boolean) => void;
+  /** The viewer shows patient details in the image's corners: with them hidden, or the image annotations off, the
+   * exported pictures show none, and their folder is not named after the patient. */
+  patientShown: boolean;
 }
 
 const KINDS: Array<{ mode: ExportMode; label: 'export.kindDicom' | 'export.kindImages' | 'export.kindVideo' | 'export.kindMedia' }> = [
@@ -84,11 +91,6 @@ function groupExportSeries(series: Series[]) {
   return [...studies.entries()];
 }
 
-function imageExportName(series: Series | undefined, includePatient: boolean) {
-  if (!includePatient) return 'VEAcom';
-  return [series?.patientName.replaceAll('^', ' ').trim(), series?.description].filter(Boolean).join(' - ') || 'VEAcom';
-}
-
 const OPEN_AFTER = 'veacom:export-open-after', MORE = 'veacom:export-more', PREFIX = 'veacom:export-prefix';
 const remembered = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* a convenience only */ } };
@@ -106,7 +108,7 @@ function PickAll({ ids, picked, action, onToggle }: { ids: string[]; picked: Rea
   return <input type="checkbox" data-action={action} checked={state.all} ref={box => { if (box) box.indeterminate = state.partial; }} onChange={() => onToggle(ids)} />;
 }
 
-export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture }: ExportDialogProps) {
+export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture, patientShown }: ExportDialogProps) {
   const { locale, t } = useTranslation();
   const active = series.find(item => item.id === activeSeriesId);
   const isImages = mode === 'images', isVideo = mode === 'video', isMedia = mode === 'media', captures = isImages || isVideo;
@@ -134,8 +136,8 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const [more, setMore] = useState(() => remembered(MORE) === '1');
   const [prefix, setPrefix] = useState(() => remembered(PREFIX) ?? '');
   const [reverse, setReverse] = useState(false);
-  const [start, setStart] = useState(1);
-  const [end, setEnd] = useState(video?.frameCount ?? 1);
+  const [start, setStart] = useState(1 + (video?.numberOffset ?? 0));
+  const [end, setEnd] = useState((video?.frameCount ?? 1) + (video?.numberOffset ?? 0));
   const [error, setError] = useState('');
   const abort = useRef<AbortController | null>(null);
   const dialog = useRef<HTMLElement>(null);
@@ -155,12 +157,13 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
   const ids = shownScope === 'all' ? series.map(item => item.id) : shownScope === 'picked' ? series.filter(item => picked.has(item.id)).map(item => item.id) : active ? [active.id] : [];
   const fitSize = { width: FIT_SIZES[fit][0], height: FIT_SIZES[fit][1] };
   const outputSize = size === 'native' ? video?.nativeSize : size === 'fit' ? fitSize : undefined;
-  const backwards = Boolean(video?.backwards), count = video?.frameCount ?? 1;
-  const indexOf = (shown: number) => backwards ? count - shown : shown - 1;
+  // Slices are numbered as the pane numbers them.
+  const backwards = Boolean(video?.backwards), count = video?.frameCount ?? 1, offset = video?.numberOffset ?? 0;
+  const indexOf = (shown: number) => video?.numbersBackwards ? count - (shown - offset) : shown - offset - 1;
   const sliceRange = shownScope === 'slice' && video ? { start: video.originalSlice, end: video.originalSlice }
     : { start: Math.min(indexOf(start), indexOf(end)), end: Math.max(indexOf(start), indexOf(end)) };
-  const order = { descending: backwards !== reverse, numberOf: (slice: number) => backwards ? count - slice : slice + 1, prefix };
-  const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 && start <= end && end <= (video?.frameCount ?? 0));
+  const order = { descending: backwards !== reverse, numberOf: (slice: number) => (video?.numbersBackwards ? count - slice : slice + 1) + offset, prefix };
+  const rangeValid = !captures || (Boolean(video) && Number.isInteger(start) && Number.isInteger(end) && start >= 1 + offset && start <= end && end <= (video?.frameCount ?? 0) + offset);
   // One DICOM export holds at most MAX_EXPORT_SERIES series (electron/export-limits.mjs), a disc's as well.
   const tooMany = !captures && ids.length > MAX_EXPORT_SERIES;
   const ready = !unavailable[mode] && Boolean(window.veacom) && (shownScope === 'layout' || (captures ? rangeValid && (isImages || (fps >= 1 && fps <= 120)) : ids.length > 0))
@@ -214,7 +217,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
       if (connections.some(core => core.generation !== engineGeneration) || !captures && new Set(selected.map(item => item.engineGeneration)).size > 1) throw new Error(t('export.differentEngines'));
       const overlays = { includeOverlays: annotations !== 'none', hideIdentity: annotations === 'basic' };
       if (isImages && video) {
-        const name = imageExportName(active, annotations === 'full');
+        const name = imageExportName(active, annotations === 'full' && patientShown);
         const directory = await exportViewportImages({ ...video, format: pictureFormat, quality: quality / 100, range: sliceRange, outputSize, ...overlays, ...order, here: true,
           suggestedName: name, signal: controller.signal, onProgress });
         if (!directory) { usage.milestone(task, 'cancel'); onClose(); return; }
@@ -252,8 +255,11 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
 
   const scopeName = (key: Scope) => key === 'slice' ? (isImages ? t('export.scopeImage') : t('export.scopeSlice')) : key === 'series' ? t('export.scopeSeries')
     : key === 'all' ? (patients > 1 ? t('export.scopeAllPatients', { count: patients }) : t('export.scopeAll')) : key === 'picked' ? t('export.scopePicked') : t('export.scopeLayout');
+  // Cut at its start (ExportDialog.css), the path is read left to right, each folder's name on its own: a drive's root
+  // is "E:\", not "\:E", and a name in a right-to-left script stays after the folder it is in.
+  const folderNames = folder.split(/([\\/])/).map((part, index) => index % 2 ? part : part && <bdi key={index}>{part}</bdi>);
   const folderRow = <div className="export-row"><span className="export-row-label">{t('export.folder')}</span>
-    <div className="export-folder"><FolderOpen size={15} aria-hidden="true" /><span className="export-folder-path" title={folder}>{folder || '…'}</span>
+    <div className="export-folder"><FolderOpen size={15} aria-hidden="true" /><span className="export-folder-path" title={folder}><bdi dir="ltr">{folder ? folderNames : '…'}</bdi></span>
       <button type="button" className="secondary-button compact" data-action="export-folder-change" onClick={() => void chooseFolder()}>{t('export.change')}</button></div></div>;
   const anonymityRow = <Choice name="anonymity" action="export-anonymity" label={t('export.anonymity')} value={anonymity} onChange={setAnonymity}
     options={[['none', t('export.anonNone')], ['partial', t('export.anonPartial')], ['full', t('export.anonFull')]]} />;
@@ -316,9 +322,9 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
                   {isVideo ? <input type="number" className="export-number" data-action="export-fps" min={1} max={120} step={1} value={fps} onChange={event => setFps(Number(event.target.value))} />
                     : <span className="export-slider"><input type="range" data-action="export-quality" min={50} max={100} step={1} value={quality} onChange={event => setQuality(Number(event.target.value))} /><output>{quality}</output></span>}</div>}
                 {shownScope === 'series' && video && <div className="export-row"><span className="export-row-label">{t('export.slices')}</span>
-                  <span className="export-range"><input type="number" className="export-number" data-action="export-first-slice" min={1} max={video.frameCount} value={start} onChange={event => setStart(Number(event.target.value))} />
-                    –<input type="number" className="export-number" data-action="export-last-slice" min={start} max={video.frameCount} value={end} onChange={event => setEnd(Number(event.target.value))} />
-                    <small>/ {video.frameCount}</small></span></div>}
+                  <span className="export-range"><input type="number" className="export-number" data-action="export-first-slice" min={1 + offset} max={video.frameCount + offset} value={start} onChange={event => setStart(Number(event.target.value))} />
+                    –<input type="number" className="export-number" data-action="export-last-slice" min={start} max={video.frameCount + offset} value={end} onChange={event => setEnd(Number(event.target.value))} />
+                    <small>/ {video.numberTotal ?? video.frameCount}</small></span></div>}
                 <div className="export-row"><span className="export-row-label">{t('export.prefix')}</span>
                   <input data-action="export-prefix" value={prefix} maxLength={40} placeholder="IMG_" onChange={event => { const next = event.target.value.replace(/[^\p{L}\p{N} _.-]/gu, ''); setPrefix(next); remember(PREFIX, next); }} /></div>
                 {isVideo && <label className="export-check"><input type="checkbox" data-action="export-reverse" checked={reverse} onChange={event => setReverse(event.target.checked)} /><span>{t('export.reverse')}</span></label>}

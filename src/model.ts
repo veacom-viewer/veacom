@@ -26,6 +26,37 @@ export interface FrameMetadata {
   voiFunction?: VoiFunction;
   /** A gamma camera frame: which detector took it, in which view, energy window and phase. */
   nm?: NmFrame;
+  /** A projection radiograph: the spacing measurements use and what it means, its side and orientation. */
+  projection?: Projection;
+  /** A ball or ruler calibration the reader set on this film alone (radiograph.ts withFilmCalibrations), and its scale. */
+  measurementScale?: number; manualCalibration?: ManualCalibration;
+}
+/** A scale the reader set from a known object on a film (the planning panel's ball or ruler). */
+export interface ManualCalibration {
+  method: 'ball' | 'ruler';
+  /** The object's size in mm: the ball's diameter or the ruler's length between the two marks. */
+  knownMm: number;
+  /** The film's measurement scale it gave (mm per coordinate unit). */
+  scale: number;
+  /** The reader confirmed the ball lay at the bones' depth. */
+  depthConfirmed?: boolean;
+}
+/** What the engine read of a projection radiograph's calibration, side and orientation (native/src/projection.rs). */
+export interface Projection {
+  /** What the spacing measurements use stands for (PS3.3 10.7.1.1): Pixel Spacing that was corrected or calibrated,
+   * Imager Pixel Spacing divided by the Estimated Radiographic Magnification Factor, Imager Pixel Spacing at the
+   * detector, Pixel Spacing that does not say, or none. */
+  basis: 'calibrated' | 'magnification' | 'detector' | 'scanned' | 'unstated' | 'none';
+  /** Row then column spacing in mm that measurements use. */
+  spacing?: [number, number];
+  pixelSpacing?: [number, number]; imagerPixelSpacing?: [number, number]; nominalScannedPixelSpacing?: [number, number];
+  magnification?: number; calibrationType?: string; calibrationDescription?: string;
+  sourceDetector?: number; sourcePatient?: number;
+  /** Patient Orientation (0020,0020): the patient directions of the rows and the columns, such as L and F. */
+  patientOrientation?: [string, string];
+  /** R, L, B (both) or U (unpaired), from the frame, the image or the series. */
+  laterality?: string;
+  bodyPart?: string; viewPosition?: string;
 }
 /** What a gamma camera (NM) frame is, from its file's frame vectors. The view (ANT, POST, RAO, LAO, RPO, LPO, R LAT,
  * L LAT) comes from the detector's View Code Sequence; detector, energy window and phase are given only where the file
@@ -47,6 +78,10 @@ export interface Series {
   engineGeneration?: number;
   patientKey?: string;
   previousPetId?: string;
+  /** Where `patientKey` joins an ID without an issuer across studies: the key earlier builds made, scoped to the
+   * study, and a PET reconstruction's ID made with it. The PET measurements those builds kept are found by them. */
+  studyScopedPatientKey?: string;
+  studyScopedPetId?: string;
   catalogRevision?: number;
   sourceRevision?: number;
   id: string; uid: string; studyUid: string; patientId: string; patientName: string;
@@ -62,6 +97,8 @@ export interface Series {
   /** What stored PET values are multiplied by for SUVbw (1 for values already in SUV); for SUL and SUVbsa, where the
    * patient's height (and, for SUL, sex) are recorded. */
   suvFactor: number | null; sulFactor?: number | null; suvBsaFactor?: number | null;
+  /** Set while the series is still being read from a disc: it is shown as far as it is read, and grows. */
+  reading?: { read: number; files: number };
   canReconstruct: boolean; warnings: string[];
   /** The same warnings as engine messages, for translation (src/i18n/core.ts). */
   warningNotes?: CoreNote[];
@@ -77,10 +114,14 @@ export interface Series {
   paddingRange?: [number, number];
   paddingIsNaN?: boolean;
   measurementScale?: number;
+  /** The ball or ruler behind measurementScale, on a film calibrated by itself (FrameMetadata, sourceFrameSeries). */
+  manualCalibration?: ManualCalibration;
   measurementUnits?: 'auto' | 'px';
   /** The SUV the reader chose for PET values (Units panel); body weight when unset. */
   suvNormalization?: SuvNormalization;
   sourceFramesOnly?: boolean;
+  /** From a projection frame (sourceFrameSeries); FrameMetadata carries it per frame. */
+  projection?: Projection;
   /** A phase of a series the engine parted, in order; one gate of a gated SPECT carries `gate` (kind `timeSlot`). */
   phase?: { kind: string; value: string; label: string; order: number; gate?: Gate };
   patientAge?: number; patientSex?: string;
@@ -94,6 +135,9 @@ export interface Series {
   /** For the image corners, as stored: Patient's Birth Date, Patient's Age (045Y), Study Time and so on. */
   patientBirthDate?: string; patientAgeText?: string; studyTime?: string; studyDescription?: string;
   institutionName?: string; accessionNumber?: string; magneticFieldStrength?: number; sliceThickness?: number;
+  /** Body Part Examined (0018,0015), as stored; every part the series' files record, separated by backslashes. */
+  bodyPartExamined?: string;
+  laterality?: string;
   /** A PET's tracer, injection and patient, for its acquisition panel (imaging/petAcquisition.ts). */
   petAcquisition?: PetAcquisition;
   /** Blood glucose in mmol/l the reader typed for this PET's study (imaging/glucose.ts): a display setting, as
@@ -194,22 +238,40 @@ export interface FusionSettings { volume: Volume; opacity: number; upperSuv: num
   /** For an overlay in a frame of reference of its own, aligned to the pane's (imaging/registration.ts): the row-major
    * 4 × 4 rigid transform from the pane's patient coordinates to the overlay's. */
   transform?: readonly number[]; }
+/** A stack paged together with its reference image as one sequence (ui/referenceImages.ts), as a pane sees it. */
+export interface Joined {
+  /** How many images the sequence has: the stack's slices and the reference image. */
+  total: number;
+  /** The reference image's place in the sequence, from 0 in paging order: its start (0) or its end (total - 1). */
+  leadAt: number;
+  /** The scanner numbered the complete sequence from its last paged image to its first. */
+  reverseNumbers?: boolean;
+  /** True in the pane that shows the reference image, false in the pane that shows the stack. */
+  lead: boolean;
+}
 export interface ViewportProps {
   volume: Volume; view: ViewState; tool: Tool; annotations: Annotation[];
   active: boolean; crosshair: Vec3 | null; fusion?: FusionSettings | null;
+  /** Set where the pane pages a stack with its reference image: the sequence, and the way to a place of it that the
+   * other of the two holds (the pane then takes that series). */
+  joined?: Joined | null;
+  onCross?: (place: number) => void;
   /** Other panes' planes, drawn where they cut this one; `transform` takes a plane in a frame of reference of its own,
    * aligned to this pane's (imaging/registration.ts), into this pane's patient coordinates. */
   referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string; transform?: readonly number[] }>;
   /** A still left click sets the linked point (while 3D is open beside the panes). */
   clickPicksPoint?: boolean;
   mouseBindings?: Partial<Record<'left' | 'middle' | 'right', Tool>>;
-  wheelSensitivity?: number;
+  /** How fast a touchpad's swipe pages slices (src/imaging/interaction.ts); a mouse wheel pages one a notch. */
+  touchpadSpeed?: number;
   /** What the wheel does without Ctrl: page slices (the default), zoom, turn the image 5° a notch, or nothing. */
   wheelAction?: WheelAction;
   reverseWheel?: boolean;
   showOverlay?: boolean;
   /** The scale bar at the bottom right (off unless asked for). */
   showScale?: boolean;
+  /** The value under the pointer, in the bottom-right corner (off unless asked for). */
+  showPointerValue?: boolean;
   hidePatientData?: boolean;
   hideMeasurements?: boolean;
   /** Segmentations to outline wherever their masks lie in the displayed plane. */
@@ -251,6 +313,15 @@ export interface CoreState {
   status: 'starting' | 'ready' | 'restarting' | 'failed' | 'stopping' | 'stopped';
   generation: number; restartCount: number; message?: string;
 }
+/** A series that a disc's DICOMDIR lists, before it is read (the engine's PlannedSeries). */
+export interface PlannedSeries {
+  uid: string; studyUid: string; patientId: string; patientName: string; studyDate: string; description: string; modality: string;
+  seriesNumber: number | null;
+  /** The files the index lists for it, and how many of them the import has finished with. */
+  files: number; finished: number;
+}
+/** A picture for a planned series: the series as made from its middle file alone (the engine's PlannedPreview). */
+export interface PlannedPreview { planned: number; series: Series }
 /** `source`: where the selection came from (usage timings), never its path. */
 export interface ImportResult { series: Series[]; warnings: string[]; warningNotes?: CoreNote[]; source?: 'disk' | 'cd' | 'zip' | 'network'; }
 /** Usage timings (electron/usage.cjs): the user's answer, and whether a collector is configured. */
@@ -282,6 +353,19 @@ export type BridgeFeature =
   | 'updates'
   /** Sending feedback to the team. */
   | 'feedback';
+/** A film of a folder being labelled, with the plan file beside it: its text, null when there is none, or `unreadable`. */
+export interface LabelFilm { name: string; plan: string | null; unreadable?: true }
+/** A folder chosen for labelling: `writes` says where Save and next puts a plan, beside its film or as a download (a
+ * browser that cannot write into a folder). */
+export interface LabelFolder { token: string; folder: string; films: LabelFilm[]; writes: 'beside' | 'download' }
+export interface LabelFolderBridge {
+  open(): Promise<LabelFolder | null>;
+  /** Import capabilities for one film, for importSelected. */
+  film(token: string, index: number): Promise<string[]>;
+  /** Writes a film's plan, and gives the file's name. */
+  write(token: string, index: number, text: string): Promise<string>;
+}
+
 export interface DesktopBridge {
   /** The browser build (viewer.veacom.app, src/web): no desktop window around the page, files chosen in the page. */
   web?: boolean;
@@ -308,8 +392,12 @@ export interface DesktopBridge {
   listSeries(): Promise<ImportResult>;
   importSelected(capabilities: string[]): Promise<ImportResult>;
   getProgress(): Promise<{ id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean }>;
-  /** Series this selection's import has already published, from the `after`th on. */
-  importEarly(capabilities: string[], after: number): Promise<{ import: number; series: Series[] }>;
+  /** Series this selection's import has already published, from the `after`th on; with `planned`, also the series a disc's
+   * DICOMDIR lists; with `finished`, how many files of each are read; and the pictures of those series from the
+   * `previewsAfter`th on. */
+  importEarly(capabilities: string[], after: number, options?: { planned: boolean; finished: boolean; previewsAfter: number }): Promise<{ import: number; series: Series[]; planned?: PlannedSeries[]; finished?: number[]; previews?: PlannedPreview[] }>;
+  /** Has this selection's import read the series `planned` of its disc's plan next: the series the reader opened. */
+  prioritiseImport?(capabilities: string[], planned: number): Promise<{ wanted: boolean }>;
   cancelOperation(id?: number): Promise<{ requested: boolean }>;
   /** Stops the DICOM, USB or folder export under way. */
   cancelExport?: () => Promise<void>;
@@ -329,6 +417,14 @@ export interface DesktopBridge {
   importFiles: (files: File[]) => Promise<string[]>;
   openExternal: (url: string) => Promise<void>;
   saveFile: (suggestedName: string, data: ArrayBuffer | string) => Promise<string | null>;
+  /** One of the landmark model's graphs for the deformity kit's suggestions (docs/landmark-model.md), fetched the first
+   * time and kept: the desktop's main process downloads it from the release, the browser from its own site. */
+  landmarkModel?: (part: 'stageA' | 'stageB', onProgress?: (received: number) => void) => Promise<ArrayBuffer>;
+  /** Stops the model's download under way. */
+  cancelLandmarkModel?: () => Promise<void>;
+  /** A folder of films to label one after another (docs/deformity-planning.md, "Labelling a folder"): chosen in the
+   * system's or the browser's own dialog; a film is named by the folder's token and its place in the list. */
+  labelFolder?: LabelFolderBridge;
   exportDicom: (seriesId: string | string[], options: { anonymize: boolean; full?: boolean; dicomdir: boolean; decompress?: boolean; root?: boolean; here?: boolean; frame?: number; zip?: boolean; smallest?: boolean; engineGeneration?: number }) => Promise<ExportResult | null>;
   /** In-app feedback to the team (veacom.app), sent only once the user confirms it in main's own dialog. `reason` is the service's or main's short error code. */
   sendFeedback?: (payload: { kind: 'problem' | 'suggestion'; message: string; email: string; includeSystem: boolean }) => Promise<{ ok: boolean; cancelled?: boolean; status?: number; reason?: string }>;

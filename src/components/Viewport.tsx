@@ -2,17 +2,18 @@ import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, us
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { Annotation, FusionSettings, NmFrame, Series, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
-import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
+import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
+import { calibrationTag, projectionEdgeLabels, projectionLine } from '../imaging/radiograph';
 import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
 import { sliceRenderer } from '../imaging/sliceRenderer';
-import { wheelSliceSteps } from '../imaging/interaction';
-import { pagesBackwards } from '../imaging/paging';
+import { streamSlices, streamWheelSteps, TOUCHPAD_SPEED, wheelSteps, type WheelStream } from '../imaging/interaction';
+import { pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../imaging/paging';
 import { patchView, renderedView, resolveView, usesSourceFrames } from '../imaging/viewState';
 import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
 import { wrapLabel } from '../ui/navigation';
@@ -31,9 +32,12 @@ import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle, type InputKind } from '../usage/tracker';
 import { ValueReadout, type ReadoutSetter } from './ValueReadout';
+import { PlanDrawing, PlanLayers } from './DeformityOverlay';
 
 type Point2 = [number, number];
-interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean; }
+interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean;
+  /** Where the pane stood, when the press began, in the sequence it pages with its reference image (props.joined). */
+  place?: number; }
 /** A left drag that starts in this right-hand part of the image pages the slices whatever the tool (VEAcom 1.x). */
 /** VEAcom Next's MPR line colours (sagittal red, coronal green, axial blue) and the gap left where the lines cross, px. */
 const MPR_LINE_COLORS = { sagittal: 'rgb(255,92,92)', coronal: 'rgb(92,219,107)', axial: 'rgb(84,168,255)' } as const;
@@ -237,6 +241,8 @@ export function Viewport(props: ViewportProps) {
   const size = useRef<[number, number]>(UNMEASURED);
   const sized = useRef(false);
   const drag = useRef<Drag | null>(null);
+  /** Set while a paging drag takes the pane from a stack to its reference image or back: the drag is kept. */
+  const crossing = useRef(false);
   const touches = useRef(new Map<number, Point2>()), pinch = useRef<Pinch | null>(null);
   const construction = useRef<Vec3[]>([]);
   const constructionTool = useRef<Tool | null>(null);
@@ -262,7 +268,10 @@ export function Viewport(props: ViewportProps) {
   const editing = useRef<{ pointer: number; start: Point2; startWorld: Vec3; original: Annotation; part: AnnotationPart; labelBase: Vec3; moved: boolean; context: InteractionContext } | null>(null);
   const editLive = useRef<Annotation | null>(null);
   const [edited, setEdited] = useState<Annotation | null>(null);
-  const baseCursor = annotationTools.has(props.tool) || props.tool === 'crosshair' ? 'crosshair' : props.tool === 'pan' ? 'grab' : 'default';
+  // The crosshair and measuring tools point with the app's own "+" (theme.css), which never inverts the colours under it.
+  const baseCursor = annotationTools.has(props.tool) || props.tool === 'crosshair' ? 'var(--cursor-point, crosshair)' : props.tool === 'pan' ? 'grab' : 'default';
+  // A press that sets the crosshair hides the cursor, so its green marker alone shows the point under it; this brings it back.
+  const showCursor = () => { if (container.current?.style.cursor === 'none') container.current.style.cursor = baseCursor; };
   // Ctrl + drag on a fused image: the pointer, where it was pressed and the PET's scale then.
   const petDrag = useRef<{ pointer: number; start: Point2; settings: { upperSuv: number; opacity: number } } | null>(null);
   const turning = useRef<{ pointer: number; id: string; pivot: Point2; last: number; turned: number; frame: PlaneFrame; mapping: ScreenMapping;
@@ -275,6 +284,7 @@ export function Viewport(props: ViewportProps) {
   const pendingCrosshair = useRef<Vec3 | null>(null);
   const [textPrompt, setTextPrompt] = useState<{ point: Vec3; value: string } | null>(null);
   const wheelAccumulator = useRef(0);
+  const wheelStream = useRef<WheelStream>({ fineUntil: 0 });
   const renderNeeded = useRef(true);
   const context = useRef(interactionContext(props.volume, resolveView(props.volume, props.view)));
   const annotationContext = useRef<InteractionContext | null>(null);
@@ -287,6 +297,7 @@ export function Viewport(props: ViewportProps) {
       const pointers = new Set([...touches.current.keys(), ...(drag.current ? [drag.current.pointer] : []), ...(freehand.current ? [freehand.current.pointer] : []), ...(editing.current ? [editing.current.pointer] : []), ...(petDrag.current ? [petDrag.current.pointer] : []), ...(turning.current ? [turning.current.pointer] : [])]);
       for (const pointer of pointers) if (container.current?.hasPointerCapture(pointer)) container.current.releasePointerCapture(pointer);
       drag.current = null; touches.current.clear(); pinch.current = null; petDrag.current = null; turning.current = null; setHeldLine(null);
+      showCursor();
     }
     editing.current = null; editLive.current = null; setEdited(null);
     construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null;
@@ -296,8 +307,11 @@ export function Viewport(props: ViewportProps) {
   const syncInteractionContext = (volume: ViewportProps['volume'], view: ViewState) => {
     const next = interactionContext(volume, view), previous = context.current;
     if (sameContext(previous, next)) return;
-    const keepScroll = drag.current?.mode === 'scroll' && previous.series === next.series && previous.plane === next.plane
-      && (previous.requestedSlice !== next.requestedSlice || previous.displayedSlice !== next.displayedSlice);
+    // A paging drag goes on when the slice changes under it, and when it took the pane itself from a stack to its
+    // reference image or back (goToPlace): the drag counts places of the sequence the two share.
+    const keepScroll = drag.current?.mode === 'scroll' && (crossing.current || (previous.series === next.series && previous.plane === next.plane
+      && (previous.requestedSlice !== next.requestedSlice || previous.displayedSlice !== next.displayedSlice)));
+    crossing.current = false;
     cancelGesture(keepScroll); context.current = next;
   };
 
@@ -346,6 +360,26 @@ export function Viewport(props: ViewportProps) {
     });
   };
 
+  /** The pane's place in the sequence it pages, and that sequence's length: the series' slices in paging order, with
+   * the stack's reference image where the pane pages the two as one (props.joined). */
+  const placeNow = (view: ViewState) => placeInSequence(props.volume.series, view, Math.round(view.slice), sliceCount(props.volume.series, view), props.joined);
+  /** Goes to a place of the sequence a stack shares with its reference image. The place the other of the two holds is
+   * asked of `onCross`: the pane then takes that series. */
+  const goToPlace = (place: number) => {
+    const joined = props.joined;
+    if (!joined) return;
+    if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) { crossing.current = drag.current?.mode === 'scroll'; props.onCross?.(place); return; }
+    if (joined.lead) return;
+    const series = props.volume.series, view = liveView.current;
+    changeView({ slice: stackSliceAt(series, view, place, sliceCount(series, view), joined) });
+  };
+  /** Pages `steps` down the page from the view `from`: within the series, or along the sequence it shares with its
+   * reference image. */
+  const pageBy = (from: ViewState, steps: number) => {
+    if (!props.joined) { changeView({ slice: stepSlice(props.volume.series, from, steps * pageDirection) }); return; }
+    const { place, total } = placeNow(from);
+    goToPlace(clamp(place + steps, 0, total - 1));
+  };
   const changeView = (patch: Partial<ViewState>) => {
     const next = patchView(latest.current.volume, liveView.current, patch);
     syncInteractionContext(latest.current.volume, next);
@@ -441,7 +475,7 @@ export function Viewport(props: ViewportProps) {
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
   }, [props, queue, syncInteractionContext, cancelGesture]);
   const refreshReadout = useEffectEvent(updateReadout);
-  useEffect(() => { refreshReadout(); }, [props.showOverlay, locale]);
+  useEffect(() => { refreshReadout(); }, [props.showOverlay, props.showPointerValue, locale]);
   const resizePane = useEffectEvent((element: HTMLElement) => measurePane(element.getBoundingClientRect()));
   const restore = useEffectEvent(() => queue());
   const wheel = useEffectEvent((event: WheelEvent) => {
@@ -457,12 +491,19 @@ export function Viewport(props: ViewportProps) {
       changeView({ zoom, pan: [x - w / 2 - (x - w / 2 - view.pan[0]) * factor, y - h / 2 - (y - h / 2 - view.pan[1]) * factor] });
       return;
     }
-    const amount = wheelSliceSteps(event, window.veacom?.zoomFactor?.() ?? 1) * (props.reverseWheel ? -1 : 1);
-    wheelAccumulator.current += action === 'rotate' ? amount : amount * clamp(props.wheelSensitivity ?? 1, 0.1, 10);
+    // A mouse wheel pages a slice a notch whatever the setting; the touchpad speed scales a touchpad's swipe only, up to
+    // a pace (streamSlices). Rotation goes by the wheel's own reading, 5° a notch, outside a swipe's reading.
+    const zoomFactor = window.veacom?.zoomFactor?.() ?? 1;
+    const read = action === 'rotate' ? wheelSteps(event, zoomFactor) : streamWheelSteps(event, zoomFactor, event.timeStamp, wheelStream.current);
+    // An event that moves nothing up or down (a sideways swipe) leaves what a swipe has gathered as it is.
+    if (read.steps === 0) return;
+    // A notch starts from whole slices, so a fraction a swipe left behind can neither swallow it nor add to it.
+    if (!read.fine) wheelAccumulator.current = 0;
+    wheelAccumulator.current += (action === 'rotate' ? read.steps : streamSlices(read, props.touchpadSpeed ?? TOUCHPAD_SPEED.default, event.timeStamp, wheelStream.current)) * (props.reverseWheel ? -1 : 1);
     const steps = Math.trunc(wheelAccumulator.current); wheelAccumulator.current -= steps;
     if (!steps) return;
     if (action === 'rotate') changeView({ rotation: ((view.rotation + steps * 5) % 360 + 360) % 360 });
-    else changeView({ slice: stepSlice(props.volume.series, view, steps * pageDirection) });
+    else pageBy(view, steps);
   });
   useEffect(() => {
     const element = container.current!;
@@ -532,7 +573,7 @@ export function Viewport(props: ViewportProps) {
     if (button === 'left' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
       event.currentTarget.setPointerCapture(event.pointerId);
       if (event.detail <= 1) gesture.current = usage.begin('drag-scroll', input === 'touch' ? 'touch' : 'drag');
-      drag.current = { mode: 'scroll', edge: true, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
+      drag.current = { mode: 'scroll', edge: true, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating, place: placeNow(liveView.current).place };
       return;
     }
     if (button === 'left' && latest.current.onCyclePlane && !construction.current.length && !twoClick.current) {
@@ -571,13 +612,9 @@ export function Viewport(props: ViewportProps) {
         gesture.current = hit.part === 'label' ? usage.begin('annotation-label', kind) : hit.part === 'body' ? usage.begin('annotation-move', kind) : usage.begin('annotation-handle', kind);
         return;
       }
-      // A press beside a selected measurement on this slice only lets it go; drawing starts with the next press (or at
-      // once on another slice, where the selected one is not shown).
-      if (selected) {
-        const onScreen = hitTargets.some(target => target.annotation.id === selected);
-        setSelected(null);
-        if (onScreen && annotationTools.has(mode)) return;
-      }
+      // A press beside the selected measurement lets it go and goes on with the tool, so the next measurement starts with
+      // this press: a reader who measures again does not spend a press letting the last one go.
+      if (selected) setSelected(null);
     }
     if (mode === 'none') return;
     if (event.detail > 1 && clickTools.has(mode)) return;
@@ -603,12 +640,28 @@ export function Viewport(props: ViewportProps) {
     if (mode === 'text') { usage.action('point-text', input); usage.touch('marks'); event.preventDefault(); setTextPrompt({ point: world, value: '' }); return; }
     event.currentTarget.setPointerCapture(event.pointerId);
     if (event.detail <= 1) gesture.current = usage.begin(annotationTools.has(mode) ? `draw-${mode}` : `drag-${mode}`, input === 'touch' ? 'touch' : 'drag');
-    drag.current = { mode, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating };
-    if (mode === 'crosshair') { pendingCrosshair.current = pickAt(...start); queue(false); }
+    drag.current = { mode, start, startWorld: world, view: { ...liveView.current, pan: [...liveView.current.pan] }, pointer: event.pointerId, pointerType: event.pointerType, moved: false, activating, place: placeNow(liveView.current).place };
+    if (mode === 'crosshair') {
+      pendingCrosshair.current = pickAt(...start); queue(false);
+      // In the three-plane MPR the lines' gap marks the point instead of the marker, and the pointer stays.
+      if (event.pointerType !== 'touch' && !(latest.current.onRotateReference && latest.current.referencePlanes?.length)) event.currentTarget.style.cursor = 'none';
+    }
   };
   const pointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
     syncInteractionContext(latest.current.volume, liveView.current);
-    const point = local(event), active = drag.current;
+    const point = local(event);
+    // A press whose release the pane never saw (the window lost the pointer) ends with the next move made without a
+    // button, as its release would have: a crosshair drag lets go of its point, and the pointer comes back.
+    if (event.buttons === 0) {
+      const lost = drag.current;
+      if (lost?.mode === 'crosshair' && lost.pointer === event.pointerId) {
+        gesture.current?.end(lost.moved ? {} : { id: `click-${lost.mode}`, input: event.pointerType === 'touch' ? 'touch' : 'mouse' }); gesture.current = null;
+        drag.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      showCursor();
+    }
+    const active = drag.current;
     if (event.pointerType !== 'touch') { hover.current = point; updateReadout(); }
     if (touches.current.has(event.pointerId)) touches.current.set(event.pointerId, point);
     if (pinch.current && touches.current.size >= 2) {
@@ -680,7 +733,9 @@ export function Viewport(props: ViewportProps) {
       changeView({ zoom, pan: [active.start[0] - w / 2 - (active.start[0] - w / 2 - initial.pan[0]) * factor, active.start[1] - h / 2 - (active.start[1] - h / 2 - initial.pan[1]) * factor] });
     } else if (active.mode === 'scroll') {
       const steps = active.edge ? Math.trunc(dy / EDGE_PX_PER_SLICE) : Math.round(dy / 5);
-      changeView({ slice: stepSlice(props.volume.series, initial, steps * pageDirection) });
+      // A stack paged with its reference image: from the place the press began at, so that the pane can change series under the drag.
+      if (props.joined && active.place !== undefined) goToPlace(clamp(active.place + steps, 0, props.joined.total - 1));
+      else changeView({ slice: stepSlice(props.volume.series, initial, steps * pageDirection) });
     } else if (active.mode === 'rotate') {
       // Free rotation, as in VEAcom Next: the image turns as far as the pointer goes round the pane's centre.
       const [w, h] = size.current, angle = (p: Point2) => Math.atan2(p[1] - h / 2, p[0] - w / 2) * 180 / Math.PI;
@@ -732,6 +787,7 @@ export function Viewport(props: ViewportProps) {
       return;
     }
     const active = drag.current; if (!active || active.pointer !== event.pointerId) return;
+    if (active.mode === 'crosshair') showCursor();
     gesture.current?.end(active.moved ? {} : { id: `click-${active.mode}`, input: event.pointerType === 'touch' ? 'touch' : 'mouse' }); gesture.current = null;
     drag.current = null;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -782,16 +838,16 @@ export function Viewport(props: ViewportProps) {
       event.preventDefault(); event.stopPropagation();
       const step = 40, [dx, dy] = { ArrowUp: [0, -step], ArrowDown: [0, step], ArrowLeft: [-step, 0], ArrowRight: [step, 0] }[event.key as 'ArrowUp'];
       changeView({ pan: [liveView.current.pan[0] + dx, liveView.current.pan[1] + dy] });
+    } else if ((event.ctrlKey || event.metaKey) && (event.key === 'ArrowLeft' || event.key === 'ArrowRight')) {
+      // Ctrl + ← / → steps through the series: the workspace's key, not this pane's.
     } else {
       const delta = { ArrowUp: -1, ArrowDown: 1, ArrowLeft: -1, ArrowRight: 1, PageUp: -10, PageDown: 10 }[event.key];
-      if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); usage.action('key-slice', 'key', { burst: true }); changeView({ slice: stepSlice(props.volume.series, liveView.current, delta * pageDirection) }); }
+      if (delta !== undefined) { event.preventDefault(); event.stopPropagation(); usage.action('key-slice', 'key', { burst: true }); pageBy(liveView.current, delta); }
     }
   };
 
   const mapping = screenMapping(props.volume.series, overlayView, ...dimensions);
   const frame = getPlaneFrame(props.volume.series, overlayView);
-  // The slice number counts in paging order: 1 at the top of an axial stack.
-  const shownBackwards = pagesBackwards(props.volume.series, { plane: overlayView.plane, mode: overlayView.mode, oblique: overlayView.oblique });
   // A whole-volume MIP: no drawing lies in it, and the crosshair shows wherever it is in depth.
   const projected = isProjection(props.volume.series, overlayView);
   const visibleAnnotations = props.hideMeasurements ? NO_ANNOTATIONS
@@ -865,7 +921,8 @@ export function Viewport(props: ViewportProps) {
   const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
   const normalAxis = frame.normal.reduce((best, value, axis) => Math.abs(value) > Math.abs(frame.normal[best]) ? axis : best, 0);
   const location = displayedSeries.orientationKnown === true && displayedSeries.positionKnown !== false ? frame.center[normalAxis] : null;
-  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t);
+  // A projection film names its side and what its millimetres stand for there instead (imaging/radiograph.ts).
+  const detailLine = projected ? '' : sliceDetail(acquiredPlane ? props.volume.series.sliceThickness : undefined, location, t) || projectionLine(displayedSeries);
   const scanner = scannerLines(props.volume.series);
   const bottomRight = props.showOverlay === false ? [] : [...scanner, ...(props.fusion ? [
     fusionLine(props.fusion.volume.series, props.hidePatientData === true, t),
@@ -877,9 +934,10 @@ export function Viewport(props: ViewportProps) {
   // and its plain form with the plain corners, so a copied picture takes the plain one.
   const fusionNameAt = props.fusion && props.showOverlay !== false ? scanner.length : -1;
   const plainFusionName = props.fusion && fusionNameAt >= 0 && !props.hidePatientData ? fitWidth(fusionLine(props.fusion.volume.series, true, t), lowerWidth, fontFamily) : null;
-  // The pointer's value takes the lowest lines of the bottom-right corner (the pane's own, then a fused PET's), kept for
-  // it while the overlay shows, so labels and corner lines stay put as it comes and goes.
-  const readoutLines = props.showOverlay === false || props.volume.series.components === 3 ? 0 : props.fusion && !projected ? 2 : 1;
+  // The pointer's value is written only where the reader asked for it (the overlay menu). It takes the lowest lines of
+  // the bottom-right corner (the pane's own, then a fused PET's), kept for it while the overlay shows, so labels and
+  // corner lines stay put as it comes and goes.
+  const readoutLines = props.showOverlay === false || !props.showPointerValue || props.volume.series.components === 3 ? 0 : props.fusion && !projected ? 2 : 1;
   const bottomRightY = (index: number) => dimensions[1] - 40 - (bottomRight.length - 1 - index + readoutLines) * 16;
   const keepOut = props.showOverlay === false || (!shownAnnotations.length && !draft) ? NO_BOXES : overlayKeepOut(dimensions[0], dimensions[1], metadataWidth,
     { topLeft: topLeft.length, topRight: topRight.length, bottomLeft: detailLine ? 3 : 2, bottomRight: bottomRight.length + readoutLines });
@@ -923,11 +981,13 @@ export function Viewport(props: ViewportProps) {
   const sourcePlane = source && displayedSeries.orientationKnown === true ? seriesPlane(props.volume.series) : null;
   // Written as a name, capitalised ("Koronal"), as VEAcom 1.x wrote it.
   const planeName = source ? (sourcePlane ? t(`plane.${sourcePlane}` as const) : '') : tilt ? t('viewport.obliquePlane', { plane: t(`plane.${overlayView.plane}` as const), angle: tilt }) : t(`plane.${overlayView.plane}` as const);
-  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${shownBackwards ? frame.slices - Math.round(overlayView.slice) : Math.round(overlayView.slice) + 1} / ${frame.slices}${source && props.volume.series.frameMetadata?.[overlayView.slice]?.instanceNumber !== undefined ? t('viewport.instance', { number: props.volume.series.frameMetadata[overlayView.slice].instanceNumber! }) : ''}`;
+  // The slice's number in the sequence the pane pages: 1 at the top of an axial stack (imaging/paging.ts).
+  const numbered = shownSlice(props.volume.series, overlayView, Math.round(overlayView.slice), frame.slices, props.joined);
+  const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${numbered.number} / ${numbered.total}`;
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
-    : { left: '', right: '', top: '', bottom: '' };
+    : projectionEdgeLabels(displayedSeries, mapping) ?? { left: '', right: '', top: '', bottom: '' };
   const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
     // A plane in a frame of reference of its own is drawn where the alignment puts it in this one.
     const own = getPlaneFrame(reference.series, reference.view), theirs = reference.transform ? frameThrough(own, reference.transform) : own;
@@ -966,6 +1026,8 @@ export function Viewport(props: ViewportProps) {
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
     <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
+    <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
       {/* Segmentation masks (from main, #3) sit on the image, under every line, measurement and overlay text. */}
       {segmentationFrames.length > 0 && <g data-testid="segmentation-overlay" pointerEvents="none">
@@ -997,6 +1059,7 @@ export function Viewport(props: ViewportProps) {
       {shownAnnotations.map((annotation, index) => <AnnotationDrawing key={annotation.id} annotation={annotation} shown={shown[index].points} dashed={shown[index].dashed}
         handles={!projected} mapping={mapping} layout={labelLayouts[index]} selected={selected === annotation.id} />)}
       {!props.hideMeasurements && draft && <AnnotationDrawing annotation={draft} shown={draftShown} mapping={mapping} layout={draftLayout} selected={false} />}
+      <PlanDrawing volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
       {/* Overlay text last: laterality and patient identification stay on top of everything else. */}
       {props.showOverlay !== false && <g data-testid="patient-overlay" data-patient-corners fill="#e6e8eb" fontFamily="var(--font-ui)" fontSize={12} stroke="#000" strokeWidth={2.5} paintOrder="stroke" strokeLinejoin="round">
         {topLeft.map((line, index) => <text key={`l${index}`} x={10} y={18 + index * 16} data-identity={line.identity || undefined}><title>{line.text}</title>{line.fitted}</text>)}
@@ -1022,7 +1085,7 @@ export function Viewport(props: ViewportProps) {
         <OverlayText text={sliceLine} y={dimensions[1] - 13} width={bottomWidth} fontFamily={fontFamily} />
         {bottomRight.map((line, index) => index !== fusionNameAt && <text key={`s${index}`} x={dimensions[0] - 14} y={bottomRightY(index)} fontSize={12} textAnchor="end"><title>{line.text}</title>{line.fitted}</text>)}
         {props.showScale && <>
-        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}</text>
+        <text x={dimensions[0] - 14} y={dimensions[1] - 24} fontSize={12} textAnchor="end">{scaleUnits} {measure.unit}{measure.unit === 'mm' && calibrationTag(displayedSeries) ? ` · ${calibrationTag(displayedSeries)}` : ''}</text>
         <path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#000" strokeWidth={3} strokeLinecap="round" opacity={0.75} fill="none" /><path d={`M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 15}v-4 M${dimensions[0] - 14 - scaleUnits * pixelsPerUnit},${dimensions[1] - 17}h${scaleUnits * pixelsPerUnit} M${dimensions[0] - 14},${dimensions[1] - 15}v-4`} stroke="#c9d3df" strokeWidth={1} fill="none" />
         </>}
       </g>}
