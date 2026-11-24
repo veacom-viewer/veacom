@@ -255,8 +255,11 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
 
   const scopeName = (key: Scope) => key === 'slice' ? (isImages ? t('export.scopeImage') : t('export.scopeSlice')) : key === 'series' ? t('export.scopeSeries')
     : key === 'all' ? (patients > 1 ? t('export.scopeAllPatients', { count: patients }) : t('export.scopeAll')) : key === 'picked' ? t('export.scopePicked') : t('export.scopeLayout');
+  // Cut at its start (ExportDialog.css), the path is read left to right, each folder's name on its own: a drive's root
+  // is "E:\", not "\:E", and a name in a right-to-left script stays after the folder it is in.
+  const folderNames = folder.split(/([\\/])/).map((part, index) => index % 2 ? part : part && <bdi key={index}>{part}</bdi>);
   const folderRow = <div className="export-row"><span className="export-row-label">{t('export.folder')}</span>
-    <div className="export-folder"><FolderOpen size={15} aria-hidden="true" /><span className="export-folder-path" title={folder}>{folder || '…'}</span>
+    <div className="export-folder"><FolderOpen size={15} aria-hidden="true" /><span className="export-folder-path" title={folder}><bdi dir="ltr">{folder ? folderNames : '…'}</bdi></span>
       <button type="button" className="secondary-button compact" data-action="export-folder-change" onClick={() => void chooseFolder()}>{t('export.change')}</button></div></div>;
   const anonymityRow = <Choice name="anonymity" action="export-anonymity" label={t('export.anonymity')} value={anonymity} onChange={setAnonymity}
     options={[['none', t('export.anonNone')], ['partial', t('export.anonPartial')], ['full', t('export.anonFull')]]} />;
