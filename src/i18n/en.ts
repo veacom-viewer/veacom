@@ -313,6 +313,7 @@ export const en = {
   'toolbar.measurementsShown': 'Measurements',
   'toolbar.customWindow': 'Custom',
   'notice.measurementsDeleted': '{count} measurements deleted',
+  'notice.measurementsNotKept': 'Some measurements could not be kept.',
   'notice.undo': 'Undo',
   'help.group.toggle': 'Show or hide',
 

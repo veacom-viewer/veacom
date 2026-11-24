@@ -316,6 +316,7 @@ export const tr: Record<keyof typeof en, string> = {
   'toolbar.measurementsShown': 'Ölçümler',
   'toolbar.customWindow': 'Özel',
   'notice.measurementsDeleted': '{count} ölçüm silindi',
+  'notice.measurementsNotKept': 'Bazı ölçümler korunamadı.',
   'notice.undo': 'Geri al',
   'help.group.toggle': 'Göster / gizle',
 

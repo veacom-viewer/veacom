@@ -18,6 +18,7 @@ import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { holdsFrame } from './ui/discPictures';
+import { carryAnnotations, holdingIn } from './ui/earlySeries';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
@@ -953,23 +954,36 @@ export default function App() {
     setLoadErrors(current => { const updated = { ...current }; for (const id of ids) delete updated[id]; return updated; });
   };
 
+  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
+   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
+   * gone. */
+  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
+    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
+  };
   /** Measurements drawn on source images keep their image when a series' images move: an import that read it again, or
-   * a series being read that grew. */
-  const followAnnotations = (moved: readonly Series[]) => setAnnotations(current => {
-    const next = { ...current }; let changed = false;
-    for (const item of moved) {
-      if (!Object.hasOwn(current, item.id)) continue;
-      const kept = current[item.id];
-      const placed = kept.map(annotation => {
-        if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
-        const index = annotationSourceIndex(annotation, item);
-        if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
-        return { ...annotation, sourceFrame: index, slice: index };
-      });
-      if (placed.some((annotation, i) => annotation !== kept[i])) { next[item.id] = placed; changed = true; }
-    }
-    return changed ? next : current;
-  });
+   * a series being read that grew. So do those Undo and Redo bring back. */
+  const followAnnotations = (moved: readonly Series[]) => {
+    const place = (annotations: Record<string, Annotation[]>) => {
+      const next = { ...annotations }; let changed = false;
+      for (const item of moved) {
+        if (!Object.hasOwn(annotations, item.id)) continue;
+        const kept = annotations[item.id];
+        const placed = kept.map(annotation => {
+          if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
+          const index = annotationSourceIndex(annotation, item);
+          if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
+          return { ...annotation, sourceFrame: index, slice: index };
+        });
+        if (placed.some((annotation, i) => annotation !== kept[i])) { next[item.id] = placed; changed = true; }
+      }
+      return changed ? next : annotations;
+    };
+    setAnnotations(place);
+    followHistory(snapshot => {
+      const annotations = place(snapshot.annotations);
+      return annotations === snapshot.annotations ? snapshot : { ...snapshot, annotations };
+    });
+  };
   /** A series still being read from a disc grew (importStudies): it takes its earlier self's place without being loaded
    * again. Each pane on it keeps the image it shows, now at that image's place in the grown series, and so does each
    * measurement. Read whole, a series shown in a pane is loaded as any series is. */
@@ -998,9 +1012,11 @@ export default function App() {
       return item ? { ...slot, view: { ...slot.view, slice: placeIn(item, slot.view.slice) } } : slot;
     };
     setSlots(current => current.map(follow));
-    // And the panes kept aside to come back: those a maximized pane hides, and those the three-plane MPR took the place of.
+    // And the panes kept aside to come back: those a maximized pane hides, those the three-plane MPR took the place of,
+    // and those Undo and Redo bring back.
     hiddenSlots.current = hiddenSlots.current.map(follow);
     if (beforeMpr.current) beforeMpr.current = { ...beforeMpr.current, slots: beforeMpr.current.slots.map(follow) };
+    followHistory(snapshot => ({ ...snapshot, slots: snapshot.slots.map(follow) }));
     followAnnotations(grown);
     // A pane on it asks again once it is read whole, or now if it has no image yet (its request went to an earlier self).
     for (const item of grown) if (slotsRef.current.some(slot => slot.seriesId === item.id) && (!item.reading || !volumesRef.current.has(item.id))) loadPaneImage(item);
@@ -1275,20 +1291,16 @@ export default function App() {
       const settled = new Set(result.series.filter(same).map(item => item.id));
       const dropped = new Set([...early.keys()].filter(id => !result.series.some(item => item.id === id)));
       // A series opened while it was read can come out of the import as more than one (the phases of one Series Instance
-      // UID). A pane on it goes to the series that holds the image it showed, at that image, and so does each measurement.
-      const holding = (sopInstanceUid: string | undefined, sourceFrameNumber: number | undefined) => {
-        if (sopInstanceUid === undefined) return undefined;
-        for (const item of result.series) {
-          const at = (item.frameMetadata ?? []).findIndex(frame => frame.sopInstanceUid === sopInstanceUid && frame.sourceFrameNumber === sourceFrameNumber);
-          if (at >= 0) return { item, at };
-        }
-        return undefined;
+      // UID). A pane on it goes to the series that holds the image it showed, at that image, and so does each measurement
+      // (src/ui/earlySeries.ts).
+      const holding = holdingIn(result.series);
+      const shownIn = (slot: Slot) => {
+        const shown = slot.seriesId ? early.get(slot.seriesId)?.frameMetadata?.[slot.view.slice] : undefined;
+        return holding(shown?.sopInstanceUid, shown?.sourceFrameNumber);
       };
       const carried = new Map<string, { item: Series; at: number } | undefined>();
       for (const slot of [...slotsRef.current, ...hiddenSlots.current]) {
-        if (!slot.seriesId || !dropped.has(slot.seriesId)) continue;
-        const shown = early.get(slot.seriesId)?.frameMetadata?.[slot.view.slice];
-        carried.set(slot.id, holding(shown?.sopInstanceUid, shown?.sourceFrameNumber));
+        if (slot.seriesId && dropped.has(slot.seriesId)) carried.set(slot.id, shownIn(slot));
       }
       const carry = (slot: Slot): Slot => {
         if (!carried.has(slot.id) || !slot.seriesId || !dropped.has(slot.seriesId)) return slot;
@@ -1296,19 +1308,17 @@ export default function App() {
         return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : { ...slot, seriesId: null };
       };
       hiddenSlots.current = hiddenSlots.current.map(carry).filter(slot => slot.seriesId);
-      if (dropped.size) setAnnotations(current => {
-        const from = [...dropped].filter(id => Object.hasOwn(current, id));
-        if (!from.length) return current;
-        const next = { ...current };
-        for (const id of from) {
-          for (const annotation of current[id]) {
-            const to = annotation.mode === 'source' ? holding(annotation.sourceSopInstanceUid, annotation.sourceFrameNumber) : undefined;
-            if (to) next[to.item.id] = [...(next[to.item.id] ?? []), { ...annotation, sourceFrame: to.at, slice: to.at }];
-          }
-          delete next[id];
-        }
-        return next;
-      });
+      // A measurement whose image no series holds is gone with its series, and said below.
+      const lostMeasurements = carryAnnotations(annotationRef.current, dropped, holding).lost;
+      if (dropped.size) {
+        setAnnotations(current => carryAnnotations(current, dropped, holding).annotations);
+        // Undo's and Redo's steps go along: their measurements, and their panes on a dropped series whose image is held.
+        const carrySaved = (slot: Slot): Slot => {
+          const to = slot.seriesId && dropped.has(slot.seriesId) ? shownIn(slot) : undefined;
+          return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : slot;
+        };
+        followHistory(snapshot => ({ ...snapshot, annotations: carryAnnotations(snapshot.annotations, dropped, holding).annotations, slots: snapshot.slots.map(carrySaved) }));
+      }
       const images = result.series.filter(item => !item.segmentation);
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0),
         source: result.source, result: images.length ? 'ok' : 'empty' }, result.series.map(item => item.id));
@@ -1325,7 +1335,9 @@ export default function App() {
       // in the import's catalogue order rather than the order they were found in. Series listed before it follow
       // where they were.
       setSeries(current => withImported(current, result.series, listedBefore, early.keys()));
-      if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
+      // The measurements that could not be kept are said after the import's own warnings.
+      const told = lostMeasurements ? { ...result, warnings: [...result.warnings, t('notice.measurementsNotKept')] } : result;
+      if (told.warnings.length) setNotice({ message: warningTexts(told).join(' · '), kind: 'info', code: 'import-warnings', warnings: told });
       const known = new Map(seriesRef.current.map(item => [item.id, item]));
       for (const item of result.series) known.set(item.id, item);
       const session = [...known.values()];
