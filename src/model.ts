@@ -241,7 +241,10 @@ export interface ViewState {
 }
 export interface FusionSettings { volume: Volume; opacity: number; upperSuv: number; palette: 'hot' | 'ge' | 'rainbow' | 'hot_metal' | 'red_yellow';
   /** uptake: low uptake fades out (as before); classic: the same share everywhere in the PET, as scanners draw it. */
-  blend: 'uptake' | 'classic'; }
+  blend: 'uptake' | 'classic';
+  /** For an overlay in a frame of reference of its own, aligned to the pane's (imaging/registration.ts): the row-major
+   * 4 × 4 rigid transform from the pane's patient coordinates to the overlay's. */
+  transform?: readonly number[]; }
 /** A stack paged together with its reference image as one sequence (ui/referenceImages.ts), as a pane sees it. */
 export interface Joined {
   /** How many images the sequence has: the stack's slices and the reference image. */
@@ -260,7 +263,9 @@ export interface ViewportProps {
    * other of the two holds (the pane then takes that series). */
   joined?: Joined | null;
   onCross?: (place: number) => void;
-  referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string }>;
+  /** Other panes' planes, drawn where they cut this one; `transform` takes a plane in a frame of reference of its own,
+   * aligned to this pane's (imaging/registration.ts), into this pane's patient coordinates. */
+  referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string; transform?: readonly number[] }>;
   /** A still left click sets the linked point (while 3D is open beside the panes). */
   clickPicksPoint?: boolean;
   mouseBindings?: Partial<Record<'left' | 'middle' | 'right', Tool>>;
@@ -290,6 +295,8 @@ export interface ViewportProps {
   onRotateReference?: (id: string, oblique: [number, number]) => void;
   /** Shown in the accessible name when several panes are open, so they can be told apart. */
   paneNumber?: number;
+  /** The pane's series, or its fused overlay, is placed by an alignment (imaging/registration.ts): its corner says so. */
+  aligned?: 'automatic' | 'adjusted';
   /** A CLOSE caliper under way in this pane: what to click, point by point (`key` names the caliper), and what setting
    * the pane up for it changed, with its Undo. */
   caliper?: { key: string; prompts: readonly string[]; setUp?: { text: string; onUndo: () => void } };
@@ -303,6 +310,14 @@ export interface VolumeViewProps {
   segmentations?: SegmentationOverlay[];
   onCrosshairChange: (point: Vec3) => void;
   onClose: () => void;
+}
+/** Where the engine lays a moving series over a fixed one: `matrix` (row-major 4 × 4) takes the moving series' patient
+ * coordinates to the fixed series'. `similarity` is normalised mutual information as the entropy correlation
+ * coefficient (0 unrelated, 1 identical), at the result and with the two coordinates taken as one; `overlap` the share of
+ * the fixed volume's points inside the moving one. */
+export interface EngineRegistration {
+  matrix: number[]; rotation: Vec3; shift: Vec3; centre: Vec3; angle: number;
+  similarity: number; similarityBefore: number; overlap: number; evaluations: number; levels: number;
 }
 export interface CoreState {
   status: 'starting' | 'ready' | 'restarting' | 'failed' | 'stopping' | 'stopped';
@@ -398,6 +413,8 @@ export interface DesktopBridge {
   cancelExport?: () => Promise<void>;
   /** The tags of the file holding frame `frame` (the slice shown), or of the series' first frame. */
   measure(id: string, generation: number, revision: number, operation: import('./imaging/nativeMeasurements').SamplingOperation): Promise<unknown>;
+  /** The rigid transform laying one series over another acquired apart (native/src/registration.rs). */
+  register?(request: { fixedId: string; movingId: string; generation: number; fixedRevision: number; movingRevision: number }): Promise<EngineRegistration>;
   getTags(seriesId: string, generation: number, frame?: number, revision?: number): Promise<Record<string, unknown>[]>;
   removeSeries(ids: string[], generation: number): Promise<{ removed: number; remaining?: number }>;
   getPixels(request: { seriesId: string; generation: number; index?: number; revision?: number }): Promise<{ url: string; generation: number }>;

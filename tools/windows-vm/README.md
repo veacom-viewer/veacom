@@ -5,7 +5,7 @@ Windows evidence for a pull request comes from two places, both driven by files 
 | Where | What runs | How |
 | --- | --- | --- |
 | Hosted Windows job ([`.github/workflows/windows.yml`](../../.github/workflows/windows.yml)), Windows Server 2022, no GPU | Frozen pnpm install, desktop runtimes, locked Rust release build with `dumpbin /dependents`, Rust release tests, web build, unit tests (`node --test`, JUnit report; the ISO test has a normal PATH), app-local Visual C++ runtime, a frozen install of `packaging/` (electron-builder, kept out of the root install), the NSIS installer build, and checks on the packaged engine and runtime. Then, drawing through WARP: the video encoder check, packaged desktop smoke with `VEACOM_SMOKE_RENDERER=software`, `check-software-rendering --expect software`, the padding pixels, file drop and the security boundary. Silent install into a folder named after the product, smoke and file drop on the installed app, then silent uninstall with the folder, registration and processes checked. | Add the `windows` label to the pull request. It runs once then, not on every push: to test a later push, remove the label and add it again, or run the workflow by hand on the branch. Release tags (`v*`) run it too. Evidence is the run's `windows-<run id>` artifact. |
-| Windows VM (Google Cloud, Windows Server 2022, Tesla T4; named in your local settings file, below) | The build again, then the T4 plan: the video encoder with the GPU on, packaged desktop smoke drawing on the T4, the click budgets and their coverage on the fingerprinted `ct-small`, `check-software-rendering --expect hardware`, the padding pixels on the T4, GPU startup, and real Windows mouse input on the frameless window (`ui-windows-checks.cjs`). | `tools/windows-vm/vm.sh`, below. Evidence is a zip downloaded to `test-results/windows-vm/`. |
+| Windows VM (Google Cloud, Windows Server 2022, Tesla T4; named in your local settings file, below) | The build again, then the T4 plan: the video encoder with the GPU on, packaged desktop smoke drawing on the T4, the click budgets on the fingerprinted `ct-small` and a synthetic long-leg film, and the coverage check for both, `check-software-rendering --expect hardware`, the padding pixels on the T4, GPU startup, and real Windows mouse input on the frameless window (`ui-windows-checks.cjs`). | `tools/windows-vm/vm.sh`, below. Evidence is a zip downloaded to `test-results/windows-vm/`. |
 
 Labeled pull requests use a smoke installer that excludes the usage collector. Release tags and manual runs with `keep_installer` use the release configuration and verify the collector inside the packaged app.
 
@@ -68,6 +68,7 @@ What each phase does on the VM:
 | --- | --- | --- | --- |
 | 2026-11-07 | veacom-viewer/veacom-private#25 | 78 min | about US$2 |
 | 2026-11-07 | veacom-viewer/veacom-private#29 merged with veacom-viewer/veacom-private#27, the kit's first run (cold build, all 8 T4 checks passed) | 16 min | about US$0.40 |
+| 2026-11-24 | [Public PR #4](https://github.com/veacom-viewer/veacom/pull/4) on current main. All 9 T4 checks passed at `7f42494`. The PET and sinus checklist workflows also passed. | 20 min 33 s | about US$0.51 |
 
 Earlier sessions, from 2026-11-03 to 2026-11-06, are not itemised here; the billing report has them.
 
