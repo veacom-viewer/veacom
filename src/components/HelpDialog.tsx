@@ -22,6 +22,7 @@ function groups(t: Translator): { title: MessageKey; rows: Row[] }[] {
     ] },
     { title: 'help.group.navigate', rows: [
       [t('help.slices'), [['↑'], ['↓'], [t('help.wheelKey')]]], [t('help.pageSlices'), [['PgUp'], ['PgDn']]],
+      [t('help.series'), [[mod, '←'], [mod, '→']]],
       [t('help.zoomKeys'), [['+'], ['−']]], [t('help.zoomWheel'), [[mod, t('help.wheelKey')]]],
       [t('help.panKeys'), [[shift, t('help.arrowKeys')]]], [t('help.zoomPan'), [[t('help.zoomPanKeys')]]],
       [t('help.resetView'), [[t('help.doubleClickKey')]]], [t('help.mpr'), [['M']]], [t('help.fusionDrag'), [[mod, t('help.dragKey')]]], [t('help.quickMenu'), [[t('help.spaceKey')]]],
@@ -95,6 +96,7 @@ export function HelpDialog({ onClose, onCheckUpdates }: { onClose: () => void; o
         <a href="https://github.com/veacom-viewer/veacom" target="_blank" rel="noopener noreferrer">{t('help.source')}</a>
         <br />{t('help.notices')} <a href="THIRD_PARTY_JAVASCRIPT_LICENSES.md" target="_blank" rel="noopener">JavaScript</a>
         {' · '}<a href="RUST_LICENSES.txt" target="_blank" rel="noopener">Rust</a>
+        {' · '}<a href="onnxruntime-LICENSE.txt" target="_blank" rel="noopener">ONNX Runtime</a>
       </p>}
       <pre lang="en" tabIndex={0} aria-label={t('help.licence')}>{licence}</pre>
     </details>

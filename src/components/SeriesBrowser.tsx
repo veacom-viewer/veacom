@@ -1,13 +1,14 @@
 import { Fragment, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent, RefObject } from 'react';
 import { ChevronDown, Eye, EyeOff, Images, Search, Shapes, TriangleAlert, X } from './icons';
-import type { Series, Volume } from '../model';
+import type { PlannedSeries, Series, Volume } from '../model';
 import { isPaddingValue } from '../imaging/geometry';
 import { voiGrey, windowGrey } from '../imaging/viewState';
 import type { Translator } from '../i18n';
 import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
+import { referenceImages } from '../ui/referenceImages';
 import { foldSearch, patientKey, searchText, sequenceGuess, shownGuess, sortStudySeries, studyKey } from '../ui/seriesNames';
 import { phaseLabel } from '../ui/overlayCorners';
 import { Glyph } from './Glyph';
@@ -22,8 +23,13 @@ export interface SeriesBrowserProps {
   shownSegmentationIds?: ReadonlySet<string>;
   /** Series whose preview could not be made: their card shows a dash. */
   failedIds?: ReadonlySet<string>;
+  /** The series of a disc being read, as its DICOMDIR lists them (App's importStudies). */
+  waiting?: readonly WaitingSeries[];
 }
-interface SeriesActions { select: (series: Series) => void; remove: (ids: string[]) => void }
+/** A series that a disc's DICOMDIR lists and that the import is still reading: its place in the index's list, what the
+ * index says of it, and the picture made from its middle image once that is read. */
+export interface WaitingSeries { index: number; info: PlannedSeries; preview?: Series }
+interface SeriesActions { select: (series: Series) => void; remove: (ids: string[]) => void; open: (card: WaitingSeries) => void }
 
 /** A drag of several picked cards carries their ids here, in the order they were picked. */
 export const SERIES_LIST_DRAG = 'application/x-veacom-series-list';
@@ -118,6 +124,15 @@ export function forgetThumbnail(id: string) {
   if (drawnPreviews.delete(id)) previewUpdates.dispatchEvent(new Event(id));
 }
 
+/** A series read whole takes the picture its card had while it was read (`from`, a WaitingSeries' preview), if it has
+ * none yet: the same image, so the card does not change. */
+export function adoptThumbnail(from: string, to: string) {
+  const picture = drawnPreviews.get(from);
+  if (!picture || drawnPreviews.has(to)) return;
+  drawnPreviews.set(to, picture);
+  previewUpdates.dispatchEvent(new Event(to));
+}
+
 function Preview({ id, empty, failed }: { id: string; empty: boolean; failed: boolean }) {
   const { t } = useTranslation();
   const subscribe = (notify: () => void) => {
@@ -132,6 +147,56 @@ function Preview({ id, empty, failed }: { id: string; empty: boolean; failed: bo
   if (empty) return <span className="series-preview-note">{t('series.noImages')}</span>;
   if (failed) return <span className="series-preview-note" title={t('series.previewFailed')}>—</span>;
   return <Images size={28} strokeWidth={1.1} className="series-preview-placeholder" />;
+}
+
+/** A series still being read from a disc: its middle image once that is read, and a line along the picture's foot for
+ * how much of it is read. Pressed, the disc reads it next and it opens as far as it is read (App's openWaiting). */
+function WaitingCard({ card, onOpen }: { card: WaitingSeries; onOpen: (card: WaitingSeries) => void }) {
+  const { t } = useTranslation();
+  const { info, preview } = card;
+  const description = info.description || t('series.untitled');
+  const read = info.files > 0 ? Math.min(1, info.finished / info.files) : 0;
+  return <button type="button" className="series-card is-waiting" data-tooltip={t('series.waiting')} data-testid={`series-waiting-${card.index}`} data-action="series-wait" onClick={() => onOpen(card)}
+    aria-label={t('series.waitingLabel', { description, modality: info.modality, count: info.files })}>
+    <span className="series-card-description">{description}</span>
+    <span className="series-preview">
+      {preview ? <Preview id={preview.id} empty={false} failed={false} /> : <Images size={28} strokeWidth={1.1} className="series-preview-placeholder" />}
+      <span className="series-image-count">{info.files}</span>
+      <span className="series-reading" style={{ width: `${Math.round(read * 100)}%` }} aria-hidden="true" />
+    </span>
+  </button>;
+}
+
+/** A study of a disc with no series read yet: its patient and date as the disc's DICOMDIR gives them, and its cards. */
+function WaitingStudy({ cards, onOpen }: { cards: readonly WaitingSeries[]; onOpen: (card: WaitingSeries) => void }) {
+  const { t } = useTranslation();
+  const first = cards[0].info;
+  const modalities = [...new Set(cards.map(card => card.info.modality).filter(Boolean))].join('/');
+  const ordered = [...cards].sort((a, b) => (a.info.seriesNumber ?? 0) - (b.info.seriesNumber ?? 0));
+  return <section className="series-patient">
+    <div className="series-patient-heading is-waiting">
+      <ChevronDown size={13} />
+      <strong>{first.patientName.replaceAll('^', ' ').trim() || first.patientId || '—'}</strong>
+      <span className="series-patient-details">{first.patientId && <span title={t('series.patientId')}>{first.patientId}</span>}</span>
+    </div>
+    <section className="series-study">
+      <div className="series-study-heading is-waiting">
+        <strong>{dateLabel(first.studyDate, t)}</strong>
+        <span className="series-study-details"><small>{t('series.studySummary', { modalities: modalities || 'DICOM', count: cards.length })}</small></span>
+      </div>
+      <div className="series-study-items">{ordered.map(card => <WaitingCard key={`waiting:${card.info.uid}`} card={card} onOpen={onOpen} />)}</div>
+    </section>
+  </section>;
+}
+
+type StudyEntry = { kind: 'read'; item: Series } | { kind: 'waiting'; card: WaitingSeries };
+/** A study's read series and those of it that are still being read from a disc, by series number: a card keeps its
+ * place when its series is read. */
+function withWaiting(items: Series[], cards: readonly WaitingSeries[], studyUid: string): StudyEntry[] {
+  const read = items.map((item): [StudyEntry, number] => [{ kind: 'read', item }, item.seriesNumber]);
+  const here = cards.filter(card => card.info.studyUid === studyUid);
+  const waiting = here.map((card): [StudyEntry, number] => [{ kind: 'waiting', card }, card.info.seriesNumber ?? 0]);
+  return [...read, ...waiting].sort((a, b) => a[1] - b[1]).map(([entry]) => entry);
 }
 
 function timeLabel(value = '') {
@@ -200,14 +265,17 @@ export function SeriesMenuItems({ series, activeId, shown, onSelect }: {
   series: Series[]; activeId?: string; shown: ReadonlySet<string>; onSelect: (item: Series) => void;
 }) {
   const { t } = useTranslation();
-  const patients = groupStudies(series);
+  // A stack and its reference image are one series here as in the list (ui/referenceImages.ts).
+  const references = referenceImages(series), counted = new Set([...references.values()].map(item => item.id));
+  const patients = groupStudies(series.filter(item => !counted.has(item.id)));
   return patients.map((patient, index) => <Fragment key={patient.key}>
     {index > 0 && <MenuDivider />}
     {patients.length > 1 && <MenuHeading>{patient.first.patientName.replaceAll('^', ' ').trim() || patient.first.patientId || '—'}</MenuHeading>}
     {patient.studies.flatMap(study => study.items.map(item => {
-      const guess = shownGuess(item, sequenceGuess(item, t));
+      const guess = shownGuess(item, sequenceGuess(item, t)), reference = references.get(item.id);
       return <MenuItem action="segmentation-kind" key={item.id} kind={item.segmentation ? 'checkbox' : 'radio'}
-        checked={item.segmentation ? shown.has(item.id) : activeId === item.id} meta={`${item.modality} · ${item.dimensions[2]}`} onClick={() => onSelect(item)}>
+        checked={item.segmentation ? shown.has(item.id) : activeId === item.id || (reference !== undefined && reference.id === activeId)}
+        meta={`${item.modality} · ${item.dimensions[2] + Number(reference !== undefined)}`} onClick={() => onSelect(item)}>
         {item.segmentation ? `${t('segmentation.kind')} · ` : ''}{item.description || item.modality}{item.phase ? ` · ${phaseLabel(item.phase)}` : ''}{guess ? ` · ${guess}` : ''}
       </MenuItem>;
     }))}
@@ -238,14 +306,14 @@ function storeGuessNames(enabled: boolean) {
   try { localStorage.setItem('veacom:guess-names', enabled ? '1' : '0'); } catch { /* Storage may be disabled. */ }
 }
 
-export function SeriesBrowser({ series, activeId, loadingIds, shownSegmentationIds, failedIds, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
+export function SeriesBrowser({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
   return <div className="series-browser-slot" inert={inert || undefined}>
-    <SeriesList series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedIds}
-      onSelect={item => actionsRef.current.select(item)} onRemove={ids => actionsRef.current.remove(ids)} />
+    <SeriesList series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedIds} waiting={waiting}
+      onSelect={item => actionsRef.current.select(item)} onRemove={ids => actionsRef.current.remove(ids)} onOpen={card => actionsRef.current.open(card)} />
   </div>;
 }
 
-function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failedIds, onSelect, onRemove }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove'] }) {
+function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, onSelect, onRemove, onOpen }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove']; onOpen: SeriesActions['open'] }) {
   const { locale, t } = useTranslation();
   const [search, setSearch] = useState('');
   const [searchOpen, setSearchOpen] = useState(false);
@@ -263,12 +331,29 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const searching = Boolean(query);
   const searchIndex = searching ? new Map(series.map(item => [item.id, searchText(item, guesses.get(item.id))])) : null;
   const words = query.split(/\s+/);
-  const studies = groupStudies(searchIndex ? series.filter(item => words.every(word => searchIndex.get(item.id)!.includes(word))) : series);
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): the image has no card of
+  // its own, the stack's card counts it among its images, and paging past the stack's end reaches it.
+  const references = referenceImages(series), onCards = new Set([...references.values()].map(item => item.id));
+  const listed = series.filter(item => !onCards.has(item.id));
+  // The stack's card stands for its reference image too: a search that finds only that image keeps the card.
+  const found = searchIndex ? (item: Series) => words.every(word => searchIndex.get(item.id)!.includes(word)) : null;
+  const studies = groupStudies(found ? listed.filter(item => found(item) || found(references.get(item.id) ?? item)) : listed);
   // A study that opens goes to the top of the list, and the list goes there with it: a reader who had scrolled down
   // sees it arrive.
   const scroller = useRef<HTMLDivElement>(null);
   const firstStudy = studies.at(0)?.studies.at(0)?.key;
   useEffect(() => { scroller.current?.scrollTo({ top: 0 }); }, [firstStudy]);
+  // A disc's series still being read (App's importStudies) wait as cards in their study, read or not yet, until their
+  // own series is read. A search finds read series only.
+  const readUids = new Set(series.map(item => item.uid));
+  const unread = searching ? [] : (waiting ?? []).filter(card => !readUids.has(card.info.uid));
+  const shownStudies = new Set(studies.flatMap(patient => patient.studies.map(study => study.first.studyUid)));
+  const waitingStudies = new Map<string, WaitingSeries[]>();
+  for (const card of unread) {
+    if (shownStudies.has(card.info.studyUid)) continue;
+    const cards = waitingStudies.get(card.info.studyUid);
+    if (cards) cards.push(card); else waitingStudies.set(card.info.studyUid, [card]);
+  }
 
   // Ctrl and Shift pick several cards, as in a folder; dragging one of them drags them all, in the order
   // they were picked, and they open side by side (VEAcom 1.x). A plain click picks one and opens it.
@@ -338,13 +423,13 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
   const studyItems = (key: string) => series.filter(item => studyKey(item) === key);
   const askStudy = (key: string) => {
     const items = studyItems(key); if (!items.length) return;
-    setQuestion({ ids: items.map(item => item.id), message: t('series.removeStudyQuestion', { name: `${patientName(items[0], t)} · ${dateLabel(items[0].studyDate, t)}`, count: items.length }) });
+    setQuestion({ ids: items.map(item => item.id), message: t('series.removeStudyQuestion', { name: `${patientName(items[0], t)} · ${dateLabel(items[0].studyDate, t)}`, count: items.filter(item => !onCards.has(item.id)).length }) });
   };
   const askPatient = (item: Series) => {
     const items = series.filter(value => patientKey(value) === patientKey(item));
-    setQuestion({ ids: items.map(value => value.id), message: t('series.removePatientQuestion', { name: patientName(item, t), count: items.length }) });
+    setQuestion({ ids: items.map(value => value.id), message: t('series.removePatientQuestion', { name: patientName(item, t), count: items.filter(item => !onCards.has(item.id)).length }) });
   };
-  const askAll = () => setQuestion({ ids: series.map(item => item.id), message: t('series.removeAllQuestion', { count: series.length }) });
+  const askAll = () => setQuestion({ ids: series.map(item => item.id), message: t('series.removeAllQuestion', { count: listed.length }) });
   // Collapse all folds every patient band, as in VEAcom Next.
   const studyKeys = () => studies.map(patient => patient.key);
   const menuStudy = menu?.study ?? (menu?.item ? studies.flatMap(patient => patient.studies).find(study => study.items.some(item => item.id === menu.item!.id))?.key : undefined);
@@ -353,6 +438,7 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
 
   return <aside className="series-browser" aria-label={t('series.browser')}>
     <div className="series-browser-scroll" ref={scroller} onContextMenu={event => openMenu(event, {})}>
+      {[...waitingStudies].map(([key, cards]) => <WaitingStudy key={`waiting:${key}`} cards={cards} onOpen={onOpen} />)}
       {studies.map(patient => {
         const patientHidden = collapsed.has(patient.key) && !search;
         const patientName = patient.first.patientName.replaceAll('^', ' ').trim();
@@ -372,17 +458,21 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
             <strong>{[dateLabel(study.first.studyDate, t), timeLabel(study.first.studyTime)].filter(Boolean).join(' ') || '—'}</strong>
             <span className="series-study-details">{study.first.studyDescription && <span title={study.first.studyDescription}>{study.first.studyDescription}</span>}<small>{t('series.studySummary', { modalities: modalities || 'DICOM', count: study.items.length })}</small></span>
           </button>
-          {!hidden && <div className="series-study-items">{study.items.map(item => {
+          {!hidden && <div className="series-study-items">{withWaiting(study.items, unread, study.first.studyUid).map(entry => {
+            if (entry.kind === 'waiting') return <WaitingCard key={`waiting:${entry.card.info.uid}`} card={entry.card} onOpen={onOpen} />;
+            const item = entry.item;
             if (item.segmentation) return <SegmentationCard key={item.id} item={item} series={series} shown={shownSegmentationIds?.has(item.id) ?? false} onSelect={onSelect} onMenu={event => openMenu(event, { item })} />;
             const loading = loadingIds.has(item.id);
-            const active = item.id === activeId;
+            const reference = references.get(item.id);
+            // The card is the open one while its series or its reference image is shown.
+            const active = item.id === activeId || (reference !== undefined && reference.id === activeId);
             const several = picked.length > 1 && picked.includes(item.id);
             return <button
               type="button"
               key={item.id}
               className={`series-card${active ? ' is-active' : ''}${several ? ' is-picked' : ''}`}
               aria-pressed={active}
-              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2], warnings: item.warnings.length ? t('series.cardWarnings') : '' })}
+              aria-label={t('series.cardLabel', { description: item.description || t('series.untitled'), phase: item.phase ? `, ${phaseLabel(item.phase)}` : '', modality: item.modality, count: item.dimensions[2] + Number(reference !== undefined), warnings: `${item.warnings.length ? t('series.cardWarnings') : ''}${item.reading ? t('series.cardReading', { read: item.reading.read, files: item.reading.files }) : ''}` })}
               aria-busy={loading}
               aria-describedby={item.warnings.length ? `series-warnings-${item.id}` : undefined}
               data-testid={`series-${item.id}`}
@@ -400,7 +490,9 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
               <span className="series-preview">
                 <Preview id={item.id} empty={item.dimensions[2] === 0} failed={Boolean(failedIds?.has(item.id) && !loading)} />
                 {item.warnings.length > 0 && <span className="series-warning" aria-hidden="true" data-tooltip={warningTexts(item, locale).join(' · ')}><TriangleAlert size={11} /></span>}
-                <span className="series-image-count">{item.dimensions[2]}</span>
+                {/* While it is read, how many of the files the disc's index lists for it are read, as the status bar says. */}
+                <span className="series-image-count">{item.reading ? `${item.reading.read} / ${item.reading.files}` : item.dimensions[2] + Number(reference !== undefined)}</span>
+                {item.reading && <span className="series-reading" style={{ width: `${Math.round(Math.min(1, item.reading.read / Math.max(1, item.reading.files)) * 100)}%` }} aria-hidden="true" />}
                 {several && <span className="sr-only">{t('series.picked', { number: picked.indexOf(item.id) + 1, count: picked.length })}</span>}
                 {item.warnings.length > 0 && <span id={`series-warnings-${item.id}`} className="sr-only">{warningTexts(item, locale).join('. ')}</span>}
               </span>
@@ -410,18 +502,18 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failed
           })}
         </section>;
       })}
-      {studies.length === 0 && <div className="series-sidebar-empty"><Images size={24} strokeWidth={1.2} /><strong>{series.length ? t('series.noMatch') : t('series.noStudy')}</strong></div>}
+      {studies.length === 0 && !waitingStudies.size && <div className="series-sidebar-empty"><Images size={24} strokeWidth={1.2} /><strong>{series.length ? t('series.noMatch') : t('series.noStudy')}</strong></div>}
     </div>
     {searchOpen && <div className="series-search">
       <input data-action="series-search" ref={searchInput} autoFocus onBlur={event => { if (!search.trim() && event.relatedTarget !== findButton.current) setSearchOpen(false); }} aria-label={t('series.search')} placeholder={t('series.searchPlaceholder')} value={search} onChange={event => setSearch(event.target.value)} spellCheck={false} onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setSearch(''); setSearchOpen(false); findButton.current?.focus(); } }} />
       {search && <button data-action="series-search-clear" type="button" aria-label={t('series.clearSearch')} onClick={() => { setSearch(''); searchInput.current?.focus(); }}><X size={12} /></button>}
     </div>}
-    <div className="series-browser-footnote"><span>{t('series.count', { count: series.length })}</span><button type="button" className="series-guess-toggle" aria-pressed={guessNames} aria-label={t('series.guessNames')} data-action="series-guess-names" data-tooltip={t('series.guessNames')} onClick={toggleGuessNames}><Glyph name="sequences" size={15} /></button><button ref={findButton} type="button" aria-label={t('series.find')} data-testid="series-find" aria-expanded={searchOpen} data-tooltip={t('series.find')} onClick={() => { setSearchOpen(open => !open); if (searchOpen) setSearch(''); }}><Search size={13} /></button></div>
+    <div className="series-browser-footnote"><span>{t('series.count', { count: series.length - onCards.size })}</span><button type="button" className="series-guess-toggle" aria-pressed={guessNames} aria-label={t('series.guessNames')} data-action="series-guess-names" data-tooltip={t('series.guessNames')} onClick={toggleGuessNames}><Glyph name="sequences" size={15} /></button><button ref={findButton} type="button" aria-label={t('series.find')} data-testid="series-find" aria-expanded={searchOpen} data-tooltip={t('series.find')} onClick={() => { setSearchOpen(open => !open); if (searchOpen) setSearch(''); }}><Search size={13} /></button></div>
     {menu && <div ref={menuRef} className="context-anchor" style={{ left: menu.x, top: menu.y }}>
       <Menu label={t('series.menu')} onClose={() => closeMenu()} className={`context-menu${menu.y > window.innerHeight - 320 ? ' menu-up' : ''}`} testId="series-menu">
         {menu.item && <>
           <MenuItem action="series-open-active" onClick={() => { const item = menu.item!; act(() => onSelect(item)); }}>{t('series.openInActive')}</MenuItem>
-          <MenuItem action="series-remove" onClick={() => { const item = menu.item!; act(() => onRemove([item.id])); }}>{t('series.removeSeries')}</MenuItem>
+          <MenuItem action="series-remove" onClick={() => { const item = menu.item!, reference = references.get(item.id); act(() => onRemove(reference ? [item.id, reference.id] : [item.id])); }}>{t('series.removeSeries')}</MenuItem>
           <MenuDivider />
         </>}
         {menu.study && <MenuItem action="study-toggle" onClick={() => { const key = menu.study!; act(() => toggleStudy(key)); }}>{t(collapsed.has(menu.study) ? 'series.expand' : 'series.collapse')}</MenuItem>}

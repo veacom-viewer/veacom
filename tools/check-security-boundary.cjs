@@ -81,6 +81,37 @@ async function main() {
     assert((await page.evaluate(caps=>window.veacom.importSelected(caps),opened)).series.length);
     assert.equal(await desktop.evaluate(({webContents})=>webContents.getAllWebContents().some(item=>item.getURL().startsWith('veacom://import/')&&!item.isDestroyed())),false);
     check('What the user opens in the import window reaches the application as one-use capabilities');
+    // The disc button asks for the disc itself (electron/import-view.cjs). The study stands in for what this computer's
+    // drives hold: one disc is opened with no window only after a press of the mouse, after a key press the window
+    // shows it, and no disc is said so.
+    const mainModule=name=>path.join(repo,'electron',name);
+    const discs=found=>desktop.evaluate((_electron,[browser,found])=>{process.mainModule.require(browser).readyDiscs=async()=>found;},[mainModule('file-browser.cjs'),found]);
+    const importWindows=()=>desktop.evaluate(({webContents})=>webContents.getAllWebContents().filter(item=>!item.isDestroyed()&&item.getURL().startsWith('veacom://import/')).length);
+    const pressDisc=()=>page.evaluate(()=>window.veacom.openImportWindow('disc').then(opened=>opened,error=>error.message));
+    // A press of the mouse where it does nothing else: on the status bar's text.
+    const pressMouse=async()=>{
+      const box=await page.locator('[data-testid="status-text"]').boundingBox();
+      await within(page.mouse.click(box.x+box.width/2,box.y+box.height/2),10000,'The check\'s mouse press did not reach the application window.');
+    };
+    await discs([study]);
+    await new Promise(resolve=>setTimeout(resolve,1700));
+    assert.match(await within(pressDisc(),5000,'The disc button\'s request was not answered.'),/click or key press/);
+    await within(page.keyboard.press('Shift'),10000,'The check\'s key press did not reach the application window.');
+    const keyed=pressDisc();keyed.catch(()=>{});
+    view=await Promise.race([importView(),keyed.then(answer=>{throw new Error(`The disc was opened after a key press, with no window: ${JSON.stringify(answer)}.`);})]);
+    lastInView(view,'window.veacomImport.close()');
+    assert.deepEqual(await within(keyed,15000,'Closing the import window did not answer the disc button\'s request.'),[]);
+    await pressMouse();
+    const disc=await within(pressDisc(),15000,'The disc was not opened.');
+    assert(Array.isArray(disc)&&disc.length===1&&disc[0].startsWith('import:')&&!disc[0].includes(study),String(disc));
+    assert.equal(await importWindows(),0);
+    assert((await page.evaluate(caps=>window.veacom.importSelected(caps),disc)).series.length);
+    await discs([]);
+    await pressMouse();
+    const none=await within(pressDisc(),15000,'The disc button\'s request was not answered.');
+    assert(typeof none==='string'&&none.includes(await desktop.evaluate((_electron,texts)=>process.mainModule.require(texts).t('disc.none'),mainModule('i18n.cjs'))),String(none));
+    assert.equal(await importWindows(),0);
+    check('The disc button opens the one disc with no window only after a press of the mouse, shows the window after a key press, and says when there is none');
     const network=process.platform==='win32'?['\\\\127.0.0.1\\veacom-check']:process.platform==='darwin'?['/net/127.0.0.1','/NET/127.0.0.1']:[];
     if(network.length){
       let waiting;({view,request:waiting}=await userOpens());

@@ -8,20 +8,27 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, prioritiseImport, removeSeries, type CoreProgress, type EarlyImport } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame } from './components/SeriesBrowser';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, type WaitingSeries } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
+import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
-import { openingSlice, pageStep, pagesBackwards } from './imaging/paging';
+import { holdsFrame } from './ui/discPictures';
+import { carryAnnotations, holdingIn } from './ui/earlySeries';
+import { joinedWith, referenceImages } from './ui/referenceImages';
+import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
 import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
 import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
+import { isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
+import { deformity, type FilmSelection } from './ui/deformityStore';
+import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
@@ -47,7 +54,7 @@ import { LesionTable } from './components/LesionTable';
 import { PetReportCopy } from './components/PetReportCopy';
 import { priorLesions } from './imaging/priorLesions';
 import { useAnnotationSummary } from './imaging/useAnnotationSummary';
-import type { Annotation, CaliperKind, FusionSettings, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, Volume, WheelAction } from './model';
+import type { Annotation, CaliperKind, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, Volume, WheelAction } from './model';
 import { chooseLocale, errorMessage, LOCALES, t, type MessageKey, type MessageParams } from './i18n';
 import { useTranslation } from './i18n/react';
 import { warningTexts } from './i18n/core';
@@ -58,15 +65,17 @@ import { usage, type Surface, type UsageSnapshot } from './usage/tracker';
 import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
-import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
-import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
-import { activeStudyContext, deriveKept, findRole, KEPT_STORAGE, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
-import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
+import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
+import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, overlayFor, SPECT_LOOK, studyOverlay } from './imaging/fusion';
+import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
+import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
+import { bestCounterpart } from './arrangements/counterpart';
 import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
-import { seriesName } from './ui/seriesNames';
+import { sequenceGuess, seriesName, shownGuess, sortStudySeries } from './ui/seriesNames';
+import { dicomDate } from './ui/overlayCorners';
 import { withFound, withImported } from './ui/seriesOrder';
 // Tokens first: component rules in styles.css must win over the shared ones at equal specificity.
 import './theme.css';
@@ -79,14 +88,22 @@ const FeedbackDialog = lazy(() => import('./components/FeedbackDialog').then(mod
 const VolumeView = lazy(() => import('./components/VolumeView').then(module => ({ default: module.VolumeView })));
 const PreopChecklist = lazy(() => import('./components/PreopChecklist').then(module => ({ default: module.PreopChecklist })));
 const AssessmentPanel = lazy(() => import('./components/AssessmentPanel').then(module => ({ default: module.AssessmentPanel })));
+const DeformityPanel = lazy(() => import('./components/DeformityPanel').then(module => ({ default: module.DeformityPanel })));
+const LabelQueue = lazy(() => import('./components/LabelQueue').then(module => ({ default: module.LabelQueue })));
 
 type Panel = 'measurements' | 'display' | 'tags' | null;
 /** `unfused`: this pane never shows the fusion (the plain CT beside the fused one); a new series or the fusion button in it clears it. */
-type Slot = { id: string; seriesId: string | null; view: ViewState; unfused?: boolean };
+type Slot = { id: string; seriesId: string | null; view: ViewState; unfused?: boolean;
+  /** While the pane shows a stack's reference image it paged to: the stack, and the view the pane had on it, for the
+   * way back. */
+  stack?: { id: string; view: ViewState } };
 type MouseButton = 'left' | 'middle' | 'right';
 type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showReferences: boolean;
   showOverlay: boolean; hidePatientData: boolean; hideMeasurements: boolean; showScale: boolean;
-  mouseBindings: Partial<Record<MouseButton, Tool>>; wheelAction: WheelAction; wheelSensitivity: number; reverseWheel: boolean; measurementUnits: 'auto' | 'px';
+  /** The value under the pointer is written on the image: off unless the reader asks for it. */ showPointerValue: boolean;
+  mouseBindings: Partial<Record<MouseButton, Tool>>; wheelAction: WheelAction;
+  /** How fast a touchpad pages slices; a mouse wheel always pages one a notch (src/imaging/interaction.ts). */ touchpadSpeed: number;
+  reverseWheel: boolean; measurementUnits: 'auto' | 'px';
   /** The SUV PET values are given in: body weight, lean body mass (SUL) or body surface area. */ suvNormalization: SuvNormalization;
   /** Single-character shortcuts (W, S, L, 0, M, +, −…) can be turned off (WCAG 2.1.4). */ singleKeys: boolean;
   /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
@@ -102,7 +119,8 @@ function readOpenSections(): Set<DisplaySection> {
   } catch { /* Storage may be disabled by the host. */ }
   return new Set(['window', 'color', 'orientation']);
 }
-type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]> };
+type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]>; plans: ReturnType<typeof deformity.snapshot>;
+  calibration?: FilmSelection & { value: FilmCalibration | null } };
 // A notice built from a message key is shown in the current language, and the key is its test hook.
 type Notice = { message: string; kind: 'error' | 'info'; key?: MessageKey; params?: MessageParams; code?: string;
   /** Engine warnings, translated again when the language changes. */
@@ -131,6 +149,12 @@ const measureIcon = (tool: Tool, size = 18, tagged = false) => { const Icon = ME
 const kebab = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 // The engine reports progress by stage name; unknown stages are shown as reported.
 const STAGES: Partial<Record<string, MessageKey>> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
+/** A duration as m:ss, or h:mm:ss from an hour on. */
+function clockText(ms: number) {
+  const seconds = Math.max(0, Math.round(ms / 1000)), hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return hours ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
 const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
 const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
 /** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
@@ -185,8 +209,8 @@ const focusImage = () => focusSoon('.viewport-cell.is-active [data-testid="dicom
 
 function readSettings(): Settings {
   const defaults: Settings = { linked: true, panel: null, showCrosshair: true, showReferences: true,
-    showOverlay: true, hidePatientData: false, hideMeasurements: false, showScale: false,
-    mouseBindings: { middle: 'pan', right: 'zoom' }, wheelAction: 'scroll', wheelSensitivity: 1, reverseWheel: false, measurementUnits: 'auto',
+    showOverlay: true, hidePatientData: false, hideMeasurements: false, showScale: false, showPointerValue: false,
+    mouseBindings: { middle: 'pan', right: 'zoom' }, wheelAction: 'scroll', touchpadSpeed: TOUCHPAD_SPEED.default, reverseWheel: false, measurementUnits: 'auto',
     suvNormalization: 'bw', singleKeys: true, cineFps: 10 };
   try {
     const stored = JSON.parse(localStorage.getItem('veacom:workspace:v2') ?? 'null');
@@ -196,13 +220,14 @@ function readSettings(): Settings {
       panel: ['measurements', 'display', 'tags', null].includes(stored.panel) ? stored.panel : defaults.panel,
       showCrosshair: stored.showCrosshair !== false,
       showReferences: stored.showReferences !== false,
-      showOverlay: stored.showOverlay !== false, hidePatientData: stored.hidePatientData === true, hideMeasurements: stored.hideMeasurements === true, showScale: stored.showScale === true,
+      showOverlay: stored.showOverlay !== false, hidePatientData: stored.hidePatientData === true, hideMeasurements: stored.hideMeasurements === true, showScale: stored.showScale === true, showPointerValue: stored.showPointerValue === true,
       mouseBindings: Object.fromEntries((['left', 'middle', 'right'] as const).flatMap(button => {
         const binding = stored.mouseBindings?.[button] ?? defaults.mouseBindings[button];
         return isTool(binding) ? [[button, binding]] : [];
       })),
       wheelAction: WHEEL_ACTIONS.includes(stored.wheelAction) ? stored.wheelAction : defaults.wheelAction,
-      wheelSensitivity: Number.isFinite(stored.wheelSensitivity) ? Math.max(0.2, Math.min(5, stored.wheelSensitivity)) : 1,
+      // A wheelSensitivity saved by earlier versions is not carried over: it scaled the mouse wheel as well, against a slower touchpad.
+      touchpadSpeed: nearestTouchpadSpeed(stored.touchpadSpeed),
       reverseWheel: stored.reverseWheel === true,
       measurementUnits: stored.measurementUnits === 'px' ? 'px' : 'auto',
       suvNormalization: SUV_NORMALIZATIONS.includes(stored.suvNormalization) ? stored.suvNormalization : defaults.suvNormalization,
@@ -218,6 +243,28 @@ function defaultView(series: Series): ViewState {
   const slice = openingSlice(series), frame = series.frameMetadata?.[slice];
   return { ...DEFAULT_VIEW, pan: [0, 0], slice, windowCenter: frame?.windowCenter ?? series.windowCenter,
     windowWidth: Math.max(1, frame?.windowWidth ?? series.windowWidth), ...petLook(series) };
+}
+/** How a series opens beside a pane of another study in the comparison screen: in the same kind of view (where that
+ * pane shows a reconstructed plane, with its tilt and slab, or a turning MIP, so does this one), level with it (by
+ * position where the two share a frame of reference, else as far through its own stack), at its zoom and pan, and,
+ * for CT beside CT, in its window: Hounsfield units are one scale, an MR's values are not. */
+function besideView(item: Series, base: ViewState, beside: Pane): ViewState {
+  const theirs = beside.view, reconstructed = !usesSourceFrames(beside.series, theirs) && !usesSourceFrames(item, { mode: 'mpr' });
+  const like: ViewState = reconstructed ? { ...base, mode: 'mpr', plane: theirs.plane, oblique: theirs.oblique ? [...theirs.oblique] : undefined, slab: theirs.slab, projection: theirs.projection } : base;
+  const target: Pane = { series: item, view: like };
+  // A MIP's slice is its turn, the same for both; a plane's is its place in the patient.
+  const slice = like.projection ? theirs.slice
+    : shareFrame(item, beside.series) ? sliceAtWorld(item, like, getPlaneFrame(beside.series, theirs).center)
+      : facesSame(target, beside) ? levelSlice(beside, target) : reconstructed ? Math.floor(sliceCount(item, like) / 2) : base.slice;
+  const oneScale = item.modality === 'CT' && beside.series.modality === 'CT';
+  return { ...like, slice, zoom: theirs.zoom, pan: [...theirs.pan],
+    ...(oneScale ? { windowCenter: theirs.windowCenter, windowWidth: theirs.windowWidth, windowMode: 'manual' as const } : {}) };
+}
+/** `view` of `item` at the place the pane `from` shows, where the two lie in one frame of reference (two series of
+ * one study): a series that takes another's pane stays where the reader was. Otherwise `view` as it is. */
+function atPlaceOf(item: Series, view: ViewState, from: Pane | undefined): ViewState {
+  if (!from || view.projection || !shareFrame(item, from.series) || isProjection(from.series, from.view)) return view;
+  return { ...view, slice: sliceAtWorld(item, view, getPlaneFrame(from.series, from.view).center) };
 }
 /** The arrangements VEAcom applies, with the reader's kept ones in place of its own. */
 const PET_LAYOUTS = [
@@ -242,12 +289,13 @@ function windowClass(volume: Volume | undefined, view: ViewState, autoWindows: M
 }
 
 /** How a volume is shown: its calibration, units and SUV, and for a PET the blood glucose typed for its study. */
-type Decoration = { scale: number | undefined; units: Settings['measurementUnits']; suvNormalization: SuvNormalization; glucose: number | undefined };
-const sameDecoration = (a: Decoration, b: Decoration) => a.scale === b.scale && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
-function decorateVolume(volume: Volume, { scale, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
+type Decoration = { scale: number | undefined; films: FilmCalibrations | undefined; units: Settings['measurementUnits']; suvNormalization: SuvNormalization; glucose: number | undefined };
+const sameDecoration = (a: Decoration, b: Decoration) => a.scale === b.scale && a.films === b.films && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
+function decorateVolume(volume: Volume, { scale, films, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
   let sourceFramesOnly = false;
   try { sourceFramesOnly = sourceFrameOnly(volume); } catch { /* The viewport reports an unavailable GPU. */ }
-  return { ...volume, series: { ...volume.series, sourceFramesOnly, measurementScale: scale, measurementUnits, suvNormalization, typedGlucose: glucose } };
+  // A film's ball or ruler outranks the series' known-length scale on that film (radiograph.ts withFilmCalibrations).
+  return { ...volume, series: withFilmCalibrations({ ...volume.series, sourceFramesOnly, measurementScale: scale, measurementUnits, suvNormalization, typedGlucose: glucose }, films) };
 }
 
 // `testId` gives the scripted desktop checks (tools/*.cjs) a hook that does not depend on the language.
@@ -270,19 +318,25 @@ const PANE_DRAG = 'application/x-veacom-pane';
  * says about it with Undo, and every pane's view before (a linked pane can move with it). */
 type CaliperRequest = { kind: CaliperKind; item: string; side: Side; study: string;
   setUp?: { slotId: string; text: string; views: Array<{ id: string; seriesId: string | null; view: ViewState }> } };
-/** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), a plane the checklist's Show turned it to
- * (Undo), or an offer to keep an arrangement as rearranged. A sticky one stays until the reader's next action instead of
- * a few seconds. */
+/** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
+ * rearranged. A sticky one stays until the reader's next action instead of a few seconds. It is about the series the
+ * pane shows (`seriesId`, empty for a pane that shows none) and goes when the pane shows another. */
 type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
-  onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'checklist-show'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain' };
+  onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'checklist-show'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain';
+  /** The comparison's offer to open a series' counterpart in this pane. */
+  onOpen?: () => void };
+
 /** Where a pane is set up to show a plane (calipers.planeView), and what it needs there; or why it cannot be. */
 type PanePlan = { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey };
 
-function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references,
+function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, joined, onCross,
   onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
   slot: Slot; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
   annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
   interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
+  /** The stack and its reference image this pane pages as one sequence, and the way to the place of it that the
+   * other of the two holds. */
+  joined: Joined | null; onCross: (id: string, place: number) => void;
   onActivate: (id: string) => void; onViewChange: (id: string, patch: Partial<ViewState>) => void;
   onAnnotationsChange: (seriesId: string, annotations: Annotation[]) => void;
   onRotateReference?: (id: string, oblique: [number, number]) => void; clickPicksPoint?: boolean;
@@ -303,15 +357,24 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
   const update = (patch: Partial<ViewState>) => onViewChange(slot.id, patch);
   const annotate = (next: Annotation[]) => { if (slot.seriesId) onAnnotationsChange(slot.seriesId, next); };
   const cyclePlane = () => onCyclePlane(slot.id);
+  const cross = (place: number) => onCross(slot.id, place);
   const [dragging, setDragging] = useState(false);
   const referencePlanes = volume && interaction.showReferences ? references.filter(item => item.id !== slot.id && sharePlaneSpace(item, { series: volume.series, view: renderedView(volume, slot.view) })) : [];
   const requestedView = volume ? resolveView(volume, slot.view) : slot.view;
   const displayView = volume ? renderedView(volume, slot.view) : slot.view;
   const count = volume ? sliceCount(volume.series, requestedView) : metadata?.dimensions[2] ?? 1;
-  // The bar and the counter go in paging order: an axial stack from the top down (see paging.ts).
-  const backwards = volume ? pagesBackwards(volume.series, requestedView) : false;
-  const atSlice = Math.min(requestedView.slice, count - 1), position = backwards ? count - 1 - atSlice : atSlice;
-  const shownNumber = Math.min(count, backwards ? count - displayView.slice : displayView.slice + 1);
+  // The bar and the counter go in paging order: an axial stack from the top down (see paging.ts). A stack and its
+  // reference image are one sequence in both (`joined`).
+  const atSlice = Math.min(requestedView.slice, count - 1);
+  const at = volume ? placeInSequence(volume.series, requestedView, atSlice, count, joined) : { place: atSlice, total: count };
+  const shown = volume ? shownSlice(volume.series, displayView, Math.min(displayView.slice, count - 1), count, joined) : { number: atSlice + 1, total: count };
+  /** The slice bar moved to a place: a slice of this series, or the place the other of a stack and its reference image holds. */
+  const toPlace = (place: number) => {
+    if (!volume) return;
+    if (!joined) update({ slice: pagingPlace(volume.series, requestedView, place, count) });
+    else if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) cross(place);
+    else if (!joined.lead) update({ slice: stackSliceAt(volume.series, requestedView, place, count, joined) });
+  };
   // A whole-volume MIP pages through its turns: the bar and the counter give its angle.
   const projected = Boolean(volume && isProjection(volume.series, displayView));
   const windowText = volume && displayView.voiLut === undefined ? suvWindowText(volume.series, displayView) : null;
@@ -339,24 +402,25 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
-        mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} wheelSensitivity={interaction.wheelSensitivity} reverseWheel={interaction.reverseWheel}
-        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} caliper={caliper} />
-        : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle className="spin" size={22} /> : <Layers size={24} strokeWidth={1.4} />}
+        showPointerValue={interaction.showPointerValue}
+        mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} touchpadSpeed={interaction.touchpadSpeed} reverseWheel={interaction.reverseWheel}
+        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} joined={joined} onCross={cross} caliper={caliper} />
+        : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
-      {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude><LoaderCircle size={12} className="spin" />{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
       {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : toast.undoAction === 'checklist-show' ? <button type="button" data-action="checklist-show-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
         {toast.onKeep && (toast.keepAction === 'keep-plain' ? <button type="button" data-action="arrangement-keep-plain" onClick={toast.onKeep}>{t('arrangement.keep')}</button>
-          : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}</div>}
+          : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}
+        {toast.onOpen && <button type="button" data-action="compare-open" onClick={toast.onOpen}>{t('compare.open')}</button>}</div>}
       {loadError && <div className="viewport-error" role="status" data-export-exclude>{volume ? t('viewport.previewOnly') : ''}{loadError}</div>}
     </div>
     {volume && <footer className="viewport-footer" data-export-exclude>
-      <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shownNumber} / {count}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
-      <SliceBar count={count} position={position} valueText={projected ? `${projectionAngle(position)}°` : `${position + 1} / ${count}`}
+      <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shown.number} / {shown.total}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
+      <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${shownSlice(volume.series, requestedView, atSlice, count, joined).number} / ${at.total}`}
         label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
-        onPosition={next => update({ slice: backwards ? count - 1 - next : next })} />
+        onPosition={toPlace} touchpadSpeed={interaction.touchpadSpeed} />
       <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${Math.round(displayView.windowWidth)} · L ${Math.round(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
       <span className="zoom-indicator">{Math.round(displayView.zoom * 100)}%</span>
     </footer>}
@@ -394,6 +458,21 @@ export default function App() {
   const planeLabel = (plane: Plane) => t(`planeLower.${plane}` as const);
   const [series, setSeries] = useState<Series[]>([]);
   const seriesById = new Map(series.map(item => [item.id, item]));
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
+  // each such image's stack.
+  const references = referenceImages(series);
+  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  /** The sequence a series is part of where it is a stack with a reference image, or such an image. */
+  const joinedOf = (item: Series): Joined | null => {
+    const reference = references.get(item.id), stack = stackOfReference.get(item.id);
+    return reference ? { ...joinedWith(item, reference), lead: false } : stack ? { ...joinedWith(stack, item), lead: true } : null;
+  };
+  /** The sequence a pane pages: a stack shown as it was acquired, or its reference image. A reconstructed plane or a
+   * projection of the stack is paged on its own. */
+  const joinedFor = (slot: Slot): Joined | null => {
+    const item = slot.seriesId ? seriesById.get(slot.seriesId) : undefined, joined = item ? joinedOf(item) : null;
+    return item && joined && (joined.lead || (usesSourceFrames(item, slot.view) && !isProjection(item, slot.view))) ? joined : null;
+  };
   // Stable event handlers read refs so their closures do not retain old volume maps.
   const seriesRef = useRef(series);
   const [volumes, setVolumes] = useState<Map<string, Volume>>(() => new Map());
@@ -421,6 +500,9 @@ export default function App() {
   const [settings, setSettings] = useState(readSettings);
   const [openSections, setOpenSections] = useState(readOpenSections);
   const [calibrationScales, setCalibrationScales] = useState<Record<string, number>>({});
+  // Ball and ruler calibrations from the deformity plan, by series and film: each stands for its own film only.
+  const [filmCalibrations, setFilmCalibrations] = useState<Partial<Record<string, FilmCalibrations>>>({});
+  const filmCalibrationsRef = useRef(filmCalibrations);
   const [calibrationLine, setCalibrationLine] = useState('');
   const [calibrationLength, setCalibrationLength] = useState('');
   const settingsRef = useRef(settings);
@@ -487,7 +569,9 @@ export default function App() {
   const [importing, setImporting] = useState(0);
   const importCount = useRef(0);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number } | null>(null);
+  // `elapsed`: how long the operation has run; `remaining`: an estimate of what is left of its stage (both in ms).
+  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number; elapsed?: number; remaining?: number } | null>(null);
+  const progressClock = useRef<{ id?: number; stage: string; began: number; stageBegan: number; stageDone: number } | null>(null);
   // The engine job Cancel was pressed for: "Cancelling…" shows while that job is the one in progress, not for the next.
   const [cancelledId, setCancelledId] = useState<number | null>(null);
   const cancelling = progress !== null && cancelledId !== null && progress.id === cancelledId;
@@ -498,6 +582,10 @@ export default function App() {
     void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); });
   };
   const [notice, setNotice] = useState<Notice | null>(null);
+  /** The two series, of different patients, that the comparison screen shows side by side. Its warning is kept apart
+   * from `notice`, which the next message replaces: it stays until the reader dismisses it or one of the two leaves
+   * the screen (docs/design-guidelines.md, "Patient safety"). */
+  const [twoPatients, setTwoPatients] = useState<readonly [string, string] | null>(null);
   const say = (key: MessageKey, kind: Notice['kind'], params?: MessageParams, transient = false) => setNotice({ message: t(key, params), kind, key, params, transient });
   const [graphics, setGraphics] = useState<Graphics | null>(null);
   // The caught error itself, so a translated (LocalizedError) message follows a language change.
@@ -596,6 +684,10 @@ export default function App() {
   const fusionRequest = useRef(0);
   // Series whose preview could not be made: the series list shows a dash for them.
   const [failedPreviews, setFailedPreviews] = useState<ReadonlySet<string>>(() => new Set());
+  // The series of a disc being read, as its DICOMDIR lists them, with their pictures (importStudies).
+  const [waiting, setWaiting] = useState<WaitingSeries[]>([]);
+  // The disc being read (importStudies): what to name it by, its cards, and the series the reader opened from one.
+  const discImport = useRef<{ paths: string[]; cards: WaitingSeries[]; wanted: string | null } | null>(null);
   // The thick slab's thickness, kept while no slab is shown (as in VEAcom Next, 10 mm to begin with).
   const [slabThickness, setSlabThickness] = useState<number>(DEFAULT_SLAB_THICKNESS);
   const [fusionOpacity, setFusionOpacity] = useState(0.45);
@@ -634,7 +726,7 @@ export default function App() {
   const petRecords = usePetRecords(series, setAnnotations);
   const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
   const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const resolvedSlots = slots.map(slot => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
@@ -644,7 +736,7 @@ export default function App() {
   });
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
   const displaySlotFrames = new Map(Object.entries(slotFrames).map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const volumeForSlot = (slot: Slot) => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     const frame = displaySlotFrames.get(slot.id);
@@ -662,6 +754,9 @@ export default function App() {
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
   const activeVolume = volumeForSlot(activeSlot);
+  // A series still being read from a disc says how far it is read, in the status bar: nothing else shows that it is not
+  // whole. A series loading needs no words.
+  const paneState = activeSeries?.reading ? t('viewport.reading', { read: activeSeries.reading.read, count: activeSeries.reading.files }) : '';
   if (activeVolume?.series.sourceFramesOnly) {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
@@ -671,6 +766,9 @@ export default function App() {
   const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
+  // The film the active pane shows, with its calibration (a ball or ruler holds for one film), for the inspector.
+  const shownFilm = activeVolume && usesSourceFrames(activeVolume.series, activeDisplayView)
+    ? sourceFrameSeries(activeVolume.series, activeDisplayView.slice) : activeVolume?.series ?? activeSeries;
   const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
   // The lines a calibration can take as its known length: Length measurements, not a caliper's drawing (a Keros depth or
   // an artery's distance is read from its points, not known beforehand).
@@ -687,10 +785,16 @@ export default function App() {
   // A CT's assessment button opens the pre-op checklist instead (the assessment is for MR).
   const opensChecklist = activeSeries?.modality === 'CT';
   const checklistShown = checklistOpen && opensChecklist;
+  // On a standing long-leg DX or CR it opens the deformity plan (docs/deformity-planning.md), in the same place.
+  const opensDeformity = !opensChecklist && Boolean(activeSeries && isLongLegFilm(activeSeries));
+  const deformityShown = checklistOpen && opensDeformity && Boolean(activeVolume);
+  const canReconstruct = Boolean(activeVolume?.series.canReconstruct && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && activeSeries && !loadingIds.has(activeSeries.id) && !loadErrors[activeSeries.id]);
+  // On a stack's reference image, MPR and 3D are the stack's (the image itself is one plane of nothing).
+  const leadStack = activeSeries ? stackOfReference.get(activeSeries.id) : undefined, leadVolume = leadStack ? displayVolumes.get(leadStack.id) : undefined;
+  const leadReconstructs = Boolean(leadStack && leadVolume?.series.canReconstruct && leadVolume.sourceFrameIndex === undefined && !leadVolume.series.sourceFramesOnly && !loadingIds.has(leadStack.id) && !loadErrors[leadStack.id]);
   // A caliper ends with its checklist: when the checklist closes or the active pane leaves its study.
   const caliperStudy = activeSeries ? studyKey(activeSeries) : null;
   useEffect(() => { if (caliperRef.current && (!checklistShown || caliperRef.current.study !== caliperStudy)) stopCaliper(); }, [checklistShown, caliperStudy]);
-  const canReconstruct = Boolean(activeVolume?.series.canReconstruct && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && activeSeries && !loadingIds.has(activeSeries.id) && !loadErrors[activeSeries.id]);
   /** Where a pane is set up to show `plane` in the bone window, from the active pane showing `volume`
    * (calipers.planeView): the active pane, or another pane of its series already on that plane, so the three-plane MPR
    * keeps its planes; or why it cannot be. */
@@ -816,13 +920,36 @@ export default function App() {
     for (const request of frameRequests.current.values()) request.controller.abort();
     frameRequests.current.clear();
   } });
+  // In the status bar, where it does not push the image down: what is being done, how far, how long it has taken and
+  // about how long is left. A series loading shows its bar alone, as it comes and goes with every series opened.
+  const progressTimes = progress?.elapsed === undefined ? ''
+    : progress.remaining === undefined ? clockText(progress.elapsed)
+    : t('status.progressTimes', { elapsed: clockText(progress.elapsed), remaining: clockText(progress.remaining) });
+  // The stage is the status text then (Taranıyor), and its bar says how far it is: the times beside it are enough.
+  const progressStage = progress && progress.stage !== 'decode' ? stageLabel(progress.stage) : '';
+  const progressText = progressStage ? progressTimes : '';
   const hasWork = Boolean(busy || loadingIds.size || importing);
   useEffect(() => {
-    if (!hasWork) { setProgress(null); setCancelledId(null); return; }
+    if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
     const pollState = { disposed: false, polling: false };
+    // How long the operation shown has run and, once its stage has run a few seconds, what is left of that stage at
+    // the pace it has kept so far. A new operation, or a new stage of it, starts its own count.
+    const timed = (value: CoreProgress) => {
+      const now = performance.now(), clock = progressClock.current;
+      const same = clock !== null && clock.id === value.id, sameStage = same && clock.stage === value.stage;
+      const next = { id: value.id, stage: value.stage, began: same ? clock.began : now, stageBegan: sameStage ? clock.stageBegan : now, stageDone: sameStage ? clock.stageDone : value.completed };
+      progressClock.current = next;
+      const done = value.completed - next.stageDone, spent = now - next.stageBegan;
+      const remaining = value.total > 0 && done > 0 && spent >= 3000 ? spent / done * Math.max(0, value.total - value.completed) : undefined;
+      return { ...value, elapsed: now - next.began, remaining };
+    };
     const poll = async () => {
       if (pollState.polling) return; pollState.polling = true;
-      await getProgress().then(value => { if (!pollState.disposed) setProgress(value.running ? value : null); })
+      await getProgress().then(value => {
+        if (pollState.disposed) return;
+        if (!value.running) progressClock.current = null;
+        setProgress(value.running ? timed(value) : null);
+      })
         .catch(() => { /* The initiating operation reports connection errors. */ })
         .finally(() => { pollState.polling = false; });
     };
@@ -851,12 +978,12 @@ export default function App() {
   }, [show3d, showAssessment, checklistOpen]);
 
   /** A checklist note for the slice of `view`, as the slice counter numbers it, with its tilt. */
-  const noteAt = (seriesId: string, series: Series, view: Pick<ViewState, 'plane' | 'slice' | 'mode' | 'oblique'>): SliceNote => {
+  const noteAt = (seriesId: string, series: Series, view: Pick<ViewState, 'plane' | 'slice' | 'mode' | 'oblique' | 'projection'>, joined?: Joined | null): SliceNote => {
     const count = sliceCount(series, view), slice = Math.round(view.slice);
-    const shown = pagesBackwards(series, view) ? count - slice : slice + 1;
+    const numbered = shownSlice(series, view, slice, count, joined);
     // A tilted plane is named with its tilt, and "go to" tilts the pane back to it.
     const tilted = (view.mode ?? 'source') === 'mpr' && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number], tilt: obliqueAngle(series, view) } : {};
-    return { seriesId, slice, shown: `${shown}/${count}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
+    return { seriesId, slice, shown: `${numbered.number}/${numbered.total}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
   };
   /** A measurement just drawn while a caliper is under way on its study: its points moved onto bone and the drawing
    * tagged as that caliper, which then ends. */
@@ -891,32 +1018,50 @@ export default function App() {
       if (annotation.id !== drawn && (!recorded || (!rescaled && samePoints(recorded.points, annotation.points)))) continue;
       const result = caliperResult(tag, annotation.points, caliperMmScale(series));
       const view = viewOfAnnotation(annotation, annotationSourceIndex(annotation, series));
-      keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view), caliper: caliperNote(annotation.id, tag, annotation.points, result) });
+      keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view, usesSourceFrames(series, view) ? joinedOf(series) : null), caliper: caliperNote(annotation.id, tag, annotation.points, result) });
     }
     const kept = rescaled && keptChecklist(study);
     if (kept) keepChecklist(study, remeasureRecords(kept, seriesId, new Set(list.map(annotation => annotation.id)), caliperMmScale(series)));
   };
-  const remember = () => {
-    history.current.past.push({ slots: slotsRef.current, annotations: annotationRef.current });
+  const setFilmCalibration = (seriesId: string, key: string, value: FilmCalibration | null) => {
+    setFilmCalibrations(current => {
+      const films = { ...current[seriesId] }, next = { ...current };
+      if (value) films[key] = value; else delete films[key];
+      if (Object.keys(films).length) next[seriesId] = films; else delete next[seriesId];
+      return next;
+    });
+  };
+  const snapshotFor = (selection?: FilmSelection): Snapshot => ({
+    slots: slotsRef.current, annotations: annotationRef.current, plans: deformity.snapshot(),
+    // Importing a plan changes this film's scale in the same step. A landmark edit never changes a calibration.
+    ...(selection ? { calibration: { ...selection, value: filmCalibrationsRef.current[selection.seriesId]?.[selection.key] ?? null } } : {}),
+  });
+  const remember = (selection?: FilmSelection) => {
+    history.current.past.push(snapshotFor(selection));
     if (history.current.past.length > 30) history.current.past.shift();
     history.current.future = []; setHistoryCount([history.current.past.length, 0]);
   };
   const undo = (redo = false) => {
     const from = redo ? history.current.future : history.current.past, to = redo ? history.current.past : history.current.future;
     const snapshot = from.pop(); if (!snapshot) return;
-    to.push({ slots: slotsRef.current, annotations: annotationRef.current });
+    to.push(snapshotFor(snapshot.calibration));
+    if (snapshot.calibration) setFilmCalibration(snapshot.calibration.seriesId, snapshot.calibration.key, snapshot.calibration.value);
     setSlots(current => current.map(slot => {
       const saved = snapshot.slots.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
       return saved ? { ...slot, view: saved.view } : slot;
     }));
-    setAnnotations(snapshot.annotations); setHistoryCount([history.current.past.length, history.current.future.length]);
+    setAnnotations(snapshot.annotations); deformity.restore(snapshot.plans); setHistoryCount([history.current.past.length, history.current.future.length]);
     // A caliper's edit undone measures again; one whose drawing is undone keeps its record in the checklist.
     for (const [seriesId, list] of Object.entries(snapshot.annotations)) recordCalipers(seriesId, list);
   };
+  // A deformity plan's steps are Undo steps too (src/ui/deformityStore.ts). `remember` reads only refs, so the first one
+  // serves for the window's life.
+  useEffect(() => { deformity.connectUndo(remember); return () => deformity.connectUndo(null); }, []);
 
   const publishVolumes = (candidate: Map<string, Volume>) => {
     const pinned = new Set([...pending.current.keys(), ...requestedPins.current, ...assessmentPinnedIds.current]);
-    for (const slot of slotsRef.current) if (slot.seriesId) pinned.add(slot.seriesId);
+    // The stack whose reference image a pane shows stays loaded: the reader is one step from it.
+    for (const slot of slotsRef.current) { if (slot.seriesId) pinned.add(slot.seriesId); if (slot.stack) pinned.add(slot.stack.id); }
     if (fusionIdRef.current) pinned.add(fusionIdRef.current);
     for (const [id, values] of Object.entries(annotationRef.current)) if (values.length) pinned.add(id);
     const result = trimInactiveVolumes(candidate, pinned, volumeAccess.current);
@@ -946,6 +1091,74 @@ export default function App() {
     setLoadErrors(current => { const updated = { ...current }; for (const id of ids) delete updated[id]; return updated; });
   };
 
+  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
+   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
+   * gone. */
+  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
+    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
+  };
+  /** Measurements drawn on source images keep their image when a series' images move: an import that read it again, or
+   * a series being read that grew. So do those Undo and Redo bring back. */
+  const followAnnotations = (moved: readonly Series[]) => {
+    const place = (annotations: Record<string, Annotation[]>) => {
+      const next = { ...annotations }; let changed = false;
+      for (const item of moved) {
+        if (!Object.hasOwn(annotations, item.id)) continue;
+        const kept = annotations[item.id];
+        const placed = kept.map(annotation => {
+          if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
+          const index = annotationSourceIndex(annotation, item);
+          if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
+          return { ...annotation, sourceFrame: index, slice: index };
+        });
+        if (placed.some((annotation, i) => annotation !== kept[i])) { next[item.id] = placed; changed = true; }
+      }
+      return changed ? next : annotations;
+    };
+    setAnnotations(place);
+    followHistory(snapshot => {
+      const annotations = place(snapshot.annotations);
+      return annotations === snapshot.annotations ? snapshot : { ...snapshot, annotations };
+    });
+  };
+  /** A series still being read from a disc grew (importStudies): it takes its earlier self's place without being loaded
+   * again. Each pane on it keeps the image it shows, now at that image's place in the grown series, and so does each
+   * measurement. Read whole, a series shown in a pane is loaded as any series is. */
+  const followGrowth = (grown: readonly Series[]) => {
+    const before = new Map(seriesRef.current.map(item => [item.id, item]));
+    // The same frame of the same file: a file of many frames holds several of a series' images.
+    const placeIn = (item: Series, index: number) => {
+      const shown = before.get(item.id)?.frameMetadata?.[index];
+      const at = shown?.sopInstanceUid === undefined ? -1 : (item.frameMetadata ?? [])
+        .findIndex(frame => frame.sopInstanceUid === shown.sopInstanceUid && frame.sourceFrameNumber === shown.sourceFrameNumber);
+      return at >= 0 ? at : Math.max(0, Math.min(index, item.dimensions[2] - 1));
+    };
+    const byId = new Map(grown.map(item => [item.id, item]));
+    frameCache.invalidate([...byId.keys()]);
+    // What was asked of its earlier self is not kept when it comes (acquireVolume): its images are in another order.
+    for (const id of byId.keys()) volumeGenerations.current.set(id, (volumeGenerations.current.get(id) ?? 0) + 1);
+    for (const [slotId, request] of frameRequests.current) if (byId.has(request.seriesId)) { request.controller.abort(); frameRequests.current.delete(slotId); }
+    const moved = (volume: Volume) => {
+      const item = byId.get(volume.series.id);
+      return item && volume.sourceFrameIndex !== undefined ? { ...volume, series: item, sourceFrameIndex: placeIn(item, volume.sourceFrameIndex) } : volume;
+    };
+    publishVolumes(new Map([...volumesRef.current].map(([id, volume]) => [id, moved(volume)])));
+    setSlotFrames(current => Object.fromEntries(Object.entries(current).map(([id, volume]) => [id, moved(volume)])));
+    const follow = (slot: Slot) => {
+      const item = slot.seriesId ? byId.get(slot.seriesId) : undefined;
+      return item ? { ...slot, view: { ...slot.view, slice: placeIn(item, slot.view.slice) } } : slot;
+    };
+    setSlots(current => current.map(follow));
+    // And the panes kept aside to come back: those a maximized pane hides, those the three-plane MPR took the place of,
+    // and those Undo and Redo bring back.
+    hiddenSlots.current = hiddenSlots.current.map(follow);
+    if (beforeMpr.current) beforeMpr.current = { ...beforeMpr.current, slots: beforeMpr.current.slots.map(follow) };
+    followHistory(snapshot => ({ ...snapshot, slots: snapshot.slots.map(follow) }));
+    followAnnotations(grown);
+    // A pane on it asks again once it is read whole, or now if it has no image yet (its request went to an earlier self).
+    for (const item of grown) if (slotsRef.current.some(slot => slot.seriesId === item.id) && (!item.reading || !volumesRef.current.has(item.id))) loadPaneImage(item);
+  };
+
   const acquireVolume = (item: Series): Promise<Volume> => {
     requestedPins.current.add(item.id);
     volumeAccess.current.set(item.id, ++accessClock.current);
@@ -959,6 +1172,13 @@ export default function App() {
       publishVolumes(next);
       keepThumbnail(volume);
     };
+    // A series still being read from a disc is shown a source frame at a time: its volume would have to be loaded again
+    // each time it grows (followGrowth). Read whole, it is loaded as any series is.
+    if (item.reading) return cached ? Promise.resolve(cached) : frameCache.get(item, openingSlice(item)).then(async volume => {
+      await prepareSourceProgram(volume);
+      if (mounted.current && isCurrent()) storeVolume(volume);
+      return volume;
+    });
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     const load = { complete: false };
@@ -999,10 +1219,15 @@ export default function App() {
     publishLoadedVolumes(volumesRef.current);
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
+  // Each card's picture is its series' middle frame, at most two in flight. It does not wait for other volumes to load:
+  // a frame is small next to a volume, and waiting would keep every card's placeholder until the last volume had
+  // arrived. A series that is itself loading is left out: its card takes its picture from the images that load brings
+  // (acquireVolume), and a frame fetched for it here would be read twice. A load starting or ending runs this again
+  // (loadingIds), retrying a card whose picture failed or was dropped; the frame cache shares a request already under way.
   useEffect(() => {
-    if (importing || loadingIds.size) return;
+    if (importing) return;
     const work = { stopped: false, cursor: 0 };
-    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id)).slice(0, 40);
+    const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id) && !loadingIds.has(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
       const volume = fullyLoaded.current.has(item.id) ? volumesRef.current.get(item.id) : undefined;
       const middle = volume ?? await frameCache.get(item, thumbnailFrame(item));
@@ -1024,7 +1249,7 @@ export default function App() {
     };
     void preload(); void preload();
     return () => { work.stopped = true; };
-  }, [series, importing, loadingIds.size, frameCache]);
+  }, [series, importing, loadingIds, frameCache]);
 
   useEffect(() => {
     // While a study is read, frames come only for the series it has already published (see importStudies).
@@ -1057,7 +1282,8 @@ export default function App() {
           || current?.seriesId !== base.series.id || current.view.slice !== index || generation !== (volumeGenerations.current.get(base.series.id) ?? 0)) return;
         setSlotFrames(values => ({ ...values, [slot.id]: frame }));
       }).catch(error => {
-        if (!request.controller.signal.aborted && frameRequests.current.get(slot.id) === request) setNotice({ message: errorText(error), kind: 'error' });
+        // As in loadPaneImage: a frame of a series' earlier self, while the series is read from a disc, is refused.
+        if (!request.controller.signal.aborted && frameRequests.current.get(slot.id) === request && !base.series.reading) setNotice({ message: errorText(error), kind: 'error' });
       }).finally(() => { if (frameRequests.current.get(slot.id) === request) frameRequests.current.delete(slot.id); });
     }
     const stale = Object.entries(slotFrames).filter(([id, volume]) => fullyLoaded.current.has(volume.series.id) || !slots.some(slot => slot.id === id && slot.seriesId === volume.series.id));
@@ -1069,19 +1295,60 @@ export default function App() {
   }, [slots, volumes, slotFrames, frameCache, importing]);
 
   const loadPaneImage = (item?: Series) => {
-    if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
+    // A series still being read from a disc grows meanwhile, and a request for its earlier self is refused: its grown
+    // self is asked for in turn (followGrowth), so that is not shown as an error.
+    if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => { if (!item.reading) setNotice({ message: errorText(error), kind: 'error' }); });
   };
-  const assignSeries = (slotId: string, item: Series) => {
+  /** Puts a series in a pane, which becomes the active one unless `activate` is false. */
+  const assignSeries = (slotId: string, item: Series, activate = true) => {
     setSlots(current => current.map(slot => slot.id === slotId ? { id: slot.id, seriesId: item.id, view: defaultView(item) } : slot));
-    setActiveId(slotId);
+    if (activate) setActiveId(slotId);
     loadPaneImage(item);
+  };
+
+  /** Puts a pane that pages a stack with its reference image on a place of that sequence: on the reference image at
+   * the image's place, on the stack's slice at any other. Where that is the other of the two, the pane takes that
+   * series: on the reference image it keeps the stack's view for the way back, and a window the reader set by hand
+   * goes with it. The place says where to go whichever of the two the pane shows, so that a call which follows
+   * another before the pane is drawn again (two wheel notches, a drag's moves) lands where it asked. */
+  const crossJoined = (slotId: string, place: number) => {
+    const known = new Map(seriesRef.current.map(item => [item.id, item])), pairs = referenceImages(seriesRef.current);
+    const stackOf = new Map([...pairs].map(([stack, reference]) => [reference.id, known.get(stack)]));
+    /** The sequence a pane's series is in: what the pane shows, the stack, its reference image and how they join. */
+    const sequenceOf = (slot: Slot) => {
+      const shown = slot.seriesId ? known.get(slot.seriesId) : undefined, stack = shown && (pairs.has(shown.id) ? shown : stackOf.get(shown.id)), reference = stack && pairs.get(stack.id);
+      return shown && stack && reference ? { shown, stack, reference, joined: { ...joinedWith(stack, reference), lead: false } } : null;
+    };
+    const next = (slot: Slot): Slot => {
+      const sequence = slot.id === slotId ? sequenceOf(slot) : null;
+      if (!sequence) return slot;
+      const { shown, stack, reference, joined } = sequence, onStack = shown.id === stack.id;
+      // Only a pane that shows the stack as it was acquired pages it with the image.
+      if (onStack && !(usesSourceFrames(stack, slot.view) && !isProjection(stack, slot.view))) return slot;
+      if (place === joined.leadAt) {
+        if (!onStack) return slot;
+        const set = slot.view.windowMode === 'manual' ? { windowMode: slot.view.windowMode, windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth } : {};
+        return { id: slot.id, seriesId: reference.id, unfused: slot.unfused, stack: { id: stack.id, view: slot.view }, view: { ...defaultView(reference), ...set, inverted: slot.view.inverted } };
+      }
+      // The stack's slice at the place: in the view the pane has on the stack, or had on it before it went to the image.
+      const view = onStack ? slot.view : slot.stack?.id === stack.id ? slot.stack.view : defaultView(stack);
+      const slice = stackSliceAt(stack, view, place, stack.dimensions[2], joined);
+      return onStack && view.slice === slice ? slot : { id: slot.id, seriesId: stack.id, unfused: slot.unfused, view: { ...view, slice } };
+    };
+    const before = slotsRef.current.find(slot => slot.id === slotId), sequence = before && sequenceOf(before);
+    if (!sequence) return;
+    // Queued even where the pane seems to be there already: it may be on its way to the other of the two.
+    setSlots(current => { const moved = current.map(next); return moved.some((slot, index) => slot !== current[index]) ? moved : current; });
+    const target = place === sequence.joined.leadAt ? sequence.reference : sequence.stack;
+    if (target.id !== sequence.shown.id) loadPaneImage(target);
   };
 
   // `trigger` says how the study was opened (folder, disc, drop...) for usage timings; never where from.
   // Set below, where arrangements are applied: opens a study's first image, or the arrangement it matches.
-  const openStudy = useRef<(first: Series, study: Series[], keepShown?: boolean, session?: Series[]) => void>(() => {});
-  const importStudies = async (paths: string[], trigger = 'other') => {
-    if (!paths.length) return;
+  const openStudy = useRef<(first: Series, study: Series[], keepShown?: boolean, session?: Series[], slotId?: string) => void>(() => {});
+  /** Imports what the capabilities name and opens it; gives the image series imported, none when it failed. */
+  const importStudies = async (paths: string[], trigger = 'other'): Promise<string[]> => {
+    if (!paths.length) return [];
     // A study named at launch has been opening since the window was created (the monotonic clock's zero).
     usage.beginStudy(trigger, trigger === 'startup' ? 0 : undefined);
     importCount.current++; setImporting(importCount.current);
@@ -1096,72 +1363,141 @@ export default function App() {
     // Asked after each wait: the import's own result ends the watch, and so does the app unmounting.
     const stillWatching = () => !earlyWatch.signal.aborted && mounted.current;
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
+    // A disc read once: the series its DICOMDIR lists, each with its picture once its middle image is read (the engine's
+    // importEarly). They are asked for until they come, then about every half second, for how far each one is read.
+    const disc: { paths: string[]; cards: WaitingSeries[]; wanted: string | null } = { paths, cards: [], wanted: null };
+    discImport.current = disc;
+    // A series read takes its card's picture only if the picture is one of its own images (see holdsFrame).
+    const pictureFor = (item: Series) => {
+      const picture = disc.cards.find(card => card.info.uid === item.uid)?.preview;
+      return picture?.uid === item.uid && holdsFrame(item, picture, thumbnailFrame(picture)) ? picture : undefined;
+    };
     void (async () => {
-      let after = 0;
+      let after = 0, previewsAfter = 0, polls = 0;
       while (stillWatching()) {
         await new Promise(resolve => setTimeout(resolve, 40));
         if (!stillWatching()) return;
-        let found: Series[];
-        try { found = await importEarly(paths, after); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        let reply: EarlyImport;
+        // The series come once; after that, about every half second, how far each of them is read.
+        const planned = !disc.cards.length, finished = !planned && polls % 12 === 0;
+        try { reply = await importEarly(paths, after, { planned, finished, previewsAfter }); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        polls += 1;
         if (!stillWatching()) return;
-        after += found.length;
+        const found = reply.series;
+        after += found.length; previewsAfter += reply.previews.length;
+        const listed = reply.planned ?? disc.cards.map((card, index) => {
+          const read = reply.finished?.[index];
+          return read === undefined || read === card.info.finished ? card.info : { ...card.info, finished: read };
+        });
+        const recounted = !reply.planned && listed.some((info, index) => info !== disc.cards[index]?.info);
+        if (reply.planned || reply.previews.length || recounted) {
+          const pictures = new Map(reply.previews.map(preview => [preview.planned, preview.series]));
+          disc.cards = listed.map((info, index) => ({ index, info, preview: pictures.get(index) ?? disc.cards[index]?.preview }));
+          setWaiting(disc.cards);
+          // Drawn as any card's picture is, from its middle frame (a file of many frames has it there). One that fails
+          // leaves its card's placeholder until its series is read.
+          for (const picture of pictures.values()) frameCache.get(picture, thumbnailFrame(picture)).then(keepThumbnail, () => {});
+        }
+        // A series handed over before comes again as it grows: one the reader opened from a disc still being read.
+        const grown = found.filter(item => early.has(item.id) && early.get(item.id)?.catalogRevision !== item.catalogRevision);
+        if (grown.length) {
+          followGrowth(grown);
+          for (const item of grown) early.set(item.id, item);
+          setSeries(current => withFound(current, grown, listedBefore));
+        }
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
+        for (const item of images) { const picture = pictureFor(item); if (picture) adoptThumbnail(picture.id, item.id); }
+        // The series the reader opened from its waiting card opens as soon as part of it is read.
+        const opened = images.find(item => item.uid === disc.wanted);
+        if (opened) disc.wanted = null;
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
         const first = early.size === 0;
         for (const item of images) { early.set(item.id, item); earlySeries.current.add(item.id); }
         setSeries(current => withFound(current, images, listedBefore));
-        if (first) assignSeries(activeIdRef.current, images[0]);
+        if (opened) assignSeries(activeIdRef.current, opened);
+        else if (first) assignSeries(activeIdRef.current, images[0]);
       }
     })();
-    await importPaths(paths).then(result => {
+    return importPaths(paths).then(result => {
       earlyWatch.abort();
+      for (const item of result.series) { const picture = pictureFor(item); if (picture) adoptThumbnail(picture.id, item.id); }
       // A series published early that came out the same keeps its pane, its view and the volume already loading.
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
       const settled = new Set(result.series.filter(same).map(item => item.id));
       const dropped = new Set([...early.keys()].filter(id => !result.series.some(item => item.id === id)));
+      // A series opened while it was read can come out of the import as more than one (the phases of one Series Instance
+      // UID). A pane on it goes to the series that holds the image it showed, at that image, and so does each measurement
+      // (src/ui/earlySeries.ts).
+      const holding = holdingIn(result.series);
+      const shownIn = (slot: Slot) => {
+        const shown = slot.seriesId ? early.get(slot.seriesId)?.frameMetadata?.[slot.view.slice] : undefined;
+        return holding(shown?.sopInstanceUid, shown?.sourceFrameNumber);
+      };
+      const carried = new Map<string, { item: Series; at: number } | undefined>();
+      for (const slot of [...slotsRef.current, ...hiddenSlots.current]) {
+        if (slot.seriesId && dropped.has(slot.seriesId)) carried.set(slot.id, shownIn(slot));
+      }
+      const carry = (slot: Slot): Slot => {
+        if (!carried.has(slot.id) || !slot.seriesId || !dropped.has(slot.seriesId)) return slot;
+        const to = carried.get(slot.id);
+        return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : { ...slot, seriesId: null };
+      };
+      hiddenSlots.current = hiddenSlots.current.map(carry).filter(slot => slot.seriesId);
+      // A measurement whose image no series holds is gone with its series, and said below.
+      const lostMeasurements = carryAnnotations(annotationRef.current, dropped, holding).lost;
+      if (dropped.size) {
+        setAnnotations(current => carryAnnotations(current, dropped, holding).annotations);
+        // Undo's and Redo's steps go along: their measurements, and their panes on a dropped series whose image is held.
+        const carrySaved = (slot: Slot): Slot => {
+          const to = slot.seriesId && dropped.has(slot.seriesId) ? shownIn(slot) : undefined;
+          return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : slot;
+        };
+        followHistory(snapshot => ({ ...snapshot, annotations: carryAnnotations(snapshot.annotations, dropped, holding).annotations, slots: snapshot.slots.map(carrySaved) }));
+      }
       const images = result.series.filter(item => !item.segmentation);
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0),
         source: result.source, result: images.length ? 'ok' : 'empty' }, result.series.map(item => item.id));
       invalidateVolumes([...result.series.map(item => item.id).filter(id => !settled.has(id)), ...dropped]);
-      if (dropped.size) setSlots(current => current.map(slot => slot.seriesId && dropped.has(slot.seriesId) ? { ...slot, seriesId: null } : slot));
+      if (dropped.size) setSlots(current => current.map(slot => slot.seriesId && dropped.has(slot.seriesId) ? (carried.has(slot.id) ? carry(slot) : { ...slot, seriesId: null }) : slot));
       const reimported = new Set(result.series.map(item => item.id));
       for (const id of reimported) maskRequests.current.delete(id);
       setSegmentationMasks(current => [...current.keys()].some(id => reimported.has(id)) ? new Map([...current].filter(([id]) => !reimported.has(id))) : current);
-      setAnnotations(current => {
-        const next = { ...current }; let changed = false;
-        for (const item of result.series) {
-          if (!Object.hasOwn(current, item.id)) continue;
-          const kept = current[item.id];
-          const moved = kept.map(annotation => {
-            if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
-            const index = annotationSourceIndex(annotation, item);
-            if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
-            return { ...annotation, sourceFrame: index, slice: index };
-          });
-          if (moved.some((annotation, i) => annotation !== kept[i])) { next[item.id] = moved; changed = true; }
-        }
-        return changed ? next : current;
-      });
+      followAnnotations(result.series);
       const visibleIds = new Set([...slotsRef.current.map(slot => slot.seriesId), fusionIdRef.current, ...assessmentPinnedIds.current]);
+      for (const to of carried.values()) if (to) visibleIds.add(to.item.id);
       for (const item of result.series) if (visibleIds.has(item.id) && !settled.has(item.id)) loadPaneImage(item);
       // The study just opened leads the list (src/ui/seriesOrder.ts): its new series, those opened early among them,
       // in the import's catalogue order rather than the order they were found in. Series listed before it follow
       // where they were.
       setSeries(current => withImported(current, result.series, listedBefore, early.keys()));
-      if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
-      const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0) ?? result.series.find(item => !item.segmentation);
+      // The measurements that could not be kept are said after the import's own warnings.
+      const told = lostMeasurements ? { ...result, warnings: [...result.warnings, t('notice.measurementsNotKept')] } : result;
+      if (told.warnings.length) setNotice({ message: warningTexts(told).join(' · '), kind: 'info', code: 'import-warnings', warnings: told });
+      const known = new Map(seriesRef.current.map(item => [item.id, item]));
+      for (const item of result.series) known.set(item.id, item);
+      const session = [...known.values()];
+      // A study opens on a series, not on a stack's reference image (ui/referenceImages.ts): that one image does not page.
+      // The stack may have been listed before this import, so the reference images are those of the whole session, as
+      // in the series list; an import of nothing but a reference image opens that image's stack.
+      const stackOf = new Map([...referenceImages(session)].map(([stack, reference]) => [reference.id, known.get(stack)!]));
+      const firstImage = result.series.find(item => !item.segmentation && item.dimensions[2] > 0 && !stackOf.has(item.id))
+        ?? result.series.map(item => stackOf.get(item.id)).find(stack => stack !== undefined) ?? result.series.find(item => !item.segmentation);
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
       // PET/CT screen) is laid out now that every series is known.
       const shownEarly = slotsRef.current.flatMap(slot => slot.seriesId && early.has(slot.seriesId) ? [slot.seriesId] : []);
-      const keep = shownEarly.length > 0 && shownEarly.every(id => settled.has(id));
-      const known = new Map(seriesRef.current.map(item => [item.id, item]));
-      for (const item of result.series) known.set(item.id, item);
-      if (firstImage) openStudy.current(firstImage, [...known.values()].filter(item => studyKey(item) === studyKey(firstImage)), keep, [...known.values()]);
+      // A pane carried to the series that holds its image counts as kept.
+      const keptPane = (id: string) => settled.has(id) || slotsRef.current.every(slot => slot.seriesId !== id || carried.get(slot.id) !== undefined);
+      const keep = shownEarly.length > 0 && shownEarly.every(keptPane) && !shownEarly.some(id => stackOf.has(id));
+      // A reference image shown since the study began to open gives way in its own pane, whichever pane the reader is
+      // in by now.
+      const referencePane = slotsRef.current.find(slot => slot.seriesId && early.has(slot.seriesId) && stackOf.has(slot.seriesId))?.id;
+      if (firstImage) openStudy.current(firstImage, session.filter(item => studyKey(item) === studyKey(firstImage)), keep, session, referencePane);
       else if (result.series.length) say('segmentation.onlySegmentations', 'info');
       else say('notice.noDicomFound', 'info');
-    }).catch(error => {
+      return images.map(item => item.id);
+    }).catch((error: unknown) => {
       earlyWatch.abort();
       usage.studyOpened({ modalities: [], series: 0, slices: 0, result: 'error' }, []); setNotice({ message: errorText(error), kind: 'error' });
       // The series published early go with the failed import (the engine has taken them back).
@@ -1170,9 +1506,16 @@ export default function App() {
         setSeries(current => current.filter(item => !early.has(item.id)));
         setSlots(current => current.map(slot => slot.seriesId && early.has(slot.seriesId) ? { ...slot, seriesId: null } : slot));
       }
+      return [];
     }).finally(() => {
       earlyWatch.abort();
       for (const id of early.keys()) earlySeries.current.delete(id);
+      // The disc's cards go with its import: its series are the list's own now, with the pictures they took.
+      if (discImport.current === disc) discImport.current = null;
+      const pictures = disc.cards.flatMap(card => card.preview ? [card.preview.id] : []);
+      for (const id of pictures) forgetThumbnail(id);
+      frameCache.invalidate(pictures);
+      setWaiting([]);
       importCount.current = Math.max(0, importCount.current - 1); setImporting(importCount.current); setBusy(null);
     });
   };
@@ -1185,8 +1528,12 @@ export default function App() {
     // Like the native dialogs, the window is what this action does, and nothing in the app's state shows it.
     usage.touch('dialog');
     const trigger = start === 'disc' ? 'disc' : 'folder';
+    // The disc button opens the disc itself where the system knows which drive holds one (electron/import-view.cjs),
+    // and a drive can take a while to answer for a disc it was just given.
+    if (start === 'disc') setBusy('status.disc');
     try { await importStudies(await window.veacom.openImportWindow(start), trigger); }
     catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+    if (start === 'disc') setBusy(importCount.current ? 'status.reading' : null);
   };
   useEffect(() => window.veacom?.onImportAction?.((id, input) => usage.action(id, input)), []);
   const open = async (kind: 'files' | 'folder' | 'archive', trigger: string = kind) => {
@@ -1196,6 +1543,73 @@ export default function App() {
     usage.touch('dialog');
     try { await importStudies(await window.veacom.openPaths(kind), trigger); }
     catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+  };
+
+  // Labelling a folder of long-leg films (ui/labelQueue.ts): one film open at a time. The next opens before the one
+  // shown is taken off the list, so the plan stays open between them. A file that does not open as an image, or opens
+  // into the series of the film before, still becomes the queue's place, with nothing to save, so Next goes past it.
+  const labelling = useLabelQueue();
+  /** Undo starts afresh on each film of a run: a step back never reaches into another film's plan. */
+  const forgetHistory = () => { history.current = { past: [], future: [] }; setHistoryCount([0, 0]); };
+  const goToFilm = async (index: number) => {
+    const queue = labelQueue.get(), folder = queue.folder, bridge = window.veacom?.labelFolder;
+    if (!folder || !bridge || index < 0 || index >= folder.films.length) return;
+    // Pictures or a video being made, or about to be made, from the pane: the film shown must stay until they are done.
+    // What was just saved is still said. (While a film opens, no capture can start: openExport.)
+    if (capturingRef.current || exportMode === 'images' || exportMode === 'video') {
+      labelQueue.say([labelQueue.get().status, t('label.waitForCapture')].filter(Boolean).join(' ')); return;
+    }
+    if (!labelQueue.begin()) return;
+    // Stopped, or another folder chosen, meanwhile: the film stays open, outside the run, and that run is left alone.
+    const same = () => labelQueue.get().folder?.token === folder.token;
+    // No `finally` here: the React Compiler leaves a component unmemoized when any function in it has one.
+    let status: string | null | undefined;
+    try {
+      const capabilities = await bridge.film(folder.token, index);
+      // Undo is cleared before the next film arrives, so no step back lands between two films.
+      forgetHistory();
+      const opened = await importStudies(capabilities, 'folder');
+      if (same()) {
+        const name = settingsRef.current.hidePatientData ? t('label.theFile') : folder.films[index].name;
+        // Two files of one series would share the film's series, and the plan could be saved for the wrong one.
+        const shared = labelQueue.shares(index, opened);
+        const before = queue.seriesIds.filter(id => !opened.includes(id));
+        if (before.length) removeFromList(before, opened.length > 0);
+        labelQueue.shown(index, shared ? [] : opened);
+        forgetHistory();
+        if (opened.length) setChecklistOpen(true);
+        if (!opened.length) status = t('label.notOpened', { name });
+        else if (shared) status = t('label.sharedSeries', { name });
+      }
+    } catch (error) { status = errorText(error); }
+    if (same()) labelQueue.end(status);
+  };
+  const startLabelling = async () => {
+    setMenu(null);
+    const bridge = window.veacom?.labelFolder;
+    if (!bridge) { say('notice.desktopToOpen', 'info'); return; }
+    if (capturingRef.current) { setNotice({ message: t('label.waitForCapture'), kind: 'info' }); return; }
+    usage.touch('dialog');
+    try {
+      const folder = await bridge.open();
+      if (!folder) return;
+      if (!folder.films.length) { setNotice({ message: t('label.empty'), kind: 'info' }); return; }
+      labelQueue.start(folder);
+      forgetHistory();
+      // The first film without a plan, so a run stopped halfway goes on where it was.
+      const next = folder.films.findIndex(film => film.plan === null && !film.unreadable);
+      await goToFilm(next >= 0 ? next : 0);
+    } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+  };
+
+  /** A film's ball or ruler calibration from the plan, or its removal: announced when it changes the scale. */
+  const calibrateFilm = (id: string, key: string, calibration: FilmCalibration | null) => {
+    const before = filmCalibrations[id]?.[key];
+    setFilmCalibration(id, key, calibration);
+    // Confirming the ball's depth changes no scale: no announcement.
+    if (calibration && calibration.method !== 'dicom' && (before?.method === 'dicom' || calibration.scale !== before?.scale)) {
+      setSettings(current => ({ ...current, measurementUnits: 'auto' })); say('notice.calibratedFilm', 'info', undefined, true);
+    }
   };
 
   const restoreCatalog = async () => {
@@ -1305,6 +1719,13 @@ export default function App() {
       const arrangement = arranged.current;
       const sharedPet = arrangement && (sharedWindow || sharedLook) && arrangement.slotIds.includes(slotId) && sharesSuvScale(arrangement.plan)
         && arrangement.plan.panes.some(pane => pane.series.id === selected.seriesId) ? arrangement : null;
+      // The comparison screen's panes zoom and pan together while linked, each from where it is; CT beside CT also
+      // takes one window (Hounsfield units are one scale).
+      const compared = arrangement?.plan.arrangement.view === 'shared' && settingsRef.current.linked && arrangement.slotIds.includes(slotId)
+        && current.length === arrangement.slotIds.length && current.every(slot => arrangement.slotIds.includes(slot.id)) ? arrangement : null;
+      const zoomed = selected.view.zoom > 0 ? nextView.zoom / selected.view.zoom : 1;
+      const shifted: [number, number] = [nextView.pan[0] - selected.view.pan[0], nextView.pan[1] - selected.view.pan[1]];
+      const framed = zoomed !== 1 || shifted[0] !== 0 || shifted[1] !== 0;
       return current.map(original => {
         if (original.id === slotId) return { ...original, view: nextView };
         if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
@@ -1317,6 +1738,12 @@ export default function App() {
           const window = sharedWindow ? sameRangeWindow(volume.series, nextView, other.series, 'SUV') : null;
           slot = { ...slot, view: { ...slot.view, ...(window ? { ...window, windowMode: 'manual' as const } : {}),
             ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
+        }
+        if (compared && slot.seriesId && (framed || windowed)) {
+          const oneScale = windowed && volume?.series.modality === 'CT' && other?.series.modality === 'CT';
+          slot = { ...slot, view: { ...slot.view,
+            ...(framed ? { zoom: slot.view.zoom * zoomed, pan: [slot.view.pan[0] + shifted[0], slot.view.pan[1] + shifted[1]] as [number, number] } : {}),
+            ...(oneScale ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: 'manual' as const } : {}) } };
         }
         if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
         const target: Pane = { series: other.series, view: slot.view };
@@ -1345,7 +1772,8 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [playing]);
   /** A click on a pane's plane name: the next plane in place, axial, coronal, sagittal (VEAcom 1.x); the plane the
-   * series was acquired in shows its own images. Only for a whole volume that can be reconstructed. */
+   * series was acquired in shows its own images, unless a thick slab is on: only a reconstruction draws one. Only for a
+   * whole volume that can be reconstructed. */
   const cyclePlane = (slotId: string) => {
     const slot = slotsRef.current.find(item => item.id === slotId), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
     if (!slot || !volume || !volume.series.canReconstruct || volume.series.sourceFramesOnly || volume.sourceFrameIndex !== undefined || isProjection(volume.series, slot.view)) return;
@@ -1353,7 +1781,7 @@ export default function App() {
     if (!current) return;
     const next = ({ axial: 'coronal', coronal: 'sagittal', sagittal: 'axial' } as const)[current];
     const center = getPlaneFrame(volume.series, slot.view).center;
-    const view: ViewState = next === acquired ? { ...slot.view, mode: 'source', plane: 'axial', oblique: undefined } : { ...slot.view, mode: 'mpr', plane: next, oblique: [0, 0] };
+    const view: ViewState = next === acquired && !slot.view.slab ? { ...slot.view, mode: 'source', plane: 'axial', oblique: undefined } : { ...slot.view, mode: 'mpr', plane: next, oblique: [0, 0] };
     updateView(slotId, { ...view, slice: sliceAtWorld(volume.series, view, center) });
   };
   /** Shown panes of one kind of plane that do not page together of themselves. */
@@ -1451,13 +1879,109 @@ export default function App() {
     activateSlot(slotId);
     if (!wasLinked) setSettings(current => ({ ...current, linked: true }));
   };
+  /** For a pane of the comparison screen (COMPARISONS in src/arrangements/builtin.ts), the other one, while its panes
+   * are still the ones on screen. */
+  const comparedWith = (slotId: string) => {
+    const current = arranged.current;
+    return current?.plan.arrangement.view === 'shared' && stillArranged() ? slotsRef.current.find(slot => slot.id !== slotId) : undefined;
+  };
+  /** The series a pane shows, while it is still in the list. */
+  const seriesOf = (slot: Slot | undefined) => slot?.seriesId ? seriesRef.current.find(value => value.id === slot.seriesId) : undefined;
+  /** Links two comparison panes where they are, as the link button links panes by hand. */
+  const linkCompared = (a: { id: string; item: Series; view: ViewState }, b: { id: string; item: Series; view: ViewState }) => {
+    anchorsRef.current.set(pairKey(a.id, b.id), { [a.id]: { seriesId: a.item.id, slice: Math.round(a.view.slice) }, [b.id]: { seriesId: b.item.id, slice: Math.round(b.view.slice) } });
+  };
+  /** Puts `item` in a comparison pane beside what the other pane shows: at the place the pane was at where its own
+   * series lay in `item`'s frame of reference, else level with the other pane; at that pane's zoom and pan, and linked
+   * to it there. The other pane is not touched. */
+  const placeBeside = (slotId: string, item: Series, other: Slot) => {
+    const theirs = seriesOf(other), slot = slotsRef.current.find(value => value.id === slotId), mine = seriesOf(slot);
+    const view = atPlaceOf(item, theirs ? besideView(item, defaultView(item), { series: theirs, view: other.view }) : defaultView(item),
+      slot && mine ? { series: mine, view: slot.view } : undefined);
+    setSlots(current => current.map(slot => slot.id === slotId ? { id: slot.id, seriesId: item.id, view } : slot));
+    loadPaneImage(item);
+    if (theirs) linkCompared({ id: slotId, item, view }, { id: other.id, item: theirs, view: other.view });
+    // Series of two patients in one comparison bring a warning. A series that names no patient is not a known
+    // mismatch, so it brings none.
+    setTwoPatients(theirs && patientMatch(item, theirs) === 'different' ? [item.id, theirs.id] : null);
+  };
+  /** In the comparison screen a series put in one pane changes that pane only. The other pane then offers, for a few
+   * seconds, that series' counterpart in its own study; one click opens it there. */
+  const offerCounterpart = (slotId: string, item: Series) => {
+    const other = comparedWith(slotId);
+    if (!other) return;
+    // From the study the other pane shows; where that pane is empty or shows this series' own study, from the nearest
+    // earlier study that has a counterpart, else the nearest later one (the roles of the comparison itself).
+    const shownThere = seriesOf(other), elsewhere = shownThere && studyKey(shownThere) !== studyKey(item);
+    if (elsewhere && (!samePatient(item, shownThere) || shownThere.studyDate === item.studyDate)) return;
+    const partner = elsewhere ? bestCounterpart(item, seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere)), seriesRef.current)
+      : findRole(COMPARE_WITH_PRIOR.roles.prior, comparableSeries(item, seriesRef.current), item) ?? findRole(COMPARE_WITH_LATER.roles.later, comparableSeries(item, seriesRef.current), item);
+    if (!partner || partner.id === other.seriesId) return;
+    // Named as its card in the series list names it: by its own name, or its likely sequence where the name is a site code.
+    setPaneToast({ slotId: other.id, seriesId: other.seriesId ?? '',
+      text: t(partner.studyDate < item.studyDate ? 'compare.offerPrior' : 'compare.offerLater', { series: shownGuess(partner, sequenceGuess(partner)) || seriesName(partner) }),
+      onOpen: () => {
+        setPaneToast(null);
+        // The offer stood for a few seconds: the series may have been taken off the list since, and the panes changed.
+        const beside = slotsRef.current.find(slot => slot.id === slotId);
+        if (beside && seriesRef.current.some(value => value.id === partner.id)) placeBeside(other.id, partner, beside);
+      } });
+  };
+  /** A series picked or dropped into a pane. In the comparison screen it opens beside the other pane's series, which
+   * stays as it is, and that pane offers the counterpart; anywhere else it opens as it does on its own. */
+  const putSeries = (slotId: string, item: Series) => {
+    const other = comparedWith(slotId);
+    if (!other) { assignSeries(slotId, item); offerPair(slotId, item); return; }
+    placeBeside(slotId, item, other); activateSlot(slotId);
+    offerCounterpart(slotId, item);
+  };
+  /** Ctrl+→ / Ctrl+←: the next or previous series of the active pane's study, in list order. In the comparison screen
+   * both panes step together, to the next series that has a counterpart in the other pane's study. */
+  const stepSeries = (direction: 1 | -1) => {
+    const slot = slotsRef.current.find(value => value.id === activeIdRef.current), shownHere = seriesOf(slot);
+    if (!slot || !shownHere || beforeMpr.current) return;
+    const study = sortStudySeries(seriesRef.current.filter(value => studyKey(value) === studyKey(shownHere) && !value.segmentation));
+    const from = study.findIndex(value => value.id === shownHere.id);
+    const other = comparedWith(slot.id), shownThere = seriesOf(other);
+    if (!other || !shownThere || studyKey(shownThere) === studyKey(shownHere) || !samePatient(shownHere, shownThere)) {
+      const next = from >= 0 && from + direction >= 0 ? study.at(from + direction) : undefined;
+      if (next) selectSeries(next);
+      return;
+    }
+    const theirs = seriesRef.current.filter(value => studyKey(value) === studyKey(shownThere));
+    for (let index = from + direction; from >= 0 && index >= 0 && index < study.length; index += direction) {
+      const next = study[index], partner = bestCounterpart(next, theirs, seriesRef.current);
+      if (!partner) continue;
+      // Each pane stays where it was when its next series lies in the frame of reference of the one it showed (the
+      // series of one study); otherwise this pane's opens level with the other pane, and its counterpart level with it.
+      const here: Pane = { series: shownHere, view: slot.view }, there: Pane = { series: shownThere, view: other.view };
+      const view = atPlaceOf(next, besideView(next, defaultView(next), there), here);
+      const partnerView = atPlaceOf(partner, besideView(partner, defaultView(partner), { series: next, view }), there);
+      setSlots(current => current.map(value => value.id === slot.id ? { id: value.id, seriesId: next.id, view }
+        : value.id === other.id ? { id: value.id, seriesId: partner.id, view: partnerView } : value));
+      loadPaneImage(next); loadPaneImage(partner);
+      linkCompared({ id: slot.id, item: next, view }, { id: other.id, item: partner, view: partnerView });
+      setPaneToast(null);
+      return;
+    }
+    say('compare.noMorePairs', 'info', undefined, true);
+  };
   const selectSeries = (item: Series) => {
     if (item.segmentation) { toggleSegmentation(item, activeIdRef.current); return; }
+    // A series still being read from a disc is read next, as it opens.
+    const disc = discImport.current, card = item.reading ? disc?.cards.find(value => value.info.uid === item.uid) : undefined;
+    if (disc && card) void prioritiseImport(disc.paths, card.index).catch(() => { /* The import's own result reports a stopped engine. */ });
     if (beforeMpr.current) endMpr.current();
-    assignSeries(activeIdRef.current, item);
-    offerPair(activeIdRef.current, item);
+    putSeries(activeIdRef.current, item);
   };
   const selectFromMenu = (item: Series) => { selectSeries(item); setMenu(null); };
+  /** A waiting card is pressed: the disc being read reads its series next, and the series opens in the active pane as
+   * soon as part of it is read (importStudies). */
+  const openWaiting = (card: WaitingSeries) => {
+    const disc = discImport.current; if (!disc) return;
+    disc.wanted = card.info.uid;
+    void prioritiseImport(disc.paths, card.index).catch(() => { /* The import's own result reports a stopped engine. */ });
+  };
   /** Several series picked together: a layout with a pane for each, the first picked first (VEAcom 1.x). */
   const openSideBySide = (ids: string[]) => {
     const picked = ids.map(id => seriesRef.current.find(value => value.id === id)).filter((item): item is Series => Boolean(item));
@@ -1478,18 +2002,20 @@ export default function App() {
     if (seriesIds.length > 1) { openSideBySide(seriesIds); return; }
     const item = seriesRef.current.find(value => value.id === seriesIds[0]); if (!item) return;
     if (!item.segmentation && beforeMpr.current) { endMpr.current(); assignSeries(activeIdRef.current, item); return; }
-    if (item.segmentation) toggleSegmentation(item, slotId); else { assignSeries(slotId, item); offerPair(slotId, item); }
+    if (item.segmentation) toggleSegmentation(item, slotId); else putSeries(slotId, item);
   };
   /** Series taken off the list (VEAcom 1.x's list menu): panes showing them are emptied, their volumes,
-   * drawings and overlays go, and the engine frees them. The files themselves are not touched. */
-  const removeFromList = (ids: string[]) => {
+   * drawings and overlays go, and the engine frees them. The files themselves are not touched. `replaced`: a film just
+   * opened takes their place (labelling a folder), so the workspace is not started afresh although the list, as this
+   * render knows it, would be empty. */
+  const removeFromList = (ids: string[], replaced = false) => {
     const gone = new Set(ids);
     const removed = seriesRef.current.filter(item => gone.has(item.id));
     if (!removed.length) return;
     const empty = (slot: Slot): Slot => slot.seriesId && gone.has(slot.seriesId) ? { ...slot, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } } : slot;
     // Panes a smaller layout keeps hidden would bring the removed series back when the layout grows again.
     hiddenSlots.current = hiddenSlots.current.filter(slot => !(slot.seriesId && gone.has(slot.seriesId)));
-    if (removed.length === seriesRef.current.length) {
+    if (removed.length === seriesRef.current.length && !replaced) {
       // With the list emptied, the workspace starts afresh as at launch: one pane, nothing hidden, maximized, in MPR,
       // in 3D, fused or playing, so the next study opens as the first one did.
       const fresh = makeSlot();
@@ -1643,13 +2169,14 @@ export default function App() {
       if (!quiet || !own) say(own ? 'notice.fusionStarted' : 'notice.fusionNoSuv', 'info', { pet: seriesName(pet), ct: seriesName(ct) }, true);
     }).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
   };
-  /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET, over the CT acquired with it. */
-  const fuseInActive = (pet: Series) => {
+  /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET (or `onItsCt`), over the CT
+   * acquired with it. */
+  const fuseInActive = (pet: Series, onItsCt = false) => {
     const slotId = activeIdRef.current, slot = slotsRef.current.find(item => item.id === slotId);
     const shown = slot?.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
     if (!shown) return;
     // The fusion arrangement's roles (src/arrangements/builtin.ts): the CT acquired with the PET.
-    const base = fusesAsOverlay(shown) ? findRole(FUSION.roles.ct, seriesRef.current, pet) : shown;
+    const base = onItsCt || fusesAsOverlay(shown) ? findRole(FUSION.roles.ct, seriesRef.current, pet) : shown;
     if (!base) { say('notice.fusionNoCt', 'info', undefined, true); return; }
     if (base.id !== shown.id) assignSeries(slotId, base);
     // Asked for in this pane: it shows the fusion even where an arrangement kept it plain.
@@ -1677,9 +2204,12 @@ export default function App() {
       fusePet(before, after, target.id);
       return;
     }
-    const pet = fusesAsOverlay(shown) ? shown : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    // A PET shown is fused itself, or the corrected one of its frame for a NAC one; a series shown with none drawn over it
+    // (a CT scout, which is no volume) gives way to the study's own PET, over the CT acquired with it.
+    const own = fusesAsOverlay(shown) ? overlayFor(shown, seriesRef.current) : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    const pet = own ?? studyOverlay(shown, seriesRef.current);
     if (!pet) { say('notice.fusionNoPet', 'info', undefined, true); return; }
-    fuseInActive(pet);
+    fuseInActive(pet, !own);
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
@@ -1722,29 +2252,49 @@ export default function App() {
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
     const separateScales = plan.arrangement.scale === 'shared' && !sharesSuvScale(plan);
+    // The listed panes start `offset` places into the grid (an arrangement's `lead`).
+    const offset = plan.arrangement.lead ?? 0, paneAt = (index: number) => index >= offset ? plan.panes.at(index - offset) : undefined;
+    const showing = current.find(slot => slot.id === activeIdRef.current);
+    const showingFused = Boolean(showing && shownPanes()[current.indexOf(showing)]?.fusedWith);
     let panes: Slot[] = Array.from({ length: rows * columns }, (_, index) => {
-      const pane = plan.panes.at(index), id = current[index]?.id ?? crypto.randomUUID();
+      const pane = paneAt(index), id = current[index]?.id ?? crypto.randomUUID();
       if (!pane) return { id, seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } };
+      // A pane kept as shown takes the view the reader has of its series in the active pane, and the fusion it shows.
+      if (pane.spec.asShown && showing?.seriesId === pane.series.id) return { id, seriesId: pane.series.id, view: { ...showing.view, pan: [...showing.view.pan] }, unfused: !showingFused };
       const spec = separateScales && !plan.arrangement.kept ? { ...pane.spec, display: { ...pane.spec.display, window: undefined } } : pane.spec;
       return { id, seriesId: pane.series.id, view: paneView(pane.series, spec, defaultView(pane.series)), unfused: spec.show !== 'fused' };
     });
     // The panes in one frame of reference start where the first one opens, so they page together from there.
     const lead = plan.panes.at(0);
     if (lead) {
-      const at = getPlaneFrame(lead.series, panes[0].view).center;
+      const at = getPlaneFrame(lead.series, panes[offset].view).center;
       panes = panes.map((slot, index) => {
-        const pane = plan.panes.at(index);
-        return index && pane && !pane.spec.view && shareFrame(lead.series, pane.series) && !isProjection(pane.series, slot.view) ? { ...slot, view: { ...slot.view, slice: sliceAtWorld(pane.series, slot.view, at) } } : slot;
+        const pane = paneAt(index);
+        return index > offset && pane && !pane.spec.view && shareFrame(lead.series, pane.series) && !isProjection(pane.series, slot.view) ? { ...slot, view: { ...slot.view, slice: sliceAtWorld(pane.series, slot.view, at) } } : slot;
       });
     }
-    setLayout([rows, columns]); setSlots(panes); activateSlot(panes[0].id);
+    // Two studies share no frame of reference (`link: 'level'`): the other panes open level with the pane kept as
+    // shown, and are linked to it there by hand, as the link button would link them.
+    const mine = panes.findIndex((slot, index) => Boolean(paneAt(index)?.spec.asShown && slot.seriesId));
+    if (plan.arrangement.link === 'level' && mine >= 0) {
+      const kept = panes[mine], beside: Pane = { series: plan.panes[mine - offset].series, view: kept.view };
+      panes = panes.map((slot, index) => {
+        const pane = paneAt(index);
+        return index === mine || !pane ? slot : { ...slot, view: besideView(pane.series, slot.view, beside) };
+      });
+      for (const slot of panes) {
+        if (slot.id !== kept.id && slot.seriesId) anchorsRef.current.set(pairKey(slot.id, kept.id), {
+          [slot.id]: { seriesId: slot.seriesId, slice: Math.round(slot.view.slice) }, [kept.id]: { seriesId: beside.series.id, slice: Math.round(kept.view.slice) } });
+      }
+    }
+    setLayout([rows, columns]); setSlots(panes); activateSlot((mine >= 0 ? panes[mine] : panes[0]).id);
     for (const item of new Set(plan.panes.map(pane => pane.series))) loadPaneImage(item);
     // Linking as the arrangement says (Undo puts it back): `none` lets each pane page on its own.
-    const linked = plan.arrangement.link === 'crosshair' ? true : plan.arrangement.link === 'none' ? false : settingsRef.current.linked;
+    const linked = plan.arrangement.link === 'crosshair' || plan.arrangement.link === 'level' ? true : plan.arrangement.link === 'none' ? false : settingsRef.current.linked;
     if (linked !== settingsRef.current.linked) setSettings(state => ({ ...state, linked }));
     const fusedAt = plan.panes.findIndex(pane => pane.spec.show === 'fused'), over = fusedAt >= 0 ? plan.roles[plan.panes[fusedAt].spec.over ?? ''] : undefined;
-    if (over) { setShowFusion(true); fusePet(over, plan.panes[fusedAt].series, panes[fusedAt].id, true); }
-    else stopFusion();
+    if (over) { setShowFusion(true); fusePet(over, plan.panes[fusedAt].series, panes[fusedAt + offset].id, true); }
+    else if (!(mine >= 0 && panes[mine].unfused === false)) stopFusion();
     arranged.current = { plan, slotIds: panes.map(slot => slot.id) };
     const name = arrangementName(plan), notice = plan.arrangement.notice;
     const undo = () => {
@@ -1770,16 +2320,22 @@ export default function App() {
         setPaneToast({ slotId: before.activeId, seriesId: first.id, text: t('arrangement.keptPlain', { name }) });
       } });
     };
-    setPaneToast({ slotId: panes[0].id, seriesId: plan.panes[0].series.id, text: separateScales ? t('arrangement.petFollowUp.separate')
-      : plan.arrangement.kept ? t('arrangement.yours', { name }) : notice ? t(notice.key, notice.params) : name,
+    // The note is in the first pane that shows a series. A notice about another study can give its date ({date}).
+    const noted = panes.find(slot => slot.seriesId) ?? panes[0];
+    const elsewhere = ['prior', 'later', 'other'].flatMap(role => Object.hasOwn(plan.roles, role) ? [plan.roles[role]] : []).at(0);
+    setPaneToast({ slotId: noted.id, seriesId: noted.seriesId ?? '', text: separateScales ? t('arrangement.petFollowUp.separate')
+      : plan.arrangement.kept ? t('arrangement.yours', { name })
+        : notice ? t(notice.key, { ...notice.params, ...(elsewhere ? { date: dicomDate(elsewhere.studyDate) } : {}) }) : name,
       sticky: true, undoAction: 'arrangement', onUndo: undo });
   };
-  const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study) => {
+  const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study, slotId?: string) => {
     arranged.current = null;
     // The session's other studies are where a prior study's role is found (the PET follow-up screen).
     const plan = matchOnOpen(keptRef.current, { series: study, session });
-    // Without an arrangement, a series already shown (opened while the study was still read) stays as it is.
-    if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(activeIdRef.current, first);
+    // Without an arrangement, a series already shown (opened while the study was still read) stays as it is. The
+    // series goes into `slotId`, the active pane unless another is named; the pane the reader is in stays the active one.
+    const pane = slotId ?? activeIdRef.current;
+    if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(pane, first, pane === activeIdRef.current);
   };
   /** Back to VEAcom's own arrangements: what the reader kept is forgotten. */
   const forgetKept = () => { saveKept({}); say('arrangement.forgotten', 'info', undefined, true); };
@@ -1888,13 +2444,17 @@ export default function App() {
   const maximizePane = (id: string) => { maximizeSlot(id); focusImage(); };
   const mpr = () => {
     if (beforeMpr.current) { restoreBeforeMpr(); return; }
-    if (!activeVolume || !canReconstruct) return;
+    // From a stack's reference image the three planes are the stack's, in the window the pane had on the stack (the
+    // image's own window is the image's); leaving MPR brings the image back.
+    const volume = canReconstruct ? activeVolume : leadReconstructs ? leadVolume : undefined;
+    if (!volume) return;
+    const windowed = volume === activeVolume ? activeSlot.view : activeSlot.stack?.id === volume.series.id ? activeSlot.stack.view : defaultView(volume.series);
     beforeMpr.current = { slots: slotsRef.current, layout, activeId: activeIdRef.current, crosshair, crosshairSeriesId }; setIsMpr(true);
     const origin = crosshairSeriesId ? volumesRef.current.get(crosshairSeriesId) : undefined;
-    const center = crosshair && origin && shareFrame(activeVolume.series, origin.series) ? crosshair : indexToWorld(activeVolume.series, activeVolume.series.dimensions.map(n => (n - 1) / 2) as Vec3);
-    const panes = (['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => ({ id: crypto.randomUUID(), seriesId: activeVolume.series.id,
-      view: { ...defaultView(activeVolume.series), windowMode: activeSlot.view.windowMode, windowCenter: activeSlot.view.windowCenter, windowWidth: activeSlot.view.windowWidth, mode: 'mpr' as const, plane, slice: sliceAtWorld(activeVolume.series, plane, center), pan: [0, 0] as [number, number] } }));
-    setSlots(panes); setActiveId(panes[0].id); setLayout([1, 3]); setCrosshair(center); setCrosshairSeriesId(activeVolume.series.id); setSettings(current => ({ ...current, linked: true }));
+    const center = crosshair && origin && shareFrame(volume.series, origin.series) ? crosshair : indexToWorld(volume.series, volume.series.dimensions.map(n => (n - 1) / 2) as Vec3);
+    const panes = (['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => ({ id: crypto.randomUUID(), seriesId: volume.series.id,
+      view: { ...defaultView(volume.series), windowMode: windowed.windowMode, windowCenter: windowed.windowCenter, windowWidth: windowed.windowWidth, mode: 'mpr' as const, plane, slice: sliceAtWorld(volume.series, plane, center), pan: [0, 0] as [number, number] } }));
+    setSlots(panes); setActiveId(panes[0].id); setLayout([1, 3]); setCrosshair(center); setCrosshairSeriesId(volume.series.id); setSettings(current => ({ ...current, linked: true }));
   };
 
   const exportImage = async (kind: 'png' | 'jpeg', all: boolean) => {
@@ -1929,6 +2489,8 @@ export default function App() {
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
     if ((mode === 'video' || mode === 'images') && activeVolume?.sourceFrameIndex !== undefined) { say('notice.videoAfterLoad', 'info'); return; }
+    // A film of a folder being labelled is replacing the one shown: pictures wait until it is there.
+    if ((mode === 'video' || mode === 'images') && labelQueue.get().busy) { setNotice({ message: t('label.waitForFilm'), kind: 'info' }); return; }
     if ((mode === 'video' || mode === 'images') && activeVolume) {
       const viewport = gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
       if (!viewport) return;
@@ -1937,8 +2499,13 @@ export default function App() {
       const plain = usesSourceFrames(activeVolume.series, activeSlot.view) || (activeSlot.view.plane === 'axial' && !activeSlot.view.oblique?.some(Boolean));
       // Cine stops: the export pages the pane itself.
       setPlaying(false);
-      setExportVideoTarget({ viewport, seriesId: activeVolume.series.id, originalSlice: activeSlot.view.slice, frameCount: sliceCount(activeVolume.series, activeSlot.view),
+      // The numbers the pane shows for its slices (paging.ts): a stack paged with its reference image counts that image.
+      const frames = sliceCount(activeVolume.series, activeSlot.view), joined = joinedFor(activeSlot);
+      const firstNumber = shownSlice(activeVolume.series, activeSlot.view, 0, frames, joined);
+      const lastNumber = shownSlice(activeVolume.series, activeSlot.view, frames - 1, frames, joined);
+      setExportVideoTarget({ viewport, seriesId: activeVolume.series.id, originalSlice: activeSlot.view.slice, frameCount: frames,
         nativeSize: plain ? { width: activeVolume.series.dimensions[0], height: activeVolume.series.dimensions[1] } : undefined, backwards: pagesBackwards(activeVolume.series, activeSlot.view),
+        numbersBackwards: firstNumber.number > lastNumber.number, numberOffset: Math.min(firstNumber.number, lastNumber.number) - 1, numberTotal: firstNumber.total,
         setSlice: slice => setSlots(current => current.map(slot => slot.id === id ? { ...slot, view: { ...slot.view, slice } } : slot)) });
     } else setExportVideoTarget(undefined);
     setExportFor(activeSeries?.id ?? null);
@@ -1982,6 +2549,9 @@ export default function App() {
   };
   const closeAssessment = () => { setShowAssessment(false); setAssessmentBehind(false); assessmentPinnedIds.current.clear(); finishAssessmentRoi(); };
   const open3d = () => {
+    // From a stack's reference image, 3D is the stack's: the pane goes to the slice beside that image first.
+    const joined = canReconstruct ? null : joinedFor(activeSlot);
+    if (joined?.lead && leadReconstructs) crossJoined(activeSlot.id, joined.leadAt === 0 ? 1 : joined.total - 2);
     const bounds = gridRef.current?.querySelector('.viewport-cell.is-active .viewport-content')?.getBoundingClientRect();
     if (bounds) setVolumeViewportSize([bounds.width, bounds.height]);
     setShow3d(true);
@@ -2002,6 +2572,8 @@ export default function App() {
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
     setCalibration(activeSeries.id, known / length);
+    // A known length sets the whole series' scale: the films' own ball or ruler calibrations give way to it.
+    setFilmCalibrations(current => { if (!current[activeSeries.id]) return current; const next = { ...current }; delete next[activeSeries.id]; return next; });
     setSettings(current => ({ ...current, measurementUnits: 'auto' }));
     say('notice.calibrated', 'info', undefined, true);
   };
@@ -2067,6 +2639,11 @@ export default function App() {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'o') { event.preventDefault(); key('open-folder'); void openImport(); return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'e') { event.preventDefault(); if (activeSeries) { if (event.shiftKey) { key('export-media'); openExport('media'); } else { key('tool-export'); openExport('dicom'); } } return; }
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); key(event.shiftKey ? 'redo' : 'undo'); undo(event.shiftKey); return; }
+    // ⌘→ / Ctrl+→ and ⌘← / Ctrl+←: the next and previous series (in the comparison screen, the next pair).
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && (event.key === 'ArrowRight' || event.key === 'ArrowLeft')) {
+      event.preventDefault(); const forward = event.key === 'ArrowRight';
+      key(forward ? 'series-next' : 'series-previous'); stepSeries(forward ? 1 : -1); return;
+    }
     // ⌘C / Ctrl+C copies the picture, with Shift the whole layout. Text the reader selected is copied as text, as anywhere,
     // but on an image pane only text selected in that pane (a drawing error's message): a selection left elsewhere (a tag
     // value copied earlier) does not take the picture's place.
@@ -2121,9 +2698,14 @@ export default function App() {
     if (target.closest('.inspector, .series-browser, .assessment-overlay, [role="toolbar"], [role="tablist"], [role="dialog"], .popover-menu')) return;
     if (activeVolume && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
       key('key-slice', true);
-      event.preventDefault(); const direction = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (pagesBackwards(activeVolume.series, activeSlot.view) ? -1 : 1);
-      const stride = event.key.startsWith('Page') ? 10 : 1;
-      updateView(activeSlot.id, { slice: stepSlice(activeVolume.series, activeSlot.view, direction * stride) });
+      event.preventDefault();
+      // Steps down the page. A stack and its reference image are paged as one sequence (joinedFor).
+      const steps = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (event.key.startsWith('Page') ? 10 : 1), joined = joinedFor(activeSlot);
+      if (!joined) { updateView(activeSlot.id, { slice: stepSlice(activeVolume.series, activeSlot.view, pageStep(activeVolume.series, activeSlot.view, steps)) }); return; }
+      const count = sliceCount(activeVolume.series, activeSlot.view), at = placeInSequence(activeVolume.series, activeSlot.view, Math.round(activeSlot.view.slice), count, joined);
+      const place = Math.max(0, Math.min(at.total - 1, at.place + steps));
+      if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) crossJoined(activeSlot.id, place);
+      else if (!joined.lead) updateView(activeSlot.id, { slice: stackSliceAt(activeVolume.series, activeSlot.view, place, count, joined) });
     }
   });
   useEffect(() => {
@@ -2136,7 +2718,7 @@ export default function App() {
     fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
     sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
     sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
-    series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
+    series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, studyDate: item.studyDate, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
       ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
       // For the gated SPECT check: each gate's phase and where its slices lie.
       ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
@@ -2144,7 +2726,7 @@ export default function App() {
     // For the arrangement checks: the panes on screen and what each one shows.
     layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
       projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
-      windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth })),
+      windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan })),
     graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
   }));
   const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(activeSlot.id, patch));
@@ -2194,8 +2776,8 @@ export default function App() {
         seg: shownSegmentations.join('|'), fusion: join([showFusion, fusionId, fusionOpacity, fusionUpper, fusionPalette, fusionBlend]),
         link: String(settings.linked), overlay: join([settings.showOverlay, settings.showReferences, settings.hidePatientData, settings.hideMeasurements]),
         // The pre-op checklist is docked beside the images like the inspector.
-        panel: join([settings.panel, activeId, checklistShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
-        lang: locale, prefs: JSON.stringify([settings.wheelSensitivity, settings.reverseWheel, settings.measurementUnits, calibrationScales, calibrationLine, calibrationLength, usageConsent]),
+        panel: join([settings.panel, activeId, checklistShown, deformityShown]), menu: menu ?? '', dialog: join([exportMode, showHelp, showUpdates, notice?.message, graphicsNoticeOpen, cancelling]),
+        lang: locale, prefs: JSON.stringify([settings.touchpadSpeed, settings.reverseWheel, settings.measurementUnits, calibrationScales, filmCalibrations, calibrationLine, calibrationLength, usageConsent]),
       },
     };
   });
@@ -2226,10 +2808,10 @@ export default function App() {
     } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
   };
 
-  const seriesActions = useRef({ select: selectSeries, remove: removeFromList });
+  const seriesActions = useRef({ select: selectSeries, remove: removeFromList, open: openWaiting });
   // Pending engine work and input handlers read the last committed workspace.
   useLayoutEffect(() => {
-    seriesActions.current = { select: selectSeries, remove: removeFromList };
+    seriesActions.current = { select: selectSeries, remove: removeFromList, open: openWaiting };
     seriesRef.current = series;
     slotsRef.current = slots;
     activeIdRef.current = activeId;
@@ -2237,6 +2819,7 @@ export default function App() {
     isMprRef.current = isMpr;
     annotationRef.current = annotations;
     settingsRef.current = settings;
+    filmCalibrationsRef.current = filmCalibrations;
     toolRef.current = tool;
     crosshairRef.current = crosshair;
     crosshairSeriesIdRef.current = crosshairSeriesId;
@@ -2284,7 +2867,7 @@ export default function App() {
   const canPlay = Boolean(!capturing && activeVolume && sliceCount(activeVolume.series, activeSlot.view) > 1);
   // A whole-volume MIP in the active pane: its slab is the whole volume already.
   const activeProjection = Boolean(activeVolume && isProjection(activeVolume.series, activeDisplayView));
-  const mprWhy = canReconstruct || isMpr || !activeSeries ? undefined : loadingIds.has(activeSeries.id) || activeVolume?.sourceFrameIndex !== undefined ? t('mpr.whyLoading')
+  const mprWhy = canReconstruct || leadReconstructs || isMpr || !activeSeries ? undefined : loadingIds.has(activeSeries.id) || activeVolume?.sourceFrameIndex !== undefined ? t('mpr.whyLoading')
     : activeSeries.dimensions[2] < 2 ? t('mpr.whySingle') : (activeVolume ? warningTexts(activeVolume.series, locale)[0] : undefined) ?? t('mpr.whyNoVolume');
   const slabItems = (close: (fn: () => void) => void) => <>
     <MenuDivider /><MenuHeading>{t('slab.title')}</MenuHeading>
@@ -2329,8 +2912,12 @@ export default function App() {
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
   const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
+  /** In the MPR menu the plane the active series was acquired in shows the series' own images, as a click on the pane's
+   * plane name does (cyclePlane); the other planes are reconstructed, and so is that one while a thick slab is on. The
+   * series' own images draw no slab, so the slab stays on and drawn; turning it off brings them back (chooseSlab). */
+  const activeAcquiredPlane = activeVolume ? acquiredPlane(activeVolume.series) : null;
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
-  const showPlane = (plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
+  const showPlane =(plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
   const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length : !petSeries.length);
   const fusionWhy = mrActive ? (mrBeside.length ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
@@ -2339,10 +2926,15 @@ export default function App() {
   const activeStudy = activeSeries ? activeStudyContext(activeSeries, series) : null;
   const nmScreen = activeStudy ? match(withKept(kept, NUCLEAR_MEDICINE_SCREENS), 'screen', activeStudy) : null;
   const openNmScreen = () => { if (nmScreen) applyArrangement(nmScreen); };
+  // The comparison screen for the series in the active pane, offered in Layout when the same patient's earlier (or
+  // later) study is loaded: with the series' counterpart there, or an empty side where it has none. Only the Layout
+  // popover shows it, so it is worked out only while that is open, not on every slice, zoom or pan.
+  const compareScreen = menu === 'layout' && activeSeries && !isMpr ? matchComparison(activeSeries, series) : null;
   // Every option reads as "shown": a tick means the item is visible on the image.
   const overlayOptions = [{ key: 'showOverlay', label: t('toolbar.showOverlay'), shortcut: 'F12', shown: settings.showOverlay }, { key: 'showReferences', label: t('toolbar.showReferences'), shortcut: combo(mod, 'F12'), shown: settings.showReferences },
     { key: 'hidePatientData', label: t('toolbar.patientInfo'), shortcut: combo('⇧', 'F12'), shown: !settings.hidePatientData }, { key: 'hideMeasurements', label: t('toolbar.measurementsShown'), shortcut: combo(mod === '⌘' ? '⌥' : 'Alt', 'F12'), shown: !settings.hideMeasurements },
-    { key: 'showScale', label: t('toolbar.showScale'), shortcut: undefined, shown: settings.showScale }] as const;
+    { key: 'showScale', label: t('toolbar.showScale'), shortcut: undefined, shown: settings.showScale },
+    { key: 'showPointerValue', label: t('toolbar.pointerValue'), shortcut: undefined, shown: settings.showPointerValue }] as const;
   const overlayItems = <>{overlayOptions.map(option => <MenuItem action="display-choice" key={option.key} kind="checkbox" checked={option.shown} shortcut={option.shortcut} onClick={() => setSettings(current => ({ ...current, [option.key]: !current[option.key] }))}>{option.label}</MenuItem>)}
     <MenuDivider /><MenuItem action="toolbar-show-tags" icon={<Tag size={16} />} shortcut={combo(mod, mod === '⌘' ? '⌥' : 'Alt', 'T')} onClick={() => act(() => showPanel('tags'))}>{t('toolbar.showTags')}</MenuItem></>;
   const orientationItems = () => <>
@@ -2365,6 +2957,8 @@ export default function App() {
         <MenuItem action="toolbar-open-folder" icon={<FolderOpen size={16} />} shortcut={bridgeCan('importWindow') ? undefined : combo(mod, 'O')} onClick={() => void open('folder')}>{t('toolbar.openFolder')}</MenuItem>
         <MenuItem action="toolbar-open-files" icon={<Files size={16} />} onClick={() => void open('files')}>{t('toolbar.openFiles')}</MenuItem>
         <MenuItem action="toolbar-open-archive" icon={<FileArchive size={16} />} onClick={() => void open('archive')}>{t('toolbar.openArchive')}</MenuItem>
+        {window.veacom?.labelFolder && <><MenuDivider />
+          <MenuItem action="toolbar-label-folder" icon={<FolderOpen size={16} />} onClick={() => void startLabelling()}>{t('toolbar.labelFolder')}</MenuItem></>}
       </Menu>}</div> },
     ...(bridgeCan('discImport') ? [{ id: 'cd', group: 'file', node: <ToolButton icon={<Glyph name="cd" />} label={t('toolbar.openDisc')} testId="tool-open-disc" onClick={() => void openImport('disc')} /> } satisfies ToolbarItem] : []),
     { id: 'export', group: 'file', node: <ToolButton icon={<Upload size={18} />} label={t('toolbar.export')} shortcut={`${mod}+E`} testId="tool-export" disabled={!activeSeries} onClick={() => openExport('dicom')} /> },
@@ -2401,6 +2995,8 @@ export default function App() {
           return <button className="secondary-button compact" type="button" data-action={action} key={action}
             onClick={() => applyArrangement(plan)}>{t(key)}</button>;
         })}
+        {compareScreen && <button className="secondary-button compact" type="button" data-action="layout-compare"
+          onClick={() => applyArrangement(compareScreen)}>{t(Object.hasOwn(compareScreen.roles, 'later') || compareScreen.arrangement.id === 'compare-later-empty' ? 'layout.compareLater' : 'layout.comparePrior')}</button>}
       </Popover>}</div> },
     { id: 'measure', group: 'measure', node: <div className="menu-anchor" data-menu><div className="split">
         <ToolButton icon={measureIcon(lastMeasure, 18, true)} label={t('toolbar.measurement', { tool: toolLabel(lastMeasure) })} shortcut={singleKey(TOOL_KEYS[lastMeasure])} testId="tool-measure" disabled={noStudy} active={MEASURE_TOOLS.includes(tool)} onClick={() => toggleMeasure(MEASURE_TOOLS.includes(tool) ? tool : lastMeasure)} />
@@ -2434,17 +3030,20 @@ export default function App() {
     </div>{menu === 'fusion' && nmScreen && <Menu label={t('toolbar.fusionMenu')} onClose={closeMenu}>
       <MenuItem action="nm-screen" meta={arrangementName(nmScreen)} onClick={() => act(openNmScreen)}>{t('toolbar.nmScreen')}</MenuItem>
     </Menu>}</div> }] : []),
-    { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu><div className="split">
-      <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('help.mpr')}`} hint={isMpr ? t('toolbar.restorePrevious') : undefined} shortcut={singleKey('M')} testId="tool-mpr" active={isMpr} disabled={!canReconstruct && !isMpr} why={mprWhy} onClick={mpr} />
-      <MenuChevron label={t('toolbar.mprPlanes')} expanded={menu === 'mpr'} testId="tool-mpr-menu" disabled={noImage} onClick={() => toggleMenu('mpr')} />
-    </div>{menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
-      <MenuItem action="toolbar-acquired-slices" kind="radio" checked={activeVolume ? usesSourceFrames(activeVolume.series, activeDisplayView) : false} disabled={!activeVolume} onClick={() => act(showAcquired)}>{t('toolbar.acquiredSlices')}</MenuItem>
-      {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action="menu-option" key={plane} kind="radio" checked={Boolean(activeVolume && !usesSourceFrames(activeVolume.series, activeDisplayView) && activeDisplayView.plane === plane && !activeDisplayView.oblique?.some(Boolean))} disabled={!canReconstruct} onClick={() => act(() => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
-      <MenuDivider />
-      <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
-      <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
-    </Menu>}</div> },
-    { id: '3d', group: 'view', priority: 10, node: <ToolButton icon={<span className="tool-word">3D</span>} label={t('toolbar.open3d')} testId="tool-3d" active={show3d} disabled={!canReconstruct} why={mprWhy} onClick={open3d} /> },
+    // One button that opens the planes' menu: a reader who presses MPR expects choices, not three panes at once. The
+    // three-plane screen is the menu's first entry, and the M key still opens it straight away.
+    { id: 'mpr', group: 'view', priority: 12, node: <div className="menu-anchor" data-menu>
+      <ToolButton icon={<span className="tool-word">MPR</span>} label={`MPR · ${t('toolbar.mprPlanes')}`} testId="tool-mpr" popup="menu" indicator active={isMpr} expanded={menu === 'mpr'} disabled={!isMpr && (noImage || (!canReconstruct && !leadReconstructs))} why={mprWhy} onClick={() => toggleMenu('mpr')} />
+      {menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
+        <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !leadReconstructs && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
+        <MenuDivider />
+        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action={`plane-${plane}`} key={plane} kind="radio"
+          checked={Boolean(activeVolume && !activeDisplayView.oblique?.some(Boolean) && (usesSourceFrames(activeVolume.series, activeDisplayView) ? plane === activeAcquiredPlane : activeDisplayView.plane === plane))}
+          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane && !activeDisplayView.slab ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
+        <MenuDivider />
+        <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
+      </Menu>}</div> },
+    { id: '3d', group: 'view', priority: 10, node: <ToolButton icon={<span className="tool-word">3D</span>} label={t('toolbar.open3d')} testId="tool-3d" active={show3d} disabled={!canReconstruct && !leadReconstructs} why={mprWhy} onClick={open3d} /> },
     { id: 'slab', group: 'view', priority: 9, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<SlabGlyph on={Boolean(activeDisplayView.slab)} />} label={activeDisplayView.slab ? `${t('slab.title')}: ${t('slab.label', { mode: t(`slab.${activeDisplayView.slab.mode}` as const), thickness: activeDisplayView.slab.thickness })}` : t('slab.title')} testId="tool-slab" popup="menu" indicator active={Boolean(activeDisplayView.slab)} expanded={menu === 'slab'} disabled={!canReconstruct || activeProjection} why={activeProjection ? t('projection.slabWhy') : mprWhy} onClick={() => toggleMenu('slab')} />
       {menu === 'slab' && <Menu label={t('slab.title')} onClose={closeMenu}>{slabItems(act)}</Menu>}</div> },
@@ -2457,7 +3056,7 @@ export default function App() {
     { id: 'orientation', group: 'image', priority: 6, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<Glyph name="mirror" />} label={t('toolbar.orientation')} testId="tool-orientation" popup="menu" indicator expanded={menu === 'orientation'} disabled={noImage} onClick={() => toggleMenu('orientation')} />
       {menu === 'orientation' && <Menu label={t('toolbar.orientation')} onClose={closeMenu}>{orientationItems()}</Menu>}</div> },
-    { id: 'assessment', group: 'image', priority: 2, node: opensChecklist ? <ToolButton icon={<Stethoscope size={18} />} label={t('checklist.title')} testId="tool-assessment" active={checklistOpen} onClick={toggleChecklist} />
+    { id: 'assessment', group: 'image', priority: 2, node: opensChecklist || opensDeformity ? <ToolButton icon={<Stethoscope size={18} />} label={t(opensDeformity ? 'deformity.title' : 'checklist.title')} testId="tool-assessment" active={checklistOpen} onClick={toggleChecklist} />
       : <ToolButton icon={<Stethoscope size={18} />} label={showAssessment && !assessmentShown ? t('toolbar.assessmentBehind') : t('toolbar.assessment')} testId="tool-assessment" active={assessmentShown} className={showAssessment && !assessmentShown ? 'is-behind' : ''} disabled={!activeVolume || !ASSESSMENT_AVAILABLE} why={ASSESSMENT_AVAILABLE ? undefined : t('toolbar.assessmentSoon')} onClick={() => {
         // Shows or hides the assessment; only its own Close button (or Esc inside it) ends it and discards its input.
         if (!showAssessment) void openAssessment();
@@ -2481,6 +3080,8 @@ export default function App() {
     { id: 'help', group: 'app', node: <ToolButton icon={<CircleHelp size={18} />} label={t('toolbar.shortcuts')} shortcut={singleKey('?')} testId="tool-help" onClick={() => setShowHelp(true)} /> },
   ];
 
+  // In the language's own numbers: "0,33×" in Turkish, "0.33×" in English.
+  const touchpadSpeedText = `${settings.touchpadSpeed.toLocaleString(locale, { maximumFractionDigits: 2 })}×`;
   const quickAct = (fn: () => void) => { fn(); setQuick(null); };
   const quickMenu = quick && activeVolume && <div ref={quickRef} className="quick-anchor" style={{ '--pointer-x': `${quick.x}px`, '--pointer-y': `${quick.y}px` } as CSSProperties}>
     <Menu label={t('quick.title')} onClose={() => setQuick(null)} testId="quick-menu" focusItem={false}>
@@ -2517,17 +3118,17 @@ export default function App() {
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews}
+      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
         {usageConsent === null && <div className="notice usage-consent" role="region" aria-label={t('usage.title')} data-testid="usage-consent"><span>{t('usage.question')}</span><span className="usage-consent-actions"><button type="button" className="secondary-button compact" data-testid="usage-consent-share" onClick={() => void chooseUsage('granted')}>{t('usage.share')}</button><button type="button" className="secondary-button compact" data-testid="usage-consent-decline" onClick={() => void chooseUsage('denied')}>{t('usage.decline')}</button></span></div>}
-        {/* Not while a series loads: a strip above the image would push the image down and back up for every series
-            opened. That progress, and its Cancel, are in the status bar instead. */}
-        {progress && progress.stage !== 'decode' && <div className="operation-progress"><LoaderCircle size={12} className="spin" /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
         {/* From main (#7): no usable graphics driver, or WebGL drawn in software. */}
         {graphicsNoticeOpen && graphicsError != null && <div className="notice error" role="alert" data-testid="graphics-unavailable-notice"><span>{errorText(graphicsError)}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
         {graphicsNoticeOpen && graphics?.software && <div className="notice warning" role="status" data-testid="software-rendering-notice"><span>{t('gpu.softwareNotice')} <span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
+        {/* Two patients in the comparison screen, while both series are on screen: its own bar, so no other message
+            takes its place. */}
+        {twoPatients?.every(id => slots.some(slot => slot.seriesId === id)) && <div className="notice error" role="alert" data-testid="patient-warning"><span>{t('compare.otherPatient')}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="patient-warning-dismiss" onClick={() => { setTwoPatients(null); focusImage(); }}><X size={14} /></button></div>}
         {/* Info notices go into a live region that is always present, so screen readers announce them reliably. */}
         <div className="notice-region" role="status">{notice && notice.kind !== 'error' && noticeBar}</div>
         {notice?.kind === 'error' && noticeBar}
@@ -2543,7 +3144,7 @@ export default function App() {
               <button type="button" className="secondary-button" data-testid="welcome-open-files" disabled={Boolean(busy)} onClick={() => void open('files')}><Files size={16} /> {t('toolbar.openFiles')}</button>
               <button type="button" className="secondary-button" data-testid="welcome-open-archive" disabled={Boolean(busy)} onClick={() => void open('archive')}><FileArchive size={16} /> {t('toolbar.openArchive')}</button>
             </div>
-            {busy && <div className="connection-status" role="status"><LoaderCircle size={14} className="spin" />{t(busy)}</div>}
+            {busy && <div className="connection-status" role="status"><LoaderCircle size={14} />{t(busy)}</div>}
             {connectionError && <div className="connection-error" role="alert"><strong>{t('welcome.serviceUnavailable')}</strong><span>{connectionError}</span><button data-action="reconnect" type="button" className="secondary-button compact" onClick={() => void connect()}>{t('welcome.reconnect')}</button></div>}
           </div>
         </div> : <div ref={attachGrid} className="viewport-grid" data-testid="viewport-grid" data-panes={slots.length} style={{ '--grid-rows': gridShape[0], '--grid-columns': gridShape[1] } as CSSProperties}>
@@ -2556,9 +3157,9 @@ export default function App() {
               annotations={slot.seriesId ? annotations[slot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS} crosshair={linkedCrosshair} fusion={fused} segmentations={segmentationOverlays}
               loading={Boolean(slot.seriesId && loadingIds.has(slot.seriesId))} loadError={slot.seriesId ? loadErrors[slot.seriesId] : undefined} linked={settings.linked} interaction={settings} references={!isMpr && slot.id === activeId ? EMPTY_REFERENCES : activeReferences}
               onActivate={activateSlot} onViewChange={updateView} onAnnotationsChange={changeAnnotations} onCrosshairChange={changeCrosshair}
-              onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
+              joined={joinedFor(slot)} onCross={crossJoined} onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
               onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlane : undefined} clickPicksPoint={show3d}
-              toast={paneToast?.slotId === slot.id && paneToast.seriesId === slot.seriesId ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes}
+              toast={paneToast?.slotId === slot.id && paneToast.seriesId === (slot.seriesId ?? '') ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes}
               caliper={slot.id === activeId && volume ? caliperPane(volume, slot.view, slot.id) : undefined} />;
           })}
         </div>}
@@ -2574,7 +3175,7 @@ export default function App() {
           displayVolumesRef.current.get(item.id)?.series ?? { ...item, measurementScale: calibrationScales[item.id] }); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
-        onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view) : null}
+        onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view, joinedFor(activeSlot)) : null}
         onMeasure={(item, side, kind) => startCaliper({ kind, item, side, study: studyKey(activeSeries) })}
         measuring={caliper && caliper.study === studyKey(activeSeries) ? caliper : null} measureBlocked={caliperBlocked}
         paneShows={paneShows} onShow={showChecklistItem} showBlocked={showBlocked}
@@ -2583,8 +3184,19 @@ export default function App() {
           updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage();
           // A measured side picks its caliper drawing too, once it is on screen.
           if (note.caliper) document.querySelector('.viewport-cell.is-active [data-testid="dicom-viewport"]')?.dispatchEvent(new CustomEvent(PICK_MEASUREMENT, { detail: note.caliper.annotationId })); }} /></Suspense></div>}
-      {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
-      <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} onError={showTagError}>
+      {(() => {
+        const plan = deformityShown && activeVolume ? <Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
+          onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
+          viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
+          labelling={labelling.folder && labelling.seriesIds.includes(activeVolume.series.id) ? { sides: labelling.sides, suggestions: labelling.suggestions } : undefined}
+          onCalibrate={calibrateFilm} /></Suspense> : null;
+        // While a folder is being labelled, its queue stays above the plan, also on a film the plan cannot open.
+        if (labelling.folder) return <div className="assessment-overlay"><div className="label-queue-column"><Suspense fallback={null}>
+          <LabelQueue volume={activeVolume ?? undefined} slice={activeDisplayView.slice} planOpen={Boolean(plan)} longLeg={opensDeformity} hidePatientData={settings.hidePatientData} onGo={index => void goToFilm(index)} onCalibrate={calibrateFilm} /></Suspense>{plan}</div></div>;
+        return plan && <div className="assessment-overlay">{plan}</div>;
+      })()}
+      {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} joinedOf={joinedOf} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
+      <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
         {inspectorShown && <>
         <div className="inspector-tabs"><div className="inspector-tablist" role="tablist" aria-label={t('inspector.label')} onKeyDown={event => {
           const order: Exclude<Panel, null>[] = ['measurements', 'display', 'tags'];
@@ -2626,6 +3238,8 @@ export default function App() {
             const Icon = MEASURE_ICONS[annotation.type] ?? Ruler;
             const neighbour = activeAnnotations[index + 1]?.id ?? activeAnnotations[index - 1]?.id;
             const sphere = sphereOf(annotation);
+            // The number the pane's counter shows on the measurement's slice (imaging/paging.ts).
+            const numbered = activeVolume ? measuredSlice(activeVolume.series, annotation, sourceIndex ?? undefined, joinedOf(activeVolume.series)) : annotation.slice + 1;
             return <li className={`annotation-row${annotation.type === 'sphere' ? ' has-details' : ''}`} key={annotation.id} data-annotation-row={annotation.id}><button data-action="measurement-go" type="button" className="annotation-main" disabled={unavailable} onClick={event => {
               // A sphere: every linked pane goes to its centre, each in its own plane.
               if (sphere) {
@@ -2638,12 +3252,12 @@ export default function App() {
               usage.touch('marks');
             }}>
               <span className="annotation-number"><Icon size={14} aria-hidden="true" />{index + 1}</span>
-              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{annotation.caliper ? caliperName(annotation.caliper.kind, locale) : toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: sourceIndex + 1 }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: annotation.slice + 1 })}</small></span></button>
+              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{annotation.caliper ? caliperName(annotation.caliper.kind, locale) : toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: numbered }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: numbered })}</small></span></button>
               <button data-action="measurement-delete" type="button" className="icon-button danger-hover" aria-label={t('inspector.deleteMeasurement', { number: index + 1 })} data-tooltip={t('inspector.deleteMeasurement', { number: index + 1 })} onClick={() => { if (!activeSeries) return; changeAnnotations(activeSeries.id, activeAnnotations.filter(item => item.id !== annotation.id)); focusSoon(neighbour ? `[data-annotation-row="${neighbour}"] .annotation-main` : '[data-testid="findings-add"]'); }}><X size={15} /></button>
               {sphere && activeSeries && <SphereDetails annotation={annotation} annotations={activeAnnotations} volume={activeVolume} onChange={next => changeAnnotations(activeSeries.id, next)} />}</li>;
           })}</ol>
             : <div className="inspector-empty"><span className="empty-icon" aria-hidden="true"><Ruler size={20} strokeWidth={1.6} /></span><strong>{t('inspector.emptyTitle')}</strong><p>{t('inspector.emptyText')}</p><button data-action="measure-length" type="button" className="secondary-button compact" data-testid="findings-add" disabled={!activeVolume} onClick={() => setTool('length')}><Plus size={14} /> {t('inspector.addMeasurement')}{settings.singleKeys && <kbd className="button-kbd">L</kbd>}</button></div>}
-          <section className="panel-block" aria-labelledby="series-details-title"><h3 className="block-title" id="series-details-title">{t('inspector.seriesDetails')}</h3>{activeSeries ? <dl className="series-details"><dt>{t('inspector.modality')}</dt><dd>{activeSeries.modality}</dd><dt>{t('inspector.images')}</dt><dd>{activeSeries.dimensions[2].toLocaleString()}</dd><dt>{t('inspector.matrix')}</dt><dd>{activeSeries.dimensions[0]} × {activeSeries.dimensions[1]}</dd><dt>{t('inspector.pixelSpacing')}</dt><dd>{activeSeries.spacingKnown === true ? `${activeSeries.spacing.slice(0, 2).map(n => n.toFixed(2)).join(' × ')} mm` : t('inspector.notCalibrated')}</dd><dt>{t('inspector.sliceSpacing')}</dt><dd>{activeSeries.canReconstruct ? `${activeSeries.spacing[2].toFixed(2)} mm` : t('inspector.notVerified')}</dd><dt>{t('inspector.values')}</dt><dd>{storedUnit(activeSeries) || t('inspector.storedValues')}</dd></dl> : <p className="muted-copy">{t('inspector.openStudy')}</p>}</section>
+          <section className="panel-block" aria-labelledby="series-details-title"><h3 className="block-title" id="series-details-title">{t('inspector.seriesDetails')}</h3>{activeSeries ? <dl className="series-details"><dt>{t('inspector.modality')}</dt><dd>{activeSeries.modality}</dd><dt>{t('inspector.images')}</dt><dd>{activeSeries.dimensions[2].toLocaleString()}</dd><dt>{t('inspector.matrix')}</dt><dd>{activeSeries.dimensions[0]} × {activeSeries.dimensions[1]}</dd><dt>{t('inspector.pixelSpacing')}</dt><dd>{shownFilm ? pixelSpacingText(shownFilm) : t('inspector.notCalibrated')}</dd><dt>{t('inspector.sliceSpacing')}</dt><dd>{activeSeries.canReconstruct ? `${activeSeries.spacing[2].toFixed(2)} mm` : t('inspector.notVerified')}</dd><dt>{t('inspector.values')}</dt><dd>{storedUnit(activeSeries) || t('inspector.storedValues')}</dd></dl> : <p className="muted-copy">{t('inspector.openStudy')}</p>}</section>
           {acquisitionPet && <PetAcquisitionPanel key={acquisitionPet.id} series={acquisitionPet} prior={petPrior} current={currentPet}
             cautions={cautions} cautionKey={cautionKey} limited={limitedView} onLimited={checked => petRecords.setLimitedView(acquisitionPet, checked)}
             typed={{ value: typedGlucose, ready: petRecords.keys.has(acquisitionPet.id), failed: petRecords.saveFailed,
@@ -2696,7 +3310,9 @@ export default function App() {
             {(['left', 'middle', 'right'] as MouseButton[]).map(button => <label className="mouse-binding" key={button}><span>{t(`mouse.${button}.drag` as const)}</span><select value={settings.mouseBindings[button] ?? (button === 'left' ? 'selected' : effectiveBinding(button))} onChange={event => setSettings(current => { const bindings = { ...current.mouseBindings }; if (event.target.value === 'selected') delete bindings[button]; else bindings[button] = event.target.value as Tool; return { ...current, mouseBindings: bindings }; })}>{button === 'left' && <option value="selected">{t('toolbar.selectedToolCurrent', { tool: toolLabel(tool) })}</option>}{BUTTON_ACTIONS.map(action => <option key={action} value={action}>{toolLabel(action)}</option>)}</select></label>)}
             <div className="popover-subtitle">{t('help.wheelKey')}</div>
             <label className="mouse-binding"><span>{t('mouse.wheel.heading')}</span><select value={settings.wheelAction} onChange={event => setSettings(current => ({ ...current, wheelAction: event.target.value as WheelAction }))}>{WHEEL_ACTIONS.map(action => <option key={action} value={action}>{t(`wheel.${action}` as const)}</option>)}</select></label>
-            <label className="slider-field"><span>{t('inspector.scrollSpeed')}<output>{settings.wheelSensitivity.toFixed(1)}×</output></span><input type="range" min={0.2} max={5} step={0.2} value={settings.wheelSensitivity} onChange={event => setSettings(current => ({ ...current, wheelSensitivity: Number(event.target.value) }))} /></label>
+            {/* The slider steps through the offered speeds; it reads out the speed, not its place in the list. */}
+            <label className="slider-field"><span>{t('inspector.touchpadSpeed')}<output>{touchpadSpeedText}</output></span><input type="range" data-action="touchpad-speed" min={0} max={TOUCHPAD_SPEEDS.length - 1} step={1} value={TOUCHPAD_SPEEDS.indexOf(settings.touchpadSpeed)} aria-valuetext={touchpadSpeedText} onChange={event => setSettings(current => ({ ...current, touchpadSpeed: TOUCHPAD_SPEEDS[Number(event.target.value)] }))} /></label>
+            <p className="field-help">{t('inspector.wheelNotch')}</p>
             <label className="check-field"><input type="checkbox" checked={settings.reverseWheel} onChange={event => setSettings(current => ({ ...current, reverseWheel: event.target.checked }))} /> {t('inspector.reverseScroll')}</label>
             <button type="button" className="text-button" onClick={resetMouse}>{t('mouse.reset')}</button>
             <p className="field-help">{t('inspector.touchHelp')}</p>
@@ -2709,7 +3325,7 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress?.stage === 'decode' && <span className="status-export"><progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} className="spin" />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
@@ -2725,7 +3341,7 @@ export default function App() {
       <span className="app-version">{t('status.version', { version: window.veacom?.getVersion() || '2' })}</span>
     </footer>
 
-    {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
+    {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} patientShown={settings.showOverlay && !settings.hidePatientData} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
       unavailable={Boolean(loadingIds.size) || activeVolume?.sourceFrameIndex !== undefined || !activeVolume ? { images: t('export.waitLoading'), video: t('export.waitLoading') } : undefined} background={exportBackground} busy={exportBusy} onBusyChange={changeExportBusy} onBackground={() => { setExportBackground(true); focusImage(); }} video={exportVideoTarget}
       currentFrame={activeSeries?.id === exportFor ? displayedDicomFrame : undefined} onProgress={(done, total) => setExportProgress([done, total])} cancelRef={exportCancel}
       onClose={() => { setExportMode(null); setExportBackground(false); }}
@@ -2735,7 +3351,7 @@ export default function App() {
     {showUpdates && <Suspense fallback={null}><UpdateDialog onClose={() => setShowUpdates(false)} /></Suspense>}
     {showFeedback && <Suspense fallback={null}><FeedbackDialog onClose={() => setShowFeedback(false)} onSent={() => say('feedback.sent', 'info', undefined, true)} /></Suspense>}
     {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={bridgeCan('updates') ? () => { setShowHelp(false); setShowUpdates(true); } : undefined} /></Suspense>}
-    {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={crosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
+    {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={crosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
       setShow3d(false);
       if (pointFrom3d.current && crosshairRef.current === pointFrom3d.current) setCrosshair(null);
       pointFrom3d.current = null;

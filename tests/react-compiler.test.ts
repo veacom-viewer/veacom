@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { fileURLToPath } from 'node:url';
 import { test } from 'node:test';
 import { createServer } from 'vite';
 
@@ -25,4 +26,12 @@ test('Vite compiles renderer components and hooks and keeps the import window fr
   } finally {
     await server.close();
   }
+});
+
+test('the compiler memoizes App itself, which a `finally` in any of its functions would stop', async () => {
+  const { transform } = await import('oxc-transform-react');
+  const file = new URL('../src/App.tsx', import.meta.url);
+  const result = await transform(fileURLToPath(file), await readFile(file, 'utf8'), { jsx: 'preserve', reactCompiler: { target: '19' } });
+  const app = result.code.slice(result.code.indexOf('export default function App'));
+  assert.match(app.slice(0, 400), /_c\(\d+\)/, 'App keeps its memo cache: paging must not sort the series again (tools/check-interface.cjs).');
 });

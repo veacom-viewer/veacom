@@ -163,7 +163,7 @@ With both engines and web apps built and Electron installed, run:
 BASE_APP=/path/to/beta2 HEAD_APP=/path/to/candidate node tools/check-beta-performance.cjs /tmp/beta-desktop 7
 ```
 
-The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, the initial PET/CT layout, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles.
+The fixtures exercise Auto Window on a reconstructed plane of a 500 MiB CT with a 256 MiB engine cache, thumbnails for eight MR series, a PET/CT opened and fused, a single colour PNG and a 100-frame 720p MP4. A separate counter run measures file reads during Auto Window. The movie check decodes H.264, verifies the frame count and rate, and compares three decoded frames with the exporter’s original pixels. PET memory is renderer RSS sampled after the fused view settles. Beta 2 fuses the PET/CT as it opens and the candidate when Fusion is pressed, so the fusion time is shown but not judged.
 
 The PNG is measured twice, once as a direct selection and once through **Open files**. The latter substitutes a native picker response after 750 ms in both builds and times from confirmation. A cancelled picker or a DICOM selection immediately closes its unused decoder.
 
@@ -173,11 +173,11 @@ The PNG is measured twice, once as a direct selection and once through **Open fi
 attenuation-corrected PET in Bq/ml with what SUV needs, and the same PET without attenuation correction. The check
 covers [arrangements](../docs/arrangements.md) on that study:
 
-- The study opens in one axial PET-over-CT pane with no click or recorded action. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
+- The study opens on its first image, unfused, with no recorded action, and Fusion lays the corrected PET over its CT in one press. The four-pane reading view is available in Layout and beside Fusion. Undo of a requested view restores the fusion.
 - A click on the MIP sends the linked panes to a lesion.
 - A pane moved and kept changes how the next PET/CT opens.
 - Undo restores the screen from before, and can be kept too.
-- Forget brings back VEAcom's own screen.
+- Forget brings back VEAcom's own opening: the first image, unfused.
 - A PET opened by hand is inverted grey, with its window in SUV.
 
 CI's desktop job, the Windows job and `tools/verify.sh` run it.
@@ -210,6 +210,31 @@ CI's desktop job (screens shard) and `tools/verify.sh` run it.
 ```sh
 node tools/fixtures/make-sinus-study.mjs /tmp/sinus-study
 node tools/check-close-calipers.cjs /tmp/sinus-study test-results/close-calipers
+
+## Comparison with an earlier study
+
+`check-comparison.cjs` covers [the comparison screen](../docs/arrangements.md#the-comparison-screen). It opens the
+synthetic patient from `fixtures/make-comparison-studies.mjs`: an earlier and a current brain MR and an earlier and a
+current chest CT, their dates interleaved. The two MRs name their series differently and record the body part as
+BRAIN and HEAD; the current MR has a FLAIR the earlier one lacks; each CT has a soft-tissue and a lung reconstruction.
+
+- Layout puts the earlier study's T2 on the left of the current T2, level with it, and the reader's pane keeps its view.
+- The two page, zoom and pan together. Each MR keeps its window; CT beside CT takes one.
+- A series picked into one pane changes that pane only; the other offers its counterpart, and an offer left alone clears itself.
+- Ctrl+Left and Ctrl+Right step both panes pair by pair, past the FLAIR.
+- The FLAIR leaves the earlier study's side empty.
+- A coronal reconstruction is compared in the same plane, and the earlier study with the later one on the right.
+- Another patient's series (the follow-up's earlier CT) put in a pane brings a warning, which goes when the panes show one patient again.
+
+A second launch opens the synthetic PET/CT follow-up. A fused PET/CT compared with the earlier CT alone keeps its
+fusion. With the earlier PET loaded too, Layout offers the PET follow-up and not the comparison.
+
+CI's desktop job, the Windows job and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-comparison-studies.mjs /tmp/comparison-studies
+node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
+node tools/check-comparison.cjs /tmp/comparison-studies /tmp/pet-followup test-results/comparison
 ```
 
 ## PET validation against the vendor workstation
@@ -304,6 +329,37 @@ CI's desktop job, the Windows job and `tools/verify.sh` run it.
 node tools/fixtures/make-nm-study.mjs /tmp/nm-study
 node tools/check-gamma-camera.cjs /tmp/nm-study test-results/gamma-camera
 ```
+
+## Deformity plan
+
+`make-longleg-study.mjs` writes a synthetic standing long-leg DX of both legs, drawn from chosen joint angles: a right leg
+with an 8° proximal tibia vara (its CORA 90 mm below the knee centre) and a left leg with a valgus distal femur. A
+25.0 mm ball and a ruler marked every 10 mm sit at the bones' depth, magnified 1.1 times. Each series carries the same
+pixels with other spacing tags (Pixel Spacing only, Imager Pixel Spacing only, with ERMF, equal, GEOMETRY, FIDUCIAL,
+differing without a type, none), and two more are mirrored (Patient Orientation R\F) or have no Patient Orientation.
+Its manifest gives every landmark in DICOM image-relative pixels and the values the angles imply, in closed form, before
+and after an 8° opening wedge HTO.
+
+`fixtures/fetch-mendeley-films.mjs` fetches two real standing long-leg films from Mendeley Data's High Tibial Osteotomy
+set (Przystalski et al., doi:10.17632/bpvj6xczm2.3, CC BY-NC 3.0), checks each against its pinned SHA-256, keeps it in
+`~/.cache/veacom-fixtures/mendeley` (`--cache=` for another folder) and wraps it as DX with the spacing read off its
+ruler: 49_0 shows both legs hip to ankle, 10_0 stops mid-tibia. They are never committed or kept as evidence.
+
+```sh
+node tools/fixtures/make-longleg-study.mjs /tmp/longleg [--variants=ips-only,none]
+node tools/fixtures/fetch-mendeley-films.mjs /tmp/mendeley
+node tools/check-deformity-plan.cjs /tmp/longleg /tmp/mendeley /tmp/deformity-plan
+```
+
+`check-deformity-plan.cjs` opens the films in the desktop app and clicks every landmark where the plan's drawing puts
+it. It checks the calibration each variant names and the femur's length it gives; on the Imager Pixel Spacing film,
+every angle of both legs to 0.1° and every length to 0.5 mm, the malalignment test and the tibial CORA; the HTO
+measured again, its wedge height, and the fragment drawn moved (bone where the talus went, dimmed where it was); ⌘Z
+and redo; MAD 0 solved; the plan saved (through a stubbed save dialog), opened again with identical values, and the
+report saved as an A4 PNG; the ball calibrating the film without spacing to the true 440 mm femur; the mirrored film
+giving the same angles under the same names; the film without Patient Orientation asking where the patient's
+right is before any medial or lateral value; and Suggest landmarks, not sure and suggesting nothing on the drawing and
+on 10_0, and suggesting all 14 landmarks on 49_0. CI runs it in the `screens` shard on llvmpipe.
 
 ## Pictures
 

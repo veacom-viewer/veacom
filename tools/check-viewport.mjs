@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import { launchHarness } from './harness-browser.mjs';
 
 // VEACOM_BROWSER_ARGS adds browser switches, e.g. --disable-gpu to run the pixel checks on software WebGL.
@@ -85,6 +86,33 @@ try {
   check('Hiding measurements preserves their data',(await state()).annotations.length===countBeforeHiding);
   await page.evaluate(()=>window.viewportTest.setOptions({}));await settle();
   await tool('crosshair');await drag([300,300],[320,350]);check('Linked point is in patient space',(await state()).crosshair.length===3);
+  // The crosshair tool points with the app's own "+" (theme.css --cursor-point), not the system crosshair, which inverts
+  // the colours under it (the green marker turns pink). While a press sets the point the pointer is hidden and the green
+  // marker alone follows it; released, the "+" is back, and so it is after a release the pane never saw.
+  // The harness page has no stylesheet: it takes the pointer's token from src/theme.css.
+  await page.addStyleTag({content:`:root{${/--cursor-point:[^;]+;/.exec(await readFile(new URL('../src/theme.css',import.meta.url),'utf8'))[0]}}`});
+  const paneCursor=()=>page.evaluate(()=>getComputedStyle(document.querySelector('[data-testid="dicom-viewport"]')).cursor);
+  // Where the marker is drawn, in the pane's own coordinates: unstyled here, the text check's note form leaves the pane
+  // scrolled, with its drawings shifted from the screen.
+  const markerAt=()=>page.evaluate(()=>{const marker=document.querySelector('[data-crosshair-marker]'),box=marker.getBoundingClientRect(),layer=marker.closest('svg').getBoundingClientRect(),pane=document.querySelector('[data-testid="dicom-viewport"]').getBoundingClientRect();
+    return [box.left+box.width/2-layer.left+pane.left,box.top+box.height/2-layer.top+pane.top];});
+  // A press on a measurement takes hold of it whatever the tool: none is left under the pointer.
+  await page.evaluate(()=>window.viewportTest.clear());await settle();
+  const pointerCursor=await paneCursor();
+  await page.mouse.move(250,260);await page.mouse.down();await settle();const pressedCursor=await paneCursor();
+  const followed=[];for(const [x,y] of [[262,281],[281,300],[300,322]]){await page.mouse.move(x,y,{steps:3});await settle();const [mx,my]=await markerAt();followed.push(Math.hypot(mx-x,my-y));}
+  await page.mouse.up();await settle();
+  const releasedCursor=await paneCursor();
+  // A release the pane never saw (the window lost the pointer): the next move without a button brings the pointer back.
+  await page.mouse.move(250,260);await page.mouse.down();await settle();
+  const hiddenAgain=await paneCursor(),pressedPoint=(await state()).crosshair;
+  await page.evaluate(()=>{const pane=document.querySelector('[data-testid="dicom-viewport"]'),box=pane.getBoundingClientRect();pane.dispatchEvent(new PointerEvent('pointermove',{pointerId:1,pointerType:'mouse',isPrimary:true,buttons:0,clientX:box.left+262,clientY:box.top+281,bubbles:true}));});await settle();
+  const afterLostRelease=await paneCursor(),pointAfterLostRelease=(await state()).crosshair;
+  await page.mouse.up();await settle();
+  check('Crosshair tool: the app\'s own pointer, hidden while pressed with the marker following it',hiddenAgain==='none'&&afterLostRelease===pointerCursor&&releasedCursor===pointerCursor&&pointerCursor.startsWith('url("data:image/svg+xml')&&pointerCursor.endsWith(', crosshair')
+    &&pressedCursor==='none'&&followed.every(distance=>distance<=1.5)&&await paneCursor()===pointerCursor);
+  // That move also ends the press: the point stays where the press set it.
+  check('Crosshair tool: a press whose release was lost ends with the next move without a button, its point kept',JSON.stringify(pointAfterLostRelease)===JSON.stringify(pressedPoint)&&pressedPoint?.length===3);
   await page.evaluate(()=>window.viewportTest.setView({plane:'coronal',slice:32}));await settle();
   check('Coronal MPR renders',await page.locator('canvas').getAttribute('data-plane')==='coronal');
   await page.evaluate(()=>window.viewportTest.setView({oblique:[15,10]}));await settle();check('Oblique MPR renders without errors',await page.locator('[role="alert"]').count()===0);
@@ -92,12 +120,28 @@ try {
   // A plane facing the way the view does (a tilted axial on an axial view) marks nothing, as in VEAcom 1.x.
   const referenceIds=await page.locator('[data-reference-plane]').evaluateAll(lines=>lines.map(line=>line.dataset.referencePlane).sort());
   check('Orthogonal and oblique patient-plane reference lines; none for a plane facing the same way',JSON.stringify(referenceIds)==='["reference-coronal","reference-oblique"]');
-  await page.evaluate(()=>window.viewportTest.setOptions({mouseBindings:{left:'pan',right:'window'},wheelSensitivity:2,reverseWheel:true}));await settle();
+  await page.evaluate(()=>window.viewportTest.setOptions({mouseBindings:{left:'pan',right:'window'},touchpadSpeed:2,reverseWheel:true}));await settle();
   await drag([300,300],[330,320]);check('User mouse binding overrides active tool',(await state()).view.pan[0]===30);
   await drag([300,300],[330,320],'right');check('Right button can control window level',(await state()).view.windowWidth>256);
-  const beforeWheel=(await state()).view.slice,sensitiveNotches=await notches();await page.mouse.wheel(0,100);await settle();
-  const sensitiveWheel=await notches()-sensitiveNotches;
-  check('Wheel direction and sensitivity settings',sensitiveWheel>=1&&(await state()).view.slice===beforeWheel+2*sensitiveWheel);
+  // A notch pages one slice at any touchpad speed, the other way when reversed.
+  const beforeWheel=(await state()).view.slice,notchesBefore=await notches();await page.mouse.wheel(0,100);await settle();
+  const notchesReceived=await notches()-notchesBefore;
+  check('Wheel direction setting; a notch pages one slice at any touchpad speed',notchesReceived>=1&&(await state()).view.slice===beforeWheel+notchesReceived);
+  // A touchpad's swipe pages by its pixels at the touchpad speed: 80 px through Windows' wheel messages (1.2 legacy units a
+  // pixel) are five slices at the normal speed (16 px a slice) and ten at 2×, the way the notch went.
+  const beforeSwipe=(await state()).view.slice;
+  await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect();for(let part=0;part<4;part++){canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:20,wheelDeltaY:-24,clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true}));await new Promise(resolve=>setTimeout(resolve,8));}});await settle();
+  check('Touchpad speed setting pages a swipe',(await state()).view.slice===beforeSwipe+10);
+  // A part of a swipe that moves nothing up or down (sideways) leaves what the swipe gathered: 10 + 10 px are 1.25 slices
+  // at the normal speed, so one slice pages.
+  await page.evaluate(()=>{window.viewportTest.setOptions({touchpadSpeed:1});window.viewportTest.reset();});await settle();
+  const beforeSideways=(await state()).view.slice;
+  await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect(),at={clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true};for(const part of [{deltaY:10,wheelDeltaY:-12},{deltaY:0,deltaX:30,wheelDeltaY:0,wheelDeltaX:-36},{deltaY:10,wheelDeltaY:-12}]){canvas.dispatchEvent(new WheelEvent('wheel',{...part,...at}));await new Promise(resolve=>setTimeout(resolve,40));}});await settle();
+  check('A sideways part of a swipe leaves the movement gathered before it',Math.abs((await state()).view.slice-beforeSideways)===1);
+  // Rotation goes by the wheel's own reading: a notch 100 ms after a part of a swipe turns 5°, not as part of the swipe.
+  await page.evaluate(()=>{window.viewportTest.setOptions({wheelAction:'rotate'});window.viewportTest.reset();});await settle();
+  await page.evaluate(async()=>{const canvas=document.querySelector('canvas'),box=canvas.getBoundingClientRect(),at={clientX:box.x+box.width/2,clientY:box.y+box.height/2,bubbles:true,cancelable:true};canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:25,wheelDeltaY:-30,...at}));await new Promise(resolve=>setTimeout(resolve,100));canvas.dispatchEvent(new WheelEvent('wheel',{deltaY:100,wheelDeltaY:-120,...at}));});await settle();
+  check('Wheel rotation turns 5° a notch, also just after a touchpad swipe',(await state()).view.rotation===5);
   await page.evaluate(()=>{window.viewportTest.setOptions({});window.viewportTest.reset();});await settle();
   const cdp=await page.context().newCDPSession(page);
   await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:250,y:300,id:1},{x:350,y:300,id:2}]});
