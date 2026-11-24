@@ -2991,7 +2991,7 @@ pub fn import_session_from(
                         // A copy that took the disc's turn to be looked for is taken only once the disc is found
                         // still in the drive: one put in its place while the copy was made could have given it.
                         if looked.elapsed() >= DISC_LOOK_EVERY {
-                            if !spool.same_disc() {
+                            if !keep_copy(file, || spool.same_disc()) {
                                 gone()?;
                                 break;
                             }
@@ -4636,6 +4636,19 @@ fn copy_from_disc(
     }
     output.flush()?;
     Ok(Copied::Whole)
+}
+
+/// Whether a disc's file, copied while another disc may have been put in the drive, is taken: when `same` finds the
+/// disc still there. Otherwise the copy made now is removed, so that no later import of the disc reads it as the
+/// disc's (see `DiscCopy`); an earlier import's copy, which was read from this disc, stays.
+fn keep_copy(file: &SpoolFile, same: impl FnOnce() -> bool) -> bool {
+    if same() {
+        return true;
+    }
+    if !matches!(file.take, Take::Kept { .. }) {
+        let _ = fs::remove_file(&file.to);
+    }
+    false
 }
 
 /// An archive's extraction folder, made, and the files that will be read from it once extracted. Planned from the
@@ -7492,6 +7505,88 @@ mod tests {
         for source in first.sources.iter().chain(&again.sources) {
             crate::decode::decode_frame(source, 0).unwrap();
         }
+    }
+
+    #[test]
+    fn a_copy_made_while_the_disc_was_not_found_again_goes_and_the_disc_opened_again_gives_that_file_anew()
+     {
+        let out = crate::test_dir::tempdir().unwrap();
+        let disc = indexed_two_series(out.path());
+        let paths = [disc.to_string_lossy().into_owned()];
+        let first = import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &[]).unwrap();
+        // One file as the disc now gives it, of the same length: what another disc of the same names could hold.
+        let mut listed = Vec::new();
+        collect_files(&disc.join("DICOM"), &mut listed).unwrap();
+        let (old, new) = (b"1.2.3.4.1.0", b"1.2.3.4.1.9");
+        let changed = (listed.iter())
+            .find(|file| {
+                fs::read(file)
+                    .unwrap()
+                    .windows(old.len())
+                    .any(|bytes| bytes == old)
+            })
+            .unwrap();
+        let mut bytes = fs::read(changed).unwrap();
+        for at in 0..=bytes.len() - old.len() {
+            if &bytes[at..at + old.len()] == old {
+                bytes[at..at + old.len()].copy_from_slice(new);
+            }
+        }
+        fs::write(changed, bytes).unwrap();
+        // Its copy, as if made while the disc was looked for and not found: it goes. An earlier import's copy stays.
+        let copy = |file: &Path| first.discs[0].copy.join(file.strip_prefix(&disc).unwrap());
+        let spooled = |file: &Path, take: Take| SpoolFile {
+            from: file.to_owned(),
+            to: copy(file),
+            take,
+            listed: None,
+            series: None,
+            first: false,
+        };
+        let made = spooled(changed, Take::Whole);
+        assert!(keep_copy(&made, || true) && made.to.exists());
+        assert!(!keep_copy(&made, || false) && !made.to.exists());
+        let other = listed.iter().find(|file| *file != changed).unwrap();
+        let kept = spooled(other, Take::Kept { unlisted: false });
+        assert!(!keep_copy(&kept, || false) && kept.to.exists());
+        // Opened again, the disc gives that file anew; the others come from their copies.
+        let again =
+            import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &first.discs).unwrap();
+        let mut images: Vec<_> = (again.sources.iter().flat_map(|source| &source.frames))
+            .map(|frame| frame.sop_uid.clone())
+            .collect();
+        images.sort();
+        assert_eq!(images.len(), 8);
+        assert!(
+            images.contains(&"1.2.3.4.1.9".to_owned())
+                && !images.contains(&"1.2.3.4.1.0".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_file_that_names_no_instance_is_read_and_its_image_goes_to_the_viewer_with_none() {
+        // A synthetic file without a SOP Instance UID: read, as any file is; the viewer then has nothing to tell its
+        // image apart by (src/ui/earlySeries.ts).
+        let out = crate::test_dir::tempdir().unwrap();
+        let mut unnamed = classic_slice(1, 0.);
+        assert!(unnamed.remove_element(Tag(0x0008, 0x0018)));
+        write_metadata(unnamed, &out.path().join("IM1"));
+        let named = classic_slice(2, 2.);
+        let instance = text(&named, Tag(0x0008, 0x0018));
+        assert!(!instance.is_empty());
+        write_metadata(named, &out.path().join("IM2"));
+        let paths = [out.path().to_string_lossy().into_owned()];
+        let read = import_session_from(&paths, None, 0, &|_| None, &[]).unwrap();
+        let frames: Vec<_> = (read.sources.iter())
+            .flat_map(|source| &source.frames)
+            .collect();
+        assert_eq!(frames.len(), 2);
+        let sent = |uid: &str| {
+            let frame = frames.iter().find(|frame| frame.sop_uid == uid).unwrap();
+            serde_json::to_value(&frame.metadata).unwrap()
+        };
+        assert_eq!(sent(&instance)["sopInstanceUid"], instance.as_str());
+        assert!(sent("").get("sopInstanceUid").is_none());
     }
 
     /// The folder zipped as an archiver writes it: a folder entry, then its files, names with forward slashes.
