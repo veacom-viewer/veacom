@@ -12,6 +12,8 @@ use veacom_core::{
     modality_lut, model, note, palette, parallel, patient, pictures, progress, random, rle_guard,
     sampling, source_file, tags, test_dir, window,
 };
+#[cfg(windows)]
+mod drives;
 mod memory;
 mod pipe;
 mod resources;
@@ -279,6 +281,12 @@ fn body<T: DeserializeOwned>(body: Option<Value>) -> ApiResult<T> {
     serde_json::from_value(body.unwrap_or(Value::Null))
         .map_err(|e| ApiError(400, format!("Invalid request: {e}").into()))
 }
+/// The drive letters the import window has just reached: a volume's name is read only for those.
+#[cfg(windows)]
+#[derive(Deserialize)]
+struct DrivesCall {
+    answering: Vec<char>,
+}
 #[derive(Deserialize)]
 struct SeriesRef {
     id: String,
@@ -307,6 +315,11 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
         match call.op.as_str() {
             "health" => ok(&health()),
             "processCounters" => ok(&resources::snapshot()),
+            #[cfg(windows)]
+            "drives" => {
+                let call: DrivesCall = body(call.body)?;
+                ok(&json!({"drives": drives::list(&call.answering)}))
+            }
             "progress" => ok(&progress::snapshot()),
             "pictureNext" => Ok(next_picture(cancelled)),
             "pictureAnswer" => answer_picture(body(call.body)?, request.data()),
@@ -720,11 +733,15 @@ fn warm_volume(core: &App, request: &pipe::Request, id: String) -> ApiResult<Rep
     }
     Ok(Reply::json(202, &json!({ "warming": true })))
 }
-/// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed.
+/// Longer than any identifier a readable file gives an image: a DICOM UID has at most 64 characters.
+const MAX_HEADER_VALUE: usize = 1024;
+/// A header value main's Headers accepts: visible ASCII and tabs, as HTTP allowed, and short enough that the reply's
+/// head stays within what main reads (MAX_HEAD in pipe.rs).
 fn header_value(value: &str) -> bool {
-    value
-        .bytes()
-        .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
+    value.len() <= MAX_HEADER_VALUE
+        && value
+            .bytes()
+            .all(|b| (0x20..0x7f).contains(&b) || b == b'\t')
 }
 fn frame(
     core: &App,
@@ -1720,6 +1737,18 @@ mod protocol_tests {
             json!([])
         );
         assert_eq!(engine.json(json!({"op": "processCounters"})).0, 200);
+        #[cfg(windows)]
+        {
+            let (status, listed) = engine.json(json!({"op": "drives", "body": {"answering": []}}));
+            assert_eq!(status, 200);
+            let fixed = |drive: &Value| drive["kind"] == "fixed" && drive["label"] == "";
+            assert!(listed["drives"].as_array().unwrap().iter().any(fixed));
+            assert_eq!(
+                engine.json(json!({"op": "drives"})).0,
+                400,
+                "the letters that answer are not optional"
+            );
+        }
         let (status, length) = engine.json(json!({"op": "measure", "body": {"seriesId": id, "points": [[0, 0, 0], [1, 0, 0]], "kind": "length"}}));
         assert_eq!((status, length["value"].clone()), (200, json!(1.0)));
         assert_eq!(
@@ -1801,6 +1830,31 @@ mod protocol_tests {
                 .is_some_and(|notes| notes.iter().any(|n| n["code"] == "import.patientConflict"));
             assert_eq!(warned, conflict, "{name}: {result}");
         }
+    }
+
+    #[test]
+    fn a_frame_named_longer_than_a_header_holds_fails_alone() {
+        use dicom_core::{Tag, VR};
+        let _turn = job_tests_progress();
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = super::job_tests::slice(temp.path(), "long.dcm", 11);
+        let mut file = dicom_object::open_file(&path).unwrap();
+        // No readable file names an image at this length: a DICOM UID has at most 64 characters.
+        file.put_str(
+            Tag(0x0008, 0x0018),
+            VR::UI,
+            format!("1.2.{}", "9".repeat(60_000)),
+        );
+        file.write_to_file(&path).unwrap();
+        let mut engine = Engine::start();
+        let (status, result) = engine.json(json!({"op":"import", "body":{"paths":[path]}}));
+        assert_eq!(status, 200, "{result}");
+        let id = &result["series"][0]["id"];
+        let (status, refused) = engine.json(json!({"op":"frame", "body":{"id":id, "index":0}}));
+        assert_eq!(status, 422, "{refused}");
+        // The engine and the series are still there.
+        let (status, listed) = engine.json(json!({"op":"series"}));
+        assert_eq!((status, &listed["series"][0]["id"]), (200, id));
     }
 
     #[test]

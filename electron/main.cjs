@@ -275,7 +275,7 @@ app.whenReady().then(async () => {
   });
   // The import window, in a view of its own (import-view.cjs): this page only opens it, right after the user's own
   // click or key press, and receives import capabilities for what the user opened there.
-  const importView = createImportView({ app, window: () => window, devUrl, locale: () => i18n.getLocale(), authorize: paths => imaging.authorizeImportPaths(paths), serve: serveFile });
+  const importView = createImportView({ app, engine, window: () => window, devUrl, locale: () => i18n.getLocale(), authorize: paths => imaging.authorizeImportPaths(paths), serve: serveFile });
   window.webContents.on('did-start-loading', () => importView.close());
   window.on('closed', () => importView.close());
   handle('files:import-window', start => importView.open(start === 'disc' ? 'disc' : undefined));

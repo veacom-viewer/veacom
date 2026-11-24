@@ -36,7 +36,7 @@ contextBridge.exposeInMainWorld('veacom', {
   onOpened: listener => { const notify = () => listener(); ipcRenderer.on('files:opened', notify); return () => ipcRenderer.removeListener('files:opened', notify); },
   getCoreState: () => invoke('core:state'),
   getGraphicsStatus: () => invoke('gpu:status'),
-  // Page zoom (View > Zoom In/Out) shrinks a wheel notch's legacy units; wheelSliceSteps undoes it.
+  // Page zoom (View > Zoom In/Out) shrinks a wheel notch's legacy units; wheelSteps undoes it.
   zoomFactor: () => webFrame.getZoomFactor(),
   onCoreState: listener => { const notify = (_event, state) => listener(state); ipcRenderer.on('core:state', notify); return () => ipcRenderer.removeListener('core:state', notify); },
   openPaths: kind => invoke('files:open', kind),
