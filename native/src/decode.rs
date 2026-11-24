@@ -60,7 +60,12 @@ trait Sample: Default + Clone + Send + Sync {
     fn from_ieee(_value: f64) -> Result<Self> {
         Err(TypeDoesNotFit.into())
     }
+    /// `from_value` for a whole number an f64 holds exactly (one smaller than 2^53): the same sample, or the same error.
+    fn from_whole(value: i64) -> Result<Self>;
 }
+/// The size a rescale slope or intercept stays below for `write_scalar_frame`: with stored values of at most 16 bits,
+/// every value it makes is then a whole number smaller than 2^48, which an f64 holds exactly.
+const WHOLE_LIMIT: f64 = 2_147_483_648.;
 macro_rules! integer_sample {
     ($kind:ty) => {
         impl Sample for $kind {
@@ -73,6 +78,9 @@ macro_rules! integer_sample {
                     return Err(TypeDoesNotFit.into());
                 }
                 Ok(value as $kind)
+            }
+            fn from_whole(value: i64) -> Result<Self> {
+                <$kind>::try_from(value).map_err(|_| TypeDoesNotFit.into())
             }
         }
     };
@@ -92,6 +100,10 @@ impl Sample for f32 {
     fn from_ieee(value: f64) -> Result<Self> {
         Ok(value as f32)
     }
+    // Rounded once, as the exact f64 is: the same sample. A whole number this small is finite in a float32.
+    fn from_whole(value: i64) -> Result<Self> {
+        Ok(value as f32)
+    }
 }
 impl Sample for f64 {
     fn from_value(value: f64) -> Result<Self> {
@@ -102,6 +114,9 @@ impl Sample for f64 {
     }
     fn from_ieee(value: f64) -> Result<Self> {
         Ok(value)
+    }
+    fn from_whole(value: i64) -> Result<Self> {
+        Ok(value as f64)
     }
 }
 
@@ -705,13 +720,28 @@ fn one_frame_values(
     frame: &Frame,
     check: fn() -> Result<()>,
 ) -> Result<FrameValues> {
+    frame_values_or(source, frame, check, &mut |_, _| Ok(false))?
+        .context("A frame was written where its values were asked for")
+}
+
+/// One frame's values, read from its file (see `one_frame_values`); or none, where `direct` writes the frame itself
+/// from its decoded pixels (as `write_scalar_frame` does) and says so.
+fn frame_values_or(
+    source: &SourceSeries,
+    frame: &Frame,
+    check: fn() -> Result<()>,
+    direct: &mut dyn FnMut(
+        &dicom_object::DefaultDicomObject,
+        &DecodedPixelData<'_>,
+    ) -> Result<bool>,
+) -> Result<Option<FrameValues>> {
     if frame.ordinary_image {
-        return Ok(FrameValues::from(
+        return Ok(Some(FrameValues::from(
             ordinary_rgb(source, frame, check)?
                 .into_iter()
                 .map(f64::from)
                 .collect::<Vec<_>>(),
-        ));
+        )));
     }
     let file = frame
         .source
@@ -726,15 +756,15 @@ fn one_frame_values(
     if source.info.photometric_interpretation == "PALETTE COLOR"
         && source.info.segmentation.is_none()
     {
-        return Ok(FrameValues::from(
+        return Ok(Some(FrameValues::from(
             crate::palette::decode_palette_frame(&object, frame.index)?
                 .into_iter()
                 .map(f64::from)
                 .collect::<Vec<_>>(),
-        ));
+        )));
     }
     if let Some(values) = special_scalar_values(source, &object, frame)? {
-        return Ok(values);
+        return Ok(Some(values));
     }
     let decoded = object
         .decode_pixel_data_frame(frame.index)
@@ -746,11 +776,82 @@ fn one_frame_values(
                 reason = error.to_string(),
             )
         })?;
-    Ok(FrameValues {
+    if direct(&object, &decoded)? {
+        return Ok(None);
+    }
+    Ok(Some(FrameValues {
         values: decoded_values(source, &object, &decoded, 0, frame)?,
         preserve_precision: false,
         allow_ieee: frame.metadata.padding_is_nan,
-    })
+    }))
+}
+
+/// Writes a scalar frame straight into its place in a volume where nothing but a whole rescale applies to its stored
+/// values: the samples `scalar_values` and `copy_values` give, without a float64 copy of the frame between them. False,
+/// having written nothing, where more applies (an activity mapping, a modality LUT, NaN padding), where the rescale is
+/// not whole or not below WHOLE_LIMIT, or where the frame is not as `scalar_values` reads it: those go that way, which
+/// also says what is wrong. `index` is the frame's place among the decoded frames.
+fn write_scalar_frame<T: Sample>(
+    source: &SourceSeries,
+    object: &dicom_object::DefaultDicomObject,
+    decoded: &DecodedPixelData<'_>,
+    index: u32,
+    frame: &Frame,
+    target: &mut [MaybeUninit<T>],
+) -> Result<bool> {
+    let whole = |value: f64| value.fract() == 0. && value.abs() < WHOLE_LIMIT;
+    if source.info.components != 1
+        || frame.activity.is_some()
+        || frame.metadata.padding_is_nan
+        || !whole(frame.slope)
+        || !whole(frame.intercept)
+        || validate_decoded(source, decoded).is_err()
+    {
+        return Ok(false);
+    }
+    let big_endian = object.meta().transfer_syntax() == "1.2.840.10008.1.2.2";
+    if !matches!(
+        crate::modality_lut::read(object, frame.index as usize, !big_endian),
+        Ok(None)
+    ) {
+        return Ok(false);
+    }
+    let (bits, high) = (decoded.bits_stored(), decoded.high_bit());
+    if bits == 0 || bits > 16 || high >= decoded.bits_allocated() || high + 1 < bits {
+        return Ok(false);
+    }
+    let Ok(data) = decoded.frame_data(index) else {
+        return Ok(false);
+    };
+    let signed = decoded.pixel_representation() as u16 == 1;
+    let shift = high + 1 - bits;
+    let range = 1i32 << bits;
+    let (slope, intercept) = (frame.slope as i64, frame.intercept as i64);
+    // A stored value unpacked as scalar_values does, and rescaled as apply_modality does, in whole numbers.
+    let sample = |word: u16| {
+        let stored = i32::from(word >> shift) & (range - 1);
+        let stored = if signed && stored >= range / 2 {
+            stored - range
+        } else {
+            stored
+        };
+        T::from_whole(i64::from(stored) * slope + intercept)
+    };
+    match decoded.bits_allocated() {
+        8 if data.len() == target.len() => {
+            for (target, &byte) in target.iter_mut().zip(data) {
+                target.write(sample(u16::from(byte))?);
+            }
+        }
+        // The decoder has already converted the file's words to native byte order.
+        16 if data.as_chunks::<2>().0.len() == target.len() => {
+            for (target, word) in target.iter_mut().zip(data.as_chunks::<2>().0) {
+                target.write(sample(u16::from_ne_bytes(*word))?);
+            }
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 /// Writes one frame's values into its place in a volume: every value of `target`, or none counts (an error).
@@ -828,10 +929,14 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
             let frame = &source.frames[index];
             if groups[frame.source.path.as_path()].len() == 1 {
                 crate::progress::check()?;
-                copy_values(
-                    target,
-                    one_frame_values(source, frame, crate::progress::check)?,
-                )?;
+                let mut direct = |object: &dicom_object::DefaultDicomObject,
+                                  decoded: &DecodedPixelData<'_>| {
+                    write_scalar_frame(source, object, decoded, 0, frame, target)
+                };
+                let values = frame_values_or(source, frame, crate::progress::check, &mut direct)?;
+                if let Some(values) = values {
+                    copy_values(target, values)?;
+                }
                 written[index].store(true, Ordering::Relaxed);
                 crate::progress::step()?;
             }
@@ -884,24 +989,29 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         for index in indices {
             crate::progress::check()?;
             let frame = &source.frames[index];
-            let values = if source.info.photometric_interpretation == "PALETTE COLOR"
-                && source.info.segmentation.is_none()
-            {
-                crate::palette::apply_palette(&decoded, &object, frame.index)?
-                    .into_iter()
-                    .map(f64::from)
-                    .collect()
-            } else {
-                decoded_values(source, &object, &decoded, frame.index, frame)?
-            };
-            copy_values(
-                &mut space[index * per_frame..(index + 1) * per_frame],
-                FrameValues {
-                    values,
-                    preserve_precision: false,
-                    allow_ieee: frame.metadata.padding_is_nan,
-                },
-            )?;
+            let target = &mut space[index * per_frame..(index + 1) * per_frame];
+            let palette = source.info.photometric_interpretation == "PALETTE COLOR"
+                && source.info.segmentation.is_none();
+            let direct = !palette
+                && write_scalar_frame(source, &object, &decoded, frame.index, frame, target)?;
+            if !direct {
+                let values = if palette {
+                    crate::palette::apply_palette(&decoded, &object, frame.index)?
+                        .into_iter()
+                        .map(f64::from)
+                        .collect()
+                } else {
+                    decoded_values(source, &object, &decoded, frame.index, frame)?
+                };
+                copy_values(
+                    target,
+                    FrameValues {
+                        values,
+                        preserve_precision: false,
+                        allow_ieee: frame.metadata.padding_is_nan,
+                    },
+                )?;
+            }
             written[index].store(true, Ordering::Relaxed);
             crate::progress::step()?;
         }
@@ -1138,6 +1248,56 @@ mod tests {
                 .collect::<Vec<_>>(),
             expected
         );
+    }
+    #[test]
+    fn a_volume_written_straight_from_stored_values_holds_what_a_frame_read_alone_does() {
+        // A volume of whole rescales is written straight from the stored values (write_scalar_frame); a frame read alone
+        // goes through float64 values. Every layout, signedness and rescale must give both the same samples: values
+        // above the stored bits, a negative slope, ones that leave int16 and uint16 for float32, a slope at the size
+        // limit, and rescales that are not whole or not below the limit, which go the float64 way in both.
+        let mut seed = 0x2545_f491_u32;
+        let mut word = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 16) as u16
+        };
+        let pixels: Vec<u16> = (0..257).map(|_| word()).collect();
+        for (signed, bits, slope, intercept) in [
+            (false, 16, 1., 0.),
+            (true, 16, 1., 0.),
+            (false, 12, 1., -1024.),
+            (true, 12, 2., -3.),
+            (true, 10, -1., 5.),
+            (false, 8, 1., 0.),
+            (true, 16, 1., 32767.),
+            (false, 16, 3., 70000.),
+            (false, 16, 2_147_483_647., -2_147_483_647.),
+            (false, 12, 0.5, 0.),
+            (true, 16, 1., 0.25),
+            (false, 16, 2_147_483_648., 0.),
+        ] {
+            let dir = crate::test_dir::tempdir().unwrap();
+            let path = dir.path().join("frame.dcm");
+            fixture(
+                &path,
+                &pixels,
+                signed,
+                bits,
+                slope,
+                intercept,
+                "MONOCHROME2",
+            );
+            let imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+            let frame = decode_frame(&imported.sources[0], 0).unwrap();
+            let volume = decode_volume(&imported.sources[0]).unwrap();
+            let values = |buffer: &PixelBuffer| {
+                (0..buffer.len())
+                    .map(|i| buffer.value(i))
+                    .collect::<Vec<_>>()
+            };
+            let case =
+                format!("signed {signed}, {bits} bits, slope {slope}, intercept {intercept}");
+            assert_eq!(values(&volume), values(&frame), "{case}");
+        }
     }
     fn wide_fixture(
         path: &Path,

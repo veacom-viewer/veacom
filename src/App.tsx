@@ -3087,7 +3087,7 @@ export default function App() {
       <span className="app-version">{t('status.version', { version: window.veacom?.getVersion() || '2' })}</span>
     </footer>
 
-    {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
+    {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle className="spin" /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} patientShown={settings.showOverlay && !settings.hidePatientData} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
       unavailable={Boolean(loadingIds.size) || activeVolume?.sourceFrameIndex !== undefined || !activeVolume ? { images: t('export.waitLoading'), video: t('export.waitLoading') } : undefined} background={exportBackground} busy={exportBusy} onBusyChange={changeExportBusy} onBackground={() => { setExportBackground(true); focusImage(); }} video={exportVideoTarget}
       currentFrame={activeSeries?.id === exportFor ? displayedDicomFrame : undefined} onProgress={(done, total) => setExportProgress([done, total])} cancelRef={exportCancel}
       onClose={() => { setExportMode(null); setExportBackground(false); }}
