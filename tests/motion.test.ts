@@ -8,12 +8,18 @@ import path from 'node:path';
 
 const source = path.resolve(import.meta.dirname, '../src');
 
-/** A stylesheet's animation declarations that run without end, as written but on one line. CSS keywords are read in
- * any case; a declaration's value runs to its semicolon or brace, over as many lines as it takes; comments and
- * selectors are no declarations. */
+/** A stylesheet's animation declarations that run without end, as written but on one line. A declaration is one of a
+ * block's, up to its semicolon or brace, over as many lines as it takes: comments and quoted text hold none, and
+ * what comes before a "{" after its last ";" is a selector or an at-rule. It runs without end when one of its
+ * values is the keyword `infinite`, in any case; an animation's name that only holds the word does not. */
 function endlessAnimations(css: string): string[] {
-  const declarations = css.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/(?:^|[{;\s])((?:-[a-z]+-)?animation(?:-iteration-count)?)\s*:\s*([^;{}]*)/gi);
-  return [...declarations].filter(([, , value]) => /\binfinite\b/i.test(value)).map(([, name, value]) => `${name}: ${value.trim().replace(/\s+/g, ' ')}`);
+  const text = css.replace(/\/\*[\s\S]*?\*\//g, '').replace(/"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g, '""');
+  const declarations = [...text.matchAll(/([^{}]*)([{}]|$)/g)].flatMap(([, part, end]) => end === '{' ? part.split(';').slice(0, -1) : part.split(';'));
+  return declarations.flatMap(declaration => {
+    const found = /^\s*((?:-[a-z]+-)?animation(?:-iteration-count)?)\s*:([\s\S]*)$/i.exec(declaration);
+    if (!found || !found[2].split(/[\s,]+/).some(value => value.toLowerCase() === 'infinite')) return [];
+    return [`${found[1]}: ${found[2].trim().replace(/\s+/g, ' ')}`];
+  });
 }
 
 it('finds an endless animation in an animation declaration only, in any case and over several lines', () => {
@@ -21,8 +27,11 @@ it('finds an endless animation in an animation declaration only, in any case and
   assert.deepEqual(endlessAnimations('.a {\n  animation:\n    turn 1s\n    infinite;\n}'), ['animation: turn 1s infinite']);
   assert.deepEqual(endlessAnimations('.a { Animation-Iteration-Count: infinite }'), ['Animation-Iteration-Count: infinite']);
   assert.deepEqual(endlessAnimations('.a { -webkit-animation: turn 1s infinite; }'), ['-webkit-animation: turn 1s infinite']);
-  // A selector, a comment and an animation that ends are not.
+  assert.deepEqual(endlessAnimations('@media (min-width: 1px) { .a { color: red; animation: turn 1s infinite } }'), ['animation: turn 1s infinite']);
+  // A selector, quoted text, a comment, an animation named after the word, and an animation that ends are not.
   assert.deepEqual(endlessAnimations('.infinite-scroll { overflow: auto; }\n/* animation: turn 1s infinite; */'), []);
+  assert.deepEqual(endlessAnimations('a[title=" animation: infinite"] { color: red; }'), []);
+  assert.deepEqual(endlessAnimations('.a { animation: infinite-scroll 1s linear; }'), []);
   assert.deepEqual(endlessAnimations('.a { animation: turn 1s 3; transition: opacity 0.2s; }'), []);
 });
 
