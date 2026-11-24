@@ -2825,12 +2825,18 @@ pub fn import_session_from(
             #[cfg(not(target_arch = "wasm32"))]
             {
                 let dir = crate::archive_temp::create("veacom-import-")?;
+                // The room the import's discs and earlier archives leave, less the spare, as for a ZIP; what the RAR
+                // writes is taken from it for the archives after it.
+                let room = room_then
+                    .map(|room| room.saturating_sub(taken).saturating_sub(SPARE_BYTES / 2));
                 let limits = crate::system_archive::Limits {
                     files: MAX_FILES,
                     file_bytes: MAX_ARCHIVE_FILE_BYTES,
                     total_bytes: available_archive_bytes(),
+                    room,
                 };
-                crate::system_archive::extract_into(path, dir.path(), &limits)?;
+                let written = crate::system_archive::extract_into(path, dir.path(), &limits)?;
+                taken = taken.saturating_add(written);
                 collect_files(dir.path(), &mut files)?;
                 let root = ImageRoot::new(dir.path(), path.file_stem());
                 archives.push(dir);

@@ -87,6 +87,7 @@
     "rar.tooManyEntries": "RAR arşivinde çok fazla öğe var.",
     "rar.entryTooLarge": "RAR içindeki bir dosya, dosya başına sınırı aşıyor.",
     "rar.tooLarge": "RAR açıldığında içe aktarma sınırını aşıyor.",
+    "rar.noRoom": "Bu bilgisayarın diskinde bu RAR'ın dosyalarına yer yok.",
     "pictures.browser": "PNG, JPEG ve BMP resimleri bu tarayıcıda açılamıyor.",
 
     "decode.cannotRead": "{path} okunamadı: {reason}",

@@ -28,6 +28,9 @@ pub(crate) struct Limits {
     pub files: usize,
     pub file_bytes: u64,
     pub total_bytes: u64,
+    /// The bytes this computer's disk can take of the archive's files and still keep its spare (see ingest.rs's
+    /// `room`); None where nothing says.
+    pub room: Option<u64>,
 }
 
 const BLOCK: usize = 512;
@@ -176,8 +179,8 @@ fn end(child: &Mutex<Child>) {
         .kill();
 }
 
-/// Extracts every file of the RAR archive into `dir`.
-pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Result<()> {
+/// Extracts every file of the RAR archive into `dir`, and gives the bytes written.
+pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Result<u64> {
     let Some(program) = reader() else {
         bail!(coded!(
             "rar.noReader",
@@ -257,11 +260,11 @@ pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Resul
     match written {
         Err(Stop::Refused(error)) => Err(error),
         _ if protected => Err(crate::rar_headers::protected()),
-        Ok(written) if status.is_some_and(|status| status.success()) => {
+        Ok((written, bytes)) if status.is_some_and(|status| status.success()) => {
             if written != expected {
                 bail!(crate::rar_headers::damaged());
             }
-            Ok(())
+            Ok(bytes)
         }
         _ => Err(crate::rar_headers::unreadable()),
     }
@@ -291,9 +294,15 @@ struct Entry {
     kind: u8,
 }
 
-/// Writes each file of the tar stream below `dir`, within `limits`.
-fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<Vec<u32>, Stop> {
+/// Writes each file of the tar stream below `dir`, within `limits`: the CRC-32 of each file written, and the bytes
+/// written in all.
+fn write_entries(
+    mut stream: impl Read,
+    dir: &Path,
+    limits: &Limits,
+) -> Result<(Vec<u32>, u64), Stop> {
     let (mut files, mut remaining) = (Vec::new(), limits.total_bytes);
+    let mut room = limits.room;
     let mut buffer = vec![0u8; 256 << 10];
     while let Some(entry) = next_entry(&mut stream)? {
         crate::progress::check()?;
@@ -321,6 +330,13 @@ fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<V
             return Err(anyhow::Error::from(coded!(
                 "rar.tooLarge",
                 "RAR expanded data exceeds the import limit"
+            ))
+            .into());
+        }
+        if room.is_some_and(|room| entry.size > room) {
+            return Err(anyhow::Error::from(coded!(
+                "rar.noRoom",
+                "This computer's disk does not have room for this RAR's files."
             ))
             .into());
         }
@@ -359,9 +375,10 @@ fn write_entries(mut stream: impl Read, dir: &Path, limits: &Limits) -> Result<V
         drop(output);
         files.push(crc.sum());
         remaining -= entry.size;
+        room = room.map(|room| room - entry.size);
         skip(&mut stream, padding(entry.size))?;
     }
-    Ok(files)
+    Ok((files, limits.total_bytes - remaining))
 }
 
 /// The bytes after `size` bytes of data up to the next block.
@@ -653,6 +670,7 @@ pub(crate) mod tests {
         files: 100,
         file_bytes: 1 << 20,
         total_bytes: 4 << 20,
+        room: None,
     };
     /// Every file below `dir`, sorted.
     fn files_in(dir: &Path) -> Vec<PathBuf> {
@@ -751,7 +769,7 @@ pub(crate) mod tests {
         assert_eq!(std::fs::read(extended).unwrap(), [7u8; 700]);
         // Each file's CRC-32, in the stream's order, for the comparison with the archive's headers.
         let again = crate::test_dir::tempdir().unwrap();
-        let sums = write_entries(&stream[..], again.path(), &ROOMY).ok();
+        let sums = (write_entries(&stream[..], again.path(), &ROOMY).ok()).map(|(sums, _)| sums);
         let sum = |bytes: &[u8]| u32::from_le_bytes(crc(bytes));
         assert_eq!(sums, Some(vec![sum(b"first"), sum(&[7u8; 700])]));
     }
@@ -800,6 +818,25 @@ pub(crate) mod tests {
             .as_deref(),
             Some("rar.tooLarge")
         );
+        // The disk's room, which this import shares with what it extracts before (ingest.rs): two files of four
+        // bytes have no room in seven, and are written in eight, which the writing gives back.
+        assert_eq!(
+            limited(Limits {
+                room: Some(7),
+                ..ROOMY
+            })
+            .as_deref(),
+            Some("rar.noRoom")
+        );
+        let dir = crate::test_dir::tempdir().unwrap();
+        let room = Limits {
+            room: Some(8),
+            ..ROOMY
+        };
+        assert!(matches!(
+            write_entries(&two[..], dir.path(), &room),
+            Ok((_, 8))
+        ));
         // The same name twice: the second is not written over the first.
         let twice = [
             tar_entry("a", b"1", b'0'),
