@@ -9,6 +9,7 @@ import { useTranslation } from '../i18n/react';
 import { warningTexts } from '../i18n/core';
 import { usage } from '../usage/tracker';
 import { MAX_EXPORT_SERIES } from '../../electron/export-limits.mjs';
+import { imageExportName } from '../ui/exportName';
 import { pickState, togglePicked } from '../ui/exportSelection';
 import { phaseLabel } from '../ui/overlayCorners';
 import { exportedImages } from '../ui/seriesNames';
@@ -58,6 +59,9 @@ export interface ExportDialogProps {
   unavailable?: Partial<Record<ExportMode, string>>;
   /** Every pane on screen as one picture. */
   onPicture?: (format: 'png' | 'jpeg', layout: boolean) => void;
+  /** The viewer shows patient details in the image's corners: with them hidden, or the image annotations off, the
+   * exported pictures show none, and their folder is not named after the patient. */
+  patientShown: boolean;
 }
 
 const KINDS: Array<{ mode: ExportMode; label: 'export.kindDicom' | 'export.kindImages' | 'export.kindVideo' | 'export.kindMedia' }> = [
@@ -87,11 +91,6 @@ function groupExportSeries(series: Series[]) {
   return [...studies.entries()];
 }
 
-function imageExportName(series: Series | undefined, includePatient: boolean) {
-  if (!includePatient) return 'VEAcom';
-  return [series?.patientName.replaceAll('^', ' ').trim(), series?.description].filter(Boolean).join(' - ') || 'VEAcom';
-}
-
 const OPEN_AFTER = 'veacom:export-open-after', MORE = 'veacom:export-more', PREFIX = 'veacom:export-prefix';
 const remembered = (key: string) => { try { return localStorage.getItem(key); } catch { return null; } };
 const remember = (key: string, value: string) => { try { localStorage.setItem(key, value); } catch { /* a convenience only */ } };
@@ -109,7 +108,7 @@ function PickAll({ ids, picked, action, onToggle }: { ids: string[]; picked: Rea
   return <input type="checkbox" data-action={action} checked={state.all} ref={box => { if (box) box.indeterminate = state.partial; }} onChange={() => onToggle(ids)} />;
 }
 
-export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture }: ExportDialogProps) {
+export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame, background = false, onClose, onComplete, onFailed, onBackground, busy, onBusyChange, onProgress, cancelRef, onModeChange, unavailable = {}, onPicture, patientShown }: ExportDialogProps) {
   const { locale, t } = useTranslation();
   const active = series.find(item => item.id === activeSeriesId);
   const isImages = mode === 'images', isVideo = mode === 'video', isMedia = mode === 'media', captures = isImages || isVideo;
@@ -218,7 +217,7 @@ export function ExportDialog({ mode, series, activeSeriesId, video, currentFrame
       if (connections.some(core => core.generation !== engineGeneration) || !captures && new Set(selected.map(item => item.engineGeneration)).size > 1) throw new Error(t('export.differentEngines'));
       const overlays = { includeOverlays: annotations !== 'none', hideIdentity: annotations === 'basic' };
       if (isImages && video) {
-        const name = imageExportName(active, annotations === 'full');
+        const name = imageExportName(active, annotations === 'full' && patientShown);
         const directory = await exportViewportImages({ ...video, format: pictureFormat, quality: quality / 100, range: sliceRange, outputSize, ...overlays, ...order, here: true,
           suggestedName: name, signal: controller.signal, onProgress });
         if (!directory) { usage.milestone(task, 'cancel'); onClose(); return; }
