@@ -10,7 +10,11 @@ const path = require('node:path');
 const ARCHIVES = /\.zip$/i;
 const MAX_ENTRIES = 5000;
 const collator = new Intl.Collator('tr', { numeric: true, sensitivity: 'base' });
-const withTimeout = (promise, ms, fallback) => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(fallback), ms))]);
+/** `promise`'s value, or `fallback` if it has not come within `ms`. The timer ends with the promise. */
+const withTimeout = (promise, ms, fallback) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => resolve(fallback), ms);
+  promise.then(resolve, reject).finally(() => clearTimeout(timer));
+});
 
 /** Home, Desktop, Downloads and Documents, which Windows can keep on a server (folder redirection). */
 function usualPlaces(app) {
@@ -96,6 +100,21 @@ function listedDrives(answering, types) {
   });
 }
 
+/**
+ * The disc drives that hold a disc, as paths. Null where that is not known: macOS and Linux list a disc as one more
+ * volume, and an engine that does not answer names no drive's kind. A drive that was just given a disc answers only
+ * once the disc turns, so each is waited for up to `wait` ms; an empty drive says so at once. `platform` and `reach`
+ * are for tests.
+ */
+async function readyDiscs(engine, { wait = 15_000, platform = process.platform, reach = root => fs.access(root) } = {}) {
+  if (platform !== 'win32') return null;
+  const types = await driveTypes(engine, []);
+  if (!Object.keys(types).length) return null;
+  const roots = LETTERS.filter(letter => types[letter]?.kind === 'disc').map(letter => `${letter}:\\`);
+  const reached = await Promise.all(roots.map(root => withTimeout(reach(root).then(() => true, () => false), wait, false)));
+  return roots.filter((_, index) => reached[index]);
+}
+
 /** Drives and usual places. A drive that does not answer within a moment is left out, unless it is a disc drive. */
 async function places(app, engine) {
   const home = usualPlaces(app).filter(place => place.key !== 'home');
@@ -109,4 +128,4 @@ async function places(app, engine) {
   return { drives: listedDrives(answering, await driveTypes(engine, answering)), home };
 }
 
-module.exports = { browse, places, usualPlaces, localPath, chosenPaths, driveTypes, listedDrives };
+module.exports = { browse, places, usualPlaces, localPath, chosenPaths, driveTypes, listedDrives, readyDiscs };

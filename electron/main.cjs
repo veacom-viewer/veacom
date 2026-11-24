@@ -5,8 +5,13 @@ if (process.env.VEACOM_USER_DATA) app.setPath('userData', path.resolve(process.e
 // One VEAcom per user data folder: a second launch brings the first window forward instead. Two copies would share
 // the usage-sharing choice and its local copy on disk, so turning sharing off in one would not stop the other.
 // A later launch sends its own arguments and folder with the request: Chromium reorders the arguments it relays.
-const primary = app.requestSingleInstanceLock({ argv: process.argv, cwd: process.cwd() });
+const startFolder = process.cwd();
+const primary = app.requestSingleInstanceLock({ argv: process.argv, cwd: startFolder });
 if (!primary) app.quit();
+// An installed VEAcom then works from its own folder. Explorer starts it in the folder of what it opens: staying there
+// would keep that disc or stick from being removed while VEAcom runs, and anything VEAcom starts would start there too.
+// What the launch named is still read against the folder it started in (launch-paths.cjs).
+if (primary && app.isPackaged) try { process.chdir(path.dirname(process.execPath)); } catch { /* It stays where it started. */ }
 const crashes = primary ? require('./crash-reports.cjs').registerCrashReports(app) : null;
 
 const { reviewExportPixels } = require('./export-review.cjs');
@@ -42,7 +47,7 @@ if (process.platform === 'darwin') systemPreferences.registerDefaults({ ApplePer
 if (!app.isPackaged && process.platform === 'linux' && process.env.VEACOM_SOFTWARE_GL === 'llvmpipe') app.commandLine.appendSwitch('ignore-gpu-blocklist');
 // What each launch named (launch-paths.cjs): this one's study, and those of later launches, which hand their arguments
 // over and end. Explorer's "Open with VEAcom" is such a launch: this window comes forward and opens what it named.
-const launches = [{ argv: process.argv, cwd: process.cwd() }];
+const launches = [{ argv: process.argv, cwd: startFolder }];
 let openLaunches = () => {};
 app.on('second-instance', (_event, _relayed, _folder, launch) => {
   if (Array.isArray(launch?.argv)) launches.push({ argv: launch.argv, cwd: typeof launch.cwd === 'string' ? launch.cwd : process.cwd() });
@@ -220,7 +225,8 @@ app.whenReady().then(async () => {
   handle('imaging:series', () => imaging.listSeries());
   handle('imaging:import', capabilities => imaging.importSelected(capabilities));
   handle('imaging:progress', () => imaging.getProgress());
-  handle('imaging:early', (capabilities, after) => imaging.importEarly(capabilities, after));
+  handle('imaging:early', (capabilities, after, options) => imaging.importEarly(capabilities, after, options));
+  handle('imaging:prioritise', (capabilities, planned) => imaging.prioritiseImport(capabilities, planned));
   handle('imaging:cancel', id => imaging.cancelOperation(id));
   handle('imaging:measure', (...args) => imaging.measure(...args));
   handle('imaging:tags', (id, generation, frame, revision) => imaging.getTags(id, generation, frame, revision));

@@ -74,11 +74,13 @@ export function linkedSlice(source: Pane, target: Pane, point: Vec3, steps: numb
   return steps && inStep(source, target) ? stepTarget(source, target, steps) : null;
 }
 
-/** The same patient by ID and name, both known. */
+/** The same patient, known by ID or name: the same ID and the engine's patient key, which holds the name and birth
+ * date too (native/src/patient.rs); without keys, the same ID and name in one study. */
 export function samePatient(a: Series, b: Series): boolean {
   const id = [a.patientId.trim(), b.patientId.trim()], name = [a.patientName.trim().toUpperCase(), b.patientName.trim().toUpperCase()];
-  if (id[0] !== id[1] || name[0] !== name[1] || !(id[0] || name[0])) return false;
-  if (a.patientKey || b.patientKey) return a.patientKey === b.patientKey;
+  if (id[0] !== id[1]) return false;
+  if (a.patientKey || b.patientKey) return a.patientKey === b.patientKey && Boolean(id[0] || name[0]);
+  if (name[0] !== name[1] || !(id[0] || name[0])) return false;
   return Boolean(a.studyUid && a.studyUid === b.studyUid);
 }
 
