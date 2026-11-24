@@ -33,6 +33,7 @@
     "series.suvNotCalibrated": "SUV hesaplanamıyor: PET değerleri Bq/ml ya da SUV olarak kalibre değil.",
     "series.suvIncomplete": "SUV hesaplanamıyor: ağırlık, doz, bozunma düzeltmesi ya da enjeksiyon zamanı eksik veya tutarsız.",
     "series.suvLutUnits": "SUV hesaplanamıyor: Modality LUT çıkış birimi PET kalibrasyon birimiyle aynı değil.",
+    "series.rescaleUnread": "Bu görüntülerin ölçek değerleri (Rescale) okunamadı: gösterilen değerler HU ya da SUV değil.",
     "series.suvDiffers": "SUV hesaplanamıyor: kalibrasyon kesitler arasında farklı.",
     "series.suvNotCorrected": "SUV hesaplanamıyor: görüntüde atenüasyon ve bozunma düzeltmesi yok.",
     "series.suvScanStart": "SUV hesaplanamıyor: Series Time çekimden sonra ve tarama başlangıcı bulunamıyor.",
