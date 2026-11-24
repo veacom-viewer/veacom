@@ -43,12 +43,15 @@ function zRange(series: Series): [number, number] {
   return [Math.min(first, last), Math.max(first, last)];
 }
 
+/** Attenuation-corrected, by its description: not NAC (nor NO-AC, NOAC). */
+export function attenuationCorrected(item: Series): boolean {
+  const words = item.description.toUpperCase();
+  return !(words.includes('NO-AC') || words.includes('NOAC') || words.split(/[\s_]+/).includes('NAC'));
+}
+
 const RANK: Record<RoleRank, (item: Series, anchor: Series | null) => number> = {
   ungated: item => Number(!item.phase?.gate),
-  corrected: item => {
-    const words = item.description.toUpperCase();
-    return Number(!(words.includes('NO-AC') || words.includes('NOAC') || words.split(/[\s_]+/).includes('NAC')));
-  },
+  corrected: item => Number(attenuationCorrected(item)),
   sameGrid: (item, anchor) => Number(!!anchor && item.dimensions[2] === anchor.dimensions[2] && Math.abs(item.spacing[2] - anchor.spacing[2]) < 1e-3),
   overlap: (item, anchor) => {
     if (!anchor) return 0;

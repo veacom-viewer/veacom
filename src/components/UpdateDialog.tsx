@@ -72,7 +72,7 @@ export function UpdateDialog({ onClose }: UpdateDialogProps) {
       <dl className="update-versions"><div><dt>{t('update.installed')}</dt><dd>{status?.currentVersion || bridge?.getVersion() || t('update.unknownVersion')}</dd></div>
         {status?.version && <div><dt>{t('update.available')}</dt><dd>{status.version}</dd></div>}</dl>
       <div className={`update-status${status?.phase === 'error' ? ' has-error' : ''}`} role="status" aria-live="polite">
-        {working ? <LoaderCircle size={16} className="update-spinner" /> : status?.phase === 'up-to-date' ? <Check size={16} /> : <Download size={16} />}
+        {working ? <LoaderCircle size={16} /> : status?.phase === 'up-to-date' ? <Check size={16} /> : <Download size={16} />}
         <div><strong>{title}</strong><p id="update-dialog-message">{status?.message || (bridge ? t('update.serviceNote') : t('update.openDesktop'))}</p></div>
       </div>
       {status?.phase === 'downloading' && <div className="update-progress"><progress aria-label={t('update.progress')} max={100} value={percent} /><span>{percent === undefined ? t('update.downloading') : `${Math.round(percent)}%`}</span></div>}

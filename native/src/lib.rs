@@ -24,6 +24,8 @@ pub mod codec_guard;
 pub mod color;
 pub mod confidentiality;
 pub mod decode;
+#[cfg(windows)]
+mod disc;
 pub mod export;
 pub mod gamma_camera;
 pub mod geometry;

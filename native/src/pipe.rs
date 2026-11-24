@@ -47,6 +47,9 @@ pub const CHUNK: usize = 1 << 20;
 pub const INLINE: usize = 16 << 10;
 const MAX_QUEUED: usize = 32;
 const MAX_PENDING: usize = 64;
+/// The longest HEAD main reads (responseLimit in electron/engine-pipe.cjs). Main ends the connection at a longer one,
+/// and every study open in the engine goes with it.
+const MAX_HEAD: usize = 64 << 10;
 
 /// A response: an HTTP-like status, headers (lowercase names) and a body sent from the buffer it holds.
 pub struct Reply {
@@ -568,6 +571,23 @@ fn write_message(out: &mut impl Write, kind: u8, id: u32, payload: &[u8]) -> io:
     out.write_all(payload)
 }
 
+/// A reply's HEAD, and whether its body may go out with it.
+fn head_of(
+    status: u16,
+    headers: Vec<(&'static str, String)>,
+    length: usize,
+) -> serde_json::Result<(Vec<u8>, bool)> {
+    let headers: serde_json::Map<String, Value> = headers
+        .into_iter()
+        .map(|(name, value)| (name.to_string(), Value::String(value)))
+        .collect();
+    let inline = length <= INLINE
+        && headers.get("content-type").and_then(Value::as_str) == Some("application/json");
+    let head =
+        serde_json::to_vec(&json!({"status": status, "headers": headers, "length": length}))?;
+    Ok((head, inline))
+}
+
 fn write_loop(
     output: impl Write,
     hello: &[u8],
@@ -586,22 +606,25 @@ fn write_loop(
                     reply,
                     abandoned,
                 } => {
-                    let length = reply.body.as_ref().as_ref().len();
-                    let headers: serde_json::Map<String, Value> = reply
-                        .headers
-                        .into_iter()
-                        .map(|(name, value)| (name.to_string(), Value::String(value)))
-                        .collect();
-                    let inline = length <= INLINE
-                        && headers.get("content-type").and_then(Value::as_str)
-                            == Some("application/json");
-                    let head = serde_json::to_vec(
-                        &json!({"status": reply.status, "headers": headers, "length": length}),
-                    )?;
+                    let mut body = reply.body;
+                    let (mut head, mut inline) =
+                        head_of(reply.status, reply.headers, body.as_ref().as_ref().len())?;
+                    if head.len() > MAX_HEAD {
+                        // This request fails alone, and the connection stays.
+                        let refused =
+                            Reply::json(500, &json!({"error": "The reply's headers are too long"}));
+                        body = refused.body;
+                        (head, inline) = head_of(
+                            refused.status,
+                            refused.headers,
+                            body.as_ref().as_ref().len(),
+                        )?;
+                    }
+                    let length = body.as_ref().as_ref().len();
                     streams.push(Outgoing {
                         id,
                         head: Some(head),
-                        body: reply.body,
+                        body,
                         sent: 0,
                         allowed: if inline { length } else { 0 },
                         abandoned,
@@ -1124,5 +1147,35 @@ pub(crate) mod tests {
         engine.next();
         engine.request(10, "progress");
         assert_eq!(engine.head().0, 10);
+    }
+
+    #[test]
+    fn a_reply_whose_head_main_would_not_read_fails_alone() {
+        let mut engine = Engine::start(|request: &Request| {
+            let value: Value = serde_json::from_slice(request.call()).unwrap();
+            if value["op"] == "long" {
+                Reply {
+                    status: 200,
+                    headers: vec![("x-sop-instance-uid", "9".repeat(MAX_HEAD))],
+                    body: Box::new(vec![1u8, 2, 3]),
+                }
+            } else {
+                Reply::json(200, &json!({"op": value["op"]}))
+            }
+        });
+        engine.request(1, "long");
+        let (kind, id, head) = engine.next();
+        assert_eq!((kind, id), (HEAD, 1));
+        assert!(head.len() <= MAX_HEAD);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&head).unwrap()["status"],
+            json!(500)
+        );
+        let (kind, id, body) = engine.next();
+        assert_eq!((kind, id), (DATA, 1));
+        assert!(serde_json::from_slice::<Value>(&body).unwrap()["error"].is_string());
+        engine.request(2, "after");
+        let (id, head) = engine.head();
+        assert_eq!((id, head["status"].clone()), (2, json!(200)));
     }
 }

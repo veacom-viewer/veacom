@@ -68,7 +68,7 @@ export function FeedbackDialog({ onClose, onSent }: { onClose: () => void; onSen
       {error && <p className="feedback-error" role="alert">{error}</p>}
       <footer>
         <button type="button" className="secondary-button" data-action="feedback-cancel" disabled={sending} onClick={onClose}>{t('common.cancel')}</button>
-        <button type="submit" className="primary-button" data-testid="feedback-send" disabled={!ready}>{sending && <LoaderCircle size={14} className="spin" />}{sending ? t('feedback.sending') : t('feedback.send')}</button>
+        <button type="submit" className="primary-button" data-testid="feedback-send" disabled={!ready}>{sending && <LoaderCircle size={14} />}{sending ? t('feedback.sending') : t('feedback.send')}</button>
       </footer>
     </form>
   </dialog>;

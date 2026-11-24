@@ -5,13 +5,16 @@
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { execFile } = require('node:child_process');
 
 // ZIP and RAR archives. The engine reads a RAR through the system's own archive reader (native/src/system_archive.rs).
 const ARCHIVES = /\.(zip|rar)$/i;
 const MAX_ENTRIES = 5000;
 const collator = new Intl.Collator('tr', { numeric: true, sensitivity: 'base' });
-const withTimeout = (promise, ms, fallback) => Promise.race([promise, new Promise(resolve => setTimeout(() => resolve(fallback), ms))]);
+/** `promise`'s value, or `fallback` if it has not come within `ms`. The timer ends with the promise. */
+const withTimeout = (promise, ms, fallback) => new Promise((resolve, reject) => {
+  const timer = setTimeout(() => resolve(fallback), ms);
+  promise.then(resolve, reject).finally(() => clearTimeout(timer));
+});
 
 /** Home, Desktop, Downloads and Documents, which Windows can keep on a server (folder redirection). */
 function usualPlaces(app) {
@@ -67,45 +70,62 @@ async function browse(folder, places = []) {
   return { path: resolved, parent, items, files, dicomdir, truncated: items.length >= MAX_ENTRIES };
 }
 
-// Windows drive kinds and volume names (WMI), read in the background and kept for half a minute.
-const KINDS = { 2: 'removable', 3: 'fixed', 4: 'network', 5: 'disc' };
-let typesRead = null, typesAt = 0;
-function driveTypes() {
-  if (typesRead && Date.now() - typesAt < 30_000) return typesRead;
-  typesAt = Date.now();
-  typesRead = new Promise(resolve => {
-    const shell = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    execFile(shell, ['-NoProfile', '-NonInteractive', '-Command', 'Get-CimInstance Win32_LogicalDisk | Select-Object DeviceID,DriveType,VolumeName | ConvertTo-Json -Compress'],
-      { timeout: 8000, windowsHide: true }, (error, stdout) => {
-        if (error) { resolve({}); return; }
-        try {
-          const rows = [].concat(JSON.parse(stdout || '[]'));
-          resolve(Object.fromEntries(rows.map(row => [String(row.DeviceID).charAt(0).toUpperCase(), { kind: KINDS[row.DriveType] ?? 'fixed', label: row.VolumeName || '' }])));
-        } catch { resolve({}); }
-      });
+const KINDS = new Set(['removable', 'fixed', 'network', 'disc']);
+const LETTERS = 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+// The longest volume name Windows gives (MAX_PATH + 1).
+const MAX_LABEL = 261;
+
+/**
+ * Windows drive kinds and volume names by letter, from the engine (native/src/drives.rs), which reads a name only for
+ * the `answering` letters. An engine that is starting, restarting or busy gives none: the drives then keep their
+ * letters alone. What it answers is checked: a row that is no drive is left out, and a name is cut to MAX_LABEL.
+ */
+async function driveTypes(engine, answering) {
+  try {
+    const response = await engine.connection().request('drives', { answering }, { signal: AbortSignal.timeout(1500) });
+    if (!response.ok) return {};
+    const { drives } = await response.json();
+    if (!Array.isArray(drives)) return {};
+    return Object.fromEntries(drives.flatMap(drive => typeof drive?.letter === 'string' && /^[A-Z]$/.test(drive.letter) && KINDS.has(drive.kind)
+      ? [[drive.letter, { kind: drive.kind, label: typeof drive.label === 'string' ? drive.label.slice(0, MAX_LABEL) : '' }]] : []));
+  } catch { return {}; }
+}
+
+/** The drives to list: each that answers, and a disc drive even if it does not (it has no disc in it). */
+function listedDrives(answering, types) {
+  return LETTERS.flatMap(letter => {
+    const type = types[letter], ready = answering.includes(letter);
+    if (!ready && type?.kind !== 'disc') return [];
+    return [{ path: `${letter}:\\`, label: type?.label ? `${type.label} (${letter}:)` : `${letter}:`, kind: type?.kind ?? 'fixed', ready }];
   });
-  return typesRead;
+}
+
+/**
+ * The disc drives that hold a disc, as paths. Null where that is not known: macOS and Linux list a disc as one more
+ * volume, and an engine that does not answer names no drive's kind. A drive that was just given a disc answers only
+ * once the disc turns, so each is waited for up to `wait` ms; an empty drive says so at once. `platform` and `reach`
+ * are for tests.
+ */
+async function readyDiscs(engine, { wait = 15_000, platform = process.platform, reach = root => fs.access(root) } = {}) {
+  if (platform !== 'win32') return null;
+  const types = await driveTypes(engine, []);
+  if (!Object.keys(types).length) return null;
+  const roots = LETTERS.filter(letter => types[letter]?.kind === 'disc').map(letter => `${letter}:\\`);
+  const reached = await Promise.all(roots.map(root => withTimeout(reach(root).then(() => true, () => false), wait, false)));
+  return roots.filter((_, index) => reached[index]);
 }
 
 /** Drives and usual places. A drive that does not answer within a moment is left out, unless it is a disc drive. */
-async function places(app) {
+async function places(app, engine) {
   const home = usualPlaces(app).filter(place => place.key !== 'home');
   if (process.platform !== 'win32') {
     const roots = process.platform === 'darwin' ? ['/Volumes'] : ['/media', '/mnt'];
     const mounted = (await Promise.all(roots.map(root => fs.readdir(root).then(names => names.map(name => path.join(root, name)), () => [])))).flat();
     return { drives: [{ path: '/', label: '/', kind: 'fixed', ready: true }, ...mounted.map(item => ({ path: item, label: path.basename(item), kind: 'removable', ready: true }))], home: [{ key: 'home', path: os.homedir() }, ...home] };
   }
-  const letters = 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
-  const [answering, types] = await Promise.all([
-    Promise.all(letters.map(letter => withTimeout(fs.access(`${letter}:\\`).then(() => true, () => false), 800, false))),
-    withTimeout(driveTypes(), 2500, {}),
-  ]);
-  const drives = letters.flatMap((letter, index) => {
-    const type = types[letter];
-    if (!answering[index] && type?.kind !== 'disc') return [];
-    return [{ path: `${letter}:\\`, label: type?.label ? `${type.label} (${letter}:)` : `${letter}:`, kind: type?.kind ?? 'fixed', ready: answering[index] }];
-  });
-  return { drives, home };
+  const reached = await Promise.all(LETTERS.map(letter => withTimeout(fs.access(`${letter}:\\`).then(() => true, () => false), 800, false)));
+  const answering = LETTERS.filter((_, index) => reached[index]);
+  return { drives: listedDrives(answering, await driveTypes(engine, answering)), home };
 }
 
-module.exports = { browse, places, usualPlaces, localPath, chosenPaths };
+module.exports = { browse, places, usualPlaces, localPath, chosenPaths, driveTypes, listedDrives, readyDiscs };

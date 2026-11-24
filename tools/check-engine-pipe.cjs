@@ -9,10 +9,18 @@ const path = require('node:path');
 const { setTimeout: delay } = require('node:timers/promises');
 const { EngineProcess } = require('../electron/engine-process.cjs');
 const { EngineChannel } = require('../electron/engine-pipe.cjs');
+const { driveTypes } = require('../electron/file-browser.cjs');
 
 const binary = path.resolve(__dirname, '../native/target/release', process.platform === 'win32' ? 'veacom-core.exe' : 'veacom-core');
 const makeStudy = path.join(__dirname, 'fixtures/make-smoke-study.mjs');
 const makeRar = path.join(__dirname, 'fixtures/make-rar-archive.mjs');
+
+// Windows: the import window's drives come from the engine. The drive Windows runs from is a fixed drive, whatever
+// else this PC has; without the engine's answer it would have no kind here.
+async function checkDrives(manager) {
+  const system = process.env.SystemDrive.charAt(0).toUpperCase();
+  assert.equal((await driveTypes(manager, [system]))[system]?.kind, 'fixed');
+}
 
 async function checkArchiveCleanup(connection, directory) {
   const study = path.join(directory, 'archive-source'), output = path.join(directory, 'zip-output');
@@ -125,6 +133,8 @@ async function main() {
     const open = await Promise.all(unread.slice(0, 4));
     assert.ok(open.every(r => r.ok));
     assert.equal((await connection.request('progress')).status, 200);
+    // The drives are listed while four volumes wait to be read.
+    if (process.platform === 'win32') await checkDrives(manager);
     const frame = await connection.request('frame', { id, index: 0 });
     assert.equal((await frame.arrayBuffer()).byteLength, 512 * 512 * 2);
     for (const controller of controls) controller.abort();

@@ -3,8 +3,8 @@
 // saved only after whatever was kept for it has been put back, so the first render after an import cannot overwrite it.
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import type { Annotation, Series, Volume } from '../model';
-import { patientDigest, PET_STUDIES_STORAGE, priorRecord, readPetStudies, REFERENCE_ROLES, sameSeriesRecord, storedAcquisition, uidDigest, withPetSeries, withStudyGlucose,
-  type PetSeriesRecord, type PetStudyRecords, type StoredLesion } from '../domain/petStudies';
+import { patientDigest, PET_STUDIES_STORAGE, priorRecord, readPetStudies, REFERENCE_ROLES, sameSeriesRecord, storedAcquisition, uidDigest, withinStudyLimit, withPetSeries,
+  withSeriesMoved, withStudyGlucose, type PetSeriesRecord, type PetStudyRecords, type StoredLesion } from '../domain/petStudies';
 import { sliceAtWorld } from './geometry';
 import { isLesion, lesionValues, nameLesions, seriesRatios } from './lesions';
 import { comparisonTracer } from './petTracer';
@@ -16,6 +16,8 @@ type Annotations = Record<string, Annotation[]>;
 interface Keys {
   study: string; series: string; patient?: string; date: string;
   previousStudy: string; previousSeries: string; previousPatient?: string; uidOnly: string;
+  /** Where builds before IDs without an issuer were joined across studies kept the series: under its study's own key. */
+  scopedStudy?: string; scopedSeries?: string;
 }
 
 function readRecords(): PetStudyRecords | null {
@@ -31,18 +33,22 @@ const keptRecord = (records: PetStudyRecords, study: string, series: string): Pe
 export const reconstructedSeriesDigest = (series: Pick<Series, 'uid' | 'id'>) => uidDigest(JSON.stringify([series.uid, series.id]));
 
 export async function petStorageKeys(item: Series): Promise<Keys> {
-  const [study, series, previousStudy, previousSeries, uidOnly, previousPatient] = await Promise.all([
+  const scoped = item.studyScopedPatientKey && item.studyScopedPetId ? { key: item.studyScopedPatientKey, id: item.studyScopedPetId } : undefined;
+  const [study, series, previousStudy, previousSeries, uidOnly, previousPatient, scopedStudy, scopedSeries] = await Promise.all([
     uidDigest(JSON.stringify([item.patientKey, item.studyUid])), reconstructedSeriesDigest(item), uidDigest(item.studyUid),
     reconstructedSeriesDigest({ uid: item.uid, id: item.previousPetId ?? item.id }), uidDigest(item.uid),
     item.patientId.trim() ? uidDigest(`${item.patientId.trim()}\u0000${item.patientName.trim().toUpperCase()}`) : undefined,
+    scoped && uidDigest(JSON.stringify([scoped.key, item.studyUid])), scoped && reconstructedSeriesDigest({ uid: item.uid, id: scoped.id }),
   ]);
-  return { study, series, previousStudy, previousSeries, uidOnly, previousPatient, patient: patientDigest(item), date: item.studyDate };
+  return { study, series, previousStudy, previousSeries, uidOnly, previousPatient, patient: patientDigest(item), date: item.studyDate,
+    ...(scopedStudy && scopedSeries ? { scopedStudy, scopedSeries } : {}) };
 }
 
 /** Older builds used both reconstruction-specific and series-UID-only records. The reader confirms the destination. */
 export function previousMeasurements(records: PetStudyRecords, key: Keys) {
   const old = Object.hasOwn(records, key.previousStudy) ? records[key.previousStudy] : undefined;
   const locations = [{ study: key.study, series: key.uidOnly }];
+  if (key.scopedStudy) locations.push({ study: key.scopedStudy, series: key.uidOnly });
   if (old && (!old.patient || old.patient === key.previousPatient) && (!old.date || !key.date || old.date === key.date)) {
     locations.push({ study: key.previousStudy, series: key.previousSeries }, { study: key.previousStudy, series: key.uidOnly });
   }
@@ -50,6 +56,20 @@ export function previousMeasurements(records: PetStudyRecords, key: Keys) {
     const record = keptRecord(records, study, series);
     return record && (Object.keys(record.references).length || record.lesions?.length);
   });
+}
+
+/** The records the series of `found` are put back from: `stored`, with what builds before IDs without an issuer were
+ * joined across studies kept under a study's own key moved to the joined key, and written with `write`. The limit on
+ * kept studies is applied once, to what the moves leave, so that no study goes for a step between them. Null when the
+ * moves cannot be written: they are left to the next time, and nothing is put back from them meanwhile. */
+export function movedForRestoration(stored: PetStudyRecords, found: readonly Keys[], write: (records: PetStudyRecords) => boolean, now: number): PetStudyRecords | null {
+  let records = stored;
+  for (const own of found) {
+    if (own.scopedStudy && own.scopedSeries) records = withSeriesMoved(records, { study: own.scopedStudy, series: own.scopedSeries }, own, now, own, Infinity);
+  }
+  if (records === stored) return stored;
+  records = withinStudyLimit(records);
+  return write(records) ? records : null;
 }
 
 /** What a series' measurements keep: its reference spheres, and its lesions with their values (from `volume`, the
@@ -125,7 +145,11 @@ export function usePetRecords(series: readonly Series[], setAnnotations: Dispatc
     let cancelled = false;
     void Promise.all(pending.map(async item => ({ item, keys: await petStorageKeys(item) }))).then(found => {
       if (cancelled) return;
-      const records = readRecords(), back: Annotations = {};
+      const stored = readRecords(), back: Annotations = {};
+      if (!stored) { setSaveFailed(true); return; }
+      // Builds before IDs without an issuer were joined across studies kept a series under its study's own key: this
+      // very study, with the name, ID and birth date as written, so what they kept moves here unasked.
+      const records = movedForRestoration(stored, found.map(item => item.keys), writeRecords, Date.now());
       if (!records) { setSaveFailed(true); return; }
       const nextKeys = new Map(keys);
       for (const { item, keys: own } of found) {
