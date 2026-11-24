@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, us
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { Annotation, CaliperTag, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
-import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
+import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, parallelToAcquired, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
@@ -948,8 +948,7 @@ export function Viewport(props: ViewportProps) {
   const nm = source ? props.volume.series.frameMetadata?.[overlayView.slice]?.nm : undefined;
   const { fontFamily, topLeft, topRight, plainLeft, plainRight } = usePatientCorners(props.volume.series, props.showOverlay !== false, props.hidePatientData === true, metadataWidth, t, nm);
   // The thickness only where the acquired slices are shown: a reformatted plane is not that thick.
-  const direction = props.volume.series.direction;
-  const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
+  const acquiredPlane = source || parallelToAcquired(props.volume.series, frame.normal);
   const normalAxis = frame.normal.reduce((best, value, axis) => Math.abs(value) > Math.abs(frame.normal[best]) ? axis : best, 0);
   const location = displayedSeries.orientationKnown === true && displayedSeries.positionKnown !== false ? frame.center[normalAxis] : null;
   // A projection film names its side and what its millimetres stand for there instead (imaging/radiograph.ts).
@@ -1012,7 +1011,7 @@ export function Viewport(props: ViewportProps) {
   const sourcePlane = source && displayedSeries.orientationKnown === true ? seriesPlane(props.volume.series) : null;
   // Written as a name, capitalised ("Koronal"), as VEAcom 1.x wrote it.
   const planeName = source ? (sourcePlane ? t(`plane.${sourcePlane}` as const) : '') : tilt ? t('viewport.obliquePlane', { plane: t(`plane.${overlayView.plane}` as const), angle: tilt }) : t(`plane.${overlayView.plane}` as const);
-  // The slice's number in the sequence the pane pages: 1 at the top of an axial stack (imaging/paging.ts).
+  // The number the slice shows wherever it is numbered: the image's own, or its place in paging order (imaging/paging.ts).
   const numbered = shownSlice(props.volume.series, overlayView, Math.round(overlayView.slice), frame.slices, props.joined);
   const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${numbered.number} / ${numbered.total}`;
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);

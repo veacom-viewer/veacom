@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Series } from '../src/model';
-import { sliceCount } from '../src/imaging/geometry';
+import type { Plane, Series, ViewState } from '../src/model';
+import { getPlaneFrame, indexToWorld, sliceAtWorld, sliceCount } from '../src/imaging/geometry';
 import { assessmentRoiLocation } from '../src/ui/assessmentRoi';
 import { translate, type Translator } from '../src/i18n';
 import { measuredSlice, numbersBackwards, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../src/imaging/paging';
@@ -109,6 +109,8 @@ describe('the slice number shown', () => {
   const numbered = (numbers: number[]): Series => ({ ...feetUp,
     frameMetadata: numbers.map((instanceNumber, index) => ({ origin: [0, 0, index * 2], direction: feetUp.direction, spacing: feetUp.spacing, instanceNumber })) });
   const shown = (series: Series) => [4, 3, 2, 1, 0].map(slice => shownSlice(series, source, slice, 5).number);
+  const withNumbers = (series: Series, numbers?: number[]): Series => numbers ? { ...series, frameMetadata: numbers.map((instanceNumber, index) =>
+    ({ origin: indexToWorld(series, [0, 0, index]), direction: series.direction, spacing: series.spacing, instanceNumber })) } : series;
 
   it('counts in paging order where the images carry no numbers of their own', () => {
     assert.equal(numbersBackwards(feetUp, source), true);
@@ -138,10 +140,40 @@ describe('the slice number shown', () => {
     assert.equal(assessmentRoiLocation(feetUp, drawn, 0, t), 'Image 5');
     assert.equal(assessmentRoiLocation(feetUp, drawn, null, t), t('assessment.sourceUnavailable'));
   });
-  it('counts a reconstructed plane in paging order, whatever the acquired images are numbered', () => {
+  it('gives a reconstruction of the acquired slices the numbers of those images, so a position keeps its number', () => {
+    // A thick slab, or three-plane MPR, draws the acquired plane as a reconstruction of the same slices.
+    const keepsNumbers = (series: Series, plane: Plane) => {
+      const view = { plane, mode: 'mpr' as const }, count = sliceCount(series, view);
+      assert.equal(count, series.dimensions[2]);
+      for (let slice = 0; slice < count; slice++) {
+        const image = sliceAtWorld(series, source, getPlaneFrame(series, { ...view, slice }).center);
+        assert.deepEqual(shownSlice(series, view, slice, count), shownSlice(series, source, image, count), `${plane} slice ${slice} of ${series.direction}`);
+      }
+    };
+    const stacks: [number[], Plane][] = [
+      [[1, 0, 0, 0, 1, 0, 0, 0, 1], 'axial'], [[1, 0, 0, 0, 1, 0, 0, 0, -1], 'axial'], // stored from the feet up, from the head down
+      [[1, 0, 0, 0, 0, 1, 0, -1, 0], 'coronal'], [[0, 0, 1, 1, 0, 0, 0, -1, 0], 'sagittal'], // a sagittal plane is reconstructed towards the right
+    ];
+    for (const [direction, plane] of stacks) for (const numbers of [[1, 2, 3, 4, 5], [5, 4, 3, 2, 1], undefined]) keepsNumbers(withNumbers(stack(direction, 5), numbers), plane);
+    // The CT numbered from the feet: 5 at the top on its own images and in the reconstruction, and in the measurement list.
     const fromTheFeet = numbered([1, 2, 3, 4, 5]);
-    assert.equal(numbersBackwards(fromTheFeet, { plane: 'axial', mode: 'mpr' }), true);
-    assert.equal(shownSlice(fromTheFeet, { plane: 'axial', mode: 'mpr' }, 4, 5).number, 1);
-    assert.deepEqual([0, 4].map(slice => measuredSlice(fromTheFeet, { plane: 'axial', slice })), [5, 1]);
+    assert.deepEqual(shownSlice(fromTheFeet, { plane: 'axial', mode: 'mpr' }, 4, 5), { number: 5, total: 5 });
+    assert.deepEqual([0, 4].map(slice => measuredSlice(fromTheFeet, { plane: 'axial', slice })), [1, 5]);
+  });
+  it('counts every other plane in paging order, whatever the acquired images are numbered', () => {
+    const fromTheFeet = numbered([1, 2, 3, 4, 5]);
+    const views: Pick<ViewState, 'plane' | 'mode' | 'oblique'>[] = [{ plane: 'coronal', mode: 'mpr' }, { plane: 'sagittal', mode: 'mpr' }, { plane: 'axial', mode: 'mpr', oblique: [10, 0] }];
+    for (const view of views) assert.equal(numbersBackwards(fromTheFeet, view), pagesBackwards(fromTheFeet, view), JSON.stringify(view));
+    // Acquired 10° off axial: the axial plane holds none of the acquired images.
+    const turn = 10 * Math.PI / 180, c = Math.cos(turn), s = Math.sin(turn);
+    const tilted = withNumbers(stack([1, 0, 0, 0, c, -s, 0, s, c], 5), [1, 2, 3, 4, 5]);
+    assert.equal(numbersBackwards(tilted, { plane: 'axial', mode: 'mpr' }), pagesBackwards(tilted, { plane: 'axial', mode: 'mpr' }));
+    // A whole-volume projection counts its turns, even where it has as many as the stack has images, numbered either way.
+    const projection = { plane: 'axial' as const, mode: 'mpr' as const, projection: 'mip' as const };
+    const upwards = Array.from({ length: 36 }, (_, index) => index + 1);
+    for (const numbers of [upwards, [...upwards].reverse()]) {
+      const turns = withNumbers(stack([1, 0, 0, 0, 1, 0, 0, 0, 1], 36), numbers);
+      assert.equal(numbersBackwards(turns, projection), pagesBackwards(turns, projection), `numbered from ${numbers[0]}`);
+    }
   });
 });

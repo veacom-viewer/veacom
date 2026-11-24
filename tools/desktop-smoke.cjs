@@ -51,6 +51,24 @@ async function main() {
       check('Hardware GPU rendering', renderer);
     }
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 800));
+
+    // A thick slab draws the plane the CT was acquired in as a reconstruction of the same slices. The slice it opens at
+    // keeps its image's number, which on the smoke CT (numbered from the feet) is 100 / 100 at the top.
+    const sliceLine = async slab => {
+      await page.waitForFunction(slab => /MIP \d+ mm/.test(document.querySelector('[data-testid="image-overlay"]')?.textContent ?? '') === slab, slab);
+      const text = await page.locator('[data-testid="image-overlay"]').first().textContent();
+      return { number: text.match(/\d+ \/ \d+/)?.[0], location: text.match(/Loc: (-?[\d.]+)/)?.[1] };
+    };
+    // The slab menu's first choices: 0 off, 1 MIP.
+    const chooseSlab = async item => { await page.getByTestId('tool-slab').click(); await page.locator('[role="menu"] [role="menuitemradio"]').nth(item).click(); };
+    const opened = await sliceLine(false);
+    assert.match(opened.number ?? '', /^\d+ \/ \d+$/);
+    await chooseSlab(1);
+    assert.deepEqual(await sliceLine(true), opened, 'The slab shows the slice under another number.');
+    await chooseSlab(0);
+    assert.deepEqual(await sliceLine(false), opened);
+    check('A slice keeps its number when a thick slab draws it', opened);
+
     await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: Math.floor(window.__VEACOM_TEST__.state().dimensions[2] / 2) }));
     await page.waitForFunction(() => +document.querySelector('canvas[data-slice]').dataset.slice === window.__VEACOM_TEST__.state().view.slice);
     await screenshot('after-window.png');
