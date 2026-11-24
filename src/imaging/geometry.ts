@@ -250,9 +250,16 @@ export function sameFacing(first: Vec3, second: Vec3): boolean {
   return first.every(Number.isFinite) && second.every(Number.isFinite) && axis(first) === axis(second);
 }
 
+/** The way the acquired slices follow one another: the volume's third axis, from each image towards the next. */
+export const sliceDirection = (series: Series): Vec3 => [series.direction[2], series.direction[5], series.direction[8]];
+/** Whether a plane with this unit normal lies parallel to the acquired slices, within about 2.6°. */
+export function parallelToAcquired(series: Series, normal: Vec3): boolean {
+  return Math.abs(dot(normal, sliceDirection(series))) > 0.999 * length(sliceDirection(series));
+}
+
 /** The plane a series was acquired in, from its slice normal: the patient axis it lies closest to. */
 export function acquiredPlane(series: Series): Plane | null {
-  const normal = [series.direction[2], series.direction[5], series.direction[8]].map(Math.abs);
+  const normal = sliceDirection(series).map(Math.abs);
   if (!normal.every(Number.isFinite) || Math.max(...normal) === 0) return null;
   return (['sagittal', 'coronal', 'axial'] as const)[normal.indexOf(Math.max(...normal))];
 }

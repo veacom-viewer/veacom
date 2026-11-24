@@ -216,8 +216,10 @@ jobs:
           node tools/fixtures/make-petct-study.mjs "$env:RUNNER_TEMP\open-with-first"
           node tools/fixtures/make-nm-study.mjs "$env:RUNNER_TEMP\open-with-second"
           node tools/check-open-with.cjs --study "$env:RUNNER_TEMP\open-with-first" --second "$env:RUNNER_TEMP\open-with-second" --output "$env:EVIDENCE\open-with"
-      - name: GPU startup on WARP
-        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+      - name: Packaged GPU startup on WARP
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
         run: node tools/check-gpu-startup.cjs "$env:STUDY\S01" "$env:EVIDENCE\gpu-startup.json"
       # Window chrome with real mouse input (tools/windows-vm/ui-windows-checks.cjs) runs on the VM only: it places
       # the window at up to 1200 x 720 at 150 % zoom, and this runner's 1024 x 768 screen leaves Help's close button

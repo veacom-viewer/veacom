@@ -132,6 +132,9 @@ npm @electron/notarize
 npm @electron/osx-sign
 npm @electron/rebuild
 npm @electron/universal
+npm @emnapi/core
+npm @emnapi/runtime
+npm @emnapi/wasi-threads
 npm @esbuild/aix-ppc64
 npm @esbuild/android-arm
 npm @esbuild/android-arm64
@@ -165,6 +168,7 @@ npm @jridgewell/sourcemap-codec
 npm @jridgewell/trace-mapping
 npm @malept/cross-spawn-promise
 npm @malept/flatpak-bundler
+npm @napi-rs/wasm-runtime
 npm @noble/hashes
 npm @oxc-project/types
 npm @oxc-transform-react/binding-android-arm-eabi
@@ -220,12 +224,14 @@ npm @rolldown/binding-linux-s390x-gnu
 npm @rolldown/binding-linux-x64-gnu
 npm @rolldown/binding-linux-x64-musl
 npm @rolldown/binding-openharmony-arm64
+npm @rolldown/binding-wasm32-wasi
 npm @rolldown/binding-win32-arm64-msvc
 npm @rolldown/binding-win32-x64-msvc
 npm @rolldown/pluginutils
 npm @sindresorhus/is
 npm @speed-highlight/core
 npm @szmarczak/http-timer
+npm @tybys/wasm-util
 npm @types/cacheable-request
 npm @types/debug
 npm @types/fs-extra
