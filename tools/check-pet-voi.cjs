@@ -577,6 +577,9 @@ async function main() {
     assert.deepEqual([s.alignments[0].fixedSeriesId, s.alignments[0].movingSeriesId], [nowCt.id, priorCt.id], 'Aligned by the prior PET\'s own CT.');
     assert.equal(await page.locator('.pane-toast').textContent(), 'PET aligned to this CT by CT: moved 24.0 mm, turned 0.0°.Undo');
     assert.match(await cells().nth(0).locator('[data-testid="image-overlay"]').textContent(), /Aligned automatically/);
+    await page.getByTestId('tool-overlay-menu').click();
+    await page.locator('[role="menu"] [data-action="display-choice"]', { hasText: 'Pointer value' }).click();
+    await page.keyboard.press('Escape');
     const at = await screenPoint(0, lesion.center);
     await page.mouse.move(at.x, at.y, { steps: 2 });
     await page.waitForFunction(() => /PET 10\.00 SUVbw/.test([...document.querySelectorAll('[data-testid="viewport-cell"]')[0]?.querySelectorAll('[data-testid="pointer-readout"] text') ?? []].map(node => node.textContent).join('\n')));
