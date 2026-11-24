@@ -2991,7 +2991,7 @@ pub fn import_session_from(
                         // A copy that took the disc's turn to be looked for is taken only once the disc is found
                         // still in the drive: one put in its place while the copy was made could have given it.
                         if looked.elapsed() >= DISC_LOOK_EVERY {
-                            if !keep_copy(file, || spool.same_disc()) {
+                            if !keep_copy(file, || spool.same_disc())? {
                                 gone()?;
                                 break;
                             }
@@ -4640,15 +4640,21 @@ fn copy_from_disc(
 
 /// Whether a disc's file, copied while another disc may have been put in the drive, is taken: when `same` finds the
 /// disc still there. Otherwise the copy made now is removed, so that no later import of the disc reads it as the
-/// disc's (see `DiscCopy`); an earlier import's copy, which was read from this disc, stays.
-fn keep_copy(file: &SpoolFile, same: impl FnOnce() -> bool) -> bool {
+/// disc's (see `DiscCopy`); an earlier import's copy, which was read from this disc, stays. A copy that cannot be
+/// removed ends the import, whose folder then goes whole.
+fn keep_copy(file: &SpoolFile, same: impl FnOnce() -> bool) -> Result<bool> {
     if same() {
-        return true;
+        return Ok(true);
     }
     if !matches!(file.take, Take::Kept { .. }) {
-        let _ = fs::remove_file(&file.to);
+        match fs::remove_file(&file.to) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                return Err(error).context("A copy of a disc's file could not be removed");
+            }
+            _ => {}
+        }
     }
-    false
+    Ok(false)
 }
 
 /// An archive's extraction folder, made, and the files that will be read from it once extracted. Planned from the
@@ -7544,11 +7550,24 @@ mod tests {
             first: false,
         };
         let made = spooled(changed, Take::Whole);
-        assert!(keep_copy(&made, || true) && made.to.exists());
-        assert!(!keep_copy(&made, || false) && !made.to.exists());
+        // Held open by another program meanwhile, it cannot be removed: that ends the import (Windows only lets a
+        // file held so be kept from removal).
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let held = fs::OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&made.to)
+                .unwrap();
+            assert!(keep_copy(&made, || false).is_err());
+            drop(held);
+        }
+        assert!(keep_copy(&made, || true).unwrap() && made.to.exists());
+        assert!(!keep_copy(&made, || false).unwrap() && !made.to.exists());
         let other = listed.iter().find(|file| *file != changed).unwrap();
         let kept = spooled(other, Take::Kept { unlisted: false });
-        assert!(!keep_copy(&kept, || false) && kept.to.exists());
+        assert!(!keep_copy(&kept, || false).unwrap() && kept.to.exists());
         // Opened again, the disc gives that file anew; the others come from their copies.
         let again =
             import_session_from(&paths, None, 0, &|_| Some(ANY_DISC), &first.discs).unwrap();
