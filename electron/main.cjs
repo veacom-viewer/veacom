@@ -220,7 +220,8 @@ app.whenReady().then(async () => {
   handle('imaging:series', () => imaging.listSeries());
   handle('imaging:import', capabilities => imaging.importSelected(capabilities));
   handle('imaging:progress', () => imaging.getProgress());
-  handle('imaging:early', (capabilities, after) => imaging.importEarly(capabilities, after));
+  handle('imaging:early', (capabilities, after, options) => imaging.importEarly(capabilities, after, options));
+  handle('imaging:prioritise', (capabilities, planned) => imaging.prioritiseImport(capabilities, planned));
   handle('imaging:cancel', id => imaging.cancelOperation(id));
   handle('imaging:measure', (...args) => imaging.measure(...args));
   handle('imaging:tags', (id, generation, frame, revision) => imaging.getTags(id, generation, frame, revision));
@@ -275,7 +276,7 @@ app.whenReady().then(async () => {
   });
   // The import window, in a view of its own (import-view.cjs): this page only opens it, right after the user's own
   // click or key press, and receives import capabilities for what the user opened there.
-  const importView = createImportView({ app, window: () => window, devUrl, locale: () => i18n.getLocale(), authorize: paths => imaging.authorizeImportPaths(paths), serve: serveFile });
+  const importView = createImportView({ app, engine, window: () => window, devUrl, locale: () => i18n.getLocale(), authorize: paths => imaging.authorizeImportPaths(paths), serve: serveFile });
   window.webContents.on('did-start-loading', () => importView.close());
   window.on('closed', () => importView.close());
   handle('files:import-window', start => importView.open(start === 'disc' ? 'disc' : undefined));

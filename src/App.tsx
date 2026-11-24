@@ -8,15 +8,17 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, removeSeries } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, prioritiseImport, removeSeries, type CoreProgress, type EarlyImport } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame } from './components/SeriesBrowser';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, type WaitingSeries } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
+import { holdsFrame } from './ui/discPictures';
+import { carryAnnotations, holdingIn } from './ui/earlySeries';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine } from './imaging/cine';
@@ -61,7 +63,7 @@ import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
 import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
-import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, SPECT_LOOK } from './imaging/fusion';
+import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, overlayFor, SPECT_LOOK, studyOverlay } from './imaging/fusion';
 import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
 import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
 import { bestCounterpart } from './arrangements/counterpart';
@@ -143,6 +145,12 @@ const measureIcon = (tool: Tool, size = 18, tagged = false) => { const Icon = ME
 const kebab = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
 // The engine reports progress by stage name; unknown stages are shown as reported.
 const STAGES: Partial<Record<string, MessageKey>> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
+/** A duration as m:ss, or h:mm:ss from an hour on. */
+function clockText(ms: number) {
+  const seconds = Math.max(0, Math.round(ms / 1000)), hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return hours ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
+}
 const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
 const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
 /** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
@@ -386,7 +394,6 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} joined={joined} onCross={cross} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
-      {volume?.sourceFrameIndex !== undefined && <span className="volume-progress" data-export-exclude>{volume.sourceFrameIndex !== requestedView.slice ? t('viewport.loadingFrame', { number: requestedView.slice + 1 }) : loading ? t('viewport.loadingVolume') : t('viewport.sourcePreview')}</span>}
       {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
@@ -515,7 +522,9 @@ export default function App() {
   const [importing, setImporting] = useState(0);
   const importCount = useRef(0);
   const [connectionError, setConnectionError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number } | null>(null);
+  // `elapsed`: how long the operation has run; `remaining`: an estimate of what is left of its stage (both in ms).
+  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number; elapsed?: number; remaining?: number } | null>(null);
+  const progressClock = useRef<{ id?: number; stage: string; began: number; stageBegan: number; stageDone: number } | null>(null);
   // The engine job Cancel was pressed for: "Cancelling…" shows while that job is the one in progress, not for the next.
   const [cancelledId, setCancelledId] = useState<number | null>(null);
   const cancelling = progress !== null && cancelledId !== null && progress.id === cancelledId;
@@ -628,6 +637,10 @@ export default function App() {
   const fusionRequest = useRef(0);
   // Series whose preview could not be made: the series list shows a dash for them.
   const [failedPreviews, setFailedPreviews] = useState<ReadonlySet<string>>(() => new Set());
+  // The series of a disc being read, as its DICOMDIR lists them, with their pictures (importStudies).
+  const [waiting, setWaiting] = useState<WaitingSeries[]>([]);
+  // The disc being read (importStudies): what to name it by, its cards, and the series the reader opened from one.
+  const discImport = useRef<{ paths: string[]; cards: WaitingSeries[]; wanted: string | null } | null>(null);
   // The thick slab's thickness, kept while no slab is shown (as in VEAcom Next, 10 mm to begin with).
   const [slabThickness, setSlabThickness] = useState<number>(DEFAULT_SLAB_THICKNESS);
   const [fusionOpacity, setFusionOpacity] = useState(0.45);
@@ -694,6 +707,9 @@ export default function App() {
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
   const activeVolume = volumeForSlot(activeSlot);
+  // A series still being read from a disc says how far it is read, in the status bar: nothing else shows that it is not
+  // whole. A series loading needs no words.
+  const paneState = activeSeries?.reading ? t('viewport.reading', { read: activeSeries.reading.read, count: activeSeries.reading.files }) : '';
   if (activeVolume?.series.sourceFramesOnly) {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
@@ -815,13 +831,36 @@ export default function App() {
     for (const request of frameRequests.current.values()) request.controller.abort();
     frameRequests.current.clear();
   } });
+  // In the status bar, where it does not push the image down: what is being done, how far, how long it has taken and
+  // about how long is left. A series loading shows its bar alone, as it comes and goes with every series opened.
+  const progressTimes = progress?.elapsed === undefined ? ''
+    : progress.remaining === undefined ? clockText(progress.elapsed)
+    : t('status.progressTimes', { elapsed: clockText(progress.elapsed), remaining: clockText(progress.remaining) });
+  // The stage is the status text then (Taranıyor), and its bar says how far it is: the times beside it are enough.
+  const progressStage = progress && progress.stage !== 'decode' ? stageLabel(progress.stage) : '';
+  const progressText = progressStage ? progressTimes : '';
   const hasWork = Boolean(busy || loadingIds.size || importing);
   useEffect(() => {
-    if (!hasWork) { setProgress(null); setCancelledId(null); return; }
+    if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
     const pollState = { disposed: false, polling: false };
+    // How long the operation shown has run and, once its stage has run a few seconds, what is left of that stage at
+    // the pace it has kept so far. A new operation, or a new stage of it, starts its own count.
+    const timed = (value: CoreProgress) => {
+      const now = performance.now(), clock = progressClock.current;
+      const same = clock !== null && clock.id === value.id, sameStage = same && clock.stage === value.stage;
+      const next = { id: value.id, stage: value.stage, began: same ? clock.began : now, stageBegan: sameStage ? clock.stageBegan : now, stageDone: sameStage ? clock.stageDone : value.completed };
+      progressClock.current = next;
+      const done = value.completed - next.stageDone, spent = now - next.stageBegan;
+      const remaining = value.total > 0 && done > 0 && spent >= 3000 ? spent / done * Math.max(0, value.total - value.completed) : undefined;
+      return { ...value, elapsed: now - next.began, remaining };
+    };
     const poll = async () => {
       if (pollState.polling) return; pollState.polling = true;
-      await getProgress().then(value => { if (!pollState.disposed) setProgress(value.running ? value : null); })
+      await getProgress().then(value => {
+        if (pollState.disposed) return;
+        if (!value.running) progressClock.current = null;
+        setProgress(value.running ? timed(value) : null);
+      })
         .catch(() => { /* The initiating operation reports connection errors. */ })
         .finally(() => { pollState.polling = false; });
     };
@@ -915,6 +954,74 @@ export default function App() {
     setLoadErrors(current => { const updated = { ...current }; for (const id of ids) delete updated[id]; return updated; });
   };
 
+  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
+   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
+   * gone. */
+  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
+    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
+  };
+  /** Measurements drawn on source images keep their image when a series' images move: an import that read it again, or
+   * a series being read that grew. So do those Undo and Redo bring back. */
+  const followAnnotations = (moved: readonly Series[]) => {
+    const place = (annotations: Record<string, Annotation[]>) => {
+      const next = { ...annotations }; let changed = false;
+      for (const item of moved) {
+        if (!Object.hasOwn(annotations, item.id)) continue;
+        const kept = annotations[item.id];
+        const placed = kept.map(annotation => {
+          if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
+          const index = annotationSourceIndex(annotation, item);
+          if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
+          return { ...annotation, sourceFrame: index, slice: index };
+        });
+        if (placed.some((annotation, i) => annotation !== kept[i])) { next[item.id] = placed; changed = true; }
+      }
+      return changed ? next : annotations;
+    };
+    setAnnotations(place);
+    followHistory(snapshot => {
+      const annotations = place(snapshot.annotations);
+      return annotations === snapshot.annotations ? snapshot : { ...snapshot, annotations };
+    });
+  };
+  /** A series still being read from a disc grew (importStudies): it takes its earlier self's place without being loaded
+   * again. Each pane on it keeps the image it shows, now at that image's place in the grown series, and so does each
+   * measurement. Read whole, a series shown in a pane is loaded as any series is. */
+  const followGrowth = (grown: readonly Series[]) => {
+    const before = new Map(seriesRef.current.map(item => [item.id, item]));
+    // The same frame of the same file: a file of many frames holds several of a series' images.
+    const placeIn = (item: Series, index: number) => {
+      const shown = before.get(item.id)?.frameMetadata?.[index];
+      const at = shown?.sopInstanceUid === undefined ? -1 : (item.frameMetadata ?? [])
+        .findIndex(frame => frame.sopInstanceUid === shown.sopInstanceUid && frame.sourceFrameNumber === shown.sourceFrameNumber);
+      return at >= 0 ? at : Math.max(0, Math.min(index, item.dimensions[2] - 1));
+    };
+    const byId = new Map(grown.map(item => [item.id, item]));
+    frameCache.invalidate([...byId.keys()]);
+    // What was asked of its earlier self is not kept when it comes (acquireVolume): its images are in another order.
+    for (const id of byId.keys()) volumeGenerations.current.set(id, (volumeGenerations.current.get(id) ?? 0) + 1);
+    for (const [slotId, request] of frameRequests.current) if (byId.has(request.seriesId)) { request.controller.abort(); frameRequests.current.delete(slotId); }
+    const moved = (volume: Volume) => {
+      const item = byId.get(volume.series.id);
+      return item && volume.sourceFrameIndex !== undefined ? { ...volume, series: item, sourceFrameIndex: placeIn(item, volume.sourceFrameIndex) } : volume;
+    };
+    publishVolumes(new Map([...volumesRef.current].map(([id, volume]) => [id, moved(volume)])));
+    setSlotFrames(current => Object.fromEntries(Object.entries(current).map(([id, volume]) => [id, moved(volume)])));
+    const follow = (slot: Slot) => {
+      const item = slot.seriesId ? byId.get(slot.seriesId) : undefined;
+      return item ? { ...slot, view: { ...slot.view, slice: placeIn(item, slot.view.slice) } } : slot;
+    };
+    setSlots(current => current.map(follow));
+    // And the panes kept aside to come back: those a maximized pane hides, those the three-plane MPR took the place of,
+    // and those Undo and Redo bring back.
+    hiddenSlots.current = hiddenSlots.current.map(follow);
+    if (beforeMpr.current) beforeMpr.current = { ...beforeMpr.current, slots: beforeMpr.current.slots.map(follow) };
+    followHistory(snapshot => ({ ...snapshot, slots: snapshot.slots.map(follow) }));
+    followAnnotations(grown);
+    // A pane on it asks again once it is read whole, or now if it has no image yet (its request went to an earlier self).
+    for (const item of grown) if (slotsRef.current.some(slot => slot.seriesId === item.id) && (!item.reading || !volumesRef.current.has(item.id))) loadPaneImage(item);
+  };
+
   const acquireVolume = (item: Series): Promise<Volume> => {
     requestedPins.current.add(item.id);
     volumeAccess.current.set(item.id, ++accessClock.current);
@@ -928,6 +1035,13 @@ export default function App() {
       publishVolumes(next);
       keepThumbnail(volume);
     };
+    // A series still being read from a disc is shown a source frame at a time: its volume would have to be loaded again
+    // each time it grows (followGrowth). Read whole, it is loaded as any series is.
+    if (item.reading) return cached ? Promise.resolve(cached) : frameCache.get(item, openingSlice(item)).then(async volume => {
+      await prepareSourceProgram(volume);
+      if (mounted.current && isCurrent()) storeVolume(volume);
+      return volume;
+    });
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     const load = { complete: false };
@@ -1031,7 +1145,8 @@ export default function App() {
           || current?.seriesId !== base.series.id || current.view.slice !== index || generation !== (volumeGenerations.current.get(base.series.id) ?? 0)) return;
         setSlotFrames(values => ({ ...values, [slot.id]: frame }));
       }).catch(error => {
-        if (!request.controller.signal.aborted && frameRequests.current.get(slot.id) === request) setNotice({ message: errorText(error), kind: 'error' });
+        // As in loadPaneImage: a frame of a series' earlier self, while the series is read from a disc, is refused.
+        if (!request.controller.signal.aborted && frameRequests.current.get(slot.id) === request && !base.series.reading) setNotice({ message: errorText(error), kind: 'error' });
       }).finally(() => { if (frameRequests.current.get(slot.id) === request) frameRequests.current.delete(slot.id); });
     }
     const stale = Object.entries(slotFrames).filter(([id, volume]) => fullyLoaded.current.has(volume.series.id) || !slots.some(slot => slot.id === id && slot.seriesId === volume.series.id));
@@ -1043,7 +1158,9 @@ export default function App() {
   }, [slots, volumes, slotFrames, frameCache, importing]);
 
   const loadPaneImage = (item?: Series) => {
-    if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
+    // A series still being read from a disc grows meanwhile, and a request for its earlier self is refused: its grown
+    // self is asked for in turn (followGrowth), so that is not shown as an error.
+    if (item && item.dimensions[2] > 0) void acquireVolume(item).catch(error => { if (!item.reading) setNotice({ message: errorText(error), kind: 'error' }); });
   };
   /** Puts a series in a pane, which becomes the active one unless `activate` is false. */
   const assignSeries = (slotId: string, item: Series, activate = true) => {
@@ -1109,61 +1226,118 @@ export default function App() {
     // Asked after each wait: the import's own result ends the watch, and so does the app unmounting.
     const stillWatching = () => !earlyWatch.signal.aborted && mounted.current;
     const listedBefore = new Set(seriesRef.current.map(item => item.id));
+    // A disc read once: the series its DICOMDIR lists, each with its picture once its middle image is read (the engine's
+    // importEarly). They are asked for until they come, then about every half second, for how far each one is read.
+    const disc: { paths: string[]; cards: WaitingSeries[]; wanted: string | null } = { paths, cards: [], wanted: null };
+    discImport.current = disc;
+    // A series read takes its card's picture only if the picture is one of its own images (see holdsFrame).
+    const pictureFor = (item: Series) => {
+      const picture = disc.cards.find(card => card.info.uid === item.uid)?.preview;
+      return picture?.uid === item.uid && holdsFrame(item, picture, thumbnailFrame(picture)) ? picture : undefined;
+    };
     void (async () => {
-      let after = 0;
+      let after = 0, previewsAfter = 0, polls = 0;
       while (stillWatching()) {
         await new Promise(resolve => setTimeout(resolve, 40));
         if (!stillWatching()) return;
-        let found: Series[];
-        try { found = await importEarly(paths, after); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        let reply: EarlyImport;
+        // The series come once; after that, about every half second, how far each of them is read.
+        const planned = !disc.cards.length, finished = !planned && polls % 12 === 0;
+        try { reply = await importEarly(paths, after, { planned, finished, previewsAfter }); } catch { return; /* An engine restart: the import's own result reports it. */ }
+        polls += 1;
         if (!stillWatching()) return;
-        after += found.length;
+        const found = reply.series;
+        after += found.length; previewsAfter += reply.previews.length;
+        const listed = reply.planned ?? disc.cards.map((card, index) => {
+          const read = reply.finished?.[index];
+          return read === undefined || read === card.info.finished ? card.info : { ...card.info, finished: read };
+        });
+        const recounted = !reply.planned && listed.some((info, index) => info !== disc.cards[index]?.info);
+        if (reply.planned || reply.previews.length || recounted) {
+          const pictures = new Map(reply.previews.map(preview => [preview.planned, preview.series]));
+          disc.cards = listed.map((info, index) => ({ index, info, preview: pictures.get(index) ?? disc.cards[index]?.preview }));
+          setWaiting(disc.cards);
+          // Drawn as any card's picture is, from its middle frame (a file of many frames has it there). One that fails
+          // leaves its card's placeholder until its series is read.
+          for (const picture of pictures.values()) frameCache.get(picture, thumbnailFrame(picture)).then(keepThumbnail, () => {});
+        }
+        // A series handed over before comes again as it grows: one the reader opened from a disc still being read.
+        const grown = found.filter(item => early.has(item.id) && early.get(item.id)?.catalogRevision !== item.catalogRevision);
+        if (grown.length) {
+          followGrowth(grown);
+          for (const item of grown) early.set(item.id, item);
+          setSeries(current => withFound(current, grown, listedBefore));
+        }
         const images = found.filter(item => !item.segmentation && !early.has(item.id));
         if (!images.length) continue;
+        for (const item of images) { const picture = pictureFor(item); if (picture) adoptThumbnail(picture.id, item.id); }
+        // The series the reader opened from its waiting card opens as soon as part of it is read.
+        const opened = images.find(item => item.uid === disc.wanted);
+        if (opened) disc.wanted = null;
         const replaced = images.filter(item => seriesRef.current.some(old => old.id === item.id && old.catalogRevision !== item.catalogRevision));
         if (replaced.length) invalidateVolumes(replaced.map(item => item.id));
         const first = early.size === 0;
         for (const item of images) { early.set(item.id, item); earlySeries.current.add(item.id); }
         setSeries(current => withFound(current, images, listedBefore));
-        if (first) assignSeries(activeIdRef.current, images[0]);
+        if (opened) assignSeries(activeIdRef.current, opened);
+        else if (first) assignSeries(activeIdRef.current, images[0]);
       }
     })();
     return importPaths(paths).then(result => {
       earlyWatch.abort();
+      for (const item of result.series) { const picture = pictureFor(item); if (picture) adoptThumbnail(picture.id, item.id); }
       // A series published early that came out the same keeps its pane, its view and the volume already loading.
       const same = (item: Series) => early.has(item.id) && JSON.stringify(early.get(item.id)) === JSON.stringify(item);
       const settled = new Set(result.series.filter(same).map(item => item.id));
       const dropped = new Set([...early.keys()].filter(id => !result.series.some(item => item.id === id)));
+      // A series opened while it was read can come out of the import as more than one (the phases of one Series Instance
+      // UID). A pane on it goes to the series that holds the image it showed, at that image, and so does each measurement
+      // (src/ui/earlySeries.ts).
+      const holding = holdingIn(result.series);
+      const shownIn = (slot: Slot) => {
+        const shown = slot.seriesId ? early.get(slot.seriesId)?.frameMetadata?.[slot.view.slice] : undefined;
+        return holding(shown?.sopInstanceUid, shown?.sourceFrameNumber);
+      };
+      const carried = new Map<string, { item: Series; at: number } | undefined>();
+      for (const slot of [...slotsRef.current, ...hiddenSlots.current]) {
+        if (slot.seriesId && dropped.has(slot.seriesId)) carried.set(slot.id, shownIn(slot));
+      }
+      const carry = (slot: Slot): Slot => {
+        if (!carried.has(slot.id) || !slot.seriesId || !dropped.has(slot.seriesId)) return slot;
+        const to = carried.get(slot.id);
+        return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : { ...slot, seriesId: null };
+      };
+      hiddenSlots.current = hiddenSlots.current.map(carry).filter(slot => slot.seriesId);
+      // A measurement whose image no series holds is gone with its series, and said below.
+      const lostMeasurements = carryAnnotations(annotationRef.current, dropped, holding).lost;
+      if (dropped.size) {
+        setAnnotations(current => carryAnnotations(current, dropped, holding).annotations);
+        // Undo's and Redo's steps go along: their measurements, and their panes on a dropped series whose image is held.
+        const carrySaved = (slot: Slot): Slot => {
+          const to = slot.seriesId && dropped.has(slot.seriesId) ? shownIn(slot) : undefined;
+          return to ? { ...slot, seriesId: to.item.id, view: { ...slot.view, slice: to.at } } : slot;
+        };
+        followHistory(snapshot => ({ ...snapshot, annotations: carryAnnotations(snapshot.annotations, dropped, holding).annotations, slots: snapshot.slots.map(carrySaved) }));
+      }
       const images = result.series.filter(item => !item.segmentation);
       usage.studyOpened({ modalities: result.series.map(item => item.modality), series: images.length, slices: images.reduce((sum, item) => sum + item.dimensions[2], 0),
         source: result.source, result: images.length ? 'ok' : 'empty' }, result.series.map(item => item.id));
       invalidateVolumes([...result.series.map(item => item.id).filter(id => !settled.has(id)), ...dropped]);
-      if (dropped.size) setSlots(current => current.map(slot => slot.seriesId && dropped.has(slot.seriesId) ? { ...slot, seriesId: null } : slot));
+      if (dropped.size) setSlots(current => current.map(slot => slot.seriesId && dropped.has(slot.seriesId) ? (carried.has(slot.id) ? carry(slot) : { ...slot, seriesId: null }) : slot));
       const reimported = new Set(result.series.map(item => item.id));
       for (const id of reimported) maskRequests.current.delete(id);
       setSegmentationMasks(current => [...current.keys()].some(id => reimported.has(id)) ? new Map([...current].filter(([id]) => !reimported.has(id))) : current);
-      setAnnotations(current => {
-        const next = { ...current }; let changed = false;
-        for (const item of result.series) {
-          if (!Object.hasOwn(current, item.id)) continue;
-          const kept = current[item.id];
-          const moved = kept.map(annotation => {
-            if (annotation.mode !== 'source' || !annotation.sourceSopInstanceUid) return annotation;
-            const index = annotationSourceIndex(annotation, item);
-            if (index === null || (index === annotation.sourceFrame && index === annotation.slice)) return annotation;
-            return { ...annotation, sourceFrame: index, slice: index };
-          });
-          if (moved.some((annotation, i) => annotation !== kept[i])) { next[item.id] = moved; changed = true; }
-        }
-        return changed ? next : current;
-      });
+      followAnnotations(result.series);
       const visibleIds = new Set([...slotsRef.current.map(slot => slot.seriesId), fusionIdRef.current, ...assessmentPinnedIds.current]);
+      for (const to of carried.values()) if (to) visibleIds.add(to.item.id);
       for (const item of result.series) if (visibleIds.has(item.id) && !settled.has(item.id)) loadPaneImage(item);
       // The study just opened leads the list (src/ui/seriesOrder.ts): its new series, those opened early among them,
       // in the import's catalogue order rather than the order they were found in. Series listed before it follow
       // where they were.
       setSeries(current => withImported(current, result.series, listedBefore, early.keys()));
-      if (result.warnings.length) setNotice({ message: warningTexts(result).join(' · '), kind: 'info', code: 'import-warnings', warnings: result });
+      // The measurements that could not be kept are said after the import's own warnings.
+      const told = lostMeasurements ? { ...result, warnings: [...result.warnings, t('notice.measurementsNotKept')] } : result;
+      if (told.warnings.length) setNotice({ message: warningTexts(told).join(' · '), kind: 'info', code: 'import-warnings', warnings: told });
       const known = new Map(seriesRef.current.map(item => [item.id, item]));
       for (const item of result.series) known.set(item.id, item);
       const session = [...known.values()];
@@ -1176,7 +1350,9 @@ export default function App() {
       // The series opened early stays, unless the import read it differently; a study with an arrangement of its own (the
       // PET/CT screen) is laid out now that every series is known.
       const shownEarly = slotsRef.current.flatMap(slot => slot.seriesId && early.has(slot.seriesId) ? [slot.seriesId] : []);
-      const keep = shownEarly.length > 0 && shownEarly.every(id => settled.has(id)) && !shownEarly.some(id => stackOf.has(id));
+      // A pane carried to the series that holds its image counts as kept.
+      const keptPane = (id: string) => settled.has(id) || slotsRef.current.every(slot => slot.seriesId !== id || carried.get(slot.id) !== undefined);
+      const keep = shownEarly.length > 0 && shownEarly.every(keptPane) && !shownEarly.some(id => stackOf.has(id));
       // A reference image shown since the study began to open gives way in its own pane, whichever pane the reader is
       // in by now.
       const referencePane = slotsRef.current.find(slot => slot.seriesId && early.has(slot.seriesId) && stackOf.has(slot.seriesId))?.id;
@@ -1197,6 +1373,12 @@ export default function App() {
     }).finally(() => {
       earlyWatch.abort();
       for (const id of early.keys()) earlySeries.current.delete(id);
+      // The disc's cards go with its import: its series are the list's own now, with the pictures they took.
+      if (discImport.current === disc) discImport.current = null;
+      const pictures = disc.cards.flatMap(card => card.preview ? [card.preview.id] : []);
+      for (const id of pictures) forgetThumbnail(id);
+      frameCache.invalidate(pictures);
+      setWaiting([]);
       importCount.current = Math.max(0, importCount.current - 1); setImporting(importCount.current); setBusy(null);
     });
   };
@@ -1209,8 +1391,12 @@ export default function App() {
     // Like the native dialogs, the window is what this action does, and nothing in the app's state shows it.
     usage.touch('dialog');
     const trigger = start === 'disc' ? 'disc' : 'folder';
+    // The disc button opens the disc itself where the system knows which drive holds one (electron/import-view.cjs),
+    // and a drive can take a while to answer for a disc it was just given.
+    if (start === 'disc') setBusy('status.disc');
     try { await importStudies(await window.veacom.openImportWindow(start), trigger); }
     catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+    if (start === 'disc') setBusy(importCount.current ? 'status.reading' : null);
   };
   useEffect(() => window.veacom?.onImportAction?.((id, input) => usage.action(id, input)), []);
   const open = async (kind: 'files' | 'folder' | 'archive', trigger: string = kind) => {
@@ -1645,10 +1831,20 @@ export default function App() {
   };
   const selectSeries = (item: Series) => {
     if (item.segmentation) { toggleSegmentation(item, activeIdRef.current); return; }
+    // A series still being read from a disc is read next, as it opens.
+    const disc = discImport.current, card = item.reading ? disc?.cards.find(value => value.info.uid === item.uid) : undefined;
+    if (disc && card) void prioritiseImport(disc.paths, card.index).catch(() => { /* The import's own result reports a stopped engine. */ });
     if (beforeMpr.current) endMpr.current();
     putSeries(activeIdRef.current, item);
   };
   const selectFromMenu = (item: Series) => { selectSeries(item); setMenu(null); };
+  /** A waiting card is pressed: the disc being read reads its series next, and the series opens in the active pane as
+   * soon as part of it is read (importStudies). */
+  const openWaiting = (card: WaitingSeries) => {
+    const disc = discImport.current; if (!disc) return;
+    disc.wanted = card.info.uid;
+    void prioritiseImport(disc.paths, card.index).catch(() => { /* The import's own result reports a stopped engine. */ });
+  };
   /** Several series picked together: a layout with a pane for each, the first picked first (VEAcom 1.x). */
   const openSideBySide = (ids: string[]) => {
     const picked = ids.map(id => seriesRef.current.find(value => value.id === id)).filter((item): item is Series => Boolean(item));
@@ -1755,13 +1951,14 @@ export default function App() {
       if (!quiet || !own) say(own ? 'notice.fusionStarted' : 'notice.fusionNoSuv', 'info', { pet: seriesName(pet), ct: seriesName(ct) }, true);
     }).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
   };
-  /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET, over the CT acquired with it. */
-  const fuseInActive = (pet: Series) => {
+  /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET (or `onItsCt`), over the CT
+   * acquired with it. */
+  const fuseInActive = (pet: Series, onItsCt = false) => {
     const slotId = activeIdRef.current, slot = slotsRef.current.find(item => item.id === slotId);
     const shown = slot?.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
     if (!shown) return;
     // The fusion arrangement's roles (src/arrangements/builtin.ts): the CT acquired with the PET.
-    const base = fusesAsOverlay(shown) ? findRole(FUSION.roles.ct, seriesRef.current, pet) : shown;
+    const base = onItsCt || fusesAsOverlay(shown) ? findRole(FUSION.roles.ct, seriesRef.current, pet) : shown;
     if (!base) { say('notice.fusionNoCt', 'info', undefined, true); return; }
     if (base.id !== shown.id) assignSeries(slotId, base);
     // Asked for in this pane: it shows the fusion even where an arrangement kept it plain.
@@ -1789,9 +1986,12 @@ export default function App() {
       fusePet(before, after, target.id);
       return;
     }
-    const pet = fusesAsOverlay(shown) ? shown : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    // A PET shown is fused itself, or the corrected one of its frame for a NAC one; a series shown with none drawn over it
+    // (a CT scout, which is no volume) gives way to the study's own PET, over the CT acquired with it.
+    const own = fusesAsOverlay(shown) ? overlayFor(shown, seriesRef.current) : findRole(FUSION.roles.overlay, seriesRef.current, shown);
+    const pet = own ?? studyOverlay(shown, seriesRef.current);
     if (!pet) { say('notice.fusionNoPet', 'info', undefined, true); return; }
-    fuseInActive(pet);
+    fuseInActive(pet, !own);
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
@@ -2379,10 +2579,10 @@ export default function App() {
     } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
   };
 
-  const seriesActions = useRef({ select: selectSeries, remove: removeFromList });
+  const seriesActions = useRef({ select: selectSeries, remove: removeFromList, open: openWaiting });
   // Pending engine work and input handlers read the last committed workspace.
   useLayoutEffect(() => {
-    seriesActions.current = { select: selectSeries, remove: removeFromList };
+    seriesActions.current = { select: selectSeries, remove: removeFromList, open: openWaiting };
     seriesRef.current = series;
     slotsRef.current = slots;
     activeIdRef.current = activeId;
@@ -2689,14 +2889,11 @@ export default function App() {
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews}
+      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
         {usageConsent === null && <div className="notice usage-consent" role="region" aria-label={t('usage.title')} data-testid="usage-consent"><span>{t('usage.question')}</span><span className="usage-consent-actions"><button type="button" className="secondary-button compact" data-testid="usage-consent-share" onClick={() => void chooseUsage('granted')}>{t('usage.share')}</button><button type="button" className="secondary-button compact" data-testid="usage-consent-decline" onClick={() => void chooseUsage('denied')}>{t('usage.decline')}</button></span></div>}
-        {/* Not while a series loads: a strip above the image would push the image down and back up for every series
-            opened. That progress, and its Cancel, are in the status bar instead. */}
-        {progress && progress.stage !== 'decode' && <div className="operation-progress"><LoaderCircle size={12} /><span>{stageLabel(progress.stage)}{progress.total > 0 ? ` · ${progress.completed} / ${progress.total}` : ''}</span><progress aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button disabled={cancelling} data-testid="operation-cancel" onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></div>}
         {/* From main (#7): no usable graphics driver, or WebGL drawn in software. */}
         {graphicsNoticeOpen && graphicsError != null && <div className="notice error" role="alert" data-testid="graphics-unavailable-notice"><span>{errorText(graphicsError)}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
         {graphicsNoticeOpen && graphics?.software && <div className="notice warning" role="status" data-testid="software-rendering-notice"><span>{t('gpu.softwareNotice')} <span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="graphics-notice-dismiss" onClick={() => { setGraphicsNoticeOpen(false); focusImage(); }}><X size={14} /></button></div>}
@@ -2894,7 +3091,7 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready')}</span>{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress?.stage === 'decode' && <span className="status-export"><progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
@@ -2910,7 +3107,7 @@ export default function App() {
       <span className="app-version">{t('status.version', { version: window.veacom?.getVersion() || '2' })}</span>
     </footer>
 
-    {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
+    {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} patientShown={settings.showOverlay && !settings.hidePatientData} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
       unavailable={Boolean(loadingIds.size) || activeVolume?.sourceFrameIndex !== undefined || !activeVolume ? { images: t('export.waitLoading'), video: t('export.waitLoading') } : undefined} background={exportBackground} busy={exportBusy} onBusyChange={changeExportBusy} onBackground={() => { setExportBackground(true); focusImage(); }} video={exportVideoTarget}
       currentFrame={activeSeries?.id === exportFor ? displayedDicomFrame : undefined} onProgress={(done, total) => setExportProgress([done, total])} cancelRef={exportCancel}
       onClose={() => { setExportMode(null); setExportBackground(false); }}
