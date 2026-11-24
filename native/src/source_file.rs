@@ -13,6 +13,8 @@ use std::{
 };
 
 const BLOCK: usize = 256 * 1024;
+// What a reader that goes through a whole file asks the file for at a time (see ReadAhead).
+const READ_AHEAD: usize = 256 * 1024;
 // What import may keep of a file while indexing it.
 const IMPORT_PREFIX: usize = 2 * 1024 * 1024;
 // Both DICOM header passes repeatedly seek inside their initial 8 KiB buffer: import reads no more than that.
@@ -230,9 +232,9 @@ impl SourceFile {
         mut file: File,
     ) -> Result<(Arc<Self>, crate::input_guard::InputInfo, SourceReader)> {
         let (source, prefix) = Self::index_prefix(path, &mut file, IMPORT_PREFIX)?;
-        let guard = source.reader(file.try_clone()?, prefix.clone());
+        let guard = source.reader(file.try_clone()?, prefix.clone(), false);
         let info = crate::input_guard::inspect_reader(guard, source.len)?;
-        let header = source.reader(file, prefix);
+        let header = source.reader(file, prefix, false);
         Ok((source, info, header))
     }
 
@@ -286,29 +288,67 @@ impl SourceFile {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         if let Some(stamp) = &self.stamp {
             stamp.verify(&file)?;
-            return Ok(self.reader(file, Arc::default()));
+            return Ok(self.reader(file, Arc::default(), true));
         }
         self.fingerprint.verify(&file)?;
         let Some(expected) = &self.head else {
-            return Ok(self.reader(file, Arc::default()));
+            return Ok(self.reader(file, Arc::default(), true));
         };
         // The headers are read again and served from this check, so what follows reads past them.
         let mut head = vec![0; HEADER_PREFIX.min(self.len as usize)];
         let mut file = file;
         ensure!(file.read_exact(&mut head).is_ok(), changed());
         ensure!(Sha256::digest(&head)[..] == expected[..], changed());
-        Ok(self.reader(file, Arc::new(head)))
+        Ok(self.reader(file, Arc::new(head), true))
     }
 
-    fn reader(self: &Arc<Self>, file: File, prefix: Arc<Vec<u8>>) -> SourceReader {
+    /// A reader of the file. `whole` is for one that reads the file from end to end: it asks the file for blocks.
+    fn reader(self: &Arc<Self>, file: File, prefix: Arc<Vec<u8>>, whole: bool) -> SourceReader {
         SourceReader {
             file,
             prefix,
             source: self.clone(),
             pos: 0,
+            ahead: whole.then(ReadAhead::default),
             #[cfg(target_os = "macos")]
             snapshot: None,
         }
+    }
+}
+
+/// The block of a file that its reader fetched last. A reader that goes through a file in small reads is served from
+/// it, and goes to the file only for a place outside it: on a disc or a network drive every read of the file, and
+/// each check around it that the file has not changed, is a trip to the device, whatever the read's size.
+#[derive(Default)]
+struct ReadAhead {
+    start: u64,
+    bytes: Vec<u8>,
+}
+
+impl ReadAhead {
+    /// Up to `dst.len()` bytes from `pos`, of a file `len` long with `pos` inside it. `fetch(from, into)` reads the
+    /// file at `from` and says how many bytes it gave.
+    fn read(
+        &mut self,
+        pos: u64,
+        len: u64,
+        dst: &mut [u8],
+        fetch: impl FnOnce(u64, &mut [u8]) -> io::Result<usize>,
+    ) -> io::Result<usize> {
+        if !(self.start..self.start + self.bytes.len() as u64).contains(&pos) {
+            let want = READ_AHEAD.min(usize::try_from(len - pos).unwrap_or(usize::MAX));
+            self.bytes.clear();
+            self.bytes.resize(want, 0);
+            let fetched = fetch(pos, &mut self.bytes);
+            // A failed fetch leaves no block behind: the next read asks the file again.
+            self.bytes.truncate(*fetched.as_ref().unwrap_or(&0));
+            self.start = pos;
+            fetched?;
+        }
+        let held = &self.bytes[(pos - self.start) as usize..];
+        let count = dst.len().min(held.len());
+        dst[..count].copy_from_slice(&held[..count]);
+        Ok(count)
     }
 }
 
@@ -319,6 +359,8 @@ pub struct SourceReader {
     prefix: Arc<Vec<u8>>,
     source: Arc<SourceFile>,
     pos: u64,
+    /// For a reader that reads the file whole; import reads the headers alone and has none.
+    ahead: Option<ReadAhead>,
 }
 
 impl Read for SourceReader {
@@ -355,14 +397,32 @@ impl Read for SourceReader {
             return Ok(read);
         }
         let length = dst.len().min((self.source.len - self.pos) as usize);
-        self.source.fingerprint.verify(&self.file)?;
-        self.file.seek(SeekFrom::Start(self.pos))?;
-        let read = self.file.read(&mut dst[..length])?;
-        self.source.fingerprint.verify(&self.file)?;
-        if read == 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, changed()));
-        }
-        self.pos += read as u64;
+        let Self {
+            file,
+            source,
+            ahead,
+            pos,
+            ..
+        } = self;
+        // One read of the file, between two checks that it is still the file that was imported.
+        let mut fetch = |from: u64, into: &mut [u8]| {
+            source.fingerprint.verify(file)?;
+            file.seek(SeekFrom::Start(from))?;
+            let read = file.read(into)?;
+            source.fingerprint.verify(file)?;
+            if read == 0 {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, changed()));
+            }
+            Ok(read)
+        };
+        let read = match ahead {
+            // A read as large as a block gains nothing from one.
+            Some(ahead) if length < READ_AHEAD => {
+                ahead.read(*pos, source.len, &mut dst[..length], fetch)?
+            }
+            _ => fetch(*pos, &mut dst[..length])?,
+        };
+        *pos += read as u64;
         Ok(read)
     }
 }
@@ -473,7 +533,7 @@ mod tests {
         let mut file = open_file(&path).unwrap();
         let (source, prefix) = SourceFile::index_prefix(&path, &mut file, IMPORT_PREFIX).unwrap();
         assert_eq!(prefix.len(), HEADER_PREFIX);
-        let mut reader = source.reader(file, prefix);
+        let mut reader = source.reader(file, prefix, false);
         std::thread::sleep(std::time::Duration::from_millis(50));
         let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
         writer.write_all(&[99]).unwrap();
@@ -486,5 +546,90 @@ mod tests {
         assert!(reader.read_exact(&mut byte).is_err());
         // Opening it again is refused outright.
         assert!(source.open().is_err());
+    }
+
+    #[test]
+    fn small_reads_through_a_file_fetch_it_in_blocks() {
+        let file: Vec<u8> = (0..600 * 1024).map(|index| (index % 251) as u8).collect();
+        let fetches = std::cell::Cell::new(0);
+        let fetch = |from: u64, into: &mut [u8]| {
+            fetches.set(fetches.get() + 1);
+            let from = from as usize;
+            let count = into.len().min(file.len() - from);
+            into[..count].copy_from_slice(&file[from..from + count]);
+            Ok(count)
+        };
+        let (mut ahead, mut read, mut piece) = (ReadAhead::default(), Vec::new(), [0; 1000]);
+        while read.len() < file.len() {
+            let count = ahead
+                .read(read.len() as u64, file.len() as u64, &mut piece, fetch)
+                .unwrap();
+            read.extend_from_slice(&piece[..count]);
+        }
+        assert_eq!(read, file);
+        // 600 KiB in blocks of 256 KiB, where a fetch for each read would be 615.
+        assert_eq!(fetches.get(), 3);
+        // A place outside the block is fetched; a place inside it is not.
+        assert_eq!(
+            ahead
+                .read(10, file.len() as u64, &mut piece, fetch)
+                .unwrap(),
+            1000
+        );
+        assert_eq!(piece[..], file[10..1010]);
+        assert_eq!(
+            ahead
+                .read(5000, file.len() as u64, &mut piece, fetch)
+                .unwrap(),
+            1000
+        );
+        assert_eq!(piece[..], file[5000..6000]);
+        assert_eq!(fetches.get(), 4);
+        // A fetch that fails leaves no block behind: the next read goes to the file again.
+        let failing = |_: u64, _: &mut [u8]| Err(io::Error::other("the drive did not answer"));
+        assert!(
+            ahead
+                .read(400_000, file.len() as u64, &mut piece, failing)
+                .is_err()
+        );
+        assert_eq!(
+            ahead
+                .read(400_000, file.len() as u64, &mut piece, fetch)
+                .unwrap(),
+            1000
+        );
+        assert_eq!(piece[..], file[400_000..401_000]);
+        assert_eq!(fetches.get(), 5);
+    }
+
+    #[test]
+    fn a_file_opened_to_be_read_whole_gives_its_bytes_and_notices_a_change_at_the_next_block() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = temp.path().join("whole.bin");
+        let bytes: Vec<u8> = (0..HEADER_PREFIX + 3 * READ_AHEAD)
+            .map(|index| (index % 249) as u8)
+            .collect();
+        std::fs::write(&path, &bytes).unwrap();
+        let source = SourceFile::index(&path).unwrap();
+        let mut read = Vec::new();
+        source.open().unwrap().read_to_end(&mut read).unwrap();
+        assert_eq!(read, bytes);
+        // Read into the first block past the headers; then the file changes past it.
+        let mut reader = source.open().unwrap();
+        let mut piece = vec![0; HEADER_PREFIX + 1000];
+        reader.read_exact(&mut piece).unwrap();
+        assert_eq!(piece[..], bytes[..HEADER_PREFIX + 1000]);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let mut writer = OpenOptions::new().write(true).open(&path).unwrap();
+        writer
+            .seek(SeekFrom::Start((HEADER_PREFIX + 2 * READ_AHEAD) as u64))
+            .unwrap();
+        writer.write_all(&[250]).unwrap();
+        drop(writer);
+        // What was read before the change is still given; the changed file is never read as if it were the old one.
+        let mut rest = Vec::new();
+        assert!(reader.read_to_end(&mut rest).is_err());
+        assert!(rest.len() < 2 * READ_AHEAD);
+        assert_eq!(rest[..], bytes[HEADER_PREFIX + 1000..][..rest.len()]);
     }
 }

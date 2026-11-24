@@ -175,7 +175,8 @@ impl Session {
         self.imports += 1;
         let mut imported = {
             let _finish = FinishProgress;
-            ingest::import_session(paths, None, self.imports)?
+            // A browser reads no disc once, so it keeps no disc's copy for a later import (ingest::DiscCopy).
+            ingest::import_session(paths, None, self.imports, &[])?
         };
         for incoming in &mut imported.sources {
             self.revisions += 1;
