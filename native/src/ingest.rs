@@ -2123,9 +2123,10 @@ fn read_frames_budget(
         let (slope_read, intercept_read) =
             (rescale(Tag(0x0028, 0x1053)), rescale(Tag(0x0028, 0x1052)));
         // A rescale the file holds that gives no number is not taken for 1 and 0, DICOM's values where there is none:
-        // the values would look right and be wrong. Such an image keeps no unit (below), and the series says so.
+        // the values would look right and be wrong. Such an image keeps no unit (below), and the series says so. An
+        // empty value is no rescale, as before.
         let held = |tag: Tag| {
-            frame_value(&obj, index, Tag(0x0028, 0x9145), |v| v.get(tag).map(|_| ())).is_some()
+            frame_value(&obj, index, Tag(0x0028, 0x9145), |v| nonempty_text(v, tag)).is_some()
         };
         let rescale_unread = (slope_read.is_none() && held(Tag(0x0028, 0x1053)))
             || (intercept_read.is_none() && held(Tag(0x0028, 0x1052)));
@@ -2148,13 +2149,18 @@ fn read_frames_budget(
         if activity.is_none() && lut.is_none() && slope == 0. {
             bail!("RescaleSlope is zero");
         }
+        // A Modality LUT or a gamma camera's activity, not the rescale, gives these values.
+        let rescale_unread = rescale_unread && activity.is_none() && lut.is_none();
+        // A stored window is in the rescaled values: not for values whose rescale could not be read, which take a
+        // window measured from their pixels (see `needs_pixel_window`).
         let window_center = frame_value(&obj, index, Tag(0x0028, 0x9132), |v| {
             first_number(v, Tag(0x0028, 0x1050))
-        });
+        })
+        .filter(|_| !rescale_unread);
         let window_width = frame_value(&obj, index, Tag(0x0028, 0x9132), |v| {
             first_number(v, Tag(0x0028, 0x1051))
         })
-        .filter(|n| *n >= 1.);
+        .filter(|n| *n >= 1. && !rescale_unread);
         // A stored window's own curve; LINEAR, absent or unknown values keep the linear window.
         let voi_function = window_width
             .and_then(|_| {
@@ -2200,8 +2206,8 @@ fn read_frames_budget(
                 }
             })
             .unwrap_or_else(|| value_unit.clone());
-        // Neither HU nor SUV for values whose rescale could not be read; their images make a series of their own.
-        let rescale_unread = rescale_unread && activity.is_none() && lut.is_none();
+        // Neither HU nor SUV for values whose rescale could not be read; their images make a series of their own (the
+        // series key says so, whatever the unit was).
         let value_unit = if rescale_unread {
             "a.u.".into()
         } else {
@@ -2276,6 +2282,13 @@ fn read_frames_budget(
             }
         };
         let image_type = &acquisition.image_type;
+        // Images whose rescale could not be read are never in a series with those whose rescale could, whatever their
+        // unit: their series alone says so.
+        let unread = if rescale_unread {
+            "|rescale=unread"
+        } else {
+            ""
+        };
         // The gates of a gated SPECT are phases of the one acquisition its file holds: another file's gates, in the
         // same series or gated otherwise, are another family, never part of these volumes.
         let gated_file = gate
@@ -2307,7 +2320,7 @@ fn read_frames_budget(
             ),
             temporal: temporal.to_string(),
             tail: format!(
-                "|{echo}|{echo_time:?}|{image_type}|{reference}|{samples}|{photometric}|{diffusion_key:?}|{repetition_time:?}|{inversion_time:?}|{}|{}|{}|{}|{:?}|unit={value_unit}{gated_file}",
+                "|{echo}|{echo_time:?}|{image_type}|{reference}|{samples}|{photometric}|{diffusion_key:?}|{repetition_time:?}|{inversion_time:?}|{}|{}|{}|{}|{:?}|unit={value_unit}{unread}{gated_file}",
                 acquisition.acquisition_contrast,
                 acquisition.contrast_bolus_phase,
                 acquisition.contrast_bolus_administered,
@@ -2512,16 +2525,18 @@ fn read_frames_budget(
 
 /// A series gets a window measured from its pixels only when none of its frames
 /// stores one, no VOI LUT applies, and its modality has no calibrated default
-/// (CT in Hounsfield units, PET with an SUV factor).
+/// (CT in Hounsfield units, PET with an SUV factor). A CT whose rescale could not be
+/// read has no Hounsfield units, so it is measured too.
 fn needs_pixel_window(source: &SourceSeries) -> bool {
     let info = &source.info;
+    let unread = (info.warnings.iter()).any(|note| note.code == "series.rescaleUnread");
     info.segmentation.is_none()
         && info.components == 1
         && matches!(
             info.photometric_interpretation.as_str(),
             "MONOCHROME1" | "MONOCHROME2"
         )
-        && info.modality != "CT"
+        && (info.modality != "CT" || unread)
         && !(info.modality == "PT" && info.suv_factor.is_some_and(|v| v > 0.))
         && !source.frames.is_empty()
         && source.frames.iter().all(|f| !f.ordinary_image)
@@ -7624,38 +7639,75 @@ mod tests {
 
     #[test]
     fn an_image_whose_rescale_cannot_be_read_keeps_no_unit_and_its_series_says_so() {
-        // Three synthetic CT slices of one series; the third holds a Rescale Slope that is no number.
-        let out = crate::test_dir::tempdir().unwrap();
-        for index in 0..3 {
-            let mut obj = classic_slice(index + 1, index as f64 * 2.);
-            obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.2");
-            obj.put_str(Tag(0x0008, 0x0060), VR::CS, "CT");
-            obj.put(ds(
-                Tag(0x0028, 0x1053),
-                if index == 2 { "one" } else { "1" },
-            ));
-            obj.put(ds(Tag(0x0028, 0x1052), "-1024"));
-            write_metadata(obj, &out.path().join(format!("IM{index}")));
-        }
-        let paths = [out.path().to_string_lossy().into_owned()];
-        let read = import_session_from(&paths, None, 0, &|_| None, &[]).unwrap();
-        let said = |source: &SourceSeries| {
-            (source.info.warnings.iter()).any(|note| note.code == "series.rescaleUnread")
+        // Synthetic slices of one series, one rescale value each (None: the element is not there), read as a folder:
+        // each series as (unit, slices, said), and whether its window is measured from its pixels.
+        let read = |modality: &str, class: &str, slopes: [Option<&str>; 3], intercept: &str| {
+            let out = crate::test_dir::tempdir().unwrap();
+            for (index, slope) in slopes.into_iter().enumerate() {
+                let mut obj = classic_slice(index + 1, index as f64 * 2.);
+                obj.put_str(Tag(0x0008, 0x0016), VR::UI, class);
+                obj.put_str(Tag(0x0008, 0x0060), VR::CS, modality);
+                if let Some(slope) = slope {
+                    obj.put(ds(Tag(0x0028, 0x1053), slope));
+                }
+                obj.put(ds(Tag(0x0028, 0x1052), intercept));
+                // A stored window, in the rescaled values.
+                obj.put(ds(Tag(0x0028, 0x1050), "40"));
+                obj.put(ds(Tag(0x0028, 0x1051), "400"));
+                write_metadata(obj, &out.path().join(format!("IM{index}")));
+            }
+            let paths = [out.path().to_string_lossy().into_owned()];
+            let imported = import_session_from(&paths, None, 0, &|_| None, &[]).unwrap();
+            let mut found: Vec<_> = (imported.sources.iter())
+                .map(|source| {
+                    let said = (source.info.warnings.iter())
+                        .any(|note| note.code == "series.rescaleUnread");
+                    let info = &source.info;
+                    (
+                        info.value_unit.clone(),
+                        source.frames.len(),
+                        said,
+                        needs_pixel_window(source),
+                    )
+                })
+                .collect();
+            found.sort();
+            found
         };
-        let mut found: Vec<_> = (read.sources.iter())
-            .map(|source| {
-                (
-                    source.info.value_unit.clone(),
-                    source.frames.len(),
-                    said(source),
-                )
-            })
-            .collect();
-        found.sort();
-        // The readable slices in HU, as before; the other in a series of its own, with no unit, and said.
+        const CT: &str = "1.2.840.10008.5.1.4.1.1.2";
+        const MR: &str = "1.2.840.10008.5.1.4.1.1.4";
+        // A CT: the readable slices in HU, as before; the other in a series of its own, in a.u., said, and with a window
+        // of its pixels rather than its stored one.
         assert_eq!(
-            found,
-            [("HU".to_owned(), 2, false), ("a.u.".to_owned(), 1, true)]
+            read("CT", CT, [Some("1"), Some("1"), Some("one")], "-1024"),
+            [
+                ("HU".to_owned(), 2, false, false),
+                ("a.u.".to_owned(), 1, true, true)
+            ]
+        );
+        // An MR, whose unit is a.u. either way: the slice is in a series of its own all the same, and said.
+        let mr = read("MR", MR, [Some("2"), Some("2"), Some("x")], "0");
+        assert_eq!(
+            mr.iter()
+                .map(|(_, slices, said, _)| (*slices, *said))
+                .collect::<Vec<_>>(),
+            [(1, true), (2, false)]
+        );
+        // An empty value is no rescale, as before: one series, nothing said.
+        let empty = read("CT", CT, [Some("1"), Some("1"), Some("")], "-1024");
+        assert_eq!(
+            empty
+                .iter()
+                .map(|(_, slices, said, _)| (*slices, *said))
+                .collect::<Vec<_>>(),
+            [(3, false)]
+        );
+        let none = read("CT", CT, [None, None, None], "-1024");
+        assert_eq!(
+            none.iter()
+                .map(|(_, slices, said, _)| (*slices, *said))
+                .collect::<Vec<_>>(),
+            [(3, false)]
         );
     }
 
