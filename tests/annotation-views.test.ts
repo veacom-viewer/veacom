@@ -58,9 +58,9 @@ describe('measurements on tilted planes', () => {
   it('name the tilt in the pre-operative summary', () => {
     const note = { seriesId: 's', slice: 200, shown: '201/596', plane: 'coronal', mode: 'mpr', oblique: [35, 0] as [number, number], tilt: 35 };
     const answers = { sscd: { right: 'present', left: 'absent' } };
-    const english = checklistSummary('temporal', answers, { sscd: note }, 'en');
-    assert.ok(english.includes('(slice 201/596, coronal oblique 35°)'));
-    assert.ok(checklistSummary('temporal', answers, { sscd: note }, 'tr').includes('(kesit 201/596, koronal oblik 35°)'));
-    assert.ok(checklistSummary('temporal', answers, { sscd: { ...note, oblique: undefined, tilt: undefined } }, 'en').includes('(slice 201/596)'));
+    const english = checklistSummary('temporal', answers, { sscd: { right: note } }, 'en');
+    assert.ok(english.includes('(slice 201/596, coronal oblique 35°), Left'), english);
+    assert.ok(checklistSummary('temporal', answers, { sscd: { right: note } }, 'tr').includes('(kesit 201/596, koronal oblik 35°)'));
+    assert.ok(checklistSummary('temporal', answers, { sscd: { left: { ...note, oblique: undefined, tilt: undefined } } }, 'en').endsWith('Left – (slice 201/596)'));
   });
 });

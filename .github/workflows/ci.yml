@@ -331,6 +331,11 @@ jobs:
         run: |
           node tools/fixtures/make-nm-study.mjs "$RUNNER_TEMP/nm-study"
           node tools/check-gamma-camera.cjs "$RUNNER_TEMP/nm-study" "$EVIDENCE/gamma-camera"
+      - name: CLOSE calipers on a synthetic sinus CT
+        if: ${{ !cancelled() && matrix.shard == 'screens' && steps.build.outcome == 'success' }}
+        run: |
+          node tools/fixtures/make-sinus-study.mjs "$RUNNER_TEMP/sinus-study"
+          node tools/check-close-calipers.cjs "$RUNNER_TEMP/sinus-study" "$EVIDENCE/close-calipers"
       # The landmark model's real films (docs/landmark-model.md): two of Mendeley Data's long-leg films, fetched from its
       # public download path with their SHA-256 pinned. This cache keeps them between runs; the repository, the
       # evidence and the releases never hold them. The fetch is its own step so a fetched film is kept even when a

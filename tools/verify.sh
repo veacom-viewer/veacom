@@ -65,6 +65,8 @@ run comparison node tools/check-comparison.cjs "$out/comparison-studies" "$out/p
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"
 run nm-fixture node tools/fixtures/make-nm-study.mjs "$out/nm-study"
 run gamma-camera node tools/check-gamma-camera.cjs "$out/nm-study" "$out/gamma-camera"
+run sinus-fixture node tools/fixtures/make-sinus-study.mjs "$out/sinus-study"
+run close-calipers node tools/check-close-calipers.cjs "$out/sinus-study" "$out/close-calipers"
 run browser-gpu node tools/check-browser-gpu.mjs "$out/browser-gpu"
 run gpu-startup node tools/check-gpu-startup.cjs "$series" "$out/gpu-startup.json"
 run hardware-rendering node tools/check-software-rendering.cjs "$series" "$out/hardware-rendering" --expect hardware
