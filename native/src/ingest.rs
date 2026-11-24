@@ -2119,14 +2119,18 @@ fn read_frames_budget(
         let slice_thickness = frame_value(&obj, index, Tag(0x0028, 0x9110), |v| {
             number(v, Tag(0x0018, 0x0050))
         });
-        let slope = frame_value(&obj, index, Tag(0x0028, 0x9145), |v| {
-            number(v, Tag(0x0028, 0x1053))
-        })
-        .unwrap_or(1.);
-        let intercept = frame_value(&obj, index, Tag(0x0028, 0x9145), |v| {
-            number(v, Tag(0x0028, 0x1052))
-        })
-        .unwrap_or(0.);
+        let rescale = |tag: Tag| frame_value(&obj, index, Tag(0x0028, 0x9145), |v| number(v, tag));
+        let (slope_read, intercept_read) =
+            (rescale(Tag(0x0028, 0x1053)), rescale(Tag(0x0028, 0x1052)));
+        // A rescale the file holds that gives no number is not taken for 1 and 0, DICOM's values where there is none:
+        // the values would look right and be wrong. Such an image keeps no unit (below), and the series says so.
+        let held = |tag: Tag| {
+            frame_value(&obj, index, Tag(0x0028, 0x9145), |v| v.get(tag).map(|_| ())).is_some()
+        };
+        let rescale_unread = (slope_read.is_none() && held(Tag(0x0028, 0x1053)))
+            || (intercept_read.is_none() && held(Tag(0x0028, 0x1052)));
+        let slope = slope_read.unwrap_or(1.);
+        let intercept = intercept_read.unwrap_or(0.);
         let lut = if activity.is_some() {
             None
         } else {
@@ -2196,8 +2200,22 @@ fn read_frames_budget(
                 }
             })
             .unwrap_or_else(|| value_unit.clone());
+        // Neither HU nor SUV for values whose rescale could not be read; their images make a series of their own.
+        let rescale_unread = rescale_unread && activity.is_none() && lut.is_none();
+        let value_unit = if rescale_unread {
+            "a.u.".into()
+        } else {
+            value_unit
+        };
         let lut_suv_compatible = lut.as_ref().is_none_or(|v| v.unit == pet_units);
+        let suv_usable = lut_suv_compatible && !rescale_unread;
         let mut warnings = crate::message::Notes::from(pet_warnings.clone());
+        if rescale_unread {
+            warnings.push(note!(
+                "series.rescaleUnread",
+                "The rescale values of these images cannot be read: the values shown are not HU or SUV"
+            ));
+        }
         if modality == "PT" && !lut_suv_compatible && suv_factor.is_some() {
             warnings.push(note!("series.suvLutUnits", "SUV conversion is unavailable because Modality LUT output units differ from the PET calibration units"));
         }
@@ -2330,13 +2348,9 @@ fn read_frames_budget(
             window_center: window_center.unwrap_or(default_window.0),
             window_width: window_width.unwrap_or(default_window.1),
             value_unit,
-            suv_factor: if lut_suv_compatible { suv_factor } else { None },
-            sul_factor: suv
-                .and_then(|factors| factors.lbm)
-                .filter(|_| lut_suv_compatible),
-            suv_bsa_factor: suv
-                .and_then(|factors| factors.bsa)
-                .filter(|_| lut_suv_compatible),
+            suv_factor: if suv_usable { suv_factor } else { None },
+            sul_factor: suv.and_then(|factors| factors.lbm).filter(|_| suv_usable),
+            suv_bsa_factor: suv.and_then(|factors| factors.bsa).filter(|_| suv_usable),
             can_reconstruct: false,
             reading: None,
             warnings,
@@ -7606,6 +7620,43 @@ mod tests {
         };
         assert_eq!(sent(&instance)["sopInstanceUid"], instance.as_str());
         assert!(sent("").get("sopInstanceUid").is_none());
+    }
+
+    #[test]
+    fn an_image_whose_rescale_cannot_be_read_keeps_no_unit_and_its_series_says_so() {
+        // Three synthetic CT slices of one series; the third holds a Rescale Slope that is no number.
+        let out = crate::test_dir::tempdir().unwrap();
+        for index in 0..3 {
+            let mut obj = classic_slice(index + 1, index as f64 * 2.);
+            obj.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.2");
+            obj.put_str(Tag(0x0008, 0x0060), VR::CS, "CT");
+            obj.put(ds(
+                Tag(0x0028, 0x1053),
+                if index == 2 { "one" } else { "1" },
+            ));
+            obj.put(ds(Tag(0x0028, 0x1052), "-1024"));
+            write_metadata(obj, &out.path().join(format!("IM{index}")));
+        }
+        let paths = [out.path().to_string_lossy().into_owned()];
+        let read = import_session_from(&paths, None, 0, &|_| None, &[]).unwrap();
+        let said = |source: &SourceSeries| {
+            (source.info.warnings.iter()).any(|note| note.code == "series.rescaleUnread")
+        };
+        let mut found: Vec<_> = (read.sources.iter())
+            .map(|source| {
+                (
+                    source.info.value_unit.clone(),
+                    source.frames.len(),
+                    said(source),
+                )
+            })
+            .collect();
+        found.sort();
+        // The readable slices in HU, as before; the other in a series of its own, with no unit, and said.
+        assert_eq!(
+            found,
+            [("HU".to_owned(), 2, false), ("a.u.".to_owned(), 1, true)]
+        );
     }
 
     /// The folder zipped as an archiver writes it: a folder entry, then its files, names with forward slashes.
