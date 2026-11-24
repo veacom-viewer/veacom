@@ -294,8 +294,10 @@ FROM episodes
 CREATE OR REPLACE VIEW otel.ux_tasks AS
 SELECT 'length' AS task, * FROM otel.ux_task_p(starts = ['tool-length', 'measure-length', 'tool-measure', 'tool-measure-menu', 'click-length'], ends = ['draw-length', 'click-length'], end_result = 'ok', end_changed = [], end_states = [])
 UNION ALL
+-- MPR from the toolbar is its menu (tool-mpr), then an entry: the three-plane screen (toolbar-restore-previous,
+-- which also leaves it) or a plane (plane-axial, -coronal, -sagittal). The M key is tool-mpr alone.
 SELECT 'mpr' AS task, * FROM otel.ux_task_p(starts = ['tool-mpr', 'tool-mpr-menu', 'tool-oblique', 'plane-axial', 'plane-coronal', 'plane-sagittal', 'mpr-three'],
-    ends = ['tool-mpr', 'mpr-three', 'plane-axial', 'plane-coronal', 'plane-sagittal', 'oblique-pitch', 'oblique-yaw'], end_result = '', end_changed = ['layout', 'plane'], end_states = ['mpr', 'coronal', 'sagittal', 'oblique'])
+    ends = ['tool-mpr', 'toolbar-restore-previous', 'mpr-three', 'plane-axial', 'plane-coronal', 'plane-sagittal', 'oblique-pitch', 'oblique-yaw'], end_result = '', end_changed = ['layout', 'plane'], end_states = ['mpr', 'coronal', 'sagittal', 'oblique'])
 UNION ALL
 SELECT '3d' AS task, * FROM otel.ux_task_p(starts = ['tool-3d'], ends = ['view3d-ready'], end_result = '', end_changed = [], end_states = [])
 UNION ALL

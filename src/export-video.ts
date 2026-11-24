@@ -86,6 +86,8 @@ async function svgImage(source: SVGSVGElement, hideIdentity = false, hidePatient
     const style = getComputedStyle(node), target = copies[index] as SVGElement;
     for (const property of svgProperties) target.style.setProperty(property, style.getPropertyValue(property));
   });
+  // Drawings that are not part of the record, such as landmark suggestions not yet accepted, stay out of every copy.
+  for (const excluded of copy.querySelectorAll('[data-export-exclude]')) excluded.remove();
   if (hideIdentity) copy.replaceChildren(...copy.querySelectorAll('.orientation-labels, [data-crosshair-marker]'));
   // A pane that shows patient details keeps, undrawn, its corner texts as they read without them (Viewport.tsx): the
   // picture takes those in place of the shown ones. A pane that hides the details already has no such pair.

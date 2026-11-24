@@ -148,13 +148,15 @@ app.whenReady().then(async () => {
   openLaunches();
   const assets = path.join(root, 'dist');
   // The application's files with its content security policy; the import window's view serves them too (import-view.cjs).
+  // 'wasm-unsafe-eval' lets the application's page and its Workers compile WebAssembly (the landmark model's runtime,
+  // docs/landmark-model.md), still with no script from text; the import window (veacom://import) has no need of it.
   const serveFile = async url => {
     const relative = decodeURIComponent(url.pathname).replace(/^\/+/, '') || 'index.html';
     const file = path.resolve(assets, relative);
     if (!file.startsWith(assets + path.sep)) return new Response('Forbidden', { status: 403 });
     const result = await net.fetch(pathToFileURL(file).href);
     const headers = new Headers(result.headers);
-    headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'");
+    headers.set('Content-Security-Policy', `default-src 'self'; script-src 'self'${url.host === 'app' ? " 'wasm-unsafe-eval'" : ''}; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-src 'none'`);
     return new Response(result.body, { status: result.status, headers });
   };
   protocol.handle('veacom', async request => {
@@ -218,7 +220,8 @@ app.whenReady().then(async () => {
   handle('imaging:series', () => imaging.listSeries());
   handle('imaging:import', capabilities => imaging.importSelected(capabilities));
   handle('imaging:progress', () => imaging.getProgress());
-  handle('imaging:early', (capabilities, after) => imaging.importEarly(capabilities, after));
+  handle('imaging:early', (capabilities, after, options) => imaging.importEarly(capabilities, after, options));
+  handle('imaging:prioritise', (capabilities, planned) => imaging.prioritiseImport(capabilities, planned));
   handle('imaging:cancel', id => imaging.cancelOperation(id));
   handle('imaging:measure', (...args) => imaging.measure(...args));
   handle('imaging:tags', (id, generation, frame, revision) => imaging.getTags(id, generation, frame, revision));
@@ -273,7 +276,7 @@ app.whenReady().then(async () => {
   });
   // The import window, in a view of its own (import-view.cjs): this page only opens it, right after the user's own
   // click or key press, and receives import capabilities for what the user opened there.
-  const importView = createImportView({ app, window: () => window, devUrl, locale: () => i18n.getLocale(), authorize: paths => imaging.authorizeImportPaths(paths), serve: serveFile });
+  const importView = createImportView({ app, engine, window: () => window, devUrl, locale: () => i18n.getLocale(), authorize: paths => imaging.authorizeImportPaths(paths), serve: serveFile });
   window.webContents.on('did-start-loading', () => importView.close());
   window.on('closed', () => importView.close());
   handle('files:import-window', start => importView.open(start === 'disc' ? 'disc' : undefined));
@@ -355,6 +358,9 @@ app.whenReady().then(async () => {
   resetPictures = require('./image-export.cjs').registerImageExport({ handle, dialog, getWindow: () => window, t, exportFolder, recordExport, sweepFolder }).reset;
   usage = registerUsageHandlers({ handle, ipcMain, validateSender, userData: app.getPath('userData'), version: app.getVersion(), packaged: app.isPackaged, resourceMonitor: require('./resource-monitor.cjs').forViewer(app, engine, () => Boolean(window && !window.isDestroyed() && window.isVisible() && !window.isMinimized())) });
   disposeUpdates = require('./updates.cjs').registerUpdateHandlers({ handle, app, getWindow: () => window, dialog, shell });
+  require('./landmark-model.cjs').registerLandmarkModel({ handle, userData: app.getPath('userData'), getWindow: () => window });
+  // A folder of films to label: main keeps the paths, and writes a plan only beside its film (label-folder.cjs).
+  require('./label-folder.cjs').registerLabelFolder({ handle, dialog, getWindow: () => window, authorize: paths => imaging.authorizeImportPaths(paths), t });
   const media = require('./media.cjs');
   disposeMedia = media.registerMediaHandlers({
     handle, getWindow: () => window, exportFolder, recordExport, sweepFolder, cancelStaging: cancelEngineExports,

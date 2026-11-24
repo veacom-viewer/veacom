@@ -182,10 +182,6 @@
 .viewport-grid:not([data-panes="1"]) .viewport-cell.is-active .slice-handle { background: var(--accent); border-color: #dbe8ff; }
 
 .empty-viewport { height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 16px; text-align: center; color: var(--text-tertiary); font-size: var(--text-sm); }
-.volume-progress {
-  position: absolute; left: 12px; bottom: 12px; display: flex; align-items: center; gap: 6px; padding: 4px 8px; pointer-events: none;
-  border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--label-chip); color: var(--text); font-size: var(--text-sm);
-}
 .viewport-error {
   position: absolute; left: 10px; right: 10px; bottom: 10px; max-height: 96px; overflow: auto; padding: 8px 10px;
   border: 1px solid var(--danger-line); border-radius: var(--radius); background: var(--danger-bg); color: #ffd7d4; font-size: var(--text-sm); line-height: 1.5;
@@ -205,7 +201,7 @@
 .annotation-prompt-hint { margin-right: auto; color: var(--text-tertiary); font-size: var(--text-xs); }
 
 /* Notices and strips above the image */
-.notice, .operation-progress, .fusion-strip {
+.notice, .fusion-strip {
   display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; min-height: 36px; padding: 5px 6px 5px 12px;
   background: var(--bg-raised); border-bottom: 1px solid var(--line); color: var(--text); font-size: var(--text-sm); line-height: 1.5;
 }
@@ -218,10 +214,6 @@
 .notice .notice-dismiss:hover { background: rgba(255, 255, 255, .08); }
 .notice .notice-action { flex-shrink: 0; min-height: var(--control-sm); margin-left: auto; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-strong); font-size: var(--text-sm); font-weight: 500; }
 .notice .notice-action:hover { border-color: var(--line-control-hover); }
-.operation-progress > span { flex: 1; }
-.operation-progress progress { width: 120px; height: 4px; accent-color: var(--accent); }
-.operation-progress button { min-height: 28px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text); font-size: var(--text-sm); font-weight: 500; }
-.operation-progress button:hover:enabled { border-color: var(--line-control-hover); color: var(--text-strong); }
 .fusion-strip { flex-wrap: wrap; }
 .strip-label { display: flex; align-items: center; gap: 6px; color: var(--text-strong); font-weight: 600; }
 .fusion-strip select { max-width: 220px; min-height: var(--control-sm); height: var(--control-sm); font-size: var(--text-sm); }
@@ -385,7 +377,7 @@
 .tag-list { padding: 0 16px 16px; }
 .tags-frame { margin: 0 16px 8px; color: var(--text-tertiary); font-size: var(--text-sm); }
 .tag-vr { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
-.status-export { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); }
+.status-export { display: inline-flex; align-items: center; gap: 6px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .status-export .text-button { min-height: 0; padding: 0 4px; font-size: inherit; }
 .status-export-bar { width: 90px; height: 5px; accent-color: var(--accent); }
 .tag-row { display: flex; flex-direction: column; gap: 3px; padding: 9px 0; border-top: 1px solid var(--line-subtle); font-size: var(--text-sm); overflow-wrap: anywhere; }
@@ -416,7 +408,7 @@
   flex: 0 0 var(--status-height); display: flex; align-items: center; gap: var(--space-3); min-width: 0; padding: 0 6px 0 12px;
   background: var(--bg-chrome); border-top: 1px solid var(--line); color: var(--text-secondary); font-size: var(--text-sm); white-space: nowrap;
 }
-.status-state { display: flex; align-items: center; gap: 6px; min-width: 0; overflow: hidden; }
+.status-state { display: flex; align-items: center; gap: 6px; min-width: 0; max-width: calc(50% - 48px); overflow: hidden; white-space: nowrap; }
 .status-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; background: var(--success); }
 .status-dot.working { background: var(--warning); animation: pulse 1.6s ease-in-out infinite; }
 .status-dot.error { background: var(--danger); }
@@ -429,6 +421,10 @@
 .app-version { flex-shrink: 0; color: var(--text-tertiary); }
 .app-status { position: relative; }
 .app-status > .status-language { margin-left: auto; }
+/* Feedback joins the language and the version at the right end: app-level controls, which keep their place while the
+   state on the left changes length. */
+.app-status > .status-feedback { margin-left: auto; }
+.app-status > .status-feedback + .status-language { margin-left: 0; }
 /* Cine: play and pause in the middle of the bar. */
 .status-play { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); display: flex; gap: 2px; }
 .status-play .status-button[aria-pressed="true"] { color: var(--accent); }

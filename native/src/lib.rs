@@ -24,6 +24,8 @@ pub mod codec_guard;
 pub mod color;
 pub mod confidentiality;
 pub mod decode;
+#[cfg(windows)]
+mod disc;
 pub mod export;
 pub mod gamma_camera;
 pub mod geometry;
@@ -40,6 +42,7 @@ pub mod parallel;
 pub mod patient;
 pub mod pictures;
 pub mod progress;
+pub mod projection;
 pub mod random;
 pub mod rle_guard;
 pub mod sampling;
