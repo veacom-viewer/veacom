@@ -95,6 +95,33 @@ fn volume_serial(_: &Path) -> Option<u32> {
     None
 }
 
+/// How often a disc being read is found again in its drive: in less time, no disc can be taken out of it and another
+/// put in its place.
+const DISC_LOOK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+/// How long a drive that gives a disc's files but not its serial number is asked again for the number.
+const DISC_NAMED_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether the disc `folder` is on is the one whose serial number is `serial`, as `lookup` names it. A lookup that
+/// fails names no disc: while the folder is there, `lookup` is asked again until `within` has passed, and a folder
+/// that is not there is on no disc. A disc not named is not the one.
+fn disc_named(
+    serial: u32,
+    folder: &Path,
+    lookup: fn(&Path) -> Option<u32>,
+    within: std::time::Duration,
+) -> bool {
+    let until = std::time::Instant::now() + within;
+    loop {
+        if let Some(now) = lookup(folder) {
+            return now == serial;
+        }
+        if !fs::exists(folder) || std::time::Instant::now() >= until {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Which of an import's selections are read once, given the disc each is on (see `read_once`) and the room this
 /// computer's temporary folder has. A disc selected more than once is read where it is, as any folder is, so that no
 /// file of it is copied twice. The discs read once leave the room SPARE_BYTES to spare between them; a disc there is
@@ -2918,7 +2945,6 @@ pub fn import_session_from(
             // The copies take no more than the disc says it holds.
             let mut allowance = spool.disc.size;
             let mut queue = SpoolQueue::new(&spool.files);
-            let mut looked = std::time::Instant::now();
             // A disc taken out (or replaced) before it is read whole is read no further. With an index, the series it
             // lists that were read whole stay (see `whole_series`); without one there is no telling which those are,
             // and the import stops.
@@ -2935,17 +2961,20 @@ pub fn import_session_from(
                 gone()?;
                 continue;
             }
+            // When the disc was last found in its drive. A file opened less than DISC_LOOK_EVERY after that is the
+            // disc's own: no other disc can be in the drive yet.
+            let mut looked = std::time::Instant::now();
             while let Some(at) = queue.next(plan_ref.as_deref()) {
                 let file = &spool.files[at];
                 crate::progress::check()?;
                 // Every second, the disc in the drive is still the one being read: another put in its place could
                 // give files of the same names.
-                if looked.elapsed() >= std::time::Duration::from_secs(1) {
-                    looked = std::time::Instant::now();
+                if looked.elapsed() >= DISC_LOOK_EVERY {
                     if !spool.same_disc() {
                         gone()?;
                         break;
                     }
+                    looked = std::time::Instant::now();
                 }
                 // The copies leave this computer room: if something else fills its disk meanwhile, the import stops.
                 if spool.disc.serial.is_some() && room().is_some_and(|room| room < SPARE_BYTES / 2)
@@ -2959,6 +2988,15 @@ pub fn import_session_from(
                 let most = crate::input_guard::MAX_FILE_SIZE;
                 match copy_from_disc(file, most, &mut allowance, &mut block)? {
                     Copied::Whole => {
+                        // A copy that took the disc's turn to be looked for is taken only once the disc is found
+                        // still in the drive: one put in its place while the copy was made could have given it.
+                        if looked.elapsed() >= DISC_LOOK_EVERY {
+                            if !spool.same_disc() {
+                                gone()?;
+                                break;
+                            }
+                            looked = std::time::Instant::now();
+                        }
                         let unlisted =
                             matches!(file.take, Take::IfDicom | Take::Kept { unlisted: true });
                         if spool.indexed && unlisted {
@@ -2984,10 +3022,6 @@ pub fn import_session_from(
                         let _ = crate::progress::step();
                     }
                 }
-            }
-            // And still once its last file is taken: a disc read in less than a second has no turn of the check above.
-            if !removed.load(std::sync::atomic::Ordering::Relaxed) && !spool.same_disc() {
-                gone()?;
             }
         }
         Ok(())
@@ -4133,12 +4167,12 @@ impl Spool {
         self.files.iter().any(|file| file.series.is_some())
     }
 
-    /// Whether the disc in the drive is no other than the one the import began with (see `Disc::serial`). A drive that
-    /// does not answer is taken at its files: a disc taken out gives none.
+    /// Whether the disc in the drive is no other than the one the import began with (see `Disc::serial`), as the drive
+    /// names it: a drive that names no disc soon (see `disc_named`) holds none that files are taken from.
     fn same_disc(&self) -> bool {
         self.disc
             .serial
-            .is_none_or(|serial| volume_serial(&self.folder).is_none_or(|now| now == serial))
+            .is_none_or(|serial| disc_named(serial, &self.folder, volume_serial, DISC_NAMED_WITHIN))
     }
 }
 
@@ -7314,6 +7348,50 @@ mod tests {
         let paths = [disc.to_string_lossy().into_owned()];
         let read = import_session_from(&paths, None, 0, &on(serial), &[]).unwrap();
         assert_eq!((read.archives.len(), frames(&read)), (1, 7));
+    }
+
+    #[test]
+    fn a_disc_whose_drive_does_not_name_it_is_not_taken_for_the_one_being_read_though_its_files_can_be_read()
+     {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // A folder whose file can be read, as a disc's can while its drive gives no serial number.
+        let out = crate::test_dir::tempdir().unwrap();
+        fs::write(out.path().join("IM1"), b"synthetic").unwrap();
+        let within = std::time::Duration::from_millis(300);
+        fn named(_: &Path) -> Option<u32> {
+            Some(7)
+        }
+        fn unnamed(_: &Path) -> Option<u32> {
+            None
+        }
+        assert!(disc_named(7, out.path(), named, within));
+        assert!(!disc_named(8, out.path(), named, within));
+        // Asked again for the while given, and taken for no disc.
+        let started = std::time::Instant::now();
+        assert!(!disc_named(7, out.path(), unnamed, within));
+        assert!(started.elapsed() >= within);
+        // Named after two failed lookups, as a drive does once its disc turns: taken.
+        static LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+        fn late(_: &Path) -> Option<u32> {
+            (LOOKUPS.fetch_add(1, Ordering::SeqCst) >= 2).then_some(7)
+        }
+        assert!(disc_named(
+            7,
+            out.path(),
+            late,
+            std::time::Duration::from_secs(5)
+        ));
+        assert_eq!(LOOKUPS.load(Ordering::SeqCst), 3);
+        // A folder that is not there is on no disc, with no wait.
+        let started = std::time::Instant::now();
+        let gone = out.path().join("gone");
+        assert!(!disc_named(
+            7,
+            &gone,
+            unnamed,
+            std::time::Duration::from_secs(5)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
