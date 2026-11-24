@@ -19,7 +19,7 @@ use std::{
 
 pub(crate) const MAX_META: u64 = 32 * 1024 * 1024;
 const MAX_VALUE: u64 = 1024 * 1024;
-const MAX_FILE_META: u64 = 64 * 1024;
+pub(crate) const MAX_FILE_META: u64 = 64 * 1024;
 /// In WebAssembly everything shares 4 GB, so one file's pixel data may take a quarter of it there.
 const MAX_PIXELS: u64 = if cfg!(target_arch = "wasm32") {
     1024 * 1024 * 1024

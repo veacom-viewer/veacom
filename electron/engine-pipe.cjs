@@ -9,7 +9,7 @@ const controlOps = new Set(['shutdown', 'progress', 'cancel', 'exportCancel', 'h
 
 function workCategory(op) {
   // pictureNext waits even on an idle viewer; importEarly polls the catalog during an import.
-  if (controlOps.has(op) || op === 'pictureNext' || op === 'importEarly') return null;
+  if (controlOps.has(op) || op === 'pictureNext' || op === 'importEarly' || op === 'importPrioritise') return null;
   switch (op) {
     case 'import': return 'import';
     case 'volume': case 'frame': case 'warm': case 'sample': case 'measure': case 'pictureAnswer': return 'pixels';
