@@ -6,6 +6,7 @@
 // (tests/import-window.test.ts), so a compromised dependency of the application cannot drive it either.
 import { isLocale, setLocale, t, type MessageKey } from '../i18n';
 import { icon, type IconName } from './icons';
+import { filesText } from './filesText';
 import '../fonts.css';
 import '../theme.css';
 import '../styles.css';
@@ -172,7 +173,7 @@ function renderFolder() {
   errorLine.textContent = error;
   list.replaceChildren(...(folder?.items ?? []).map(row), ...(folder && !folder.items.length ? [h('li', { className: 'import-none' }, t('import.noFolders'))] : []));
   filesLine.hidden = !folder;
-  filesLine.textContent = folder ? `${folder.dicomdir ? t('import.dicomdir', { count: folder.files }) : t('import.files', { count: folder.files })}${folder.truncated ? ` · ${t('import.truncated')}` : ''}` : '';
+  filesLine.textContent = folder ? `${filesText(folder.files, folder.dicomdir)}${folder.truncated ? ` · ${t('import.truncated')}` : ''}` : '';
 }
 
 function renderFooter() {

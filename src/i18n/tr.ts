@@ -229,6 +229,8 @@ export const tr: Record<keyof typeof en, string> = {
   'import.noFolders': 'Burada klasör ya da arşiv yok.',
   'import.files': '{count} dosya',
   'import.dicomdir': '{count} dosya · DICOMDIR var',
+  'import.oneFile': '1 dosya',
+  'import.oneFileDicomdir': '1 dosya · DICOMDIR var',
   'import.truncated': 'ilk 5000 öğe',
   'import.selected': '{count} öğe seçili',
   'import.thisFolder': 'Açılacak: {folder}',

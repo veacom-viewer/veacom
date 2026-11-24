@@ -226,6 +226,8 @@ export const en = {
   'import.noFolders': 'No folders or archives here.',
   'import.files': '{count} files',
   'import.dicomdir': '{count} files · has a DICOMDIR',
+  'import.oneFile': '1 file',
+  'import.oneFileDicomdir': '1 file · has a DICOMDIR',
   'import.truncated': 'first 5000 items',
   'import.selected': '{count} selected',
   'import.thisFolder': 'Opens: {folder}',
