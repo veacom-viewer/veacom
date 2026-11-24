@@ -409,6 +409,8 @@ npm nopt
 npm normalize-url
 npm object-keys
 npm once
+npm onnxruntime-common
+npm onnxruntime-web
 npm oxc-transform-react
 npm p-cancelable
 npm p-limit

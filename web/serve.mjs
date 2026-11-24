@@ -25,7 +25,7 @@ const studies = {
   jtwok: 'bigct_j2k',
   jpegll: 'bigct_jpegll',
 };
-const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.json': 'application/json', '.css': 'text/css', '.woff2': 'font/woff2', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
+const types = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.onnx': 'application/octet-stream', '.wasm': 'application/wasm', '.json': 'application/json', '.css': 'text/css', '.woff2': 'font/woff2', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 const headers = {
   ...(isolated ? {
     'Cross-Origin-Opener-Policy': 'same-origin',

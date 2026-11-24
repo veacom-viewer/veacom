@@ -7,6 +7,7 @@ const { ClickBudget } = require('./click-budget.cjs');
 const { ignoreOutsideInput } = require('./lib/outside-input.cjs');
 const { closeDesktop } = require('./lib/close-desktop.cjs');
 const { isSoftwareRenderer } = require('./software-renderer.cjs');
+const { toggleMpr } = require('./lib/mpr.cjs');
 // hardware (default): a graphics driver must draw. software: the PC has no usable driver, so drawing must
 // run in software and the app must say so.
 const expectedRenderer = process.env.VEACOM_SMOKE_RENDERER || 'hardware';
@@ -104,6 +105,44 @@ async function main() {
     check('Annotation undo and redo');
     await screenshot('after-measurement.png');
 
+    // The MPR menu: the plane the CT was acquired in shows its own slices, and the other planes are reconstructions.
+    const planeItems = page.locator('[role="menu"] [data-action^="plane-"]');
+    await page.getByTestId('tool-mpr').click();
+    assert.equal(await planeItems.count(), 3);
+    assert.equal(await page.locator('[role="menu"] [data-action="toolbar-acquired-slices"]').count(), 0, 'The acquired slices have no entry of their own.');
+    assert.equal(await planeItems.nth(0).getAttribute('aria-checked'), 'true', 'Axial, the plane the CT was acquired in, is the one shown.');
+    await planeItems.nth(1).click();
+    await page.waitForFunction(() => { const view = window.__VEACOM_TEST__.state().view; return view.mode === 'mpr' && view.plane === 'coronal'; });
+    await page.getByTestId('tool-mpr').click();
+    await planeItems.nth(0).click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.mode === 'source');
+    check('In the MPR menu the acquired plane shows the CT\'s own slices; the others are reconstructed');
+
+    // With a thick slab on, the acquired plane is reconstructed too, since the CT's own slices draw no slab. Choosing it
+    // again in the MPR menu, or reaching it from the pane's plane name, keeps the slab on and drawn; turning the slab off
+    // brings the CT's own slices back.
+    const shownView = () => page.evaluate(() => { const view = window.__VEACOM_TEST__.state().view; return { mode: view.mode, plane: view.plane, slab: view.slab?.mode ?? null }; });
+    const axialMip = { mode: 'mpr', plane: 'axial', slab: 'mip' };
+    const slabItems = page.locator('[role="menu"] [role="menuitemradio"]');
+    await page.getByTestId('tool-slab').click();
+    await slabItems.nth(1).click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().view.slab?.mode === 'mip');
+    assert.deepEqual(await shownView(), axialMip);
+    await page.getByTestId('tool-mpr').click();
+    await planeItems.nth(0).click();
+    await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.deepEqual(await shownView(), axialMip, 'Axial chosen again in the MPR menu keeps the slab.');
+    const pane = await canvas.boundingBox();
+    for (const plane of ['coronal', 'sagittal', 'axial']) {
+      await page.mouse.click(pane.x + 10, pane.y + pane.height - 10);
+      await page.waitForFunction(plane => window.__VEACOM_TEST__.state().view.plane === plane, plane);
+    }
+    assert.deepEqual(await shownView(), axialMip, 'The plane name returns to axial with the slab.');
+    await page.getByTestId('tool-slab').click();
+    await slabItems.nth(0).click();
+    await page.waitForFunction(() => { const view = window.__VEACOM_TEST__.state().view; return view.mode === 'source' && !view.slab; });
+    check('A thick slab stays on and drawn when the MPR menu or the plane name returns to the acquired plane');
+
     // A pane draws its overlay in a box of the pane's own size, which is one unit until the pane is measured. Shown then,
     // the handles on the plane lines cover the pane in their colours: note every frame that shows such an overlay.
     await page.evaluate(() => {
@@ -116,7 +155,7 @@ async function main() {
       };
       requestAnimationFrame(watch);
     });
-    await budget.task('mpr', () => page.getByTestId('tool-mpr').click(), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
+    await budget.task('mpr', () => toggleMpr(page), { until: () => page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer]').length === 3) });
     const planes = await page.locator('canvas[data-renderer]').evaluateAll(nodes => nodes.map(node => node.dataset.plane).sort());
     assert.deepEqual(planes, ['axial', 'coronal', 'sagittal']);
     const early = await page.evaluate(() => { const seen = window.__earlyOverlays; delete window.__earlyOverlays; return seen; });
@@ -175,6 +214,19 @@ async function main() {
     for (let attempt = 0; attempt < 50 && await saved() !== 'tr'; attempt++) await page.waitForTimeout(100);
     assert.equal(await saved(), 'tr');
     check('Turkish by default; the language switch updates the interface and is saved');
+
+    // Feedback stands with the language and the version at the right end of the status bar, and keeps its place while the
+    // state on the left changes length.
+    const feedbackBox = () => page.getByTestId('feedback-open').boundingBox();
+    const feedback = await feedbackBox(), language = await page.getByTestId('tool-language').boundingBox(), cine = await page.locator('.status-play').boundingBox();
+    assert(feedback.x > cine.x + cine.width, 'Feedback is to the right of the cine controls.');
+    const gap = language.x - (feedback.x + feedback.width);
+    assert(gap >= 0 && gap <= 16, `Feedback stands just before the language: ${gap} px between them.`);
+    const stateText = await page.evaluate(() => { const status = document.querySelector('[data-testid="status-text"]'), text = status.textContent; status.textContent = `${text} ${text} ${text}`; return text; });
+    const withLongerState = await feedbackBox();
+    await page.evaluate(text => { document.querySelector('[data-testid="status-text"]').textContent = text; }, stateText);
+    assert.equal(withLongerState.x, feedback.x, 'A longer state text leaves Feedback where it is.');
+    check('Feedback stands with the language at the right end of the status bar and keeps its place');
 
     // Usage timings: a fresh profile is asked once (a strip, not a modal); the answer is saved, and the
     // settings switch turns sharing on and off (off deletes the local copy).

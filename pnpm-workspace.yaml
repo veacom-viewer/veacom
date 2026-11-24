@@ -25,6 +25,14 @@ overrides:
   'electron>@types/node': '-'
   jiti: '-'
   fsevents: '-'
+  # onnxruntime-web's bundles (dist/ort.wasm.min.mjs, which the landmark suggestions load) carry their own code; these
+  # packages serve only its legacy WebGL backend's model parser, which VEAcom never loads. protobufjs would also want an
+  # install script.
+  'onnxruntime-web>flatbuffers': '-'
+  'onnxruntime-web>guid-typescript': '-'
+  'onnxruntime-web>long': '-'
+  'onnxruntime-web>platform': '-'
+  'onnxruntime-web>protobufjs': '-'
 
 # A reviewed emergency, such as a security release younger than 3 days, may list its exact version under
 # minimumReleaseAgeExclude. Delete the entry once the version is 3 days old.

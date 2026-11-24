@@ -2,7 +2,7 @@
 // a PET without SUV (Python: app/ui/fusion.py). A reconstructed SPECT is fused the same way, always on its own scale; the
 // gates of a gated SPECT on the one their file shares.
 import type { FusionSettings, PixelArray, Series } from '../model';
-import { findRole } from '../arrangements/roles';
+import { attenuationCorrected, findRole } from '../arrangements/roles';
 import { FUSION } from '../arrangements/builtin';
 import { indexToWorld } from './geometry';
 import { shareFrame } from './linking';
@@ -51,6 +51,22 @@ export function draggedFusion(start: { upperSuv: number; opacity: number }, dx: 
 export function bestPartner(target: Series, candidates: readonly Series[], modality: 'PT' | 'CT', fits: (series: Series) => boolean): Series | null {
   // The ranking is the fusion arrangement's (src/arrangements/builtin.ts): AC first, the same grid, the most overlap, slices.
   return findRole({ modality, prefer: FUSION.roles[modality === 'PT' ? 'overlay' : 'ct'].prefer }, candidates, target, fits);
+}
+
+/** The PET or SPECT the fusion button fuses when the active pane shows one: the one shown, but for one that is not
+ * attenuation-corrected (NAC) when its frame of reference holds one that is, which the fusion arrangement ranks first
+ * (src/arrangements/builtin.ts). A gate shown is fused itself. */
+export function overlayFor(shown: Series, candidates: readonly Series[]): Series {
+  if (shown.phase?.gate || attenuationCorrected(shown)) return shown;
+  const best = findRole(FUSION.roles.overlay, candidates, shown);
+  return best && !best.phase?.gate && attenuationCorrected(best) ? best : shown;
+}
+
+/** The PET or SPECT of `shown`'s study that the fusion button fuses when none is drawn over the series shown (a CT
+ * scout, which is no volume): the one the fusion arrangement ranks first, of those with a CT acquired with them. */
+export function studyOverlay(shown: Series, candidates: readonly Series[]): Series | null {
+  const { modality, prefer } = FUSION.roles.overlay;
+  return findRole({ modality, prefer }, candidates, shown, item => fusesAsOverlay(item) && findRole(FUSION.roles.ct, candidates, item) !== null);
 }
 
 /** After contrast, as series are usually named ("T1_postcontrast", "T1 +C", "C+", "GAD", "kontrastlı", "KM"). */

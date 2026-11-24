@@ -1,0 +1,8 @@
+{
+  "name": "veacom-landmarks-r2",
+  "release": "https://github.com/veacom-viewer/veacom/releases/download/v0.1.0-beta.3/",
+  "files": {
+    "stageA": { "file": "veacom-landmarks-r2-stagea.onnx", "bytes": 8251441, "sha256": "51e9f821df1b9f425cc9dc7b8e3516fc84742d31834e8935dd4eac1075821099" },
+    "stageB": { "file": "veacom-landmarks-r2-stageb.onnx", "bytes": 9510893, "sha256": "c0adab05fac6d90d97ba9af9e347fdcd5fe69b87a25357643f51facdcadfcfdd" }
+  }
+}
