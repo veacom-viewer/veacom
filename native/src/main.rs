@@ -1165,9 +1165,44 @@ fn new_core(cache_limit: usize) -> App {
         early: Mutex::new(EarlyImport::default()),
     })
 }
+/// Runs the engine below the priority of the app that started it. Decoding a study takes every core at once; at the
+/// app's own priority it holds back the study's first picture, which the page, the GPU process and main need the
+/// processor for at that moment (native/README.md has the measurement). The system gives a lower-priority process
+/// the time the others leave: a study opened and left alone showed no measurable change in its loading time.
+///
+/// Called before any thread is started: on Linux a thread keeps the priority of the thread that started it, and a
+/// later change reaches only the one thread it names. A failure is not reported: it leaves the engine at the app's
+/// priority, where it still works, and tools/check-engine-pipe.cjs fails when the priority is not lowered.
+fn run_below_the_app() {
+    // 10 is what the `nice` command adds when it is given no number.
+    #[cfg(unix)]
+    // SAFETY: nice only changes this process's scheduling priority.
+    unsafe {
+        libc::nice(10);
+    }
+    #[cfg(windows)]
+    // SAFETY: the pseudo-handle of this process is always valid, and the calls only read and change its scheduling
+    // priority.
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass, IDLE_PRIORITY_CLASS,
+            NORMAL_PRIORITY_CLASS, SetPriorityClass,
+        };
+        // One class below the one the engine was started in. That is the app's class at normal and below; under an
+        // app above normal Windows starts the engine at normal, which is below the app already.
+        let lower = match GetPriorityClass(GetCurrentProcess()) {
+            NORMAL_PRIORITY_CLASS => BELOW_NORMAL_PRIORITY_CLASS,
+            BELOW_NORMAL_PRIORITY_CLASS => IDLE_PRIORITY_CLASS,
+            _ => return,
+        };
+        SetPriorityClass(GetCurrentProcess(), lower);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // First: the pipes are the protocol from here on, and a print to fd 1 must not reach main.
     let (input, output) = pipe::stdio()?;
+    run_below_the_app();
     if let Err(error) = archive_temp::cleanup_stale() {
         eprintln!("Archive cleanup could not complete: {error}");
     }
