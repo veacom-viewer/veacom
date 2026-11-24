@@ -20,6 +20,8 @@ Electron starts the engine with private stdin and stdout pipes. Protocol 2 uses 
 
 Dedicated workers handle catalog changes, volume reads, frames, control calls, two concurrent tool operations, picture polls and picture answers. Pending requests can be cancelled before taking a worker. Once running, an operation owns its turn through completion or rollback. Shutdown and stdin EOF stop admission and drain the workers before releasing the catalog and extracted archives. The protocol writer owns a private copy of stdout on Unix and Windows. See `src/pipe.rs` and `electron/engine-pipe.cjs`.
 
+The engine lowers its own priority as it starts, before it starts a thread (`run_below_the_app` in `src/main.rs`): `nice` 10 on Linux and macOS, one priority class lower on Windows (below normal under an app at normal priority). Decoding a volume uses every core, and at the app's priority it delays the first image of a study, which the page, the GPU process and main need the processor for at the same moment. On a four-core Linux machine drawing in software (17 November 2026, six rounds against the build without it), the first image of a 1,000-slice CT came after 359 ms instead of 542 ms, and after 366 ms instead of 459 ms as JPEG Lossless. Opened and left alone, the CT was complete after 1797 ms against 1726 ms, which is no measurable change (0.94 times as fast, 95% interval 0.89 to 1.06). Paged through without a pause while it loads, it was complete after 2.7 s instead of 2.4 s: the load gives way to the paging. While another program uses every core, the engine waits for it. `tools/check-engine-pipe.cjs` checks the priority, and on Linux that every engine thread has it.
+
 ## API
 
 | Operation (`op`, `body`) | Result |
