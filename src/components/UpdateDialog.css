@@ -39,5 +39,3 @@
 .update-button.primary:hover:enabled { background: var(--accent-solid-hover); }
 .update-notes-link { display: inline-flex; align-items: center; gap: 5px; margin-right: auto; padding: 4px 0; border: 0; background: transparent; color: var(--accent); font-size: var(--text-sm); }
 .update-notes-link:hover:enabled { text-decoration: underline; }
-.update-spinner { animation: update-spin 1s linear infinite; }
-@keyframes update-spin { to { transform: rotate(360deg); } }
