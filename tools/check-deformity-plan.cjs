@@ -10,8 +10,10 @@
 // leg's 14 landmarks, the three with no real-film check marked as unchecked, which the reader accepts. The real films
 // are Mendeley Data's, from tools/fixtures/fetch-mendeley-films.mjs.
 // usage: node tools/check-deformity-plan.cjs LONGLEG_STUDY MENDELEY_FILMS [OUTPUT_DIR] [-- app switches, e.g. --force-device-scale-factor=1]
+//        node tools/check-deformity-plan.cjs --click-budgets OUTPUT_DIR
 const { _electron: electron } = require('playwright');
 const fs = require('node:fs/promises');
+const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const os = require('node:os');
@@ -28,9 +30,20 @@ const ANGLES = ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA'], LENGT
 
 async function main() {
   const split = process.argv.indexOf('--'), own = split < 0 ? process.argv.slice(2) : process.argv.slice(2, split), switches = split < 0 ? [] : process.argv.slice(split + 1);
-  assert(own[0] && own[1], 'usage: node tools/check-deformity-plan.cjs LONGLEG_STUDY MENDELEY_FILMS [OUTPUT_DIR] [-- app switches]');
-  const study = path.resolve(own[0]), mendeley = path.resolve(own[1]);
-  const output = path.resolve(own[2] || 'test-results/deformity-plan');
+  assert(own[0] && own[1], 'Pass LONGLEG_STUDY MENDELEY_FILMS [OUTPUT_DIR] or --click-budgets OUTPUT_DIR.');
+  if (own[0] === '--click-budgets') {
+    const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-budget-film-'));
+    try {
+      const study = path.join(scratch, 'study');
+      execFileSync(process.execPath, [path.join(__dirname, 'fixtures/make-longleg-study.mjs'), study, '--variants=ips-only']);
+      await checkStudy(study, null, path.resolve(own[1]), switches);
+    } finally { await fs.rm(scratch, { recursive: true, force: true }); }
+    return;
+  }
+  await checkStudy(path.resolve(own[0]), path.resolve(own[1]), path.resolve(own[2] || 'test-results/deformity-plan'), switches);
+}
+
+async function checkStudy(study, mendeley, output, switches) {
   const manifest = JSON.parse(await fs.readFile(path.join(study, 'manifest.json'), 'utf8'));
   assert.equal(manifest.generator, 'veacom-longleg-v1', 'Run on the films made by tools/fixtures/make-longleg-study.mjs.');
   await fs.mkdir(output, { recursive: true });
@@ -104,7 +117,22 @@ async function main() {
 
     // 1. Imager Pixel Spacing only: the detector plane, named; both legs in full; lengths magnified 1.1 times.
     const ips = manifest.series['ips-only'];
+    const measureKnee = async point => {
+      await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-place"]').click();
+      await budget.task('deformity-landmark', () => click(point), { until: () => page.waitForFunction(() => document.querySelector('.deformity-landmarks [data-landmark="kneeCentre"]')?.hasAttribute('data-placed')) });
+    };
+    const saveResults = async () => {
+      assert.deepEqual(errors, []);
+      budget.assert();
+      await fs.writeFile(path.join(output, 'deformity-plan.json'), JSON.stringify({ checks, budgets: budget.results }, null, 2) + '\n');
+    };
     await open(ips.description);
+    if (!mendeley) {
+      await measureKnee(manifest.legs[0].landmarks.kneeCentre);
+      await saveResults();
+      console.log('PASS measured opening the deformity plan and placing a landmark');
+      return;
+    }
     assert.match(await calibration().textContent(), /Both sides · Detector plane, not corrected/);
     assert.equal(await calibration().getAttribute('data-state'), 'detector');
     assert.match(await page.locator('.viewport-cell.is-active .slice-detail').textContent(), /Detector plane/);
@@ -297,9 +325,7 @@ async function main() {
       assert.equal(await calibration().getAttribute('data-state'), variant.state === 'pixels' ? 'none' : variant.state, `${name} names its calibration.`);
       await panel.locator('[data-landmark="femoralHeadContour"] [data-action="deformity-place"]').click();
       for (const point of right.landmarks.femoralHeadContour) await click(point);
-      await panel.locator('[data-landmark="kneeCentre"] [data-action="deformity-place"]').click();
-      // A landmark the kit asks for is one click on the film (click budget deformity-landmark).
-      await budget.task('deformity-landmark', () => click(right.landmarks.kneeCentre), { until: () => page.waitForFunction(() => document.querySelector('.deformity-landmarks [data-landmark="kneeCentre"]')?.hasAttribute('data-placed')) });
+      await measureKnee(right.landmarks.kneeCentre);
       await panel.locator('[data-action="deformity-place-stop"]').click().catch(() => {});
       const femur = (await values('.deformity-values:not(.deformity-compare)')).femurLength;
       if (variant.mmPerPixel) near(femur, right.expected.femurLength * variant.mmPerPixel / manifest.objectMm, LENGTH, `${name} femur length`);
@@ -641,9 +667,7 @@ async function main() {
       assert.doesNotMatch(String(value), /kneeCentre|femoralHead|ankleCentre|plan\.json|SYNTHETIC|MENDELEY|Mendeley/, `Usage attribute ${key} names no landmark, file or patient.`);
     }
     check('The usage timings carry only schema control ids, never a landmark, value or file', { actions: actions.filter(id => id?.startsWith('deformity-')).length });
-    assert.deepEqual(errors, []);
-    budget.assert();
-    await fs.writeFile(path.join(output, 'deformity-plan.json'), JSON.stringify({ checks, budgets: budget.results }, null, 2) + '\n');
+    await saveResults();
     console.log(`All ${checks.length} deformity plan checks passed.`);
   } finally {
     await closeDesktop(desktop);
