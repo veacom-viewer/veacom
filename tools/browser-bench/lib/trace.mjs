@@ -39,7 +39,8 @@ export function readTrace(events, decode) {
     if (event.cat === 'blink.user_timing' && /^(bench|veacom):/.test(event.name ?? '') && marks[event.name] === undefined) marks[event.name] = event.ts / 1000;
   }
   const shots = events.filter(event => event.name === 'Screenshot' && event.args?.snapshot).sort((a, b) => a.ts - b.ts);
-  for (const shot of shots) frames.push({ ts: shot.ts / 1000, ...readPicture(decode(shot.args.snapshot)), jpeg: shot.args.snapshot });
+  for (const shot of shots) frames.push({ ts: shot.ts / 1000, expectedDisplayTime: shot.args.expected_display_time,
+    sequence: shot.args.frame_sequence, ...readPicture(decode(shot.args.snapshot)), jpeg: shot.args.snapshot });
   return { marks, frames };
 }
 
