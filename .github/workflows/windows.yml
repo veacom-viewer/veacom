@@ -320,7 +320,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, macos-15]
+        # The isolated browser check needs at least four logical CPUs to start two engine threads.
+        os: [windows-2022, macos-15-intel]
     steps:
       - name: Find the source of the verified public site
         id: source
