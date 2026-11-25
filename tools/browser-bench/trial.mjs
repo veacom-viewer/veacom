@@ -231,6 +231,20 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       line.renderer = await rendererName(js);
     }
 
+    if (study.name === 'ct-64-series') {
+      line.activeCatalog = await js(`(async () => {
+        const bridge = window.veacom, { series } = await bridge.listSeries(), { generation } = await bridge.getCoreState();
+        const canvas = document.querySelector('canvas[data-series-id]'), source = series.find(item => item.id === canvas?.dataset.seriesId);
+        if (!source) throw new Error('Missing active source');
+        const pixels = await bridge.fetchPixels({ seriesId: source.id, generation, revision: source.catalogRevision, index: 0 });
+        return { series: series.length, unique: new Set(series.map(item => item.uid)).size, depth: source.dimensions[2],
+          patient: source.patientId, sop: pixels.headers.get('X-SOP-Instance-UID'), uid: source.uid };
+      })()`);
+      const verified = line.activeCatalog;
+      if (verified.series !== 64 || verified.unique !== 64 || verified.depth !== 300 || verified.patient !== 'BENCH-ct-64-series' ||
+          verified.sop !== verified.uid.replace(/\.2$/, '.3.1')) throw new Error('Wrong reading study: ' + JSON.stringify(verified));
+    }
+
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
       let at = await look(win);
