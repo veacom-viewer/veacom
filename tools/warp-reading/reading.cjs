@@ -127,7 +127,7 @@ async function main(){
  assert.equal(process.platform,'win32','This benchmark measures the Windows WARP driver');
  await fs.mkdir(out,{recursive:true});const manifest=JSON.parse(await fs.readFile(path.join(out,'study-manifest.json'),'utf8'));
  const engine=new EngineProcess({binary:process.env.VEACOM_CORE_PATH,restartDelaysMs:[]});let centres;
- try {const c=await engine.start();const j=await(await c.request('import',{paths:[path.join(studies,'CT')]})).json();assert.equal(j.series.length,1);
+ try {const c=await engine.start();const response=await c.request('import',{paths:[path.join(studies,'CT')]});const j=await response.json();assert.ok(response.ok,j.error);assert.equal(j.series.length,1);
   centres=j.series[0].frameMetadata.map(f=>manifest.studies.CT.centerBySop[f.sopInstanceUid]);assert.equal(new Set(centres).size,25);assert.ok(centres.every(Number.isFinite));}finally{await engine.stop();}
  const pairs=Number(process.env.VEACOM_WARP_PAIRS);assert.ok(Number.isInteger(pairs)&&pairs>=1&&pairs<=12);
  for(let pair=1;pair<=pairs;pair++)for(const modality of ['MG','CT'])for(const build of pair%2?['reference','candidate']:['candidate','reference']){

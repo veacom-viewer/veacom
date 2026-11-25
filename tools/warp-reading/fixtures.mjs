@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
-import { dataset } from '../fixtures/dicom-elements.mjs';
+import { dataset, element } from '../fixtures/dicom-elements.mjs';
 const [dir, evidence] = process.argv.slice(2);
 const root = '1.2.826.0.1.3680043.10.1700.20261125', syntax = '1.2.840.10008.1.2.1';
 const manifest = { version: 1, synthetic: true, syntax, studies: {} };
@@ -16,9 +16,10 @@ for (const [modality,w,h,depth,group,sop] of [['MG',3328,4096,1,1,'1.2.840.10008
       const val=centre?central:(x*17+y*37+z*83)%4096;
       pixels.writeUInt16LE(val,2*(y*w+x));
     }
-    const bytes=Buffer.concat([Buffer.alloc(128),Buffer.from('DICM'),dataset([
+    const meta=dataset([
       [2,1,'OB',[0,1]],[2,2,'UI',sop],[2,3,'UI',uid],[2,0x10,'UI',syntax],[2,0x12,'UI',root+'.8']
-    ]),dataset([
+    ]);
+    const bytes=Buffer.concat([Buffer.alloc(128),Buffer.from('DICM'),element(2,0,'UL',meta.length),meta,dataset([
       [8,0x16,'UI',sop],[8,0x18,'UI',uid],[8,0x20,'DA','20260101'],[8,0x60,'CS',modality],[8,0x103e,'LO','Synthetic '+modality],
       [16,0x10,'PN','SYNTHETIC^REDRAW'],[16,0x20,'LO','SYNTHETIC-REDRAW'],[24,0x50,'DS','1'],
       [32,0x0d,'UI',root+'.'+group+'.1'],[32,0x0e,'UI',root+'.'+group+'.2'],[32,0x11,'IS',1],[32,0x13,'IS',z+1],
