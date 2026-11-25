@@ -250,8 +250,8 @@ void main() {
   ${dimension === '2d' ? `// A frame over the GPU's 2D limit is drawn as tiles (frameTiles): each draw keeps its own part of the frame.
   vec2 framePixel=p.xy;
   if (outside(p,uFull)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
-  if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
-  p.xy-=uTileOrigin;` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
+  ${plain ? '' : `if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
+  p.xy-=uTileOrigin;`}` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${color ? `
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
   outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : `texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb`},1.0);
@@ -665,15 +665,6 @@ class SharedSliceRenderer {
     const mprX = samples(indexRight), mprY = samples(indexDown);
     const petX = petRight ? samples(petRight) : 1, petY = petDown ? samples(petDown) : 1;
     const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
-    const plain = this.info.software && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
-      && !view.voiFunction && (!view.palette || view.palette === 'gray');
-    const sampling: Sampling = plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
-    const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
-    if (this.canvas.width !== w) this.canvas.width = w;
-    if (this.canvas.height !== h) this.canvas.height = h;
-    this.finishProgram(program);
-    this.current = program;
-    gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
     let limit = this.textureLimit;
     if (cachedFrame) {
       const overlayBytes = fusion && petKind ? fusion.volume.data.length * bytesPerTexel(petKind) + fusion.volume.series.dimensions[2] * 16 : 0;
@@ -685,6 +676,15 @@ class SharedSliceRenderer {
       }
     }
     const tiles = sourceFrame === undefined ? [] : frameTiles(nx, ny, limit);
+    const plain = this.info.software && tiles.length === 1 && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
+      && !view.voiFunction && (!view.palette || view.palette === 'gray');
+    const sampling: Sampling = plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
+    const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
+    this.finishProgram(program);
+    this.current = program;
+    gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
     let sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0]);
     const pinned = new Set(reducedOnly ? [] : [sourceKey]);
     gl.uniform1i(this.uniform('uImage'), 0);
