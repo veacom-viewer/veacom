@@ -494,7 +494,7 @@ export default function App() {
   // Stable event handlers read refs so their closures do not retain old volume maps.
   const seriesRef = useRef(series);
   const [volumes, setVolumes] = useState<Map<string, Volume>>(() => new Map());
-  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [closingStudies, setClosingStudies] = useState(0);
   const [slotFrames, setSlotFrames] = useState<Record<string, Volume>>({});
   const [frameCache] = useState(() => new SourceFrameCache());
   const frameRequests = useRef(new Map<string, { key: string; seriesId: string; controller: AbortController }>());
@@ -2148,8 +2148,6 @@ export default function App() {
       // With the list emptied, the workspace starts afresh as at launch: one pane, nothing hidden, maximized, in MPR,
       // in 3D, fused or playing, so the next study opens as the first one did.
       const fresh = makeSlot();
-      // The old browser DOM can retain handlers and their captured CT volume after its last pane closes.
-      if (window.veacom?.web) setWorkspaceRevision(value => value + 1);
       hiddenSlots.current = []; beforeMpr.current = null;
       setSlots([fresh]); setLayout([1, 1]); activateSlot(fresh.id);
       setMaximized(null); setIsMpr(false); setShow3d(false); setShowFusion(false); setFusionId(null);
@@ -2169,7 +2167,12 @@ export default function App() {
     const byEngine = new Map<number | undefined, string[]>();
     for (const item of removed) byEngine.set(item.engineGeneration, [...(byEngine.get(item.engineGeneration) ?? []), item.id]);
     // An engine that restarted meanwhile has forgotten them already.
-    for (const [generation, group] of byEngine) void removeSeries(group, generation).catch(() => {});
+    const closingLast = Boolean(window.veacom?.web && !replaced && removed.length === seriesRef.current.length);
+    if (closingLast) setClosingStudies(count => count + 1);
+    const removals = Array.from(byEngine, ([generation, group]) => removeSeries(group, generation));
+    void Promise.allSettled(removals).then(() => {
+      if (closingLast && mounted.current) setClosingStudies(count => count - 1);
+    });
   };
   const changeAnnotations = (seriesId: string, next: Annotation[]) => {
     const { list, drawn } = caliperDrawn(seriesId, next);
@@ -3384,7 +3387,7 @@ export default function App() {
   const fileChoiceDisabled = Boolean(busy && !(busy === 'status.connecting' && window.veacom?.web));
   const noticeBar = notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : undefined} data-testid="notice" data-kind={notice.kind} data-code={notice.code ?? notice.key}><span>{notice.key ? t(notice.key, notice.params) : notice.warnings ? warningTexts(notice.warnings, locale).join(' · ') : notice.message}</span>{notice.action && <button type="button" className="notice-action" data-testid="notice-action" onClick={() => { notice.action?.run(); setNotice(null); focusSoon('[data-annotation-row] .annotation-main', '[data-testid="findings-add"]'); }}>{t(notice.action.label)}</button>}<button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="notice-dismiss" onClick={() => { setNotice(null); focusImage(); }}><X size={14} /></button></div>;
 
-  return <div key={workspaceRevision} className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
+  return <div className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !closingStudies && !connectionError} data-locale={locale}
     onPointerMoveCapture={event => { pointerAt.current = { x: event.clientX, y: event.clientY }; }}
     onPointerDownCapture={event => {
       if (quick && !quickRef.current?.contains(event.target as Node)) setQuick(null);
