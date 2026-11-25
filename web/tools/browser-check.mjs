@@ -284,6 +284,22 @@ async function checkLooseFileDrop(browser, url) {
       ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 1, -1000, -1000],
       ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 1, 0, 0],
     ]);
+    // Keep reading the MR while removing the other patient's CT.
+    const { CT, MR } = await page.evaluate(async () => Object.fromEntries((await window.veacom.listSeries()).series.map(item => [item.modality, item.id])));
+    await page.getByTestId('series-' + MR).click();
+    const image = page.locator('canvas[data-series-id="' + MR + '"]');
+    await image.waitFor();
+    await image.evaluate(canvas => { window.remainingMRCanvas = new WeakRef(canvas); });
+    await page.getByTestId('series-' + CT).click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
+    assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
+    const remaining = await page.evaluate(async () => {
+      const bridge = window.veacom, { generation } = await bridge.getCoreState(), [item] = (await bridge.listSeries()).series;
+      const frame = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+      return [item.id, item.patientId, frame.headers.get('X-SOP-Instance-UID')];
+    });
+    assert.deepEqual(remaining, [MR, 'SYNTHETIC-OTHER', root + '.10.3.1']);
   } finally { await page.close(); }
 }
 
