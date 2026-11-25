@@ -467,8 +467,40 @@ function useViewportGrid() {
   return { gridRef, gridTall, attachGrid };
 }
 
+type VisibleProgress = { id?: number; stage: string; completed: number; total: number; elapsed?: number; remaining?: number };
+
+function useProgressPolling(hasWork: boolean, setProgress: (value: VisibleProgress | null) => void, setCancelledId: (value: number | null) => void) {
+  const progressClock = useRef<{ id?: number; stage: string; began: number; stageBegan: number; stageDone: number } | null>(null);
+  useEffect(() => {
+    if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
+    const pollState = { disposed: false, polling: false };
+    // How long the operation shown has run and, once its stage has run a few seconds, what is left of that stage at
+    // the pace it has kept so far. A new operation, or a new stage of it, starts its own count.
+    const timed = (value: CoreProgress) => {
+      const now = performance.now(), clock = progressClock.current;
+      const same = clock !== null && clock.id === value.id, sameStage = same && clock.stage === value.stage;
+      const next = { id: value.id, stage: value.stage, began: same ? clock.began : now, stageBegan: sameStage ? clock.stageBegan : now, stageDone: sameStage ? clock.stageDone : value.completed };
+      progressClock.current = next;
+      const done = value.completed - next.stageDone, spent = now - next.stageBegan;
+      const remaining = value.total > 0 && done > 0 && spent >= 3000 ? spent / done * Math.max(0, value.total - value.completed) : undefined;
+      return { ...value, elapsed: now - next.began, remaining };
+    };
+    const poll = async () => {
+      if (pollState.polling) return; pollState.polling = true;
+      await getProgress().then(value => {
+        if (pollState.disposed) return;
+        if (!value.running) progressClock.current = null;
+        setProgress(value.running ? timed(value) : null);
+      })
+        .catch(() => { /* The initiating operation reports connection errors. */ })
+        .finally(() => { pollState.polling = false; });
+    };
+    void poll(); const timer = setInterval(() => void poll(), 400);
+    return () => { pollState.disposed = true; clearInterval(timer); };
+  }, [hasWork, setProgress, setCancelledId]);
+}
+
 export default function App() {
-  'use no web memo';
   const { locale, t } = useTranslation();
   const toolLabel = (tool: Tool) => t(`tool.${tool}` as const);
   const presetName = (preset: typeof PRESETS[number]) => t(`preset.${preset.key}` as const);
@@ -592,8 +624,7 @@ export default function App() {
   const importCount = useRef(0);
   const [connectionError, setConnectionError] = useState<string | null>(null);
   // `elapsed`: how long the operation has run; `remaining`: an estimate of what is left of its stage (both in ms).
-  const [progress, setProgress] = useState<{ id?: number; stage: string; completed: number; total: number; elapsed?: number; remaining?: number } | null>(null);
-  const progressClock = useRef<{ id?: number; stage: string; began: number; stageBegan: number; stageDone: number } | null>(null);
+  const [progress, setProgress] = useState<VisibleProgress | null>(null);
   // The engine job Cancel was pressed for: "Cancelling…" shows while that job is the one in progress, not for the next.
   const [cancelledId, setCancelledId] = useState<number | null>(null);
   const cancelling = progress !== null && cancelledId !== null && progress.id === cancelledId;
@@ -1034,34 +1065,7 @@ export default function App() {
   // The stage is the status text then (Taranıyor), and its bar says how far it is: the times beside it are enough.
   const progressStage = progress && progress.stage !== 'decode' ? stageLabel(progress.stage) : '';
   const progressText = progressStage ? progressTimes : '';
-  const hasWork = Boolean(busy || loadingIds.size || importing || aligning);
-  useEffect(() => {
-    if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
-    const pollState = { disposed: false, polling: false };
-    // How long the operation shown has run and, once its stage has run a few seconds, what is left of that stage at
-    // the pace it has kept so far. A new operation, or a new stage of it, starts its own count.
-    const timed = (value: CoreProgress) => {
-      const now = performance.now(), clock = progressClock.current;
-      const same = clock !== null && clock.id === value.id, sameStage = same && clock.stage === value.stage;
-      const next = { id: value.id, stage: value.stage, began: same ? clock.began : now, stageBegan: sameStage ? clock.stageBegan : now, stageDone: sameStage ? clock.stageDone : value.completed };
-      progressClock.current = next;
-      const done = value.completed - next.stageDone, spent = now - next.stageBegan;
-      const remaining = value.total > 0 && done > 0 && spent >= 3000 ? spent / done * Math.max(0, value.total - value.completed) : undefined;
-      return { ...value, elapsed: now - next.began, remaining };
-    };
-    const poll = async () => {
-      if (pollState.polling) return; pollState.polling = true;
-      await getProgress().then(value => {
-        if (pollState.disposed) return;
-        if (!value.running) progressClock.current = null;
-        setProgress(value.running ? timed(value) : null);
-      })
-        .catch(() => { /* The initiating operation reports connection errors. */ })
-        .finally(() => { pollState.polling = false; });
-    };
-    void poll(); const timer = setInterval(() => void poll(), 400);
-    return () => { pollState.disposed = true; clearInterval(timer); };
-  }, [hasWork]);
+  useProgressPolling(Boolean(busy || loadingIds.size || importing || aligning), setProgress, setCancelledId);
   useEffect(() => { try { localStorage.setItem('veacom:workspace:v2', JSON.stringify(settings)); } catch { /* Storage may be disabled by the host. */ } }, [settings]);
   useEffect(() => {
     if (!notice?.transient) return;

@@ -6,7 +6,7 @@ const isRendererSource = createFilter('src/**/*.{js,jsx,ts,tsx}', 'src/import-wi
 
 /** The React Compiler on the renderer's source (the browser build's too, vite.web.config.ts). The import page is
  * privileged, so React compilation belongs in the renderer's module transform. */
-export function reactCompiler(customOptOutDirectives?: string[]): Plugin {
+export function reactCompiler(): Plugin {
   return {
     name: 'veacom-react-compiler',
     enforce: 'pre',
@@ -14,7 +14,7 @@ export function reactCompiler(customOptOutDirectives?: string[]): Plugin {
       filter: { id: /\.[jt]sx?$/ },
       async handler(source, id) {
         if (!isRendererSource(id)) return;
-        const result = await transform(id, source, { jsx: 'preserve', sourcemap: true, reactCompiler: { target: '19', customOptOutDirectives } });
+        const result = await transform(id, source, { jsx: 'preserve', sourcemap: true, reactCompiler: { target: '19' } });
         if (result.fatal) this.error(result.errors.map(error => error.codeframe || error.message).join('\n'));
         return { code: result.code, map: result.map };
       },

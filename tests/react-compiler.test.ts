@@ -15,7 +15,7 @@ test('Vite compiles renderer components and hooks and keeps the import window fr
       assert.match(module?.code ?? '', /react[/_]compiler-runtime/, file);
       // The workspace itself is compiled whole: a construct the compiler cannot lower (a default parameter read from a
       // ref, say) leaves the component uncompiled without an error, and every pane then re-renders the series list.
-      if (file === '/src/App.tsx') assert.match(module?.code ?? '', /function App\(\)\s*\{\s*(?:["']use no web memo["'];?\s*)?const \$ = _c\(\d+\)/, 'App is memoized');
+      if (file === '/src/App.tsx') assert.match(module?.code ?? '', /function App\(\)\s*\{\s*const \$ = _c\(\d+\)/, 'App is memoized');
     }
     const importPage = await server.transformRequest('/src/import-window/main.ts');
     assert.ok(importPage);
