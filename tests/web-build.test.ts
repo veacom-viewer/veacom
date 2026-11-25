@@ -1,5 +1,9 @@
 // The browser build's own pieces (src/web): its MP4 writer against the desktop's, its ZIP, and its Trusted Types rule.
 import assert from 'node:assert/strict';
+import { openAsBlob } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { it } from 'node:test';
 import glyphs from '../src/assets/glyphs.json';
@@ -21,6 +25,25 @@ it('bounds the total bytes read ahead and preserves file indices when reads are 
   assert.equal(heads[1024]?.length, 64 * 1024);
   assert.equal(heads[1025], undefined);
   assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+});
+
+it('returns the exact prefix for each source across batches, empty files and a file changed on disk', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'veacom-file-heads-'));
+  try {
+    const changedPath = path.join(directory, 'changed');
+    await writeFile(changedPath, 'old');
+    const changed = await openAsBlob(changedPath);
+    await writeFile(changedPath, 'new and longer');
+    const bytes = Array.from({ length: 270 }, (_, index) => new Uint8Array(index % 23 === 0 ? 65541 : index).fill(index % 251));
+    const files = bytes.map(data => ({ file: new Blob([data]) }));
+    files[17] = { file: changed };
+    files[64] = { file: new Blob() };
+    const heads: (Uint8Array | undefined)[] = await readHeads(files);
+    assert.equal(heads.length, files.length);
+    for (const [index, expected] of bytes.entries()) {
+      assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, 65536), String(index));
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 it('writes the same MP4 header as the desktop, in both layouts', () => {
