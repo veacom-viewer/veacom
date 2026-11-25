@@ -12,6 +12,10 @@ on:
       site_run:
         description: Successful main Verify run for the long reading session
         type: string
+      retained_control:
+        description: Repeat on the same machine using the original canvas handle
+        type: boolean
+        default: false
       cycles:
         description: Number of reading and closing cycles in one tab
         default: '100'
@@ -245,5 +249,16 @@ jobs:
         with:
           name: reading-session-${{ github.run_id }}
           path: ${{ runner.temp }}/reading-session
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Repeat with the original canvas handle on this host
+        if: inputs.retained_control
+        run: node tools/browser-bench/long-session.mjs "$RUNNER_TEMP/published-site" "$RUNNER_TEMP/retained-control" "$CYCLES" "$RUNNER_TEMP/site-source.json" --original-handle
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() && inputs.retained_control }}
+        with:
+          name: reading-session-control-${{ github.run_id }}
+          path: ${{ runner.temp }}/retained-control
           if-no-files-found: warn
           retention-days: 90

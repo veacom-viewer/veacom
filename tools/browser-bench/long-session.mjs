@@ -9,7 +9,8 @@ import { chromium } from 'playwright';
 import { serveVeacom } from './lib/serve.mjs';
 import { makeStudy } from './make-study.mjs';
 
-const [site, output, cycleText, sourceFile] = process.argv.slice(2);
+const [site, output, cycleText, sourceFile, handleMode] = process.argv.slice(2);
+const originalHandle = handleMode === '--original-handle';
 const cycles = Number(cycleText);
 assert(process.platform === 'linux' && process.env.GITHUB_ACTIONS === 'true');
 assert(Number.isInteger(cycles) && cycles >= 3 && cycles <= 150);
@@ -27,25 +28,46 @@ const log = record => appendFile(path.join(output, 'cycles.jsonl'), JSON.stringi
 const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /** Linux resident memory for the browser and all its current descendants. RSS counts shared pages in each process. */
-function memory(browserPid) {
+function memory(browserPid, detail = false) {
   const ps = execFileSync('ps', ['-eo', 'pid=,ppid='], { encoding: 'utf8' });
-  const children = new Map();
+  const children = new Map(), roles = {};
   for (const line of ps.trim().split('\n')) {
     const [pid, parent] = line.trim().split(/\s+/).map(Number);
     if (!children.has(parent)) children.set(parent, []);
     children.get(parent).push(pid);
   }
-  let rssKiB = 0, processes = 0;
+  let rssKiB = 0, totalPssKiB = 0, pssProcesses = 0, processes = 0;
   const visit = pid => {
     try {
       const status = readFileSync('/proc/' + pid + '/status', 'utf8'), rss = /^VmRSS:\s+(\d+) kB$/m.exec(status);
-      if (rss) { rssKiB += Number(rss[1]); processes++; }
+      if (rss) {
+        rssKiB += Number(rss[1]); processes++;
+        if (detail) {
+          const cmd = readFileSync('/proc/' + pid + '/cmdline', 'utf8').split('\0');
+          const role = cmd.find(arg => arg.startsWith('--type='))?.slice(7) ?? (pid === browserPid ? 'browser' : 'other');
+          roles[role] = (roles[role] ?? 0) + Number(rss[1]);
+          try {
+            const stat = readFileSync('/proc/' + pid + '/smaps_rollup', 'utf8'), pss = /^Pss:\s+(\d+) kB$/m.exec(stat);
+            if (pss) { totalPssKiB += Number(pss[1]); pssProcesses++; }
+          } catch (error) {
+            if (!['EACCES','EPERM','ENOENT','ESRCH'].includes(error.code)) throw error;
+          }
+        }
+      }
     } catch (error) { if (error.code !== 'ENOENT' && error.code !== 'ESRCH') throw error; }
     for (const child of children.get(pid) ?? []) visit(child);
   };
   visit(browserPid);
   assert(processes > 1);
-  return { rssMiB: Math.round(rssKiB / 1024), processes };
+  const result = { rssMiB: Math.round(rssKiB / 1024), processes };
+  if (detail) Object.assign(result, { rssByRoleMiB:Object.fromEntries(Object.entries(roles).map(([k,n])=>[k,Math.round(n/1024)])),
+    pssProcesses, pssMiB:pssProcesses === processes ? Math.round(totalPssKiB/1024) : null });
+  return result;
+}
+
+async function heapMetrics(cdp) {
+  const [heap, dom] = await Promise.all([cdp.send('Runtime.getHeapUsage'), cdp.send('Memory.getDOMCounters')]);
+  return { ...dom, heapMiB: Object.fromEntries(Object.entries(heap).map(([name,bytes]) => [name,Math.round(bytes/2**20)])) };
 }
 
 async function verifyCase(page, study) {
@@ -100,7 +122,7 @@ try {
   const manifests = {};
   for (const study of studies) manifests[study.name] = sha(await readFile(path.join(scratch,study.name,'manifest.json')));
   const setup = { site: JSON.parse(await readFile(sourceFile,'utf8')), browser:browser.version(), cycles, fixtures:manifests,
-    cpu:os.cpus()[0].model, cores:os.cpus().length, hostMemoryGiB:os.totalmem()/2**30, initial:memory(pid),
+    cpu:os.cpus()[0].model, cores:os.cpus().length, hostMemoryGiB:os.totalmem()/2**30, initial:memory(pid,true), originalCanvasHandle:originalHandle,
     memory:'Sum of Linux VmRSS of the browser process tree, sampled every 500 ms and at each checkpoint. Shared pages can be counted in more than one process.',
     timing:'First canvas draw submission observed in animation-frame polling after native folder drop. Catalog, pane identities and source SOPs checked after loading.',
     close:'Real Clear list and confirmation, one WebAssembly memory release, empty catalog and no image canvas, then 2 seconds to settle.' };
@@ -110,16 +132,17 @@ try {
     const count = await page.evaluate(() => Number(document.documentElement.dataset.engineReleases || 0));
     await page.evaluate(() => { performance.clearMarks('veacom:volume-done'); });
     let peakMiB = 0, samples = 0;
-    const sample = () => { const m=memory(pid); peakMiB=Math.max(peakMiB,m.rssMiB); samples++; return m; };
+    const sample = (detail=false) => { const m=memory(pid,detail); peakMiB=Math.max(peakMiB,m.rssMiB); samples++; return m; };
     sample(); timer = setInterval(sample,500);
     const start = performance.now();
     for (const type of ['dragEnter','dragOver','drop']) await input.send('Input.dispatchDragEvent',{type,x:640,y:400,data:{items:[],files,dragOperationsMask:1}});
-    await page.waitForFunction(() => document.querySelector('canvas[data-series-id][data-slice]'));
+    if (originalHandle) await page.waitForFunction(() => document.querySelector('canvas[data-series-id][data-slice]'));
+    else await (await page.waitForFunction(() => Boolean(document.querySelector('canvas[data-series-id][data-slice]')))).dispose();
     const firstDrawMs = Math.round(performance.now()-start);
     await page.waitForFunction(() => performance.getEntriesByName('veacom:volume-done').length > 0 &&
       !document.querySelector('[data-action="series-pick"][aria-busy="true"]') && document.querySelector('[data-testid="veacom-app"]')?.dataset.ready === 'true', null,{timeout:90000});
     const verification = await verifyCase(page,study);
-    const loaded = sample();
+    const loaded = sample(true);
     if (i < 3 || i >= cycles-3) await page.screenshot({path:path.join(output,'open-'+String(i+1).padStart(3,'0')+'.png')});
     await page.locator('[data-action="series-pick"]').first().click({button:'right'});
     await page.locator('[data-action="series-clear"]').click();
@@ -130,9 +153,21 @@ try {
     assert.deepEqual(await page.evaluate(async () => (await window.veacom.listSeries()).series),[]);
     await wait(2000);
     clearInterval(timer);
-    const closed = sample();
-    await log({cycle:i+1,study:study.name,firstDrawMs,loaded,closed,peakMiB,samples,verification});
+    const closed = sample(true), heap = await heapMetrics(input);
+    await log({cycle:i+1,study:study.name,firstDrawMs,loaded,closed,heap,peakMiB,samples,verification});
   }
+  const snapshots = {};
+  const snapshot = async () => ({ memory:memory(pid,true), heap:await heapMetrics(input) });
+  snapshots.afterLastClose = await snapshot();
+  await wait(10000);
+  snapshots.tenSecondsLater = await snapshot();
+  await input.send('HeapProfiler.collectGarbage');
+  await wait(1500);
+  snapshots.afterGarbageCollection = await snapshot();
+  await page.close();
+  await wait(2000);
+  snapshots.afterTabClose = { memory:memory(pid,true) };
+  await writeFile(path.join(output,'end.json'),JSON.stringify(snapshots,null,2)+'\n');
 } finally {
   clearInterval(timer);
   await browser?.close();
