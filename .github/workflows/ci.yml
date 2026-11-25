@@ -1,9 +1,17 @@
 name: Measure the three-plane CT transition
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      captured_run:
+        description: Encode the captures already produced by this run
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 jobs:
   mpr:
+    if: inputs.captured_run == ''
     runs-on: macos-15
     timeout-minutes: 50
     env:
@@ -60,8 +68,6 @@ jobs:
           cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
       - name: Compare eight pairs and keep one real screen capture sequence per build
         run: node tools/reading-audit/reading.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 8 "$PWD/candidate-build"
-      - name: Encode the recorded frames at their original capture times
-        run: python3 tools/reading-audit/recording.py "$RUNNER_TEMP/mpr"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -69,3 +75,33 @@ jobs:
           name: mpr-comparison
           path: ${{ runner.temp }}/mpr
           retention-days: 14
+  recording:
+    needs: mpr
+    if: always() && (needs.mpr.result == 'success' || inputs.captured_run != '')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: mpr-comparison
+          path: ${{ runner.temp }}/mpr
+          run-id: ${{ inputs.captured_run || github.run_id }}
+          github-token: ${{ github.token }}
+      - name: Encode the original timed screen captures
+        run: |
+          if ! command -v ffmpeg >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
+          python3 tools/reading-audit/recording.py "$RUNNER_TEMP/mpr"
+          for build in reference candidate; do
+            ffprobe -v error -show_entries stream=codec_name,width,height,duration "$RUNNER_TEMP/mpr/$build.mp4"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: mpr-comparison-with-video
+          path: ${{ runner.temp }}/mpr
+          retention-days: 30
