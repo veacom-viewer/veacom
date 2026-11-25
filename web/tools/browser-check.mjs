@@ -191,6 +191,38 @@ async function checkChooseDuringStartup(browser, url, fail) {
   } finally { offline.resolve(); await page.close(); }
 }
 
+/** Closing the last CT must let the browser collect the full pixel buffer while the reader stays open. */
+async function checkClosedCTBuffer(browser, url) {
+  const page = await browser.newPage(), cdp = await page.context().newCDPSession(page);
+  try {
+    await page.addInitScript(expectedBytes => {
+      window.Worker = class extends Worker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            const bytes = data?.value?.bytes;
+            if (bytes instanceof ArrayBuffer && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes);
+          });
+        }
+      };
+    }, columns * rows * slices * 2);
+    await page.goto(url);
+    const selected = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
+    await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
+      Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
+    await page.locator('[data-action="series-pick"]').first().click({ button: 'right' });
+    await page.locator('[data-action="series-clear"]').click();
+    await page.getByTestId('series-remove-confirm').click();
+    await page.waitForFunction(() => Number(document.documentElement.dataset.engineReleases) > 0 && !document.querySelector('canvas[data-series-id]'));
+    assert.deepEqual(await page.evaluate(async () => (await window.veacom.listSeries()).series), []);
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await cdp.send('HeapProfiler.collectGarbage');
+    assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The empty viewer still retains the full CT pixel buffer.');
+  } finally { await cdp.detach(); await page.close(); }
+}
+
 /** The actual browser file list contains the same basename twice, once for each patient. */
 async function checkLooseFileDrop(browser, url) {
   const page = await browser.newPage();
@@ -471,6 +503,7 @@ try {
       }));
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
+      await checkClosedCTBuffer(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
