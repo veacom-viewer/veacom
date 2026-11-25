@@ -77,7 +77,36 @@ try {
         }
       }
       const median = values => { const a=values.toSorted((x,y)=>x-y); return (a[7]+a[8])/2; };
-      timings.push({name,width,height,outWidth,outHeight,frames,firstMs:first,firstAfterShaderSetupMs:cold,medianRedrawMs:warm.map(median),redrawMs:warm});
+      const renderer=renderers[0], gl=renderer.gl;
+      const one=new Uint8Array(4);
+      const bitmaps=await Promise.all(panes[0].map(c=>createImageBitmap(c)));
+      const phases={full:[], shader:[], present:[]};
+      const draw=CanvasRenderingContext2D.prototype.drawImage;
+      for(let repetition=0;repetition<9;repetition++) {
+        const modes=['full','shader','present'];
+        for(let j=0;j<modes.length;j++) {
+          const mode=modes[(repetition+j)%modes.length];
+          let submit=0, readback=0;
+          const begin=performance.now();
+          if(mode==='shader') CanvasRenderingContext2D.prototype.drawImage=function(){};
+          try {
+            for(let slice=0;slice<frames;slice++) {
+              const canvas=panes[0][slice], ctx=canvas.getContext('2d');
+              const t=performance.now();
+              if(mode==='present') ctx.drawImage(bitmaps[slice],0,0);
+              else renderer.render(canvas,volume,{...view,slice,windowCenter:2048+repetition,pan:[repetition%3,repetition%5]});
+              const submitted=performance.now();
+              if(mode==='shader') gl.readPixels(Math.floor(outWidth/2), Math.floor(outHeight/2),1,1,gl.RGBA,gl.UNSIGNED_BYTE,one);
+              else ctx.getImageData(Math.floor(outWidth/2),Math.floor(outHeight/2),1,1);
+              submit+=submitted-t;readback+=performance.now()-submitted;
+            }
+            gl.finish();
+            phases[mode].push({ms:performance.now()-begin,submit,readback});
+          } finally { if(mode==='shader') CanvasRenderingContext2D.prototype.drawImage=draw; }
+        }
+      }
+      bitmaps.forEach(b=>b.close());
+      timings.push({name,width,height,outWidth,outHeight,frames,firstMs:first,firstAfterShaderSetupMs:cold,medianRedrawMs:warm.map(median),redrawMs:warm,phases});
       renderers.forEach(render=>render.setVisibleViews([]));
     }
     return {renderer:renderers[0].info.renderer, candidateRenderer:renderers[1].info.renderer,timings};
