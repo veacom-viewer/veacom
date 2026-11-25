@@ -24,7 +24,10 @@ try {
         let video;
         try {
           await context.addInitScript(lang => {
-            if (location.protocol === 'http:') localStorage.setItem('veacom.locale', lang);
+            if (location.protocol === 'http:') {
+              localStorage.setItem('veacom:locale', lang);
+              localStorage.setItem('veacom.locale', lang);
+            }
             const send = Worker.prototype.postMessage;
             let held = false;
             Worker.prototype.postMessage = function (request, ...args) {
