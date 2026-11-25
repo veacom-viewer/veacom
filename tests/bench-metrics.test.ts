@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 // @ts-expect-error The bench's plain JavaScript modules have no type declarations.
-import { openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from '../tools/browser-bench/lib/metrics.mjs';
+import { navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from '../tools/browser-bench/lib/metrics.mjs';
 // @ts-expect-error The bench's plain JavaScript modules have no type declarations.
 import { compare, median, summarize } from '../tools/browser-bench/lib/stats.mjs';
 
@@ -14,6 +14,17 @@ describe('bench metrics', () => {
     const frames = [frame(1000, null), frame(1100, 150, 1), frame(1250, 0), frame(1300, 0)];
     assert.deepEqual(openMetrics({ 'bench:drop': 1000 }, frames, MAIN), { firstImageMs: 250, firstSlice: 0 });
     assert.deepEqual(openMetrics({ 'bench:drop': 1000 }, [frame(900, 0)], MAIN), { firstImageMs: null, firstSlice: null });
+  });
+
+  it('times navigation to the correct opening slice on the same trial clock', () => {
+    const first = frame(1250.75, 0);
+    assert.deepEqual(navigationMetrics(220, 230.5, 1000, first, 0),
+      { readySinceNavigationMs: 220, handoffSinceNavigationMs: 230.5, navigationToFirstCorrectMs: 481.25 });
+    assert.throws(() => navigationMetrics(220, 230.5, 1000, frame(1250, 8), 0), /Expected opening slice/);
+    assert.throws(() => navigationMetrics(240, 230, 1000, first, 0), /timestamp/);
+    assert.throws(() => navigationMetrics(220, 230, 1300, first, 0), /timestamp/);
+    assert.throws(() => navigationMetrics(220, undefined, 1000, first, 0), /timestamp/);
+    assert.throws(() => navigationMetrics(220, 230, 1000, undefined, 0), /timestamp/);
   });
 
   it('measures paging: slices drawn per second, notches kept, the longest stall and the lag after the last notch', () => {
