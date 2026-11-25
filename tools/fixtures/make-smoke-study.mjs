@@ -9,13 +9,15 @@ import path from 'node:path';
 const [destination, ...options] = process.argv.slice(2);
 const large = options.includes('--pipe-volume');
 const video = options.includes('--video-ct');
+// Reuse the name, UIDs, geometry and pixels to exercise the patient boundary on separate imports.
+const otherPatient = options.includes('--other-patient');
 const manySmall = options.includes('--many-small');
 const flag = options.indexOf('--modality'), modality = flag >= 0 ? options[flag + 1] : 'CT';
 const numbered = options.find(arg => arg.startsWith('--series-index='));
 const index = numbered ? Number(numbered.slice('--series-index='.length)) : 1;
 if (!destination || !['CT', 'MR'].includes(modality) || !Number.isInteger(index) || index < 1 || index > 99
-    || (manySmall && (large || video || numbered)) || (video && (large || modality !== 'CT')) || options.length !== (flag >= 0 ? 2 : 0) + Number(large) + Number(video) + Number(Boolean(numbered)) + Number(manySmall)) {
-  throw new Error('Usage: node tools/fixtures/make-smoke-study.mjs <new-directory> [--modality CT|MR] [--series-index=N] [--pipe-volume|--video-ct|--many-small]');
+    || (manySmall && (large || video || numbered)) || (video && (large || modality !== 'CT')) || options.length !== (flag >= 0 ? 2 : 0) + Number(large) + Number(video) + Number(Boolean(numbered)) + Number(manySmall) + Number(otherPatient)) {
+  throw new Error('Usage: node tools/fixtures/make-smoke-study.mjs <new-directory> [--modality CT|MR] [--series-index=N] [--other-patient] [--pipe-volume|--video-ct|--many-small]');
 }
 const mr = modality === 'MR';
 await mkdir(destination); // Refuse to replace an existing study.
@@ -50,7 +52,7 @@ for (let z = 0; z < slices; z++) {
   const bytes = Buffer.concat([Buffer.alloc(128), Buffer.from('DICM'), element(0x0002, 0x0000, 'UL', meta.length), meta, dataset([
     [0x0008, 0x0016, 'UI', sopClass], [0x0008, 0x0018, 'UI', uid], [0x0008, 0x0020, 'DA', '20000101'], [0x0008, 0x0030, 'TM', '120000'],
     [0x0008, 0x0060, 'CS', modality], [0x0008, 0x103e, 'LO', `Synthetic CI smoke ${modality}`], [0x0010, 0x0010, 'PN', 'SYNTHETIC^SMOKE'],
-    [0x0010, 0x0020, 'LO', 'SYNTHETIC-SMOKE'], [0x0018, 0x0050, 'DS', 1], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2${seriesSuffix}`],
+    [0x0010, 0x0020, 'LO', otherPatient ? 'SYNTHETIC-OTHER' : 'SYNTHETIC-SMOKE'], [0x0018, 0x0050, 'DS', 1], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2${seriesSuffix}`],
     [0x0020, 0x0011, 'IS', index], [0x0020, 0x0013, 'IS', z + 1], [0x0020, 0x0032, 'DS', [0, 0, z]], [0x0020, 0x0037, 'DS', [1, 0, 0, 0, 1, 0]],
     [0x0020, 0x0052, 'UI', `${root}.5`], [0x0028, 0x0002, 'US', 1], [0x0028, 0x0004, 'CS', 'MONOCHROME2'], [0x0028, 0x0010, 'US', size],
     [0x0028, 0x0011, 'US', size], [0x0028, 0x0030, 'DS', [1, 1]], [0x0028, 0x0100, 'US', 16], [0x0028, 0x0101, 'US', 16], [0x0028, 0x0102, 'US', 15],

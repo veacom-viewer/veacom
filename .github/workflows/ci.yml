@@ -271,6 +271,9 @@ jobs:
         env:
           VEACOM_SMOKE_RENDERER: software
         run: node tools/desktop-smoke.cjs "$STUDY/S01" "$EVIDENCE/desktop-smoke"
+      - name: Measurement recovery after quit and crash
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-measurement-recovery.cjs "$EVIDENCE/measurement-recovery"
       - name: Read DICOM cine timing from the composited frames
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-cine-timing.mjs "$EVIDENCE/cine-timing"

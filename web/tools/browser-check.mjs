@@ -144,6 +144,44 @@ async function checkFilePicker(page) {
   assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
 }
 
+/** Save on the same CT in two tabs. Reload it through the normal file-drop entry point to check the shared profile. */
+async function checkMeasurementTabs(browser, url) {
+  const context = await browser.newContext();
+  const selector = '[data-annotation-id]:not([data-annotation-id="draft"])';
+  async function open(page) {
+    await page.goto(url);
+    await page.waitForFunction(() => document.documentElement.dataset.engineThreads && window.__VEACOM_TEST__);
+    await page.evaluate(async () => {
+      const names = (await (await fetch('/__study/files.json')).json()).slice(0, 3);
+      const transfer = new DataTransfer();
+      for (const name of names) transfer.items.add(new File([await (await fetch('/__study/' + name)).arrayBuffer()], name.split('/').pop()));
+      document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    await page.evaluate(() => { window.__VEACOM_TEST__.setView({ slice: 1 }); window.__VEACOM_TEST__.setTool('probe'); });
+    await page.locator('[data-testid="annotation-overlay"][data-mode="source"][data-slice="1"]').waitFor();
+  }
+  async function draw(page, at) {
+    const bounds = await page.locator('[data-testid="annotation-overlay"]').boundingBox();
+    await page.mouse.click(bounds.x + at * bounds.width, bounds.y + 0.5 * bounds.height);
+    await page.locator(selector).waitFor();
+    await page.locator('[data-measurement-save="saved"]').waitFor();
+    return page.locator(selector).getAttribute('data-annotation-id');
+  }
+  try {
+    const [first, second] = await Promise.all([context.newPage(), context.newPage()]);
+    await Promise.all([open(first), open(second)]);
+    const ids = await Promise.all([draw(first, 0.42), draw(second, 0.58)]);
+    assert.equal(new Set(ids).size, 2);
+    await open(first);
+    await first.locator(`[data-annotation-id="${ids[1]}"]`).waitFor();
+    const displayed = await first.locator(selector).evaluateAll(marks => marks.map(mark => mark.dataset.annotationId));
+    assert.deepEqual(displayed.sort(), [...ids].sort());
+    await first.locator('[data-measurement-save="saved"]').waitFor();
+    console.log('Two browser tabs kept both measurements on the same source image.');
+  } finally { await context.close(); }
+}
+
 async function checkArchiveLimit(page) {
   async function zipSlice(file) {
     const name = path.basename(file);
@@ -352,6 +390,7 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
       const check = (ok, what) => { if (!ok) failures.push(`${mode}: ${what}`); };
       check(started.isolated === isolated, `crossOriginIsolated is ${started.isolated}`);

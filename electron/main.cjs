@@ -203,7 +203,7 @@ app.whenReady().then(async () => {
   window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
-  // The page holds the window open while an export runs (App.tsx): ask before closing it half done.
+  // An unfinished export or measurement save can hold the window open.
   window.webContents.on('will-prevent-unload', event => {
     const choice = dialog.showMessageBoxSync(window, { type: 'warning', title: t('export.quitTitle'), message: t('export.quitMessage'), detail: t('export.quitDetail'),
       buttons: [t('export.quitAnyway'), t('export.quitStay')], defaultId: 1, cancelId: 1, noLink: true });

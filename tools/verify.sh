@@ -51,6 +51,7 @@ run file-drop node tools/check-file-drop.cjs --study "$series" --output "$out/fi
 run engine-pipe node tools/check-engine-pipe.cjs
 run crash-reports node tools/check-crash-reporting.cjs "$out/crash-reports.json"
 run engine-recovery node tools/check-engine-recovery.cjs "$series" "$out/engine-recovery"
+run measurement-recovery node tools/check-measurement-recovery.cjs "$out/measurement-recovery"
 run security-boundary node tools/check-security-boundary.cjs "$series" "$out/security-boundary"
 run pictures node tools/check-pictures.cjs "$series" "$out/pictures"
 run interface node tools/check-interface.cjs "$series" "$out/interface"
