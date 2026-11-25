@@ -57,13 +57,25 @@ describe('measurement recovery', () => {
     const scope = await scopeOf(series), view = { slice: 3, plane: 'coronal' as const, mode: 'mpr' as const, oblique: [12, -5] as [number, number] };
     const a: Annotation = { id: 'oblique', type: 'text', label: 'Synthetic note', points: [getPlaneFrame(series, view).center], ...view };
     const record = await saveMeasurement(series, scope, a);
-    assert.deepEqual(await recoverMeasurement({ ...series }, scope, record), a);
+    const regrouped = { ...series, id: 'new-catalog-id', legacyGridIds: [series.id] };
+    // A record written by the original release on this fixture, before the catalog was regrouped.
+    const legacy = { ...record, reference: '80df330bd40a7fa5aa4600e4b96d81dad3d67d7344054c58bf6b40e15bfbde52' };
+    for (const stored of [record, legacy]) {
+      assert.deepEqual(await recoverMeasurement(series, scope, stored), a);
+      assert.deepEqual(await recoverMeasurement(regrouped, scope, stored), a);
+      const other = { ...regrouped, patientKey: 'other' };
+      assert.equal(await recoverMeasurement(other, await scopeOf(other), stored), null);
+    }
+    assert.equal((await saveMeasurement(regrouped, scope, a)).reference, record.reference);
+    assert.equal(await recoverMeasurement({ ...regrouped, legacyGridIds: [] }, scope, legacy), null);
     for (const slice of [0, 100]) {
       assert.equal(await recoverMeasurement(series, scope, { ...record, drawing: { ...a, slice } }), null);
     }
-    for (const changed of [{ canReconstruct: false }, { id: 'other-stack' }, { spacing: [1, 1, 2] as Vec3 },
-      { frameMetadata: [...frames].reverse() }, { frameMetadata: frames.slice(1) }, { frameMetadata: [{ ...frames[0], sopInstanceUid: undefined }, ...frames.slice(1)] }]) {
-      assert.equal(await recoverMeasurement({ ...series, ...changed }, scope, record), null);
+    for (const changed of [{ canReconstruct: false }, { spacing: [1, 1, 2] as Vec3 }, { frameOfReferenceUid: 'other' },
+      { frameMetadata: [...frames].reverse() }, { frameMetadata: frames.slice(1) }, { frameMetadata: [frames[1], frames[1], frames[2]] },
+      { frameMetadata: [{ ...frames[0], sopInstanceUid: undefined }, ...frames.slice(1)] },
+      { frameMetadata: [{ ...frames[0], sopInstanceUid: 'unrelated-acquisition' }, ...frames.slice(1)] }]) {
+      for (const stored of [record, legacy]) assert.equal(await recoverMeasurement({ ...regrouped, ...changed }, scope, stored), null);
     }
   });
 
