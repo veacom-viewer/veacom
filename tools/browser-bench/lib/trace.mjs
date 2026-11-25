@@ -39,7 +39,8 @@ export function readTrace(events, decode) {
     if (event.cat === 'blink.user_timing' && /^(bench|veacom):/.test(event.name ?? '') && marks[event.name] === undefined) marks[event.name] = event.ts / 1000;
   }
   const shots = events.filter(event => event.name === 'Screenshot' && event.args?.snapshot).sort((a, b) => a.ts - b.ts);
-  for (const shot of shots) frames.push({ ts: shot.ts / 1000, ...readPicture(decode(shot.args.snapshot)), jpeg: shot.args.snapshot });
+  for (const shot of shots) frames.push({ ts: shot.ts / 1000, expectedDisplayTime: shot.args.expected_display_time,
+    sequence: shot.args.frame_sequence, ...readPicture(decode(shot.args.snapshot)), jpeg: shot.args.snapshot });
   return { marks, frames };
 }
 
@@ -68,9 +69,11 @@ export function openingTrace(events, frames, marks, first) {
     groups.set(id, tasks);
   }
   return {
+    dropTraceMs: start,
     marks: Object.fromEntries(Object.entries(marks).filter(([name]) => name.startsWith('veacom:')).map(([name, at]) => [name, Math.round(at - start)])),
     screenshots: frames.filter(f => f.ts >= start && f.ts <= end).map(f => ({
-      at: Math.round(f.ts - start), slice: f.index, cell: f.unit, width: f.width, height: f.height,
+      at: Math.round(f.ts - start), expectedDisplayTime: f.expectedDisplayTime, sequence: f.sequence,
+      slice: f.index, cell: f.unit, width: f.width, height: f.height,
     })),
     threads: [...groups].map(([id, tasks]) => ({ id, name: names.get(id),
       tasks: tasks.sort((a, b) => b.ms - a.ms).slice(0, 25).sort((a, b) => a.at - b.at) })),

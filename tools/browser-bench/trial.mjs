@@ -5,8 +5,10 @@
 //   <electron> tools/browser-bench/trial.mjs <spec.json>
 import { app, BrowserWindow, nativeImage } from 'electron';
 import fs from 'node:fs';
+import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Worker } from 'node:worker_threads';
 import { openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
 import { openingTrace, readPicture, readTrace, startTrace } from './lib/trace.mjs';
 
@@ -39,6 +41,16 @@ async function look(win) {
   const picture = readPicture({ width, height, pixels: image.toBitmap() });
   return picture.index === null || picture.unit < MAIN * width ? null
     : { index: picture.index, x: (picture.x + picture.bandWidth / 2) / scale, y: (picture.y + 2 * picture.unit) / scale, unit: picture.unit / scale, top: picture.y / scale };
+}
+
+/** A quiet page may still have no image. Scanning its pixels on Electron's main thread delays trace screenshots. */
+async function showsSlice(win) {
+  const image = await win.webContents.capturePage();
+  const worker = new Worker(new URL('./lib/open-probe.worker.mjs', import.meta.url), {
+    workerData: { ...image.getSize(), pixels: image.toBitmap(), minShare: MAIN },
+  });
+  const [visible] = await once(worker, 'message');
+  return visible;
 }
 
 function wheel(win, at, direction) {
@@ -140,7 +152,7 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
     const afterOpen = Promise.resolve(viewer.adapter.afterOpen?.({ js })).catch(error => { line.afterOpenError = String(error?.message ?? error); });
-    let peakMB = 0, quietSince = null, lastCpu = before, lastAt = performance.now(), seen = null, lastLook = 0;
+    let peakMB = 0, quietSince = null, lastCpu = before, lastAt = performance.now(), seen = false, lastLook = 0;
     while (performance.now() - dropped < OPEN_LIMIT_MS) {
       await sleep(250);
       const now = performance.now(), metrics = processes();
@@ -148,8 +160,11 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       peakMB = Math.max(peakMB, memoryMB(metrics));
       lastCpu = new Map(metrics.map(m => [m.pid, m.cpu.cumulativeCPUUsage])); lastAt = now;
       quietSince = cores < QUIET_SHARE ? quietSince ?? now : null;
-      if (!seen && now - lastLook > 1000) { lastLook = now; seen = await look(win); }
-      if (seen && quietSince !== null && now - quietSince >= QUIET_MS) { line.doneMs = Math.round(quietSince - dropped); break; }
+      if (quietSince !== null && now - quietSince >= QUIET_MS && now - lastLook > 1000) {
+        lastLook = now;
+        seen = await showsSlice(win);
+        if (seen) { line.doneMs = Math.round(quietSince - dropped); break; }
+      }
     }
     await afterOpen;
     const after = processes();
@@ -162,6 +177,11 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     const steps = Object.entries(marks).filter(([name]) => name.startsWith('veacom:')).map(([name, at]) => [name.slice(7), Math.round(at - marks['bench:drop'])]);
     if (steps.length) line.openSteps = Object.fromEntries(steps.sort((a, b) => a[1] - b[1]));
     const first = frames.find(f => f.index !== null && f.unit >= MAIN * f.width && f.ts >= marks['bench:drop']);
+    // The primary result uses the same screenshot callback clock as earlier runs. Keep Chromium's estimate beside it.
+    if (first && Number.isFinite(first.expectedDisplayTime)) {
+      const display = first.expectedDisplayTime / 1000;
+      if (display >= marks['bench:drop'] && Math.abs(display - first.ts) < 10_000) line.firstImageEstimatedMs = Math.round(display - marks['bench:drop']);
+    }
     if (first) fs.writeFileSync(path.join(outDir, 'shots', `${line.viewer}-${study.name}-r${round}-first.jpg`), Buffer.from(first.jpeg, 'base64'));
     // The window showed a slice but the trace's small screenshots never read it: keep the last one to see why.
     else if (frames.length) fs.writeFileSync(path.join(outDir, 'shots', `${line.viewer}-${study.name}-r${round}-unread.jpg`), Buffer.from(frames.at(-1).jpeg, 'base64'));
@@ -171,7 +191,7 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       const before = frames.findLast(f => f.ts < first.ts && f.ts >= marks['bench:drop']);
       if (before) fs.writeFileSync(path.join(outDir, 'shots', name + '-preceding.jpg'), Buffer.from(before.jpeg, 'base64'));
     }
-    if (!seen) throw new Error('No slice marker appeared on screen.');
+    if (!seen && !(await look(win))) throw new Error('No slice marker appeared on screen.');
     // The window showed a slice that no trace screenshot read: the opening was not measured, so the trial fails.
     if (line.firstImageMs === null) throw new Error('The trace screenshots never read the slice marker the window showed (picture kept as -unread.jpg).');
 
