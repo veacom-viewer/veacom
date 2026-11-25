@@ -69,6 +69,7 @@ What each phase does on the VM:
 | 2026-11-07 | veacom-viewer/veacom-private#25 | 78 min | about US$2 |
 | 2026-11-07 | veacom-viewer/veacom-private#29 merged with veacom-viewer/veacom-private#27, the kit's first run (cold build, all 8 T4 checks passed) | 16 min | about US$0.40 |
 | 2026-11-24 | [Public PR #4](https://github.com/veacom-viewer/veacom/pull/4) on current main. All 9 T4 checks passed at `7f42494`. The PET and sinus checklist workflows also passed. | 20 min 33 s | about US$0.51 |
+| 2026-11-25 | [Public PR #91](https://github.com/veacom-viewer/veacom/pull/91) for reduced slices and fractional display scaling. All 9 T4 checks passed at `3ddd143`. | 8 min 48 s | about US$0.22 |
 
 Earlier sessions, from 2026-11-03 to 2026-11-06, are not itemised here; the billing report has them.
 
