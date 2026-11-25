@@ -32,7 +32,7 @@ const scratch = mkdtempSync(path.join(tmpdir(), 'veacom-browser-check-'));
 const study = path.join(scratch, 'study'), mrStudy = path.join(scratch, 'mr.zip');
 const makeStudy = path.join(repository, 'tools/fixtures/make-smoke-study.mjs');
 execFileSync(process.execPath, [makeStudy, study], { stdio: 'inherit' });
-execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR'], { stdio: 'inherit' });
+execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR', '--other-patient'], { stdio: 'inherit' });
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
 
@@ -142,6 +142,38 @@ async function checkFilePicker(page) {
     name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
   })));
   assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
+}
+
+/** The actual browser file list contains the same basename twice, once for each patient. */
+async function checkLooseFileDrop(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    await page.getByTestId('welcome-open-folder').waitFor();
+    const devtools = await page.context().newCDPSession(page);
+    const files = [study, mrStudy].map(folder => path.join(folder, studyFiles[0]));
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await devtools.send('Input.dispatchDragEvent', { type, x: 100, y: 120, data: { items: [], files, dragOperationsMask: 1 } });
+    }
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length >= 2);
+    const results = await page.evaluate(async () => {
+      const bridge = window.veacom, { generation } = await bridge.getCoreState();
+      const values = [];
+      for (const item of (await bridge.listSeries()).series) {
+        const pixels = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+        const sopInstanceUid = pixels.headers.get('X-SOP-Instance-UID');
+        const corner = await bridge.measure(item.id, generation, item.sourceRevision, { kind: 'sourceRegion', frame: { index: 0, sopInstanceUid },
+          shape: 'rectangle', points: [[1, 1, 0], [4, 4, 0]], pixelUnits: false });
+        values.push([item.modality, item.patientId, sopInstanceUid, item.dimensions[2], corner.min, corner.max]);
+      }
+      return values.sort((a, b) => a[0].localeCompare(b[0]));
+    });
+    const root = '2.25.302617644913925066835652647005517224101';
+    assert.deepEqual(results, [
+      ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 1, -1000, -1000],
+      ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 1, 0, 0],
+    ]);
+  } finally { await page.close(); }
 }
 
 /** Save on the same CT in two tabs. Reload it through the normal file-drop entry point to check the shared profile. */
@@ -390,6 +422,7 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
       const check = (ok, what) => { if (!ok) failures.push(`${mode}: ${what}`); };
