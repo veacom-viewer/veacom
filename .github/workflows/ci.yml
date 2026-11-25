@@ -23,22 +23,31 @@ jobs:
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: . -> native/target
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run setup:runtime && pnpm run build:core && pnpm run build:web
+      - name: Check out public main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: c2e542d4c49f8c95de1a3ca87fa1c164785e27f8
+          path: reference-build
+          persist-credentials: false
       - name: Check out the candidate renderer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 8853b5cda56151afb9eac1252d49f668f5b19cd4
+          ref: e5e88edba0dc6237407556dd52d2c30fa0b40b85
           path: candidate-build
           persist-credentials: false
       - name: Build the candidate UI against the identical engine
         run: |
-          diff -qr -x target native candidate-build/native
+          diff -qr -x target reference-build/native candidate-build/native
+          cd reference-build
+          pnpm install --frozen-lockfile
+          pnpm run setup:runtime
+          pnpm run build:core
+          pnpm run build:web
           core="$PWD/native/target/release/veacom-core"
           echo "VEACOM_CORE_PATH=$core" >> "$GITHUB_ENV"
-          echo "REFERENCE_COMMIT=ac84997d4c3883ffb09b5054513f8a87b9235bc5" >> "$GITHUB_ENV"
-          echo "CANDIDATE_COMMIT=8853b5cda56151afb9eac1252d49f668f5b19cd4" >> "$GITHUB_ENV"
-          cd candidate-build
+          echo "REFERENCE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          cd ../candidate-build
+          echo "CANDIDATE_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
           pnpm install --frozen-lockfile
           pnpm run build:web
       - name: Generate the reference CT and record the machine
@@ -46,10 +55,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/mpr"
           sysctl -n machdep.cpu.brand_string > "$RUNNER_TEMP/mpr/cpu.txt"
           system_profiler SPDisplaysDataType -json > "$RUNNER_TEMP/mpr/display.json"
+          cd reference-build
           node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
           cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
-      - name: Compare both viewers over 30 paired fresh launches
-        run: node tools/reading-audit/reading.cjs "$PWD" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 30 "$PWD/candidate-build"
+      - name: Compare eight pairs and keep one real screen capture sequence per build
+        run: node tools/reading-audit/reading.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 8 "$PWD/candidate-build"
+      - name: Encode the recorded frames at their original capture times
+        run: python3 tools/reading-audit/recording.py "$RUNNER_TEMP/mpr"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

@@ -70,7 +70,7 @@ function correlation(a,b){
     for(let i=0;i<a.length;i++){const x=a[i]-ma,y=b[i]-mb;product+=x*y;va+=x*x;vb+=y*y;}
     return product/Math.sqrt(va*vb);
 }
-async function mpr(page,depth,calibrating,diagnostic) {
+async function mpr(page,depth,calibrating,diagnostic,recording) {
     await setView(page,{slice:Math.floor((await page.evaluate(()=>window.__VEACOM_TEST__.state().dimensions[2]))/2)});
     await page.getByTestId('dicom-viewport').first().focus();
     await page.evaluate(()=>window.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='m')performance.mark('bench:mpr-command');},{capture:true,once:true}));
@@ -103,6 +103,16 @@ async function mpr(page,depth,calibrating,diagnostic) {
     assert.deepEqual(panes.map(r=>r.plane).sort(),['axial','coronal','sagittal']);
     await redrawCorner(page);await redrawCorner(page);await redrawCorner(page);
     const {marks,frames}=await stop();
+    if(recording){
+        const dir=path.join(output,recording);await fs.mkdir(dir,{recursive:true});
+        const times=[];
+        for(const [i,frame] of frames.entries()){
+            const file=String(i).padStart(4,'0')+'.jpg';
+            await fs.writeFile(path.join(dir,file),Buffer.from(frame.jpeg,'base64'));
+            times.push({file,ms:frame.ts-marks['bench:mpr-command']});
+        }
+        await fs.writeFile(path.join(dir,'captured.json'),JSON.stringify(times));
+    }
     const png=PNG.sync.read(await page.screenshot({scale:'css'}));
     const full=features({width:png.width,height:png.height,pixels:png.data},panes,8,6);
     const traceImage=jpeg(frames.at(-1).jpeg),last=features(traceImage,panes);
@@ -145,7 +155,7 @@ async function main() {
             await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded,undefined,{timeout:90000});
             const state=await page.evaluate(()=>window.__VEACOM_TEST__.state());
             assert.equal(state.dimensions[2],n);
-            const wheel=run?await paging(page,n):null, transition=await mpr(page,n,run===0 && build.name==='reference',run===0);
+            const wheel=run?await paging(page,n):null, transition=await mpr(page,n,run===0 && build.name==='reference',run===0,run===1?build.name:undefined);
             if(run===1)await page.screenshot({path:path.join(output,build.name+'-three-planes.png')});
             (run?rows:controls).push({build:build.name,run,depth:n,renderer:await page.locator('canvas[data-renderer]').first().getAttribute('data-renderer'),paging:wheel,mpr:transition});
             await save('reading.json',{tree,referenceCommit:process.env.REFERENCE_COMMIT,candidateCommit:process.env.CANDIDATE_COMMIT,controls,rows});
