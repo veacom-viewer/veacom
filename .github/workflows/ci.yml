@@ -34,13 +34,13 @@ jobs:
       - name: Check out public main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: c2e542d4c49f8c95de1a3ca87fa1c164785e27f8
+          ref: 845bc2c8da40ea1e6d7f580695179ff05e5efb62
           path: reference-build
           persist-credentials: false
       - name: Check out the candidate renderer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: e5e88edba0dc6237407556dd52d2c30fa0b40b85
+          ref: d0f6941af6ada8c81d4dbd0003b1b9118b431ecd
           path: candidate-build
           persist-credentials: false
       - name: Build the candidate UI against the identical engine
@@ -66,7 +66,7 @@ jobs:
           cd reference-build
           node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
           cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
-      - name: Compare eight pairs and keep one real screen capture sequence per build
+      - name: Compare eight pairs after scrolling and eight pairs at full-volume readiness
         run: node tools/reading-audit/reading.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 8 "$PWD/candidate-build"
       - name: Keep measurements and partial results
         if: always()

@@ -70,8 +70,8 @@ function correlation(a,b){
     for(let i=0;i<a.length;i++){const x=a[i]-ma,y=b[i]-mb;product+=x*y;va+=x*x;vb+=y*y;}
     return product/Math.sqrt(va*vb);
 }
-async function mpr(page,depth,calibrating,diagnostic,recording) {
-    await setView(page,{slice:Math.floor((await page.evaluate(()=>window.__VEACOM_TEST__.state().dimensions[2]))/2)});
+async function mpr(page,depth,calibrating,diagnostic,recording,scenario) {
+    if(scenario==='reading')await setView(page,{slice:Math.floor((await page.evaluate(()=>window.__VEACOM_TEST__.state().dimensions[2]))/2)});
     await page.getByTestId('dicom-viewport').first().focus();
     await page.evaluate(()=>window.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='m')performance.mark('bench:mpr-command');},{capture:true,once:true}));
     if (diagnostic) await page.evaluate(() => {
@@ -91,10 +91,13 @@ async function mpr(page,depth,calibrating,diagnostic,recording) {
         },{capture:true,once:true});
     });
     const stop=await trace(page);
-    for(let i=0;i<6;i++){await redrawCorner(page);await sleep(100);}
+    if(scenario==='reading')for(let i=0;i<6;i++){await redrawCorner(page);await sleep(100);}
+    else await redrawCorner(page);
     const before = PNG.sync.read(await page.screenshot({scale:'css'}));
     assert.equal(await page.locator('canvas[data-renderer]').count(),1);
-    await redrawCorner(page);await page.keyboard.press('m');
+    if(scenario==='reading')await redrawCorner(page);
+    await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded && Number.isFinite(window.__readyAt),undefined,{timeout:90000});
+    await page.keyboard.press('m');
     await page.waitForFunction(()=>new Set([...document.querySelectorAll('canvas[data-renderer]')].map(c=>c.dataset.plane)).size===3,undefined,{timeout:20000});
     await sleep(330);
     const panes=await page.evaluate(()=>[...document.querySelectorAll('canvas[data-renderer]')].map(c=>{
@@ -119,8 +122,9 @@ async function mpr(page,depth,calibrating,diagnostic,recording) {
     const coarse=features(traceImage,panes,8,6);
     const crossResolutionCorrelation=coarse.map((plane,i)=>correlation(plane,full[i]));
     assert(crossResolutionCorrelation.every(r=>r>.9),'Full-window and trace images must correlate in each plane: '+crossResolutionCorrelation);
-    if(calibrating) references.set(depth,last);
-    const target=references.get(depth);
+    const key=depth+'-'+scenario;
+    if(calibrating) references.set(key,last);
+    const target=references.get(key);
     assert(target.every(c=>Math.max(...c)-Math.min(...c)>70),'Each MPR plane must show contrast');
     const t=marks['bench:mpr-command'];assert(Number.isFinite(t));
     const scored=frames.map(f=>({ms:f.ts-t,estimateMs:f.estimateMs===undefined?null:f.estimateMs-t,errors:errors(features(jpeg(f.jpeg),panes),target)}));
@@ -139,7 +143,10 @@ async function mpr(page,depth,calibrating,diagnostic,recording) {
     assert(matched);
     const calls=diagnostic ? await page.evaluate(() => window.__mprCalls.filter(c => c.at>=window.__mprInput && (c.ms>=1 || c.name==='texImage3D'))
         .map(c=>({...c,at:c.at-window.__mprInput}))) : undefined;
-    return {calls,timeToThreeStablePlanesMs:matched.ms,referenceToleranceGray:limit,planes:panes.map(b=>b.plane),crossResolutionCorrelation,screens:scored,referenceRange:target.map(t=>Math.max(...t)-Math.min(...t))};
+    const readiness=await page.evaluate(()=>({alreadyLoadedAtAttach:window.__readyAtAttach,readyMs:window.__readyAt,
+        firstCanvasMs:performance.getEntriesByName('veacom:first-draw')[0]?.startTime,
+        commandAfterObservedReadyMs:performance.getEntriesByName('bench:mpr-command')[0].startTime-window.__readyAt}));
+    return {calls,readiness,timeToThreeStablePlanesMs:matched.ms,referenceToleranceGray:limit,planes:panes.map(b=>b.plane),crossResolutionCorrelation,screens:scored,referenceRange:target.map(t=>Math.max(...t)-Math.min(...t))};
 }
 async function main() {
     const rows=[],controls=[];
@@ -147,17 +154,24 @@ async function main() {
     const rounds=Number(process.argv[6]??5);
     const builds=[{name:'reference',folder:repo}, {name:'candidate',folder:path.resolve(process.argv[7])}];
     const n=1000;
-    for(let run=0;run<=rounds;run++)for(const build of (run%2 ? [...builds].reverse() : builds)){
+    for(let run=0;run<=rounds;run++)for(const scenario of run%2?['loaded','reading']:['reading','loaded'])for(const build of (run%2 ? [...builds].reverse() : builds)){
         const profile=await fresh();let current;
         try{
             current=await launch(profile,path.join(base,'ct-'+n,'S01'),build.folder);
             const {page}=current;
-            await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded,undefined,{timeout:90000});
-            const state=await page.evaluate(()=>window.__VEACOM_TEST__.state());
-            assert.equal(state.dimensions[2],n);
-            const wheel=run?await paging(page,n):null, transition=await mpr(page,n,run===0 && build.name==='reference',run===0,run===1?build.name:undefined);
-            if(run===1)await page.screenshot({path:path.join(output,build.name+'-three-planes.png')});
-            (run?rows:controls).push({build:build.name,run,depth:n,renderer:await page.locator('canvas[data-renderer]').first().getAttribute('data-renderer'),paging:wheel,mpr:transition});
+            await page.evaluate(()=>{
+                const ready=()=>document.querySelector('[data-testid="viewport-cell"]')?.dataset.volumeComplete==='true';
+                window.__readyAtAttach=ready();
+                if(window.__readyAtAttach){window.__readyAt=performance.now();return;}
+                const obs=new MutationObserver(()=>{if(ready()){window.__readyAt=performance.now();obs.disconnect();}});
+                obs.observe(document.documentElement,{childList:true,subtree:true,attributes:true,attributeFilter:['data-volume-complete']});
+            });
+            assert.equal(await page.evaluate(()=>window.__VEACOM_TEST__.state().dimensions[2]),n);
+            if(scenario==='reading')await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded,undefined,{timeout:90000});
+            const wheel=run&&scenario==='reading'?await paging(page,n):null;
+            const transition=await mpr(page,n,run===0 && build.name==='reference',run===0,run===1&&scenario==='reading'?build.name:undefined,scenario);
+            if(run===1)await page.screenshot({path:path.join(output,build.name+'-'+scenario+'-three-planes.png')});
+            (run?rows:controls).push({build:build.name,scenario,run,depth:n,renderer:await page.locator('canvas[data-renderer]').first().getAttribute('data-renderer'),paging:wheel,mpr:transition});
             await save('reading.json',{tree,referenceCommit:process.env.REFERENCE_COMMIT,candidateCommit:process.env.CANDIDATE_COMMIT,controls,rows});
             console.log(build.name,'CT',n,'trial',run,'wheel errors',wheel?.wrongSteps,'MPR ms',transition.timeToThreeStablePlanesMs);
         }finally{if(current)await closeDesktop(current.app);await fs.rm(profile,{recursive:true,force:true});}
