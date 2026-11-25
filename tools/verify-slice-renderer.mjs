@@ -239,7 +239,7 @@ export function verifySliceRenderer() {
 function verifySoftwareWindow(renderer, series, view) {
   const gl = renderer.gl, software = renderer.info.software;
   const canvas = document.createElement('canvas');
-  canvas.width = 240; canvas.height = 152;
+  canvas.width = 239; canvas.height = 153;
   const width = 768, height = 640;
   const study = offset => {
     const data = new Int16Array(width * height * 2);

@@ -812,8 +812,12 @@ class SharedSliceRenderer {
       [view.pan[0] * ratio, view.pan[1] * ratio]) : undefined;
     const sampling: Sampling = sample ? 'window-samples' : plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
     const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
-    if (this.canvas.width !== w) this.canvas.width = w;
-    if (this.canvas.height !== h) this.canvas.height = h;
+    // Adjacent panes can differ by one physical pixel. Share their backing surface and draw each at its exact size.
+    const surfaceSize = (size: number) => this.info.software && size <= this.info.maxTextureSize
+      ? Math.min(this.info.maxTextureSize, Math.ceil(size / 8) * 8) : size;
+    const surfaceWidth = surfaceSize(w), surfaceHeight = surfaceSize(h);
+    if (this.canvas.width !== surfaceWidth) this.canvas.width = surfaceWidth;
+    if (this.canvas.height !== surfaceHeight) this.canvas.height = surfaceHeight;
     this.finishProgram(program);
     this.current = program;
     gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
@@ -891,7 +895,8 @@ class SharedSliceRenderer {
     }
     const context = target.getContext('2d', { alpha: false });
     if (!context) throw new Error(t('gpu.compositorFailed'));
-    context.drawImage(this.canvas, 0, 0);
+    if (surfaceWidth === w && surfaceHeight === h) context.drawImage(this.canvas, 0, 0);
+    else context.drawImage(this.canvas, 0, surfaceHeight - h, w, h, 0, 0, w, h);
     target.dataset.textureTarget = sourceFrame === undefined ? 'TEXTURE_3D' : 'TEXTURE_2D';
     if (sourceFrame === undefined) delete target.dataset.sourceFrame; else target.dataset.sourceFrame = String(sourceFrame);
     this.prune(0, pinned);
