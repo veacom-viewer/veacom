@@ -19,7 +19,7 @@ PlexusMD has no source or build to pin. It is timed over the internet, it loads 
 
 ## What it measures
 
-Every number comes from what the screen showed. Each slice of a bench study carries its own index in a band of black and white cells (`lib/marker.mjs`), and the harness reads Chromium's trace screenshots, one for every frame that changed, so it knows which slice was on screen and when. This works the same for every viewer, with no hooks inside any of them.
+Each slice carries its index in a band of black and white cells (`lib/marker.mjs`). The harness reads that index in Chromium's trace screenshots for every viewer. Opening time runs from the file handoff to the first screenshot callback with a readable main-pane slice. The raw result also records Chromium's estimated display time when supplied on the same clock. After two quiet seconds a worker checks a separate full-size screenshot for the completion test. Reading that screenshot on Electron's main thread can delay the trace callbacks by hundreds of milliseconds.
 
 | Scenario | Metrics |
 |---|---|

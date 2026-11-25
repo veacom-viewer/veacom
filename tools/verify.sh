@@ -36,6 +36,7 @@ run open-work node tools/check-open-speed.cjs --output="$out/open-work"
 run unit pnpm test
 run web-build pnpm run build:web
 run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
+run cine-timing node tools/check-cine-timing.mjs "$out/cine-timing"
 run video-encoder node tools/check-video-encoder.cjs "$out/video-encoder"
 run video-encoder-no-gpu node tools/check-video-encoder.cjs "$out/video-encoder" --no-gpu
 run click-budget node tools/check-click-budget.cjs "$study" "$out/click-budget"
