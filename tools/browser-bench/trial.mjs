@@ -156,23 +156,6 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     let trace, ready;
     if (spec.fromNavigation) {
       devtools.attach('1.3');
-      await devtools.sendCommand('Page.enable');
-      await devtools.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
-        if (self !== top) return;
-        const selection = ${JSON.stringify(viewer.adapter.navigationDrop.control)};
-        let mounted = false;
-        const observer = new MutationObserver(() => {
-          const opener = document.querySelector(selection);
-          if (!opener) return;
-          if (!mounted) { mounted = true; performance.mark('startup:opener-mounted'); }
-          if (!opener.matches(':disabled')) {
-            performance.mark('startup:opener-enabled');
-            observer.disconnect();
-            requestAnimationFrame(() => performance.mark('startup:next-paint-opportunity'));
-          }
-        });
-        observer.observe(document, { subtree: true, childList: true, attributes: true, attributeFilter: ['disabled'] });
-      })()` });
       trace = await startOpeningTrace();
     }
     const loadStart = performance.now();
