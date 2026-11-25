@@ -1186,6 +1186,8 @@ export const tr: Record<keyof typeof en, string> = {
   'status.speed': 'Oynatma hızı',
   'status.slower': 'Yavaşlat',
   'status.faster': 'Hızlandır',
+  'status.averageFps': 'ort. kare/sn',
+  'status.dicomTiming': 'DICOM kare zamanlamasını kullan',
   'status.fpsUnit': 'fps',
   'status.speedValue': 'Saniyede kare (1–{max})',
   'status.speedEdit': 'Yazmak için tıklayın (1–{max})',

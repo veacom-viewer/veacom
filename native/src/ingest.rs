@@ -1826,6 +1826,7 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
         diffusion_b_value: None,
         acquisition: AcquisitionMetadata::default(),
         frame_metadata: Vec::new(),
+        cine: None,
         phase: None,
         padding_range: None,
         segmentation: None,
@@ -1834,6 +1835,7 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
     let frame = Frame {
         source,
         index: 0,
+        cine: None,
         sop_uid: String::new(),
         instance_number: 0,
         geometry: FrameGeometry {
@@ -1991,6 +1993,10 @@ fn read_frames_budget(
     let frames = number(&obj, Tag(0x0028, 0x0008)).unwrap_or(1.) as usize;
     if frames == 0 || frames > MAX_FILES {
         bail!("Invalid or excessive NumberOfFrames");
+    }
+    let cine = crate::cine::FileCine::read(&obj, frames).map(Arc::new);
+    if let Some(timing) = &cine {
+        budget.reserve_index(1, timing.retained_bytes())?;
     }
     let modality = text(&obj, Tag(0x0008, 0x0060));
     let uid = text(&obj, Tag(0x0020, 0x000e));
@@ -2416,6 +2422,7 @@ fn read_frames_budget(
             diffusion_b_value,
             acquisition,
             frame_metadata: Vec::new(),
+            cine: None,
             phase: None,
             padding_range: padding,
             window_from_pixels: false,
@@ -2472,6 +2479,7 @@ fn read_frames_budget(
         let frame = Frame {
             source: source.clone(),
             index: index as u32,
+            cine: cine.clone(),
             sop_uid: text(&obj, Tag(0x0008, 0x0018)),
             instance_number: number(&obj, Tag(0x0020, 0x0013)).unwrap_or(0.) as i32,
             geometry: FrameGeometry {
@@ -3555,6 +3563,10 @@ fn catalogue(
         info.spacing = geom.spacing;
         info.origin = geom.origin;
         info.direction = geom.direction;
+        info.cine = crate::cine::for_series(&ordered);
+        for frame in &mut ordered {
+            frame.cine = None;
+        }
         info.frame_metadata = ordered.iter().map(|frame| frame.metadata.clone()).collect();
         // VOI LUTs, once each, for the frames that store no window (a window takes precedence).
         let mut luts: Vec<Arc<crate::model::VoiLut>> = Vec::new();
@@ -5726,6 +5738,51 @@ mod tests {
     fn ds(tag: Tag, value: &str) -> DataElement<InMemDicomObject> {
         DataElement::new(tag, VR::DS, value)
     }
+    #[test]
+    fn cine_catalog_keeps_source_order_and_gates_mixed_instances() {
+        let temp = crate::test_dir::tempdir().unwrap();
+        let path = temp.path().join("clip.dcm");
+        let mut obj = metadata_object(4);
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0009),
+            VR::AT,
+            PrimitiveValue::from(Tag(0x0018, 0x1065)),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0018, 0x1065),
+            VR::DS,
+            "0\\25\\75\\45",
+        ));
+        obj.put(DataElement::new(Tag(0x0008, 0x2142), VR::IS, "2"));
+        obj.put(DataElement::new(Tag(0x0008, 0x2143), VR::IS, "4"));
+        obj.put(DataElement::new(
+            Tag(0x0018, 0x1244),
+            VR::US,
+            PrimitiveValue::from(1u16),
+        ));
+        let positions = ["0\\0\\6", "0\\0\\4", "0\\0\\2", "0\\0\\0"].map(|value| {
+            InMemDicomObject::from_element_iter([sequence(
+                Tag(0x0020, 0x9113),
+                vec![InMemDicomObject::from_element_iter([DataElement::new(
+                    Tag(0x0020, 0x0032),
+                    VR::DS,
+                    value,
+                )])],
+            )])
+        });
+        obj.put(sequence(Tag(0x5200, 0x9230), positions.into()));
+        write_metadata(obj.clone(), &path);
+        let result = import(&[path.to_string_lossy().into_owned()]).unwrap();
+        let timing = result.sources[0].info.cine.as_ref().unwrap();
+        assert_eq!(timing.slices, [2, 1, 0]);
+        assert_eq!(timing.intervals_ms, [75., 45.]);
+        assert!(timing.sweeping);
+        obj.put(DataElement::new(Tag(0x0008, 0x0018), VR::UI, "1.2.3.4.6"));
+        write_metadata(obj, &temp.path().join("second.dcm"));
+        let both = import(&[temp.path().to_string_lossy().into_owned()]).unwrap();
+        assert!(both.sources.iter().all(|source| source.info.cine.is_none()));
+    }
+
     #[test]
     fn metadata_preserves_frame_overrides_shared_fallback_and_decoded_order() {
         let mut obj = metadata_object(2);

@@ -9,8 +9,10 @@ const REPEAT_MS = 80;
 const repeatStep = (repeats: number) => repeats < 10 ? 1 : repeats < 25 ? 2 : repeats < 45 ? 5 : 10;
 
 /** The cine speed while a series plays: − and + change it one frame a second at a time (faster while held), and
- * the number itself can be typed. Whole numbers from 1 to `max`, the series' slice count. */
-export function CineSpeed({ fps, max, onChange }: { fps: number; max: number; onChange: (fps: number) => void }) {
+ * the number itself can be typed. Typing a speed overrides the recorded timing for this clip. */
+export function CineSpeed({ fps, max, onChange, source }: {
+  fps: number; max: number; onChange: (fps: number) => void; source?: { active: boolean; variable: boolean; restore: () => void };
+}) {
   const { t } = useTranslation();
   const clamp = (value: number) => Math.max(1, Math.min(max, Math.round(value)));
   const [draft, setDraft] = useState<string | null>(null);
@@ -31,15 +33,17 @@ export function CineSpeed({ fps, max, onChange }: { fps: number; max: number; on
 
   // Leaving the field takes what was typed, unless Esc gave it up (the blur that follows comes before the re-render).
   const givenUp = useRef(false);
+  const edited = useRef(false);
+  const shown = Number(fps.toPrecision(4));
   const commit = () => {
-    const typed = givenUp.current ? null : draft;
+    const typed = givenUp.current || !edited.current ? null : draft;
     givenUp.current = false;
     setDraft(null);
     if (typed === null) return;
     const value = Number.parseInt(typed, 10);
     if (Number.isFinite(value)) {
       const next = clamp(value);
-      if (next !== fps) onChange(next);
+      if (next !== fps || source?.active) onChange(next);
     }
   };
   const editKey = (event: ReactKeyboardEvent<HTMLInputElement>) => {
@@ -52,13 +56,16 @@ export function CineSpeed({ fps, max, onChange }: { fps: number; max: number; on
       disabled={fps <= 1} onPointerDown={press(-1)} onClick={key(-1)}><Minus size={13} /></button>
     <label className="status-fps-value" data-tooltip={t('status.speedEdit', { max })}>
       <input ref={input} data-testid="status-fps" type="text" inputMode="numeric" autoComplete="off" spellCheck={false}
-        aria-label={t('status.speedValue', { max })} value={draft ?? String(fps)} size={Math.max(2, String(max).length)}
-        onFocus={event => { setDraft(String(fps)); event.currentTarget.select(); }}
-        onChange={event => setDraft(event.target.value.replace(/\D/g, '').slice(0, String(max).length))}
+        aria-label={t('status.speedValue', { max })} value={draft ?? String(shown)} size={Math.max(2, String(shown).length)}
+        onFocus={event => { edited.current = false; setDraft(String(shown)); event.currentTarget.select(); }}
+        onChange={event => { edited.current = true; setDraft(event.target.value.replace(/\D/g, '').slice(0, String(max).length)); }}
         onBlur={commit} onKeyDown={editKey} />
-      <span aria-hidden="true">{t('status.fpsUnit')}</span>
+      <span aria-hidden="true">{t(source?.active && source.variable ? 'status.averageFps' : 'status.fpsUnit')}</span>
     </label>
     <button type="button" className="status-button" data-testid="status-fps-up" aria-label={t('status.faster')} data-tooltip={t('status.faster')}
       disabled={fps >= max} onPointerDown={press(1)} onClick={key(1)}><Plus size={13} /></button>
+    {source && <button type="button" className="status-button" data-action="status-dicom-timing"
+      aria-pressed={source.active} aria-label={t('status.dicomTiming')} data-tooltip={t('status.dicomTiming')}
+      onClick={() => source.active ? onChange(clamp(fps)) : source.restore()}>DICOM</button>}
   </div>;
 }

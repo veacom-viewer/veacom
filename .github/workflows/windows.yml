@@ -179,6 +179,11 @@ jobs:
         env:
           VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
         run: node tools/check-measurement-recovery.cjs "$env:EVIDENCE/measurement-recovery"
+      - name: Read cine frame timing in the packaged viewer
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
+        run: node tools/check-cine-timing.mjs "$env:EVIDENCE/cine-timing"
       - name: Software drawing reported, packaged
         if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
         env:

@@ -699,6 +699,7 @@ mod tests {
             diffusion_b_value: None,
             acquisition: Default::default(),
             frame_metadata: Vec::new(),
+            cine: None,
             phase: None,
             padding_range: None,
             segmentation: None,

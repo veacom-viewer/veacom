@@ -274,6 +274,9 @@ jobs:
       - name: Measurement recovery after quit and crash
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-measurement-recovery.cjs "$EVIDENCE/measurement-recovery"
+      - name: Read DICOM cine timing from the composited frames
+        if: ${{ !cancelled() && steps.study.outcome == 'success' }}
+        run: node tools/check-cine-timing.mjs "$EVIDENCE/cine-timing"
       - name: Software drawing reported
         if: ${{ !cancelled() && steps.study.outcome == 'success' }}
         run: node tools/check-software-rendering.cjs "$STUDY/S01" "$EVIDENCE/software-rendering" --expect software
@@ -462,6 +465,7 @@ jobs:
           retention-days: 7
       - run: node tools/fixtures/make-smoke-study.mjs "$RUNNER_TEMP/veacom-smoke-study"
       - run: node tools/desktop-smoke.cjs "$RUNNER_TEMP/veacom-smoke-study/S01" "$RUNNER_TEMP/desktop-smoke"
+      - run: node tools/check-cine-timing.mjs "$RUNNER_TEMP/cine-timing"
       - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder"
       - run: node tools/check-video-encoder.cjs "$RUNNER_TEMP/video-encoder" --no-gpu
       - name: Retain synthetic smoke and video evidence
@@ -471,6 +475,7 @@ jobs:
           name: macos-smoke-${{ github.run_id }}
           path: |
             ${{ runner.temp }}/desktop-smoke
+            ${{ runner.temp }}/cine-timing
             ${{ runner.temp }}/video-encoder
           if-no-files-found: ignore
           retention-days: 7
