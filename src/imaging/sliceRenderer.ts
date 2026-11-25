@@ -196,7 +196,7 @@ uniform vec3 uIndexTopLeft;
 uniform vec3 uIndexRight;
 uniform vec3 uIndexDown;
 uniform float uScreenHeight;
-${retained ? 'uniform highp sampler2D uWindowSamples; uniform int uSamplePass; uniform ivec2 uSampleShift;' : ''}
+${retained ? 'uniform highp sampler2D uWindowSamples; uniform int uSamplePass; uniform ivec2 uSampleShift; uniform vec3 uSampleOrigin;' : ''}
 ${dimension === '2d' ? 'uniform vec3 uFull;\nuniform vec4 uTile;\nuniform vec2 uTileOrigin;' : ''}
 ${color || dimension !== '3d' ? '' : 'uniform int uSlabMode;\nuniform int uSlabHalf;\nuniform vec3 uSlabStep;'}
 ${color ? '' : 'uniform vec2 uWindow;\nuniform bool uInvert;\nuniform int uBasePalette;\nuniform int uVoiFunction;\nuniform bool uVoi;\nuniform usampler2D uVoiLut;\nuniform float uVoiFirst;\nuniform int uVoiCount;\nuniform float uVoiMax;'}
@@ -263,14 +263,17 @@ void main() {
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
   outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : `texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb`},1.0);
   ` : `
-  ${retained ? `if (uSamplePass==1) { outColor=vec4(frameAverage(framePixel).r,framePixel,1.0); return; }
+  ${retained ? `if (uSamplePass==1) { outColor=vec4(frameAverage(framePixel).r,0.0,0.0,1.0); return; }
   float value;
   if (uSamplePass==3) value=texelFetch(uWindowSamples,ivec2(gl_FragCoord.xy),0).r;
   else if (uSamplePass==2) {
     ivec2 at=ivec2(gl_FragCoord.xy)+uSampleShift, size=textureSize(uWindowSamples,0);
-    vec4 old=texelFetch(uWindowSamples,clamp(at,ivec2(0),size-1),0);
+    vec2 centre=vec2(at)+0.5;
+    vec3 old=uSampleOrigin+uIndexRight*centre.x+uIndexDown*(uScreenHeight-centre.y);
     // Small pans can differ by one floating-point step. Reuse only the exact source position.
-    if (old.a>0.5&&all(equal(old.gb,framePixel))) value=old.r; else value=frameAverage(framePixel).r;
+    if (all(lessThan(uvec2(at),uvec2(size)))&&!outside(old,uFull)&&all(equal(old.xy,framePixel)))
+      value=texelFetch(uWindowSamples,at,0).r;
+    else value=frameAverage(framePixel).r;
   } else value=frameAverage(framePixel).r;` : `float value=${reducedOnly ? 'frameAverage(framePixel).r' : dimension === '2d' ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};`}
   ${plain ? '' : 'if (nonFinite(value)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${reducedOnly ? '' : filtered && dimension === '2d' ? `vec2 mean=frameAverage(framePixel).rg;
@@ -630,7 +633,7 @@ class SharedSliceRenderer {
   private planSamples(target: HTMLCanvasElement, owner: string, origin: Vec3, right: Vec3, down: Vec3,
     grid: [number, number], footprint: [number, number], pan: [number, number]): SampleDraw | undefined {
     const { width, height } = target, gl = this.gl;
-    if (width * height * 16 > SAMPLE_BUDGET || Math.max(width, height) > this.textureLimit ||
+    if (width * height * 4 > SAMPLE_BUDGET || Math.max(width, height) > this.textureLimit ||
       !(this.sampleSupport ??= !!gl.getExtension('EXT_color_buffer_float'))) return;
     const geometry = [owner, width, height, ...right.map(Math.fround), ...down.map(Math.fround), ...footprint.map(Math.fround), ...grid].join(':');
     const state = this.sampleViews.get(target);
@@ -657,7 +660,7 @@ class SharedSliceRenderer {
     gl.activeTexture(gl.TEXTURE6);
     if (plan.build) {
       if (!entry) {
-        const bytes = width * height * 16;
+        const bytes = width * height * 4;
         const samples = [...this.textures].filter(([id]) => id.startsWith('window:')).sort((a, b) => a[1].touched - b[1].touched);
         let total = samples.reduce((sum, [, cached]) => sum + cached.bytes, bytes);
         for (const [id, old] of samples) {
@@ -667,7 +670,7 @@ class SharedSliceRenderer {
         this.prune(bytes, pinned);
         const texture = gl.createTexture();
         gl.bindTexture(gl.TEXTURE_2D, texture); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, width, height, 0, gl.RGBA, gl.FLOAT, null);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, null);
         entry = { owner, texture, padding: null, data: new WeakRef(volume.data), bytes, touched: 0 };
         this.textures.set(key, entry);
       }
@@ -689,7 +692,7 @@ class SharedSliceRenderer {
     }
     if (entry) {
       gl.bindTexture(gl.TEXTURE_2D, entry.texture); gl.uniform1i(this.uniform('uWindowSamples'), 6);
-      gl.uniform1i(this.uniform('uSamplePass'), plan.same ? 3 : 2); gl.uniform2iv(this.uniform('uSampleShift'), plan.shift);
+      gl.uniform1i(this.uniform('uSamplePass'), plan.same ? 3 : 2); gl.uniform2iv(this.uniform('uSampleShift'), plan.shift); gl.uniform3fv(this.uniform('uSampleOrigin'), plan.state.origin);
       entry.touched = performance.now(); pinned.add(key);
     } else gl.uniform1i(this.uniform('uSamplePass'), 0);
   }
