@@ -3384,7 +3384,7 @@ export default function App() {
   const fileChoiceDisabled = Boolean(busy && !(busy === 'status.connecting' && window.veacom?.web));
   const noticeBar = notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : undefined} data-testid="notice" data-kind={notice.kind} data-code={notice.code ?? notice.key}><span>{notice.key ? t(notice.key, notice.params) : notice.warnings ? warningTexts(notice.warnings, locale).join(' · ') : notice.message}</span>{notice.action && <button type="button" className="notice-action" data-testid="notice-action" onClick={() => { notice.action?.run(); setNotice(null); focusSoon('[data-annotation-row] .annotation-main', '[data-testid="findings-add"]'); }}>{t(notice.action.label)}</button>}<button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="notice-dismiss" onClick={() => { setNotice(null); focusImage(); }}><X size={14} /></button></div>;
 
-  return <div key={workspaceRevision} className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
+  return <div className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
     onPointerMoveCapture={event => { pointerAt.current = { x: event.clientX, y: event.clientY }; }}
     onPointerDownCapture={event => {
       if (quick && !quickRef.current?.contains(event.target as Node)) setQuick(null);
@@ -3397,7 +3397,7 @@ export default function App() {
     <TooltipLayer />
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
-    <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
+    <div key={workspaceRevision} className={`workspace${show3d ? ' beside-3d' : ''}`}>
       <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
