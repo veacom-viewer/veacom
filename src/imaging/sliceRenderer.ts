@@ -506,7 +506,8 @@ class SharedSliceRenderer {
       const byteCount = texels * bytesPerTexel(kind);
       this.prune(byteCount + d * 16, protectedKeys);
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
-      let displayData = region ? planePixels(sourceData, series.dimensions, region) : sourceData;
+      const strided = region && (tileWidth !== series.dimensions[0] || tileHeight !== series.dimensions[1]) ? region : undefined;
+      let displayData = region && !strided ? planePixels(sourceData, series.dimensions, region) : sourceData;
       if (sourceData instanceof Float64Array) {
         const depth = sourceFrame === undefined ? series.dimensions[2] : 1;
         const copy = new Float32Array(texels);
@@ -539,7 +540,13 @@ class SharedSliceRenderer {
         : kind === 'uint16' ? [gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT]
           : kind === 'uint8' ? [gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE]
             : kind === 'rgb8' ? [gl.RGB8, gl.RGB, gl.UNSIGNED_BYTE] : [gl.R32F, gl.RED, gl.FLOAT];
-      if (sourceFrame === undefined) gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData);
+      if (strided) {
+        const [nx, ny] = series.dimensions, [x, y, z] = strided.start;
+        const first = (z * ny + y) * nx + x, span = ((d - 1) * ny + h - 1) * nx + w;
+        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, nx); gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, ny);
+        try { gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData.subarray(first, first + span)); }
+        finally { gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_IMAGE_HEIGHT, 0); }
+      } else if (sourceFrame === undefined) gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData);
       else if (tiled && !(sourceData instanceof Float64Array)) {
         // A tile is read from the frame in place: rows of the whole frame, from the tile's corner.
         gl.pixelStorei(gl.UNPACK_ROW_LENGTH, series.dimensions[0]); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, tiled.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, tiled.y);
