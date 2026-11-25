@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useRef, useState } from 'react';
 import type { Annotation, Series, Volume } from '../model';
-import { calibrationEditId, measurementEdits, measurementScope, recoverCalibration, recoverMeasurement, saveCalibration, saveMeasurement, type CalibrationEdit, type RecoveryRecord } from '../domain/measurementRecovery';
+import { calibrationEditId, measurementEdits, measurementScope, recoverCalibrations, recoverMeasurement, saveCalibration, saveMeasurement, type CalibrationEdit, type RecoveryWrite } from '../domain/measurementRecovery';
 import { readMeasurements, writeMeasurements } from '../domain/measurementDatabase';
 
 type Edit = { id: string; drawing?: Annotation; calibration?: CalibrationEdit };
@@ -31,11 +31,11 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Ser
       try {
         const scope = await measurementScope(series);
         if (!scope) throw new Error('Missing study identity');
-        const changes = await Promise.all(edits.map(async (edit): Promise<{ id: string; put?: RecoveryRecord }> => {
+        const changes = await Promise.all(edits.map(async (edit): Promise<RecoveryWrite> => {
           if (edit.calibration) return saveCalibration(series, scope, edit.calibration);
           return edit.drawing ? { id: edit.id, put: await saveMeasurement(series, scope, edit.drawing) } : { id: edit.id };
         }));
-        await writeMeasurements(scope, changes.flatMap(e => e.put ? [e.put] : []), changes.filter(e => !e.put).map(e => e.id));
+        await writeMeasurements(scope, changes);
         const previous = failed.current.get(series.id);
         if (previous) {
           const completed = new Set(edits.map(e => e.id));
@@ -81,19 +81,17 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Ser
       // A read started by a reopen follows earlier writes. Edits made during the read still win, including deletions.
       void Promise.all([scope, writes.current]).then(async ([key]) => {
         const rows = await readMeasurements(key);
-        // Individual film calibrations take precedence over a scale recovered from a partially imported series.
-        const calibrationRows = rows.filter(r => r && typeof r === 'object' && 'calibration' in r);
-        const isSeriesScale = (r: unknown) => Boolean(r && typeof r === 'object' && 'frame' in r && r.frame === null);
-        calibrationRows.sort((a, b) => Number(isSeriesScale(b)) - Number(isSeriesScale(a)));
         const [drawings, calibrations] = await Promise.all([
           Promise.all(rows.flatMap(r => r && typeof r === 'object' && 'drawing' in r ? [recoverMeasurement(item, key, r)] : [])),
-          Promise.all(calibrationRows.map(r => recoverCalibration(item, key, r))),
+          recoverCalibrations(item, key, rows),
         ]);
         if (reads.current.get(id) !== read) return;
         readFailures.current.delete(id);
         for (const edit of failed.current.get(id)?.edits ?? []) edited.add(edit.id);
         const back = drawings.filter((a): a is Annotation => a !== null && !edited.has(a.id));
-        const scales = calibrations.flat().filter(c => !edited.has(calibrationEditId(item, c.frame)));
+        // An edit to the series scale also supersedes inherited per-image scales while this read was in flight.
+        const inherited = edited.has(calibrationEditId(item, null)) ? [] : calibrations.seriesScales;
+        const scales = [...inherited, ...calibrations.films].filter(c => !edited.has(calibrationEditId(item, c.frame)));
         restore(item, back, scales, edited);
       }).catch(() => {
         if (reads.current.get(id) !== read) return;

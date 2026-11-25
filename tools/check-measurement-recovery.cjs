@@ -97,16 +97,33 @@ async function onScreen(page, entry) {
   }));
 }
 
-async function calibrate(page, entry) {
+async function calibrate(page, entry, mm = 80) {
   await page.getByTestId('inspector-tab-display').click();
   const toggle = page.locator('#section-units-toggle');
   if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
   await page.locator('[data-action="calibration-line"]').selectOption(entry.id);
-  await page.locator('[data-action="calibration-length"]').fill('80');
+  await page.locator('[data-action="calibration-length"]').fill(String(mm));
   await page.locator('[data-action="calibrate"]').click();
   await page.getByTestId('inspector-tab-measurements').click();
   await saved(page);
-  assert.match((await onScreen(page, entry)).label, /80[.,]0\s*mm|8[.,]0\s*cm/);
+  assert.match((await onScreen(page, entry)).label, new RegExp(mm + '[.,]0\\s*mm|' + mm / 10 + '[.,]0\\s*cm'));
+}
+
+async function selectAcquisition(page, number) {
+  const id = await page.evaluate(number => {
+    const h = window.__VEACOM_TEST__, series = h.state().series;
+    if (series.length !== 2) throw new Error('Expected two acquisitions');
+    const item = series.find(s => s.description.endsWith('(' + number + '/2)'));
+    if (!item) throw new Error('Missing acquisition ' + number);
+    h.selectSeries(item.id);
+    return item.id;
+  }, number);
+  await page.waitForFunction(id => {
+    const s = window.__VEACOM_TEST__.state();
+    return s.activeSeriesId === id && s.fullVolumeLoaded && s.dimensions[2] === 6;
+  }, id);
+  await saved(page);
+  return id;
 }
 
 async function runTrial(dir, mode, locale) {
@@ -121,7 +138,15 @@ async function runTrial(dir, mode, locale) {
     await saved(page);
     await stop();
 
+    page = await start('regrouped');
+    await selectAcquisition(page, 2);
+    const second = await draw(page, source(2), 'length');
+    const secondBefore = await onScreen(page, second);
+    await saved(page);
+    await stop();
+
     page = await start('first');
+    const firstId = await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId);
     assert.deepEqual(await rows(page), []);
     await page.evaluate(() => {
       const put = IDBObjectStore.prototype.put;
@@ -188,7 +213,30 @@ async function runTrial(dir, mode, locale) {
     assert.deepEqual(await rows(page), expectedSubset.map(e => e.id), 'Only drawings from the six acquired images belong in a partial import');
     const subsetRuler = { ...entries[0], view: source(2) };
     assert.deepEqual(await onScreen(page, subsetRuler), entries[0].before, 'A six-image import keeps the original 80 mm calibration');
-    return { mode, locale, recovered: entries.length, wrongPatient: 0, partialImport: expectedSubset.length, entries };
+    await stop();
+    page = await start('regrouped');
+    assert.notEqual(await selectAcquisition(page, 1), firstId);
+    await page.locator(`[data-annotation-row="${subsetRuler.id}"]`).waitFor();
+    assert.deepEqual(await rows(page), expectedSubset.map(e => e.id));
+    const regrouped = await onScreen(page, subsetRuler);
+    assert.deepEqual(regrouped, entries[0].before, 'The original acquisition keeps its 80 mm ruler after regrouping');
+    await selectAcquisition(page, 2);
+    await page.locator(`[data-annotation-row="${second.id}"]`).waitFor();
+    assert.deepEqual(await rows(page), [second.id]);
+    assert.deepEqual(await onScreen(page, second), secondBefore, 'The second acquisition keeps its own ruler and scale');
+    let recalibratedLabel;
+    if (mode === 'normal') {
+      await selectAcquisition(page, 1);
+      await calibrate(page, subsetRuler, 60);
+      await stop();
+      page = await start('first');
+      await page.locator(`[data-annotation-row="${entries[0].id}"]`).waitFor();
+      recalibratedLabel = (await onScreen(page, entries[0])).label;
+      assert.match(recalibratedLabel, /60[.,]0\s*mm|6[.,]0\s*cm/, 'The recalibrated images keep their new scale in the full study');
+      assert.deepEqual(await onScreen(page, entries[10]), entries[10].before, 'An image outside that acquisition keeps its original scale');
+    }
+    return { mode, locale, recovered: entries.length, wrongPatient: 0, partialImport: expectedSubset.length,
+      regroupedLabel: regrouped.label, secondAcquisitionLabel: secondBefore.label, recalibratedLabel, entries };
   } finally { if (active) await closeDesktop(active.app); }
 }
 
@@ -199,11 +247,15 @@ async function main() {
     const fixture = path.join(__dirname, 'fixtures/make-smoke-study.mjs');
     execFileSync(process.execPath, [fixture, path.join(dir, 'first')]);
     execFileSync(process.execPath, [fixture, path.join(dir, 'other'), '--other-patient']);
+    execFileSync(process.execPath, [fixture, path.join(dir, 'second'), '--second-acquisition']);
     const subset = path.join(dir, 'subset', 'S01');
+    const regrouped = path.join(dir, 'regrouped', 'S01');
     await fs.mkdir(subset, { recursive: true });
+    await fs.mkdir(regrouped, { recursive: true });
     for (let z = 10; z <= 15; z++) {
       const file = 'IM' + String(z).padStart(5, '0') + '.dcm';
       await fs.copyFile(path.join(dir, 'first', 'S01', file), path.join(subset, file));
+      for (const part of ['first', 'second']) await fs.copyFile(path.join(dir, part, 'S01', file), path.join(regrouped, part + file));
     }
     const results = [];
     for (const [mode, locale] of [['normal', 'en'], ['crash', 'tr']]) {
