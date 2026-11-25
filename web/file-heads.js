@@ -6,20 +6,46 @@ const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
 // Larger files use 1 MiB pieces in web/engine/src/blob.rs and discard a 64 KiB head.
 const LARGE_FILE_BYTES = 16 * 1024 * 1024;
 
+/** @param {{ index: number, part: Blob }[]} group @param {(Uint8Array | undefined)[]} result */
+async function readGroup(group, result) {
+  try {
+    const bytes = new Uint8Array(await new Blob(group.map(item => item.part)).arrayBuffer());
+    if (bytes.byteLength === group.reduce((sum, item) => sum + item.part.size, 0)) {
+      let offset = 0;
+      for (const { index, part } of group) {
+        result[index] = bytes.subarray(offset, offset + part.size);
+        offset += part.size;
+      }
+      return;
+    }
+  } catch { /* A changed file can make the whole group unreadable. Try the files separately. */ }
+  await Promise.all(group.map(async ({ index, part }) => {
+    try { result[index] = new Uint8Array(await part.arrayBuffer()); }
+    catch { /* The engine reads a missing head on demand. */ }
+  }));
+}
+
 /** @param {ReadonlyArray<{file: Blob}>} files */
 export async function readHeads(files) {
   /** @type {(Uint8Array | undefined)[]} */
   const result = Array(files.length).fill(undefined);
   let remaining = MAX_PREFETCH_BYTES;
   for (let start = 0; start < files.length && remaining > 0; start += 256) {
-    await Promise.all(files.slice(start, start + 256).map(async ({ file }, index) => {
-      const length = Math.min(file.size, HEAD_BYTES);
-      if (!length || file.size > LARGE_FILE_BYTES || length > remaining) return;
-      remaining -= length;
-      try {
-        result[start + index] = new Uint8Array(await file.slice(0, length).arrayBuffer());
-      } catch { /* The engine can still read the file on demand. */ }
-    }));
+    const reads = [];
+    const end = Math.min(start + 256, files.length);
+    for (let from = start; from < end && remaining > 0; from += 16) {
+      const group = [];
+      for (let index = from; index < Math.min(from + 16, end); index++) {
+        const { file } = files[index];
+        const length = Math.min(file.size, HEAD_BYTES);
+        if (!length || file.size > LARGE_FILE_BYTES || length > remaining) continue;
+        remaining -= length;
+        try { group.push({ index, part: file.slice(0, length) }); }
+        catch { /* The engine can still read the file on demand. */ }
+      }
+      if (group.length) reads.push(readGroup(group, result));
+    }
+    await Promise.all(reads);
   }
   return result;
 }
