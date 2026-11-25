@@ -13,6 +13,7 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 import { createLabelFolder, type FolderEntry } from './labelFolder';
+import { droppedFileGroups, type CapturedDrop, type SelectedFile } from './droppedFiles';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -26,7 +27,6 @@ interface CallOptions {
   /** Told the request's number as soon as it waits, so it can be cancelled before it starts. */
   onQueued?: (id: number) => void;
 }
-interface SelectedFile { path: string; file: File }
 interface Selection { files: SelectedFile[]; roots: string[]; zip: boolean }
 type Progress = { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean };
 
@@ -51,7 +51,7 @@ function storedLocale(): 'tr' | 'en' {
 }
 
 /** Files from the last drop on the page, taken before the interface's own drop handler (see `watchDrops`). */
-let dropped: { files: File[]; entries: FileSystemEntry[] } | null = null;
+let dropped: CapturedDrop | null = null;
 
 /** The files of dropped folders can only be read through the drop's entries, and only while the drop event runs: this
  * capture-phase listener keeps them for `importFiles`, which the interface calls from its own drop handler. */
@@ -64,22 +64,6 @@ export function watchDrops(): void {
       entries: Array.from(transfer.items).map(item => item.webkitGetAsEntry()).filter((entry): entry is FileSystemEntry => Boolean(entry)),
     };
   }, true);
-}
-
-async function walk(root: FileSystemEntry): Promise<SelectedFile[]> {
-  const found: { path: string; entry: FileSystemFileEntry }[] = [];
-  const visit = async (entry: FileSystemEntry, path: string): Promise<void> => {
-    if (entry.isFile) { found.push({ path, entry: entry as FileSystemFileEntry }); return; }
-    if (!entry.isDirectory) return;
-    const reader = (entry as FileSystemDirectoryEntry).createReader();
-    for (;;) {
-      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-      if (!batch.length) break;
-      await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
-    }
-  };
-  await visit(root, root.name);
-  return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
 }
 
 type FileHandle = { kind: 'file'; name: string; getFile(): Promise<File> };
@@ -488,8 +472,7 @@ export function createWebBridge(): DesktopBridge {
     async importFiles(files) {
       const drop = dropped;
       dropped = null;
-      const same = drop && drop.files.length === files.length && drop.files.every((file, i) => file === files[i]);
-      const selected = same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]);
+      const selected = await droppedFileGroups(files, drop);
       // Steps of opening a study, on the page's timeline for tools/browser-bench (performance marks cost next to nothing).
       performance.mark('veacom:files-listed');
       return remember(selected);
