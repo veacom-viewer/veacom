@@ -330,7 +330,7 @@ export function Viewport(props: ViewportProps) {
   const wheelStream = useRef<WheelStream>({ fineUntil: 0 });
   const renderNeeded = useRef(true);
   const context = useRef(interactionContext(props.volume, resolveView(props.volume, props.view)));
-  const annotationContext = useRef<InteractionContext | null>(null);
+  const annotationContext = useRef<(InteractionContext & { createdAt: number }) | null>(null);
   const promptId = useId();
 
   const gesture = useRef<GestureHandle | null>(null);
@@ -466,7 +466,7 @@ export function Viewport(props: ViewportProps) {
     if (type === 'sphere' && !sphereOf({ type, points })) { discardDraft(); usage.markResult('cancel'); return; }
     // A sphere lies in the volume, not on the acquired slice it was drawn on.
     const view = renderedView(current.volume, liveView.current), source = type !== 'sphere' && usesSourceFrames(current.volume.series, view);
-    const annotation: Annotation = { id: crypto.randomUUID(), type, points, mode: source ? 'source' : 'mpr', sourceFrame: source ? view.slice : undefined, sourceSopInstanceUid: source ? current.volume.series.frameMetadata?.[view.slice]?.sopInstanceUid : undefined, sourceFrameNumber: source ? current.volume.series.frameMetadata?.[view.slice]?.sourceFrameNumber : undefined, plane: view.plane, slice: view.slice, label,
+    const annotation: Annotation = { id: crypto.randomUUID(), createdAt: annotationContext.current.createdAt, type, points, mode: source ? 'source' : 'mpr', sourceFrame: source ? view.slice : undefined, sourceSopInstanceUid: source ? current.volume.series.frameMetadata?.[view.slice]?.sopInstanceUid : undefined, sourceFrameNumber: source ? current.volume.series.frameMetadata?.[view.slice]?.sourceFrameNumber : undefined, plane: view.plane, slice: view.slice, label,
       ...(!source && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number] } : {}) };
     current.onAnnotationsChange([...current.annotations, annotation]); setSelected(annotation.id); discardDraft();
     usage.markResult('ok');
@@ -668,9 +668,11 @@ export function Viewport(props: ViewportProps) {
     if (event.detail > 1 && clickTools.has(mode)) return;
     // Another measurement tool replaces a pending click-click measurement; panning or zooming in between keeps it.
     if (twoClick.current && twoClick.current.mode !== mode && annotationTools.has(mode)) discardDraft();
-    if (annotationTools.has(mode) && !annotationContext.current) annotationContext.current = interactionContext(latest.current.volume, liveView.current);
+    if (clickTools.has(mode) && constructionTool.current && constructionTool.current !== mode) discardDraft();
+    if (annotationTools.has(mode) && !annotationContext.current) {
+      annotationContext.current = { ...interactionContext(latest.current.volume, liveView.current), createdAt: performance.timeOrigin + event.timeStamp };
+    }
     if (clickTools.has(mode)) {
-      if (constructionTool.current && constructionTool.current !== mode) { discardDraft(); annotationContext.current = interactionContext(latest.current.volume, liveView.current); }
       constructionTool.current = mode;
       // An outline traced by moving the pointer (no button held) closes with the next click, wherever it is.
       if (mode === 'polygon' && construction.current.length >= 3) { usage.action('point-polygon', input); finishConstruction(); return; }

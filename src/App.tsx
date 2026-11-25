@@ -26,7 +26,7 @@ import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld
 import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
 import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
-import { isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
+import { filmKey, isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
 import { deformity, type FilmSelection } from './ui/deformityStore';
 import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
@@ -47,6 +47,8 @@ import { sphereOf } from './imaging/voi';
 import { clearEditedScores } from './imaging/deauvilleReading';
 import { SphereDetails } from './components/SphereDetails';
 import { usePetRecords, usePetStudies } from './imaging/usePetStudies';
+import { useMeasurementRecovery } from './imaging/useMeasurementRecovery';
+import { calibrationEditId, measurementTools, type CalibrationEdit } from './domain/measurementRecovery';
 import { WarningBox } from './components/WarningBox';
 import { compared, comparisonFlags, comparisonKey, comparisonText, keptCompared, type PetPrior } from './imaging/petComparison';
 import { nameLesions } from './imaging/lesions';
@@ -141,7 +143,7 @@ const WHEEL_ACTIONS: readonly WheelAction[] = ['scroll', 'zoom', 'rotate', 'none
 /** What each mouse button can be given, as in VEAcom Next: the navigation tools, rotation, the crosshair or nothing. */
 const BUTTON_ACTIONS: readonly Tool[] = ['scroll', 'window', 'pan', 'zoom', 'rotate', 'crosshair', 'none'];
 const isTool = (value: unknown): value is Tool => typeof value === 'string' && (TOOLS as readonly string[]).includes(value);
-const MEASURE_TOOLS: Tool[] = ['length', 'angle', 'cobb', 'rectangle', 'ellipse', 'polygon', 'polyline', 'sphere', 'probe', 'arrow', 'text'];
+const MEASURE_TOOLS: readonly Tool[] = measurementTools;
 // Keyboard shortcuts handled in the window keydown handler below; shown in tooltips and menus.
 const TOOL_KEYS: Partial<Record<Tool, string>> = { scroll: 'S', window: 'W', pan: 'P', zoom: 'Z', length: 'L', angle: 'A', ellipse: 'E', rectangle: 'R', crosshair: 'C', text: 'T', sphere: 'V' };
 const MEASURE_ICONS: Partial<Record<Tool, typeof Ruler>> = { length: Ruler, angle: TriangleRight, cobb: Radius, rectangle: Square, ellipse: Circle, polygon: Hexagon, polyline: Spline, sphere: Globe, probe: Pipette, arrow: MoveUpRight, text: Type };
@@ -751,6 +753,41 @@ export default function App() {
 
   // Each decorated volume keeps its identity while its volume and settings do (see decoratedVolumes.ts).
   const petRecords = usePetRecords(series, setAnnotations);
+  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
+   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
+   * gone. */
+  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
+    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
+  };
+  const recovery = useMeasurementRecovery(volumes, (item, restored, calibration, edited) => {
+    if (!edited.has(calibrationEditId(item, null))) {
+      const value = calibration.find(edit => edit.frame === null)?.value;
+      const scale = value?.method === 'scale' ? value.scale : undefined;
+      setCalibrationScales(current => {
+        if (current[item.id] === scale) return current;
+        const next = { ...current };
+        if (scale === undefined) delete next[item.id]; else next[item.id] = scale;
+        return next;
+      });
+    }
+    setFilmCalibrations(current => {
+      const films: Record<string, FilmCalibration> = {};
+      for (const [key, value] of Object.entries(current[item.id] ?? {})) if (value && edited.has('@film:' + key)) films[key] = value;
+      for (const edit of calibration) if (edit.frame !== null && edit.value) films[filmKey(item, edit.frame)] = edit.value;
+      if (Object.keys(films).length) return { ...current, [item.id]: films };
+      if (!current[item.id]) return current;
+      const next = { ...current }; delete next[item.id]; return next;
+    });
+    if (!restored.length) return;
+    // Restored drawings were already in the study before any undo step taken while the database was opening.
+    const add = (current: Record<string, Annotation[]>) => {
+      const existing = current[item.id] ?? [], present = new Set(existing.map(a => a.id));
+      const extra = restored.filter(a => !present.has(a.id));
+      return extra.length ? { ...current, [item.id]: [...existing, ...extra].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0)) } : current;
+    };
+    setAnnotations(add);
+    followHistory(snapshot => ({ ...snapshot, annotations: add(snapshot.annotations) }));
+  });
   const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
   const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
     { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
@@ -1074,6 +1111,9 @@ export default function App() {
     if (kept) keepChecklist(study, remeasureRecords(kept, seriesId, new Set(list.map(annotation => annotation.id)), caliperMmScale(series)));
   };
   const setFilmCalibration = (seriesId: string, key: string, value: FilmCalibration | null) => {
+    const item = seriesRef.current.find(s => s.id === seriesId);
+    const frame = item?.frameMetadata?.findIndex((_, i) => filmKey(item, i) === key) ?? -1;
+    if (item && frame >= 0) recovery.calibrate(item, [{ frame, value }]);
     setFilmCalibrations(current => {
       const films = { ...current[seriesId] }, next = { ...current };
       if (value) films[key] = value; else delete films[key];
@@ -1100,6 +1140,11 @@ export default function App() {
       const saved = snapshot.slots.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
       return saved ? { ...slot, view: saved.view } : slot;
     }));
+    for (const id of new Set([...Object.keys(annotationRef.current), ...Object.keys(snapshot.annotations)])) {
+      const item = displayVolumesRef.current.get(id)?.series;
+      const previous = annotationRef.current[id] ?? EMPTY_ANNOTATIONS, next = snapshot.annotations[id] ?? EMPTY_ANNOTATIONS;
+      if (item && previous !== next) recovery.save(item, previous, next);
+    }
     setAnnotations(snapshot.annotations); deformity.restore(snapshot.plans); setHistoryCount([history.current.past.length, history.current.future.length]);
     // A caliper's edit undone measures again; one whose drawing is undone keeps its record in the checklist.
     for (const [seriesId, list] of Object.entries(snapshot.annotations)) recordCalipers(seriesId, list);
@@ -1144,12 +1189,6 @@ export default function App() {
     setLoadErrors(current => { const updated = { ...current }; for (const id of ids) delete updated[id]; return updated; });
   };
 
-  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
-   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
-   * gone. */
-  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
-    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
-  };
   /** Measurements drawn on source images keep their image when a series' images move: an import that read it again, or
    * a series being read that grew. So do those Undo and Redo bring back. */
   const followAnnotations = (moved: readonly Series[]) => {
@@ -2098,7 +2137,10 @@ export default function App() {
   const changeAnnotations = (seriesId: string, next: Annotation[]) => {
     const { list, drawn } = caliperDrawn(seriesId, next);
     const named = seriesRef.current.find(item => item.id === seriesId)?.modality === 'PT' ? nameLesions(list) : list;
-    remember(); setAnnotations(current => ({ ...current, [seriesId]: clearEditedScores(current[seriesId] ?? [], named) }));
+    const before = annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, changed = clearEditedScores(before, named);
+    const item = displayVolumesRef.current.get(seriesId)?.series;
+    if (item) recovery.save(item, before, changed);
+    remember(); setAnnotations(current => ({ ...current, [seriesId]: changed }));
     recordCalipers(seriesId, named, drawn);
   };
   /** Starts the caliper for an item and side from the checklist, or stops it when it is the one under way. Its pane is
@@ -2741,7 +2783,15 @@ export default function App() {
   /** Sets or removes a series' calibration. Its caliper records measure again at the new scale, as its drawings' labels
    * do: the checklist, its answers, the report and the theatre card follow the scale on screen. Removing it takes down
    * the notice that says the series is calibrated. */
-  const setCalibration = (seriesId: string, factor: number | undefined) => {
+  const setCalibration = (seriesId: string, factor: number | undefined, clearFilms = false) => {
+    const item = seriesRef.current.find(s => s.id === seriesId);
+    if (item) {
+      const changes: CalibrationEdit[] = [{ frame: null, value: factor === undefined ? null : { method: 'scale', scale: factor } }];
+      if (clearFilms) item.frameMetadata?.forEach((metadata, frame) => {
+        if (metadata.sopInstanceUid) changes.push({ frame, value: null });
+      });
+      recovery.calibrate(item, changes);
+    }
     setCalibrationScales(current => { const next = { ...current }; if (factor === undefined) delete next[seriesId]; else next[seriesId] = factor; return next; });
     if (factor === undefined) setNotice(current => current?.key === 'notice.calibrated' ? null : current);
     const series = displayVolumesRef.current.get(seriesId)?.series;
@@ -2753,7 +2803,7 @@ export default function App() {
     const length = line?.points.length === 2 ? distanceMm(line.points[0], line.points[1]) : null;
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
-    setCalibration(activeSeries.id, known / length);
+    setCalibration(activeSeries.id, known / length, true);
     // A known length sets the whole series' scale: the films' own ball or ruler calibrations give way to it.
     setFilmCalibrations(current => { if (!current[activeSeries.id]) return current; const next = { ...current }; delete next[activeSeries.id]; return next; });
     setSettings(current => ({ ...current, measurementUnits: 'auto' }));
@@ -3295,7 +3345,7 @@ export default function App() {
   </div>;
   const noticeBar = notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : undefined} data-testid="notice" data-kind={notice.kind} data-code={notice.code ?? notice.key}><span>{notice.key ? t(notice.key, notice.params) : notice.warnings ? warningTexts(notice.warnings, locale).join(' · ') : notice.message}</span>{notice.action && <button type="button" className="notice-action" data-testid="notice-action" onClick={() => { notice.action?.run(); setNotice(null); focusSoon('[data-annotation-row] .annotation-main', '[data-testid="findings-add"]'); }}>{t(notice.action.label)}</button>}<button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="notice-dismiss" onClick={() => { setNotice(null); focusImage(); }}><X size={14} /></button></div>;
 
-  return <div className="app-shell" data-testid="veacom-app" data-ready={!busy && !connectionError} data-locale={locale}
+  return <div className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
     onPointerMoveCapture={event => { pointerAt.current = { x: event.clientX, y: event.clientY }; }}
     onPointerDownCapture={event => {
       if (quick && !quickRef.current?.contains(event.target as Node)) setQuick(null);
@@ -3525,7 +3575,10 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" />{recovery.status !== 'saved' && <span className="status-export" role={recovery.status === 'failed' ? 'alert' : 'status'}>
+        {t(recovery.status === 'saving' ? 'measurement.saving' : 'measurement.storageFailed')}
+        {recovery.status === 'failed' && <button type="button" className="text-button" data-action="retry-measurements" onClick={recovery.retry}>{t('measurement.retry')}</button>}
+      </span>}<span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
