@@ -7,6 +7,7 @@
 import type { CoreState, DesktopBridge, ImportResult, Series, UpdateStatus } from '../model';
 import { coreErrorText, coreText } from '../i18n/core';
 import { t } from '../i18n';
+import { prepareSourceProgram } from '../imaging/sliceRenderer';
 import { handOverPixels } from '../imaging/pixelHandoff';
 import type { EngineExport, EngineInfo, EnginePixels, EngineRequest } from './engine.worker';
 import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
@@ -239,6 +240,11 @@ export function createWebBridge(): DesktopBridge {
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
     worker.postMessage({ id: next.id, ...next.request });
+    if (next.request.op === 'import' && next.request.files.length > 1) {
+      // Compile the two integer source programs while the engine reads the folder. Decoded pixels choose the program to draw.
+      void prepareSourceProgram('int16');
+      void prepareSourceProgram('uint16');
+    }
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
   const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
