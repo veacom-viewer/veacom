@@ -25,6 +25,22 @@ jobs:
           workspaces: . -> native/target
       - run: pnpm install --frozen-lockfile
       - run: pnpm run setup:runtime && pnpm run build:core && pnpm run build:web
+      - name: Check out the candidate renderer
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 8853b5cda56151afb9eac1252d49f668f5b19cd4
+          path: candidate-build
+          persist-credentials: false
+      - name: Build the candidate UI against the identical engine
+        run: |
+          diff -qr -x target native candidate-build/native
+          core="$PWD/native/target/release/veacom-core"
+          echo "VEACOM_CORE_PATH=$core" >> "$GITHUB_ENV"
+          echo "REFERENCE_COMMIT=ac84997d4c3883ffb09b5054513f8a87b9235bc5" >> "$GITHUB_ENV"
+          echo "CANDIDATE_COMMIT=8853b5cda56151afb9eac1252d49f668f5b19cd4" >> "$GITHUB_ENV"
+          cd candidate-build
+          pnpm install --frozen-lockfile
+          pnpm run build:web
       - name: Generate the reference CT and record the machine
         run: |
           mkdir -p "$RUNNER_TEMP/mpr"
@@ -32,12 +48,12 @@ jobs:
           system_profiler SPDisplaysDataType -json > "$RUNNER_TEMP/mpr/display.json"
           node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
           cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
-      - name: One diagnostic and 30 counted fresh launches
-        run: node tools/reading-audit/reading.cjs "$PWD" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 30
+      - name: Compare both viewers over 30 paired fresh launches
+        run: node tools/reading-audit/reading.cjs "$PWD" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 30 "$PWD/candidate-build"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: mpr-baseline
+          name: mpr-comparison
           path: ${{ runner.temp }}/mpr
           retention-days: 14

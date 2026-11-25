@@ -20,7 +20,12 @@ async function paging(page,depth) {
     for(let i=0;i<6;i++){await redrawCorner(page);await sleep(100);}
     const before=PNG.sync.read(await page.screenshot({scale:'css'}));
     const actual=(await pictures).readPicture({width:before.width,height:before.height,pixels:before.data});
-    assert.equal(actual.index,Math.floor(depth/2),'The source pixels must identify the selected frame before paging');
+    const expected=await page.evaluate(() => {
+        const state=window.__VEACOM_TEST__.state(), series=state.series.find(s=>s.id===state.activeSeriesId);
+        // The phantom stores marker k at patient z = -k. Catalog slices follow the volume's patient-space axis.
+        return Math.round(-(series.origin[2]+series.direction[8]*series.spacing[2]*state.view.slice));
+    });
+    assert.equal(actual.index,expected,'The source pixels must identify the selected physical slice before paging');
     const count=12;
     for(let i=0;i<count;i++){await page.mouse.wheel(0,i<6?120:-120);await sleep(160);}
     await redrawCorner(page);const {marks,frames}=await stop();
@@ -65,11 +70,11 @@ function correlation(a,b){
     for(let i=0;i<a.length;i++){const x=a[i]-ma,y=b[i]-mb;product+=x*y;va+=x*x;vb+=y*y;}
     return product/Math.sqrt(va*vb);
 }
-async function mpr(page,depth,calibrating) {
+async function mpr(page,depth,calibrating,diagnostic) {
     await setView(page,{slice:Math.floor((await page.evaluate(()=>window.__VEACOM_TEST__.state().dimensions[2]))/2)});
     await page.getByTestId('dicom-viewport').first().focus();
     await page.evaluate(()=>window.addEventListener('keydown',e=>{if(e.key.toLowerCase()==='m')performance.mark('bench:mpr-command');},{capture:true,once:true}));
-    if (calibrating) await page.evaluate(() => {
+    if (diagnostic) await page.evaluate(() => {
         // The diagnostic launch records driver waits. The 30 counted launches use the untouched WebGL methods.
         window.__mprCalls = [];
         for (const name of ['texImage3D', 'texImage2D', 'getError', 'getProgramParameter', 'drawArrays']) {
@@ -122,7 +127,7 @@ async function mpr(page,depth,calibrating) {
     const lastWrong=scored.findLastIndex((s,i)=>s.ms>=0&&values[i]>limit);
     const matched=scored.find((s,i)=>s.ms>=0 && i>lastWrong&&values[i]<=limit);
     assert(matched);
-    const calls=calibrating ? await page.evaluate(() => window.__mprCalls.filter(c => c.at>=window.__mprInput && (c.ms>=1 || c.name==='texImage3D'))
+    const calls=diagnostic ? await page.evaluate(() => window.__mprCalls.filter(c => c.at>=window.__mprInput && (c.ms>=1 || c.name==='texImage3D'))
         .map(c=>({...c,at:c.at-window.__mprInput}))) : undefined;
     return {calls,timeToThreeStablePlanesMs:matched.ms,referenceToleranceGray:limit,planes:panes.map(b=>b.plane),crossResolutionCorrelation,screens:scored,referenceRange:target.map(t=>Math.max(...t)-Math.min(...t))};
 }
@@ -130,19 +135,21 @@ async function main() {
     const rows=[],controls=[];
     const base=process.argv[5]??path.join(os.homedir(),'.cache/veacom-bench/studies');
     const rounds=Number(process.argv[6]??5);
-    for(let run=0;run<=rounds;run++)for(const n of [1000]){
+    const builds=[{name:'reference',folder:repo}, {name:'candidate',folder:path.resolve(process.argv[7])}];
+    const n=1000;
+    for(let run=0;run<=rounds;run++)for(const build of (run%2 ? [...builds].reverse() : builds)){
         const profile=await fresh();let current;
         try{
-            current=await launch(profile,path.join(base,'ct-'+n,'S01'));
+            current=await launch(profile,path.join(base,'ct-'+n,'S01'),build.folder);
             const {page}=current;
             await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded,undefined,{timeout:90000});
             const state=await page.evaluate(()=>window.__VEACOM_TEST__.state());
             assert.equal(state.dimensions[2],n);
-            const wheel=run?await paging(page,n):null,transition=await mpr(page,n,run===0);
-            if(run===1)await page.screenshot({path:path.join(output,'mpr-three-planes.png')});
-            (run?rows:controls).push({run,depth:n,renderer:await page.locator('canvas[data-renderer]').first().getAttribute('data-renderer'),paging:wheel,mpr:transition});
-            await save('reading.json',{tree,controls,rows});
-            console.log('CT',n,'trial',run,'wheel errors',wheel?.wrongSteps,'MPR ms',transition.timeToThreeStablePlanesMs);
+            const wheel=run?await paging(page,n):null, transition=await mpr(page,n,run===0 && build.name==='reference',run===0);
+            if(run===1)await page.screenshot({path:path.join(output,build.name+'-three-planes.png')});
+            (run?rows:controls).push({build:build.name,run,depth:n,renderer:await page.locator('canvas[data-renderer]').first().getAttribute('data-renderer'),paging:wheel,mpr:transition});
+            await save('reading.json',{tree,referenceCommit:process.env.REFERENCE_COMMIT,candidateCommit:process.env.CANDIDATE_COMMIT,controls,rows});
+            console.log(build.name,'CT',n,'trial',run,'wheel errors',wheel?.wrongSteps,'MPR ms',transition.timeToThreeStablePlanesMs);
         }finally{if(current)await closeDesktop(current.app);await fs.rm(profile,{recursive:true,force:true});}
     }
 }

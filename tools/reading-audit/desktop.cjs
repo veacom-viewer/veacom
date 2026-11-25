@@ -14,8 +14,8 @@ const {jpegjs, PNG}=req(path.join(path.dirname(req.resolve('playwright-core/pack
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const fresh=()=>fs.mkdtemp(path.join(os.tmpdir(),'veacom-reading-audit-'));
 const tree=execFileSync('git',['-C',repo,'rev-parse','HEAD^{tree}'],{encoding:'utf8'}).trim();
-async function launch(profile,study) {
-    const app=await _electron.launch({executablePath:req('electron'),args:[repo,'--study',study,...(process.platform==='darwin'?['-ApplePersistenceIgnoreState','YES']:[])],
+async function launch(profile,study,checkout=repo) {
+    const app=await _electron.launch({executablePath:req('electron'),args:[checkout,'--study',study,...(process.platform==='darwin'?['-ApplePersistenceIgnoreState','YES']:[])],
         env:{...process.env,VEACOM_USER_DATA:profile,VEACOM_TEST_MODE:'1',VEACOM_LOCALE:'en',VEACOM_TELEMETRY_CONSENT:'denied',VEACOM_TELEMETRY_ENVIRONMENT:'lab'},timeout:90000});
     try {
         const page=await app.firstWindow();await ignoreOutsideInput(app);
