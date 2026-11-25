@@ -1,5 +1,8 @@
 const {fs,path,os,output,assert,sleep,fresh,tree,launch,closeDesktop,setView,save,PNG}=require('./desktop.cjs');
 const {trace,jpeg}=require('./trace.cjs');
+const {repo}=require('./desktop.cjs');
+const {pathToFileURL}=require('node:url');
+const pictures=import(pathToFileURL(path.join(repo,'tools/browser-bench/lib/trace.mjs')).href);
 
 async function redrawCorner(page) {
     // Force a trace screenshot of an otherwise static window. The corner square is outside every image ROI.
@@ -13,15 +16,20 @@ async function paging(page,depth) {
     const btn=page.getByTestId('dicom-viewport').first(),box=await btn.boundingBox();
     await page.mouse.move(box.x+box.width*.6,box.y+box.height*.45);
     await page.evaluate(()=>{let n=0;window.addEventListener('wheel',()=>performance.mark('bench:notch-'+n++),{capture:true,passive:true});});
-    const stop=await trace(page);await redrawCorner(page);
+    const stop=await trace(page);
+    for(let i=0;i<6;i++){await redrawCorner(page);await sleep(100);}
+    const before=PNG.sync.read(await page.screenshot({scale:'css'}));
+    const actual=(await pictures).readPicture({width:before.width,height:before.height,pixels:before.data});
+    assert.equal(actual.index,Math.floor(depth/2),'The source pixels must identify the selected frame before paging');
     const count=12;
     for(let i=0;i<count;i++){await page.mouse.wheel(0,i<6?120:-120);await sleep(160);}
     await redrawCorner(page);const {marks,frames}=await stop();
     const inputs=Object.keys(marks).filter(k=>k.startsWith('bench:notch-')).sort((a,b)=>Number(a.split('-').at(-1))-Number(b.split('-').at(-1)));
     assert.equal(inputs.length,count,'one wheel event for every test input');
     const pixels=frames.filter(f=>f.index!==null&&f.unit/f.width>.008);
-    const baseline=pixels.filter(f=>f.ts<marks[inputs[0]]).at(-1);
-    assert(baseline,'Source image marker must be readable before the first notch');
+    const recorded=pixels.filter(f=>(f.estimateMs??f.ts)<marks[inputs[0]]).at(-1);
+    if(recorded) assert.equal(recorded.index,actual.index,'Trace and independent pre-notch capture must agree');
+    const baseline=actual;
     const steps=[];let previous=baseline.index;
     for(let i=0;i<count;i++){
         const t=marks[inputs[i]],end=i+1<count?marks[inputs[i+1]]:Infinity;
