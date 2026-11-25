@@ -213,11 +213,11 @@ async function checkClosedCTBuffer(browser, url) {
     await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
       Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
     const paging = await page.evaluate(async () => {
-      const original = Array.prototype.sort, callers = new Map(), shown = [];
+      const original = Array.prototype.sort, shown = [];
+      let seriesSorts = 0;
       Array.prototype.sort = function (...args) {
         if (this[0]?.dimensions && this[0]?.modality) {
-          const trace = new Error().stack.split('\n').slice(2,5).join(' ');
-          callers.set(trace, (callers.get(trace) ?? 0) + 1);
+          seriesSorts++;
         }
         return original.apply(this,args);
       };
@@ -230,10 +230,10 @@ async function checkClosedCTBuffer(browser, url) {
           shown.push(Number(document.querySelector('canvas[data-series-id]').dataset.slice));
         }
       } finally { Array.prototype.sort = original; }
-      return { shown, callers: Array.from(callers) };
+      return { shown, seriesSorts };
     });
     assert.deepEqual(paging.shown, [50, 51, 52]);
-    console.log('Series sorts while paging in a browser:', JSON.stringify(paging.callers));
+    assert.equal(paging.seriesSorts, 0, 'Paging must preserve the catalog ordering.');
     await page.locator('[data-action="series-pick"]').first().click({ button: 'right' });
     await page.locator('[data-action="series-clear"]').click();
     await page.getByTestId('series-remove-confirm').click();

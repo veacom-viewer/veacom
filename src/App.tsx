@@ -944,7 +944,6 @@ export default function App() {
   const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
-  const shownSegmentationIds = new Set(shownSegmentations);
   const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
   const assessmentVolumes = [...displayVolumes.values()].filter(volume => volume.sourceFrameIndex === undefined);
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
@@ -3262,7 +3261,7 @@ export default function App() {
     }),
     { id: 'series', group: 'series', priority: 1, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<List size={18} />} label={t('toolbar.chooseSeries')} testId="tool-series" popup="menu" indicator expanded={menu === 'series'} disabled={!series.length} onClick={() => toggleMenu('series')} />
-      {menu === 'series' && <Menu label={t('toolbar.series')} onClose={closeMenu} className="series-menu"><SeriesMenuItems series={series} activeId={activeSeries?.id} shown={shownSegmentationIds} onSelect={selectFromMenu} /></Menu>}</div> },
+      {menu === 'series' && <Menu label={t('toolbar.series')} onClose={closeMenu} className="series-menu"><SeriesMenuItems series={series} activeId={activeSeries?.id} shown={new Set(shownSegmentations)} onSelect={selectFromMenu} /></Menu>}</div> },
     { id: 'layout', group: 'layout', priority: 11, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
@@ -3398,7 +3397,7 @@ export default function App() {
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
+      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
