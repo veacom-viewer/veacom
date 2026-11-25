@@ -15,6 +15,11 @@ on:
         type: choice
         default: '8'
         options: ['4', '8', '12']
+      exercise:
+        description: Measure opening the three planes or scrolling within them
+        type: choice
+        default: transition
+        options: [transition, paging]
       captured_run:
         description: Encode the captures already produced by this run
         type: string
@@ -80,9 +85,15 @@ jobs:
           node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
           cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
       - name: Compare after scrolling and at full-volume readiness
+        if: inputs.exercise == 'transition'
         env:
           PAIRS: ${{ inputs.rounds }}
         run: node tools/reading-audit/reading.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" "$PAIRS" "$PWD/candidate-build"
+      - name: Check real scrolling within each reconstruction against independent reference images
+        if: inputs.exercise == 'paging'
+        env:
+          PAIRS: ${{ inputs.rounds }}
+        run: node tools/reading-audit/plane-paging.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies/ct-1000/S01" "$PAIRS" "$PWD/candidate-build"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
@@ -92,7 +103,7 @@ jobs:
           retention-days: 14
   recording:
     needs: mpr
-    if: always() && (needs.mpr.result == 'success' || inputs.captured_run != '')
+    if: always() && inputs.exercise == 'transition' && (needs.mpr.result == 'success' || inputs.captured_run != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
