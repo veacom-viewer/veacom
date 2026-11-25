@@ -74,16 +74,22 @@ function shareFiles(threaded: ThreadedEngine, ids: number[], files: File[]): voi
 async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; threads: number; memory: WebAssembly.Memory }> {
   if (self.crossOriginIsolated) {
     try {
-      const threaded: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
-      const exports = await threaded.default();
+      const [threaded, binary] = await Promise.all([
+        import('../../web/engine/pkg-threads/veacom_web_engine.js'),
+        fetch(new URL('../../web/engine/pkg-threads/veacom_web_engine_bg.wasm', import.meta.url)),
+      ]);
+      const exports = await threaded.default({ module_or_path: binary });
       await startHelpers(threaded, THREADS - 1);
       return { engine: threaded as unknown as Engine, threaded, threads: THREADS, memory: exports.memory };
     } catch (error) {
       console.warn('The threaded engine could not start; using one thread.', error);
     }
   }
-  const single: Engine = await import('../../web/engine/pkg/veacom_web_engine.js');
-  const exports = await single.default();
+  const [single, binary] = await Promise.all([
+    import('../../web/engine/pkg/veacom_web_engine.js'),
+    fetch(new URL('../../web/engine/pkg/veacom_web_engine_bg.wasm', import.meta.url)),
+  ]);
+  const exports = await single.default({ module_or_path: binary });
   return { engine: single, threads: 1, memory: exports.memory };
 }
 let engine: Engine;

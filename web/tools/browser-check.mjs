@@ -49,9 +49,13 @@ const assets = {
 };
 
 /** The site on 127.0.0.1, with or without the cross-origin isolation headers, and the study under /__study/. */
-function serve(isolated) {
+function serve(isolated, { wasmRequests, unavailableWasm } = {}) {
   const server = createServer(async (incoming, outgoing) => {
     const url = new URL(incoming.url, `http://${incoming.headers.host}`);
+    if (url.pathname.endsWith('.wasm')) {
+      wasmRequests?.push(url.pathname);
+      if (url.pathname === unavailableWasm) { outgoing.writeHead(503).end(); return; }
+    }
     if (url.pathname === '/__study/files.json') {
       outgoing.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(studyFiles));
       return;
@@ -86,6 +90,23 @@ async function openStudy() {
     volume: Number(volume.headers.get('Content-Length')),
     state: await bridge.getCoreState(),
   };
+}
+
+/** A failed threaded binary loads the single-thread engine and opens the same CT. */
+async function checkUnavailableThreadedEngine(browser, threadedPath) {
+  const wasmRequests = [], server = await serve(true, { wasmRequests, unavailableWasm: threadedPath });
+  const page = await browser.newPage();
+  try {
+    await page.goto(`http://127.0.0.1:${server.address().port}/`);
+    await page.waitForFunction(() => document.documentElement.dataset.engineThreads === '1');
+    assert.equal(wasmRequests.length, 2);
+    assert.equal(wasmRequests[0], threadedPath);
+    assert.notEqual(wasmRequests[1], threadedPath);
+    const opened = await page.evaluate(openStudy);
+    assert.deepEqual(opened.dimensions, [columns, rows, slices]);
+    assert.deepEqual(opened.frame, { index: '0', bytes: columns * rows * 2 });
+    assert.equal(opened.state.restartCount, 0);
+  } finally { await page.close(); server.close(); }
 }
 
 /** In the page: makes a PNG, a JPEG and a BMP of one size and colour, opens them together, and asks for each frame's
@@ -397,7 +418,7 @@ const browser = await chromium.launch();
 const failures = [];
 try {
   for (const isolated of [true, false]) {
-    const server = await serve(isolated);
+    const wasmRequests = [], server = await serve(isolated, { wasmRequests });
     const page = await browser.newPage();
     await page.addInitScript(() => {
       // The bridge hands the transferred buffer to the viewer outside the Response body. Read it at the Worker boundary.
@@ -422,6 +443,8 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      assert.equal(wasmRequests.length, 1, 'Startup must fetch only the engine it uses.');
+      if (isolated) await checkUnavailableThreadedEngine(browser, wasmRequests[0]);
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
