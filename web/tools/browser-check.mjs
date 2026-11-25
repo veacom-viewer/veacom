@@ -201,7 +201,7 @@ async function checkClosedCTBuffer(browser, url) {
           super(...args);
           this.addEventListener('message', ({ data }) => {
             const bytes = data?.value?.bytes;
-            if (bytes instanceof ArrayBuffer && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes);
+            if (bytes instanceof Uint8Array && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes.buffer);
           });
         }
       };
