@@ -468,6 +468,11 @@ function useViewportGrid() {
 }
 
 export default function App() {
+  const [session, setSession] = useState(0);
+  return <ReadingSession key={session} restart={() => setSession(value => value + 1)} />;
+}
+
+function ReadingSession({ restart }: { restart: () => void }) {
   const { locale, t } = useTranslation();
   const toolLabel = (tool: Tool) => t(`tool.${tool}` as const);
   const presetName = (preset: typeof PRESETS[number]) => t(`preset.${preset.key}` as const);
@@ -2166,6 +2171,7 @@ export default function App() {
     for (const item of removed) byEngine.set(item.engineGeneration, [...(byEngine.get(item.engineGeneration) ?? []), item.id]);
     // An engine that restarted meanwhile has forgotten them already.
     for (const [generation, group] of byEngine) void removeSeries(group, generation).catch(() => {});
+    if (window.veacom?.web && !replaced && removed.length === seriesRef.current.length) restart();
   };
   const changeAnnotations = (seriesId: string, next: Annotation[]) => {
     const { list, drawn } = caliperDrawn(seriesId, next);
