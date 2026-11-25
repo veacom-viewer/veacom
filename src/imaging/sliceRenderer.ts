@@ -10,7 +10,7 @@ import { isSoftwareRenderer } from './rendererInfo';
 
 type TextureKind = 'float32' | 'int16' | 'uint16' | 'uint8' | 'rgb8';
 type TextureDimension = '2d' | '3d';
-type Sampling = 'native' | 'area' | 'reduced' | 'reduced-with-mask';
+type Sampling = 'native' | 'area' | 'reduced' | 'reduced-with-mask' | 'reduced-axes' | 'axis-weights';
 interface CachedTexture { owner: string; texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number; }
 interface Program { key: string; program: WebGLProgram; shaders: [WebGLShader, WebGLShader] | null;
   preparation?: Promise<void>; uniforms: Map<string, WebGLUniformLocation | null>; }
@@ -169,9 +169,38 @@ vec4 frameAverage(vec2 framePixel) {
 }`;
 }
 
+// An axis-aligned sample has the same horizontal weights for every row and the same vertical weights for every column.
+const axisWeights = `#version 300 es
+precision highp float;
+uniform vec2 uOrigin, uStep, uScale, uFootprint, uGrid;
+out vec4 outColor;
+void main() {
+  int axis = int(gl_FragCoord.y);
+  float p = uOrigin[axis] + uStep[axis] * gl_FragCoord.x;
+  float edge = (p + 0.5) * uScale[axis], footprint = uFootprint[axis];
+  float start = footprint <= 1.0 ? floor(edge) : edge - 0.5 * footprint;
+  float base = floor(start), first = min(footprint, 1.0 - fract(start)), second = min(1.0, footprint - first);
+  float last = max(0.0, footprint - first - second);
+  outColor = vec4((base + second / (first + second) + 0.5) / uGrid[axis], (base + 2.5) / uGrid[axis], last / footprint, 1.0);
+}`;
+
+const axisSampling = `
+uniform sampler2D uReduced, uFilterAxes;
+vec4 frameAverage(vec2 unused) {
+  vec3 x = texelFetch(uFilterAxes, ivec2(int(gl_FragCoord.x), 0), 0).rgb;
+  vec3 y = texelFetch(uFilterAxes, ivec2(int(uScreenHeight - gl_FragCoord.y), 1), 0).rgb;
+  vec4 top = texture(uReduced, vec2(x.r, y.r));
+  if (x.b > 0.0) top = mix(top, texture(uReduced, vec2(x.g, y.r)), x.b);
+  if (y.b <= 0.0) return top;
+  vec4 bottom = texture(uReduced, vec2(x.r, y.g));
+  if (x.b > 0.0) bottom = mix(bottom, texture(uReduced, vec2(x.g, y.g)), x.b);
+  return mix(top, bottom, y.b);
+}`;
+
 function fragment(main: TextureKind, dimension: TextureDimension, pet: TextureKind | undefined, projection: boolean,
   sampling: Sampling, floatLinear: boolean): string {
-  const filtered = sampling !== 'native', reducedOnly = sampling === 'reduced';
+  if (sampling === 'axis-weights') return axisWeights;
+  const filtered = sampling !== 'native', reducedOnly = sampling === 'reduced' || sampling === 'reduced-axes';
   const cachedFrame = reducedOnly || sampling === 'reduced-with-mask';
   const color = main === 'rgb8';
   return `#version 300 es
@@ -211,7 +240,7 @@ ${color ? '' : scalarSampling('image', 'uImage', 'uDimensions', main === 'float3
 ${pet ? scalarSampling('pet', 'uPet', 'uPetDimensions', pet === 'float32', '3d') : ''}
 ${filtered && dimension === '3d' ? planeAverage('image', 'u') : ''}
 ${filtered && pet ? planeAverage('pet', 'uPet') : ''}
-${filtered && dimension === '2d' ? frameSampling(color, cachedFrame, cachedFrame && !color && floatLinear) : ''}
+${sampling === 'reduced-axes' ? axisSampling : filtered && dimension === '2d' ? frameSampling(color, cachedFrame, cachedFrame && !color && floatLinear) : ''}
 ${color || dimension !== '3d' ? '' : `
 // Thick slab: the brightest, darkest or mean value of the samples either side of the slice, along its normal.
 float slabValue(vec3 p,float centre) {
@@ -324,6 +353,8 @@ class SharedSliceRenderer {
   private voiTextures = new Map<VoiLut | null, WebGLTexture>();
   private lost = false;
   private floatLinear: boolean;
+  private axisSupport: boolean | undefined;
+  private axes: { texture: WebGLTexture; framebuffer: WebGLFramebuffer; length: number; key: string } | null = null;
   constructor() {
     const gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
     if (!gl) throw new LocalizedError('gpu.webglUnavailable');
@@ -332,6 +363,7 @@ class SharedSliceRenderer {
     this.parallel = gl.getExtension('KHR_parallel_shader_compile');
     this.canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     this.canvas.addEventListener('webglcontextrestored', () => {
+      this.axes = null; this.axisSupport = undefined;
       this.textures.clear(); this.programs.clear(); this.voiTextures.clear(); this.current = null; this.emptyPadding = null; this.lost = false;
       this.parallel = gl.getExtension('KHR_parallel_shader_compile');
       this.floatLinear = !!gl.getExtension('OES_texture_float_linear');
@@ -469,6 +501,9 @@ class SharedSliceRenderer {
     this.visible.clear();
     if (!views.length) {
       for (const [key, cached] of this.textures) this.dropTexture(key, cached);
+      if (this.axes) {
+        this.gl.deleteFramebuffer(this.axes.framebuffer); this.gl.deleteTexture(this.axes.texture); this.axes = null;
+      }
       this.canvas.width = 1; this.canvas.height = 1;
       return;
     }
@@ -605,6 +640,41 @@ class SharedSliceRenderer {
     gl.uniform2fv(this.uniform('uReducedOrigin'), reduced.origin);
     return key;
   }
+  private prepareFilterAxes(length: number, origin: Vec3, step: [number, number], full: [number, number],
+    grid: [number, number], footprint: [number, number]): boolean {
+    const gl = this.gl;
+    if (length > this.textureLimit || !(this.axisSupport ??= !!gl.getExtension('EXT_color_buffer_float'))) return false;
+    const key = [length, origin[0], origin[1], ...step, ...full, ...grid, ...footprint].join(',');
+    if (this.axes?.key === key) return true;
+    if (!this.axes) {
+      const texture = gl.createTexture(), framebuffer = gl.createFramebuffer();
+      this.axes = { texture, framebuffer, length: 0, key: '' };
+    }
+    const axes = this.axes;
+    gl.bindFramebuffer(gl.FRAMEBUFFER, axes.framebuffer);
+    try {
+      if (axes.length !== length) {
+        gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, axes.texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, length, 2, 0, gl.RGBA, gl.FLOAT, null);
+        gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, axes.texture, 0);
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+          gl.deleteTexture(axes.texture); gl.deleteFramebuffer(axes.framebuffer);
+          this.axes = null; this.axisSupport = false; return false;
+        }
+        axes.length = length;
+      }
+      const program = this.startProgram('float32', '2d', undefined, false, 'axis-weights');
+      this.finishProgram(program); this.current = program; gl.useProgram(program.program);
+      gl.uniform2f(this.uniform('uOrigin'), origin[0], origin[1]); gl.uniform2fv(this.uniform('uStep'), step);
+      gl.uniform2f(this.uniform('uScale'), grid[0] / full[0], grid[1] / full[1]); gl.uniform2fv(this.uniform('uGrid'), grid);
+      gl.uniform2fv(this.uniform('uFootprint'), footprint);
+      gl.viewport(0, 0, length, 2); gl.drawArrays(gl.TRIANGLES, 0, 3);
+      axes.key = key;
+    } finally { gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
+    return true;
+  }
   private indexMapping(prefix: string, series: Series, origin: Vec3, indexRight: Vec3, indexDown: Vec3): void {
     this.gl.uniform3fv(this.uniform(`${prefix}IndexTopLeft`), worldToIndex(series, origin));
     this.gl.uniform3fv(this.uniform(`${prefix}IndexRight`), indexRight);
@@ -663,13 +733,6 @@ class SharedSliceRenderer {
     const mprX = samples(indexRight), mprY = samples(indexDown);
     const petX = petRight ? samples(petRight) : 1, petY = petDown ? samples(petDown) : 1;
     const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
-    const sampling: Sampling = reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
-    const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
-    if (this.canvas.width !== w) this.canvas.width = w;
-    if (this.canvas.height !== h) this.canvas.height = h;
-    this.finishProgram(program);
-    this.current = program;
-    gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
     let limit = this.textureLimit;
     if (cachedFrame) {
       const overlayBytes = fusion && petKind ? fusion.volume.data.length * bytesPerTexel(petKind) + fusion.volume.series.dimensions[2] * 16 : 0;
@@ -681,12 +744,26 @@ class SharedSliceRenderer {
       }
     }
     const tiles = sourceFrame === undefined ? [] : frameTiles(nx, ny, limit);
+    const footprint: [number, number] = [Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny))];
+    const useAxes = reducedOnly && mainKind !== 'rgb8' && !fusion && this.info.software && this.floatLinear
+      && tiles.length === 1 && indexRight[1] === 0 && indexDown[0] === 0
+      && this.prepareFilterAxes(Math.max(w, h), worldToIndex(imageSeries, topLeft), [indexRight[0], indexDown[1]], [nx, ny], grid, footprint);
+    const sampling: Sampling = useAxes ? 'reduced-axes' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
+    const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
+    if (this.canvas.width !== w) this.canvas.width = w;
+    if (this.canvas.height !== h) this.canvas.height = h;
+    this.finishProgram(program);
+    this.current = program;
+    gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
+    if (useAxes) {
+      gl.activeTexture(gl.TEXTURE6); gl.bindTexture(gl.TEXTURE_2D, this.axes!.texture); gl.uniform1i(this.uniform('uFilterAxes'), 6);
+    }
     let sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0]);
     const pinned = new Set(reducedOnly ? [] : [sourceKey]);
     gl.uniform1i(this.uniform('uImage'), 0);
     if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
     this.indexMapping('u', imageSeries, topLeft, indexRight, indexDown);
-    if (reduced) gl.uniform2f(this.uniform('uFootprint'), Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny)));
+    if (reduced) gl.uniform2fv(this.uniform('uFootprint'), footprint);
     if (filtered && sourceFrame === undefined) gl.uniform2i(this.uniform('imageGrid'), mprX, mprY);
     gl.uniform1f(this.uniform('uScreenHeight'), h);
     gl.uniform3fv(this.uniform('uDimensions'), sourceFrame === undefined ? volume.series.dimensions : [volume.series.dimensions[0], volume.series.dimensions[1], 1]);
