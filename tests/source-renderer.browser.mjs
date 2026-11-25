@@ -40,7 +40,7 @@ export function verifySourceGpu(nativeColors = []){
    const w=300,h=260,data=components===3?new Uint8Array(w*h*3):label==='float64'?new Float64Array(w*h):new Uint16Array(w*h);
    for(let y=0;y<h;y++)for(let x=0;x<w;x++){const v=(x*7+y*13)%4096;if(components===3)data.set([x%256,y%256,(x+y)%256],(y*w+x)*3);else data[y*w+x]=v}
    const volume=vol(`tiled-${label}`,data,{dimensions:[w,h,1],pixelType:components===3?'uint8':label==='float64'?'float64':'uint16',components,canReconstruct:false,modality:'DX',...(label==='float64'?{paddingRange:[128,147]}:{})});
-   for(const view of [{zoom:1},{zoom:1.7,rotation:30,pan:[13,-7]},{flipX:true,zoom:.8},{rotation:90,flipY:true,zoom:2.3,pan:[-40,25]}]){
+   for(const view of [{zoom:1},{zoom:1.7,rotation:30,pan:[13,-7]},{flipX:true,zoom:.8},{zoom:.3,rotation:15,pan:[.25,.5]},{rotation:90,flipY:true,zoom:2.3,pan:[-40,25]}]){
     const settled={...baseView,windowCenter:2048,windowWidth:4096,...view},whole=canvas(w,h),tiled=canvas(w,h);
     renderer.render(whole,volume,settled);
     renderer.limitTexturesForTesting(200);
@@ -54,10 +54,49 @@ export function verifySourceGpu(nativeColors = []){
     record(`Tiled ${label} ${JSON.stringify(view)}: every pixel as one texture, in tiles of at most 200`,different===0&&(view.rotation!==undefined||view.flipX!==undefined||sent.length>1)&&sent.every(u=>u.width<=200&&u.height<=200),{different,tiles:sent.length});
    }
   });
-  attempt('No acquired-frame interpolation',()=>{
+  attempt('Enlarged acquired frames retain the original samples',()=>{
    const data=new Uint8Array([0,100,200,250,120,120,120,120,240,240,240,240]),volume=vol('nearest-source',data,{dimensions:[2,2,3],pixelType:'uint8'}),c=canvas(4);
    renderer.render(c,volume,baseView);checkPixel('Zoomed source image keeps nearest original intensity',c,1,1,[0,0,0,255]);
    renderer.render(c,volume,{...baseView,slice:.5});checkPixel('Fractional source slice selects one acquired frame',c,1,1,[120,120,120,255]);
+  });
+  attempt('Minification preserves thin lines and attenuates folded frequencies',()=>{
+   const width=64, target=canvas(32);
+   for(const frequency of [1/8,3/8]) {
+    const pixels=Int16Array.from({length:width*width*3},(_,i)=>Math.round(128+80*Math.cos(2*Math.PI*frequency*(i%width)+.37)));
+    const volume=vol('grating-'+frequency,pixels,{dimensions:[width,width,3],pixelType:'int16'});
+    for(const mode of ['source','mpr']) for(const phase of [0,.25,.5,.75]) {
+     renderer.render(target,volume,{...baseView,mode,slice:1,pan:[phase/2,phase/2]});
+     const row=target.getContext('2d').getImageData(8,16,16,1).data;
+     let real=0,imag=0;
+     for(let i=0;i<16;i++){const angle=2*Math.PI*frequency*2*i;real+=row[4*i]*Math.cos(angle);imag+=row[4*i]*Math.sin(angle);}
+     const contrast=2*Math.hypot(real,imag)/(16*80);
+     // A two-pixel mean has gain |cos(pi*f)|. A half-pixel shift can also linearly mix adjacent samples.
+     record(mode+' grating '+frequency+' phase '+phase,frequency===1/8?contrast>.84&&contrast<.94:contrast<.40,{contrast});
+    }
+   }
+   const pixels=Uint16Array.from({length:width*width*3},(_,i)=>i%width===(Math.floor(i/width)%width<32?31:32)?224:32);
+   const volume=vol('thin-lines',pixels,{dimensions:[width,width,3],pixelType:'uint16'});
+   for(const factor of [2,4]) for(const mode of ['source','mpr']) for(const shift of [0,.25,.5,.75]){
+    target.width=target.height=width/factor;
+    renderer.render(target,volume,{...baseView,mode,slice:1,pan:[shift/factor,0]});
+    const totals=[.25,.75].map(y=>{
+     const row=target.getContext('2d').getImageData(2,target.height*y,target.width-4,1).data;
+     let sum=0;for(let x=0;x<row.length;x+=4)sum+=row[x]-32;return sum*factor;
+    });
+    record(mode+' line area at 1/'+factor+' shift '+shift,totals.every(sum=>Math.abs(sum-192)<=factor*2),{totals});
+   }
+  });
+  attempt('Reduced values apply the DICOM window after averaging and keep center padding empty',()=>{
+   const pixels=Int16Array.from({length:8*4},(_,i)=>[-1000,0,80,80,10,10,-1000,-1000][i%8]);
+   const volume=vol('reduced-padding',pixels,{dimensions:[8,4,1],pixelType:'int16',paddingRange:[-1000,-1000]});
+   const target=canvas(2,1), before=uploads.length;
+   renderer.render(target,volume,{...baseView,windowCenter:40,windowWidth:81});
+   checkPixel('Minified frame excludes padding before its window',target,0,0,[172,172,172,255]);
+   checkPixel('Minified padding center stays background',target,1,0,[0,0,0,255]);
+   const first=uploads.slice(before).filter(t=>t.internalFormat===gl.RG32F);
+   const cached=uploads.length;
+   renderer.render(target,volume,{...baseView,pan:[.1,0],windowWidth:100});
+   record('Window and pan reuse the reduced frame',first.length===1&&!uploads.slice(cached).some(t=>t.internalFormat===gl.RG32F));
   });
   attempt('Per-frame physical source geometry',()=>{
    const frames=[{origin:[10,20,30],direction:[1,0,0,0,1,0,0,0,1],spacing:[1,1,1]},

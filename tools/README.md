@@ -30,6 +30,8 @@ The runner uses installed Google Chrome. Set `VEACOM_BROWSER_CHANNEL=msedge` to 
 
 `renderer-check.html` checks exact GPU pixels for compact scalar formats, trilinear sampling, PET fusion, source RGB, inversion and palettes. Its machine-readable result is `window.rendererCheckResult`. Unsupported color MPR and uncalibrated SUV fusion must fail explicitly.
 
+The renderer suite also measures folded contrast and thin-line visibility while panning a reduced synthetic frame, in both acquired and reconstructed views. The viewport check reads the final Chromium surface at 125% and 150% display scaling. To compare frame times with another checkout, run `node tools/profile-display-sampling.mjs <reference-checkout> <output.json>`. The manual Windows workflow's **compare_display** input runs it against main on two WARP cores. It records the first draw, a fresh texture after shader compilation, and repeated pan and window redraws for the same images.
+
 Float64 source values remain exact for measurements; GPU display uses a cached Float32 copy. NaN/Inf padding stays unchanged in the source and displays as background. Stacks deeper than the GPU3D texture limit still page through source frames using one frame upload at a time; MPR and fusion remain unavailable for those stacks.
 
 `viewport-check.html` mounts the actual React viewport against a known mathematical scalar field. The runner checks scrolling, window/level, zoom/pan, every annotation tool, MPR, oblique and reference planes, mouse settings, touch gestures and 25 simultaneous panes. These fixtures are test inputs, not example patient images.

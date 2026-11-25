@@ -75,7 +75,8 @@ function sphereOnPlane(annotation: Annotation, frame: PlaneFrame, mapping: Scree
   return { points: [section.center, add(section.center, scale(mapping.right, section.radius))], depth: section.depth };
 }
 const rootStyle: CSSProperties = { position: 'relative', width: '100%', height: '100%', minHeight: 80, overflow: 'hidden', background: '#000', touchAction: 'none' };
-const canvasStyle: CSSProperties = { display: 'block', width: '100%', height: '100%' };
+// The renderer already samples at device resolution. Preserve those pixels at fractional desktop scaling.
+const canvasStyle: CSSProperties = { display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated' };
 const overlayStyle: CSSProperties = { position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' };
 /** A pane's size until it is first measured, a frame or two after it opens. The overlay is drawn in a box of the pane's
  * size, so drawn then it is one unit stretched over the pane, and a 3.5-unit handle on an MPR line covers the pane in
@@ -239,10 +240,23 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }
 
 
+function paneRaster(bounds: DOMRect) {
+  const ratio = window.devicePixelRatio || 1;
+  const left = Math.round(bounds.left * ratio), top = Math.round(bounds.top * ratio);
+  return { ratio, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height),
+    pixelWidth: Math.max(1, Math.round(bounds.right * ratio) - left), pixelHeight: Math.max(1, Math.round(bounds.bottom * ratio) - top),
+    x: left / ratio - bounds.left, y: top / ratio - bounds.top };
+}
+
 let firstDrawMarked = false;
-function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number) {
+function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number, raster: ReturnType<typeof paneRaster>) {
   const renderer = sliceRenderer();
-  const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion);
+  // Snap both edges of the bitmap and keep its patient-space mapping relative to the pane.
+  canvas.style.marginLeft = raster.x + 'px'; canvas.style.marginTop = raster.y + 'px';
+  canvas.style.width = raster.pixelWidth / raster.ratio + 'px'; canvas.style.height = raster.pixelHeight / raster.ratio + 'px';
+  if (canvas.width !== raster.pixelWidth) canvas.width = raster.pixelWidth;
+  if (canvas.height !== raster.pixelHeight) canvas.height = raster.pixelHeight;
+  const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion, raster);
   canvas.dataset.renderer = renderer.info.renderer;
   canvas.dataset.softwareRenderer = String(renderer.info.software);
   canvas.dataset.slice = String(displayed.slice);
@@ -365,15 +379,10 @@ export function Viewport(props: ViewportProps) {
       const current = latest.current;
       syncInteractionContext(current.volume, liveView.current);
       const displayed = renderedView(current.volume, liveView.current);
-      if (renderNeeded.current && canvas.current && sized.current) {
+      if (renderNeeded.current && canvas.current && container.current && sized.current) {
         renderNeeded.current = false;
         try {
-          // Changing the bitmap size clears it. Resize and paint in the same frame.
-          const dpr = window.devicePixelRatio || 1;
-          const width = Math.max(1, Math.round(size.current[0] * dpr)), height = Math.max(1, Math.round(size.current[1] * dpr));
-          if (canvas.current.width !== width) canvas.current.width = width;
-          if (canvas.current.height !== height) canvas.current.height = height;
-          paintSlice(canvas.current, current, displayed, liveView.current.slice);
+          paintSlice(canvas.current, current, displayed, liveView.current.slice, paneRaster(container.current.getBoundingClientRect()));
           if (errorLive.current) { errorLive.current = null; setError(null); }
         } catch (e) {
           const message = e instanceof Error ? e.message : t('viewport.renderFailed');
@@ -423,8 +432,7 @@ export function Viewport(props: ViewportProps) {
   // the layout changes, so pointer events take it too: closing 3D or the inspector widens the pane, and a click before
   // that frame must be judged (the right edge scrolls) and placed on the image by the pane it lands in.
   const measurePane = (bounds: DOMRect) => {
-    const width = Math.max(1, bounds.width), height = Math.max(1, bounds.height);
-    const dpr = window.devicePixelRatio || 1, pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+    const { width, height, pixelWidth, pixelHeight } = paneRaster(bounds);
     const geometryChanged = size.current[0] !== width || size.current[1] !== height;
     const bitmapChanged = canvas.current && (canvas.current.width !== pixelWidth || canvas.current.height !== pixelHeight);
     if (!geometryChanged && !bitmapChanged && sized.current) return;
@@ -540,7 +548,13 @@ export function Viewport(props: ViewportProps) {
   useEffect(() => {
     const element = container.current!;
     const resizeState = { frame: null as number | null };
+    let density: MediaQueryList | null = null;
     const resize = () => {
+      if (!density?.matches) {
+        density?.removeEventListener('change', resize);
+        density = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+        density.addEventListener('change', resize);
+      }
       if (resizeState.frame !== null) return;
       resizeState.frame = requestAnimationFrame(() => { resizeState.frame = null; resizePane(element); });
     };
@@ -552,6 +566,7 @@ export function Viewport(props: ViewportProps) {
     window.addEventListener('veacom-gpu-restored', restore);
     return () => {
       observer.disconnect();
+      density?.removeEventListener('change', resize);
       element.removeEventListener(PICK_MEASUREMENT, pick);
       element.removeEventListener('wheel', wheel);
       window.removeEventListener('resize', resize);

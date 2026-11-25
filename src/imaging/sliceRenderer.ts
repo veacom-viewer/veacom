@@ -3,13 +3,15 @@ import { applyPoint, applyVector } from './rigid';
 import { MAX_PROJECTION_HALF, MAX_SLAB_HALF, slabSampling } from './slab';
 import { usesSourceFrames } from './viewState';
 import type { FusionSettings, PixelArray, Series, Vec3, ViewState, VoiLut, Volume } from '../model';
-import { isProjection, screenMapping, screenToWorld, sourceFrameSeries, sub, worldToIndex, worldToIndexMatrix } from './geometry';
+import { isProjection, multiply, screenMapping, screenToWorld, sourceFrameSeries, sub, worldToIndex, worldToIndexMatrix } from './geometry';
+import { reduceFrame, reducedTile } from './frameReduction';
 import { LocalizedError, t } from '../i18n';
 import { isSoftwareRenderer } from './rendererInfo';
 
 type TextureKind = 'float32' | 'int16' | 'uint16' | 'uint8' | 'rgb8';
 type TextureDimension = '2d' | '3d';
-interface CachedTexture { texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number; }
+type Sampling = 'native' | 'area' | 'reduced' | 'reduced-with-mask';
+interface CachedTexture { owner: string; texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number; }
 interface Program { key: string; program: WebGLProgram; shaders: [WebGLShader, WebGLShader] | null;
   preparation?: Promise<void>; uniforms: Map<string, WebGLUniformLocation | null>; }
 /** `software` is true when WebGL draws on the CPU because no usable graphics driver is available. */
@@ -23,6 +25,7 @@ function readRendererInfo(gl: WebGL2RenderingContext): RendererInfo {
     max3DTextureSize: Number(gl.getParameter(gl.MAX_3D_TEXTURE_SIZE)), software: isSoftwareRenderer(renderer) };
 }
 
+const TEXTURE_BUDGET = 1024 ** 3;
 const VOI_ROW = 4096;
 const VOI_UNIT = 4;
 
@@ -43,6 +46,20 @@ function textureKind(volume: Volume): TextureKind {
   if (volume.data instanceof Uint8Array) return 'uint8';
   if (volume.data instanceof Float32Array || volume.data instanceof Float64Array) return 'float32';
   throw new Error('Unsupported volume pixel type.');
+}
+
+function texturePixels(volume: Volume, kind: TextureKind, frame?: number): PixelArray {
+  const [width, height, depth] = volume.series.dimensions, frameLength = width * height * (kind === 'rgb8' ? 3 : 1);
+  if (volume.series.dimensions.some(d => !Number.isInteger(d) || d < 1)) throw new Error('Invalid volume dimensions');
+  const partial = volume.sourceFrameIndex !== undefined;
+  if (volume.data.length !== frameLength * (partial ? 1 : depth)) throw new Error('Incomplete pixel buffer');
+  if (partial && volume.sourceFrameIndex !== frame) throw new Error(t('gpu.frameNotLoaded'));
+  return frame === undefined || partial ? volume.data : volume.data.subarray(frame * frameLength, (frame + 1) * frameLength);
+}
+
+function bytesPerTexel(kind: TextureKind): number {
+  // RGB8 can occupy four bytes on the driver.
+  return kind === 'float32' || kind === 'rgb8' ? 4 : kind === 'uint8' ? 1 : 2;
 }
 
 function samplerType(kind: TextureKind, dimension: TextureDimension): string {
@@ -92,9 +109,70 @@ float ${prefix}Linear(vec3 p) {
 }`;
 }
 
-/** A whole-volume projection gets a program of its own, with a longer sampling loop; every other program's source is
- * as it was. */
-function fragment(main: TextureKind, dimension: TextureDimension, pet?: TextureKind, projection = false): string {
+/** Average across a screen pixel in the reconstruction plane, without thickening the slice. */
+function planeAverage(prefix: 'image' | 'pet', coordinates: string): string {
+  return `
+uniform ivec2 ${prefix}Grid;
+float ${prefix}Plane(vec3 p,float centre) {
+  if (nonFinite(centre) || all(equal(${prefix}Grid,ivec2(1)))) return centre;
+  float total=0.0, count=0.0;
+  for (int y=0;y<${prefix}Grid.y;y++) for (int x=0;x<${prefix}Grid.x;x++) {
+    vec2 offset=(vec2(x,y)+0.5)/vec2(${prefix}Grid)-0.5;
+    vec3 q=p+offset.x*${coordinates}IndexRight+offset.y*${coordinates}IndexDown;
+    if (outside(q,${coordinates}Dimensions)) continue;
+    float v=${prefix}Linear(q);
+    if (!nonFinite(v)) { total+=v/float(${prefix}Grid.x*${prefix}Grid.y); count+=1.0; }
+  }
+  return count>0.0 ? total*(float(${prefix}Grid.x*${prefix}Grid.y)/count) : centre;
+}`;
+}
+
+function frameSampling(color: boolean, cachedFrame: boolean, hardwareLinear: boolean): string {
+  return `
+uniform vec2 uFootprint;
+${cachedFrame ? `uniform sampler2D uReduced;
+uniform vec2 uReducedScale;
+uniform vec2 uReducedOrigin;
+${hardwareLinear ? `vec4 readReduced(vec2 coord) {
+  return texture(uReduced,(coord+0.5)/vec2(textureSize(uReduced,0)));
+}` : ''}` : ''}
+vec4 frameAverage(vec2 framePixel) {
+  vec2 edge=framePixel+0.5;
+  ${cachedFrame ? 'edge*=uReducedScale;' : ''}
+  vec2 start=mix(edge-0.5*uFootprint,floor(edge),lessThanEqual(uFootprint,vec2(1.0)));
+  vec2 base=floor(start);
+  vec2 first=min(uFootprint,1.0-fract(start)), second=min(vec2(1.0),uFootprint-first);
+  vec2 last=max(vec2(0.0),uFootprint-first-second);
+  ${hardwareLinear ? `
+  // One bilinear fetch integrates the first two cells on each axis. Only a fractional third cell needs another fetch.
+  base-=uReducedOrigin;
+  vec2 sampleAt=base+second/(first+second), tail=last/uFootprint;
+  vec4 top=readReduced(sampleAt);
+  if (last.x>0.0) top=mix(top,readReduced(vec2(base.x+2.0,sampleAt.y)),tail.x);
+  if (last.y<=0.0) return top;
+  vec4 bottom=readReduced(vec2(sampleAt.x,base.y+2.0));
+  if (last.x>0.0) bottom=mix(bottom,readReduced(base+2.0),tail.x);
+  return mix(top,bottom,tail.y);` : `
+  vec3 wx=vec3(first.x,second.x,last.x)/uFootprint.x, wy=vec3(first.y,second.y,last.y)/uFootprint.y;
+  vec4 sum=vec4(0.0);
+  for (int y=0;y<3;y++) for (int x=0;x<3;x++) {
+    float weight=wx[x]*wy[y]; if (weight<=0.0) continue;
+    ${cachedFrame ? `
+    ivec2 at=ivec2(base-uReducedOrigin)+ivec2(x,y);
+    sum+=weight*texelFetch(uReduced,clamp(at,ivec2(0),textureSize(uReduced,0)-1),0);` : `
+    ivec2 at=ivec2(base-uTileOrigin)+ivec2(x,y);
+    ${color ? 'sum.rgb+=weight*texelFetch(uImage,clamp(at,ivec2(0),ivec2(uDimensions.xy)-1),0).rgb;' : `
+    float v=imageVoxel(ivec3(at,0));
+    if (!nonFinite(v)) sum.rg+=weight*vec2(v,1.0);`}`}
+  }
+  return sum;`}
+}`;
+}
+
+function fragment(main: TextureKind, dimension: TextureDimension, pet: TextureKind | undefined, projection: boolean,
+  sampling: Sampling, floatLinear: boolean): string {
+  const filtered = sampling !== 'native', reducedOnly = sampling === 'reduced';
+  const cachedFrame = reducedOnly || sampling === 'reduced-with-mask';
   const color = main === 'rgb8';
   return `#version 300 es
 precision highp float;
@@ -131,6 +209,9 @@ bool outside(vec3 p,vec3 size) { return any(lessThan(p,vec3(-0.5))) || any(great
 bool nonFinite(float v) { return (floatBitsToUint(v)&0x7f800000u)==0x7f800000u; }
 ${color ? '' : scalarSampling('image', 'uImage', 'uDimensions', main === 'float32', dimension)}
 ${pet ? scalarSampling('pet', 'uPet', 'uPetDimensions', pet === 'float32', '3d') : ''}
+${filtered && dimension === '3d' ? planeAverage('image', 'u') : ''}
+${filtered && pet ? planeAverage('pet', 'uPet') : ''}
+${filtered && dimension === '2d' ? frameSampling(color, cachedFrame, cachedFrame && !color && floatLinear) : ''}
 ${color || dimension !== '3d' ? '' : `
 // Thick slab: the brightest, darkest or mean value of the samples either side of the slice, along its normal.
 float slabValue(vec3 p,float centre) {
@@ -165,15 +246,19 @@ vec3 palette(float t,int selected) {
 void main() {
   vec3 p=uIndexTopLeft+uIndexRight*gl_FragCoord.x+uIndexDown*(uScreenHeight-gl_FragCoord.y);
   ${dimension === '2d' ? `// A frame over the GPU's 2D limit is drawn as tiles (frameTiles): each draw keeps its own part of the frame.
+  vec2 framePixel=p.xy;
   if (outside(p,uFull)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
   if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
   p.xy-=uTileOrigin;` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${color ? `
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
-  outColor=vec4(texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb,1.0);
+  outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : `texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb`},1.0);
   ` : `
-  float value=${dimension === '2d' ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};
+  float value=${reducedOnly ? 'frameAverage(framePixel).r' : dimension === '2d' ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};
   if (nonFinite(value)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
+  ${reducedOnly ? '' : filtered && dimension === '2d' ? `vec2 mean=frameAverage(framePixel).rg;
+  if (mean.y<=0.0) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
+  value=mean.x/mean.y;` : filtered ? 'if (uSlabMode==0) value=imagePlane(p,value);' : ''}
   float grey;
   if (uVoi) {
     // The VOI LUT entry for the nearest input value, clamped at both ends; rows of ${VOI_ROW} entries.
@@ -188,6 +273,7 @@ void main() {
   vec3 q=uPetIndexTopLeft+uPetIndexRight*gl_FragCoord.x+uPetIndexDown*(uScreenHeight-gl_FragCoord.y);
   if (!outside(q,uPetDimensions)) {
     float sampled=petLinear(q);
+    ${filtered ? 'sampled=petPlane(q,sampled);' : ''}
     if (!nonFinite(sampled)) {
       float uptake=max(0.0,sampled*uSuvFactor);
       float t=clamp(uptake/max(0.001,uPetUpper),0.0,1.0);
@@ -237,23 +323,26 @@ class SharedSliceRenderer {
   private parallel: KHR_parallel_shader_compile | null;
   private voiTextures = new Map<VoiLut | null, WebGLTexture>();
   private lost = false;
+  private floatLinear: boolean;
   constructor() {
     const gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
     if (!gl) throw new LocalizedError('gpu.webglUnavailable');
     this.gl = gl;
+    this.floatLinear = !!gl.getExtension('OES_texture_float_linear');
     this.parallel = gl.getExtension('KHR_parallel_shader_compile');
     this.canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     this.canvas.addEventListener('webglcontextrestored', () => {
       this.textures.clear(); this.programs.clear(); this.voiTextures.clear(); this.current = null; this.emptyPadding = null; this.lost = false;
       this.parallel = gl.getExtension('KHR_parallel_shader_compile');
+      this.floatLinear = !!gl.getExtension('OES_texture_float_linear');
       // A restored context can run on a different renderer, for example after the GPU process fell back to software.
       this.info = readRendererInfo(gl);
       window.dispatchEvent(new Event('veacom-gpu-restored'));
     });
     this.info = readRendererInfo(gl);
   }
-  private startProgram(main: TextureKind, dimension: TextureDimension, pet?: TextureKind, projection = false): Program {
-    const key = `${main}:${dimension}:${pet ?? 'none'}${projection ? ':projection' : ''}`;
+  private startProgram(main: TextureKind, dimension: TextureDimension, pet?: TextureKind, projection = false, sampling: Sampling = 'native'): Program {
+    const key = `${main}:${dimension}:${pet ?? 'none'}${projection ? ':projection' : ''}:${sampling}`;
     const cached = this.programs.get(key);
     if (cached) return cached;
     const gl = this.gl;
@@ -264,7 +353,7 @@ class SharedSliceRenderer {
     };
     const vs = compile(gl.VERTEX_SHADER, vertex);
     let fs: WebGLShader;
-    try { fs = compile(gl.FRAGMENT_SHADER, fragment(main, dimension, pet, projection)); } catch (error) { gl.deleteShader(vs); throw error; }
+    try { fs = compile(gl.FRAGMENT_SHADER, fragment(main, dimension, pet, projection, sampling, this.floatLinear)); } catch (error) { gl.deleteShader(vs); throw error; }
     const program = gl.createProgram();
     gl.attachShader(program, vs); gl.attachShader(program, fs); gl.linkProgram(program);
     const compiled: Program = { key, program, shaders: [vs, fs], uniforms: new Map() };
@@ -334,13 +423,13 @@ class SharedSliceRenderer {
   }
   private prune(requiredBytes = 0, protectedKeys = new Set<string>()): void {
     let total = [...this.textures.values()].reduce((sum, value) => sum + value.bytes, 0);
-    const candidates = [...this.textures.entries()].sort((a, b) => Number(this.visible.has(a[0])) - Number(this.visible.has(b[0])) || a[1].touched - b[1].touched);
+    const candidates = [...this.textures.entries()].sort((a, b) => Number(this.visible.has(a[1].owner)) - Number(this.visible.has(b[1].owner)) || a[1].touched - b[1].touched);
     for (const [key, cached] of candidates) {
       if (protectedKeys.has(key)) continue;
-      if (cached.data.deref() && total + requiredBytes <= 1024 ** 3 && this.textures.size < 64) continue;
+      if (cached.data.deref() && total + requiredBytes <= TEXTURE_BUDGET && this.textures.size < 64) continue;
       this.dropTexture(key, cached); total -= cached.bytes;
     }
-    if (total + requiredBytes > 1024 ** 3) throw new Error(t('gpu.textureBudget'));
+    if (total + requiredBytes > TEXTURE_BUDGET) throw new Error(t('gpu.textureBudget'));
   }
   /** A VOI LUT as an R16UI texture in rows of VOI_ROW entries; null gives a one-entry placeholder. Recent tables stay cached. */
   private voiTexture(lut: VoiLut | null): WebGLTexture {
@@ -393,7 +482,7 @@ class SharedSliceRenderer {
   }
   private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile): string {
     const gl = this.gl, series = volume.series;
-    if (series.dimensions.some(d => !Number.isInteger(d) || d < 1)) throw new Error('Invalid volume dimensions');
+    const sourceData = texturePixels(volume, kind, sourceFrame);
     const limit = sourceFrame === undefined ? this.info.max3DTextureSize : this.textureLimit;
     const [tileWidth, tileHeight] = tile ? [tile.width, tile.height] : [series.dimensions[0], series.dimensions[1]];
     if (tileWidth > limit || tileHeight > limit || (sourceFrame === undefined && series.dimensions[2] > limit)) {
@@ -401,20 +490,16 @@ class SharedSliceRenderer {
     }
     const components = kind === 'rgb8' ? 3 : 1;
     const frameLength = series.dimensions[0] * series.dimensions[1] * components;
-    const partial = volume.sourceFrameIndex !== undefined;
-    if (volume.data.length !== frameLength * (partial ? 1 : series.dimensions[2])) throw new Error('Incomplete pixel buffer');
-    if (partial && (sourceFrame === undefined || volume.sourceFrameIndex !== sourceFrame)) throw new Error(t('gpu.frameNotLoaded'));
     const target = sourceFrame === undefined ? gl.TEXTURE_3D : gl.TEXTURE_2D;
     gl.activeTexture(gl.TEXTURE0 + unit);
     const tiled = tile && (tile.width !== series.dimensions[0] || tile.height !== series.dimensions[1]) ? tile : undefined;
-    const key = this.textureKey(volume, kind, sourceFrame) + (tiled ? `:tile:${tiled.x},${tiled.y},${tiled.width},${tiled.height}` : '');
+    const owner = this.textureKey(volume, kind, sourceFrame);
+    const key = owner + (tiled ? `:tile:${tiled.x},${tiled.y},${tiled.width},${tiled.height}` : '');
     let cached = this.textures.get(key);
     if (!cached) {
       const texels = tileWidth * tileHeight * (sourceFrame === undefined ? series.dimensions[2] : 1);
-      // Drivers may store RGB8 as RGBA8; reserve four bytes per colour texel.
-      const byteCount = texels * (kind === 'float32' || kind === 'rgb8' ? 4 : kind === 'int16' || kind === 'uint16' ? 2 : 1);
+      const byteCount = texels * bytesPerTexel(kind);
       this.prune(byteCount + (sourceFrame === undefined ? series.dimensions[2] : 1) * 16, protectedKeys);
-      const sourceData = sourceFrame === undefined || partial ? volume.data : volume.data.subarray(sourceFrame * frameLength, (sourceFrame + 1) * frameLength);
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
       let displayData = sourceData;
       if (sourceData instanceof Float64Array) {
@@ -476,7 +561,7 @@ class SharedSliceRenderer {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
         if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
       }
-      cached = { texture, padding, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
+      cached = { owner, texture, padding, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
       this.textures.set(key, cached);
     } else gl.bindTexture(target, cached.texture);
     if (kind !== 'rgb8') {
@@ -487,12 +572,43 @@ class SharedSliceRenderer {
     cached.touched = performance.now();
     return key;
   }
-  private indexMapping(prefix: string, series: Series, origin: Vec3, right: Vec3, down: Vec3): void {
-    const matrix = worldToIndexMatrix(series);
-    const vector = (p: Vec3) => [matrix[0] * p[0] + matrix[1] * p[1] + matrix[2] * p[2], matrix[3] * p[0] + matrix[4] * p[1] + matrix[5] * p[2], matrix[6] * p[0] + matrix[7] * p[1] + matrix[8] * p[2]];
+  private bindReduction(volume: Volume, frame: number, grid: [number, number], tile: FrameTile, sourceKey: string,
+    pinned: Set<string>, reducedOnly: boolean): string {
+    const gl = this.gl, [width, height] = volume.series.dimensions, full: [number, number] = [width, height];
+    const data = texturePixels(volume, textureKind(volume), frame);
+    const reduced = reducedTile(tile.core, full, grid), color = volume.series.components === 3;
+    const owner = this.textures.get(sourceKey)?.owner ?? sourceKey;
+    const key = `${owner}:reduced:${grid}:${reduced.origin}:${reduced.size}`;
+    gl.activeTexture(gl.TEXTURE5);
+    let cached = this.textures.get(key);
+    if (!cached) {
+      const [w, h] = reduced.size, bytes = w * h * (reducedOnly ? 4 : 8);
+      this.prune(bytes, pinned);
+      const range = volume.series.frameMetadata?.[frame]?.paddingRange ?? volume.series.paddingRange;
+      const pixels = reduceFrame(data, 0, full, grid, reduced, color, range);
+      const texture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      const filter = color || this.floatLinear ? gl.LINEAR : gl.NEAREST;
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, color ? gl.RGB8 : reducedOnly ? gl.R32F : gl.RG32F, w, h, 0,
+        color ? gl.RGB : reducedOnly ? gl.RED : gl.RG, color ? gl.UNSIGNED_BYTE : gl.FLOAT, pixels);
+      const error = gl.getError();
+      if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
+      cached = { owner, texture, padding: null, bytes, data: new WeakRef(volume.data), touched: 0 };
+      this.textures.set(key, cached);
+    } else gl.bindTexture(gl.TEXTURE_2D, cached.texture);
+    cached.touched = performance.now();
+    gl.uniform1i(this.uniform('uReduced'), 5);
+    gl.uniform2f(this.uniform('uReducedScale'), grid[0] / width, grid[1] / height);
+    gl.uniform2fv(this.uniform('uReducedOrigin'), reduced.origin);
+    return key;
+  }
+  private indexMapping(prefix: string, series: Series, origin: Vec3, indexRight: Vec3, indexDown: Vec3): void {
     this.gl.uniform3fv(this.uniform(`${prefix}IndexTopLeft`), worldToIndex(series, origin));
-    this.gl.uniform3fv(this.uniform(`${prefix}IndexRight`), vector(right));
-    this.gl.uniform3fv(this.uniform(`${prefix}IndexDown`), vector(down));
+    this.gl.uniform3fv(this.uniform(`${prefix}IndexRight`), indexRight);
+    this.gl.uniform3fv(this.uniform(`${prefix}IndexDown`), indexDown);
   }
   private configuration(volume: Volume, view: ViewState, fusion?: FusionSettings | null) {
     if (this.lost || this.gl.isContextLost()) throw new Error(t('gpu.contextLost'));
@@ -515,26 +631,63 @@ class SharedSliceRenderer {
     if (petKind === 'rgb8') throw new Error(t('gpu.scalarPet'));
     return { sourceFrame, mainKind, petKind };
   }
-  render(target: HTMLCanvasElement, volume: Volume, view: ViewState, fusion?: FusionSettings | null): number {
+  render(target: HTMLCanvasElement, volume: Volume, view: ViewState, fusion?: FusionSettings | null,
+    pane?: { width: number; height: number; x: number; y: number; ratio: number }): number {
     const { sourceFrame, mainKind, petKind } = this.configuration(volume, view, fusion);
     const start = performance.now(), gl = this.gl, w = target.width, h = target.height;
     if (!w || !h) return 0;
-    const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
+    const ratio = pane?.ratio ?? target.width / Math.max(1, target.getBoundingClientRect().width || target.clientWidth || target.width);
+    const cssWidth = pane?.width ?? w / ratio, cssHeight = pane?.height ?? h / ratio;
+    const mapping = screenMapping(volume.series, sourceFrame === undefined ? view : { ...view, mode: 'source', slice: sourceFrame }, cssWidth, cssHeight);
+    const x = pane?.x ?? 0, y = pane?.y ?? 0, topLeft = screenToWorld(mapping, x, y);
+    const right = sub(screenToWorld(mapping, x + 1 / ratio, y), topLeft), down = sub(screenToWorld(mapping, x, y + 1 / ratio), topLeft);
+    const imageSeries = sourceFrame === undefined ? volume.series : sourceFrameSeries(volume.series, sourceFrame);
+    const matrix = worldToIndexMatrix(imageSeries), indexRight = multiply(matrix, right), indexDown = multiply(matrix, down);
+    const [nx, ny] = volume.series.dimensions;
+    const footprintX = Math.max(1, Math.hypot(indexRight[0], indexDown[0]));
+    const footprintY = Math.max(1, Math.hypot(indexRight[1], indexDown[1]));
+    const reduced = sourceFrame !== undefined && Math.max(footprintX, footprintY) > 1.00001;
+    // Keep at most three cells across the residual footprint. Pans, windows and nearby zoom levels reuse these means.
+    const grid: [number, number] = [
+      Math.max(1, Math.floor(nx / Math.ceil(footprintX / 2 - 1e-6))),
+      Math.max(1, Math.floor(ny / Math.ceil(footprintY / 2 - 1e-6))),
+    ];
+    const cachedFrame = reduced && (grid[0] < nx || grid[1] < ny);
+    const reducedOnly = cachedFrame && (mainKind === 'rgb8' || (mainKind !== 'float32' && !imageSeries.paddingRange));
+    const projection = sourceFrame === undefined && isProjection(volume.series, view);
+    const petMatrix = fusion && worldToIndexMatrix(fusion.volume.series), transform = fusion?.transform;
+    const petRight = petMatrix && multiply(petMatrix, transform ? applyVector(transform, right) : right);
+    const petDown = petMatrix && multiply(petMatrix, transform ? applyVector(transform, down) : down);
+    // Thin reconstructions integrate in their own plane. Bound work per output pixel at extreme zoom-out.
+    const samples = (step: Vec3) => Math.min(8, Math.max(1, Math.ceil(Math.hypot(...step) - 1e-5)));
+    const mprX = samples(indexRight), mprY = samples(indexDown);
+    const petX = petRight ? samples(petRight) : 1, petY = petDown ? samples(petDown) : 1;
+    const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
+    const sampling: Sampling = reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
+    const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
     this.finishProgram(program);
     this.current = program;
     gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
-    const tiles = sourceFrame === undefined ? [] : frameTiles(volume.series.dimensions[0], volume.series.dimensions[1], this.textureLimit);
-    const pinned = new Set([this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0])]); gl.uniform1i(this.uniform('uImage'), 0);
+    let limit = this.textureLimit;
+    if (cachedFrame) {
+      const overlayBytes = fusion && petKind ? fusion.volume.data.length * bytesPerTexel(petKind) + fusion.volume.series.dimensions[2] * 16 : 0;
+      const tileBytes = (reducedOnly ? 0 : bytesPerTexel(mainKind)) + (reducedOnly ? 4 : 8);
+      // A raw validity mask and a reduced tile must fit alongside the fused volume, even on very large films.
+      const available = Math.max(0, TEXTURE_BUDGET - overlayBytes - 32);
+      if (nx * ny * tileBytes > available) {
+        limit = Math.min(limit, Math.max(2 * TILE_HALO + 1, Math.floor(Math.sqrt(available / tileBytes))));
+      }
+    }
+    const tiles = sourceFrame === undefined ? [] : frameTiles(nx, ny, limit);
+    let sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0]);
+    const pinned = new Set(reducedOnly ? [] : [sourceKey]);
+    gl.uniform1i(this.uniform('uImage'), 0);
     if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
-    const ratio = target.width / Math.max(1, target.getBoundingClientRect().width || target.clientWidth || target.width);
-    const cssWidth = w / ratio, cssHeight = h / ratio;
-    const mapping = screenMapping(volume.series, sourceFrame === undefined ? view : { ...view, mode: 'source', slice: sourceFrame }, cssWidth, cssHeight);
-    const topLeft = screenToWorld(mapping, 0, 0);
-    const right = sub(screenToWorld(mapping, 1 / ratio, 0), topLeft), down = sub(screenToWorld(mapping, 0, 1 / ratio), topLeft);
-    const imageSeries = sourceFrame === undefined ? volume.series : sourceFrameSeries(volume.series, sourceFrame);
-    this.indexMapping('u', imageSeries, topLeft, right, down);
+    this.indexMapping('u', imageSeries, topLeft, indexRight, indexDown);
+    if (reduced) gl.uniform2f(this.uniform('uFootprint'), Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny)));
+    if (filtered && sourceFrame === undefined) gl.uniform2i(this.uniform('imageGrid'), mprX, mprY);
     gl.uniform1f(this.uniform('uScreenHeight'), h);
     gl.uniform3fv(this.uniform('uDimensions'), sourceFrame === undefined ? volume.series.dimensions : [volume.series.dimensions[0], volume.series.dimensions[1], 1]);
     if (sourceFrame === undefined && mainKind !== 'rgb8') {
@@ -560,9 +713,8 @@ class SharedSliceRenderer {
     if (fusion) {
       gl.uniform3fv(this.uniform('uPetDimensions'), fusion.volume.series.dimensions);
       // An overlay aligned from a frame of its own is read where the pane's points lie in its coordinates.
-      const transform = fusion.transform;
-      if (transform) this.indexMapping('uPet', fusion.volume.series, applyPoint(transform, topLeft), applyVector(transform, right), applyVector(transform, down));
-      else this.indexMapping('uPet', fusion.volume.series, topLeft, right, down);
+      this.indexMapping('uPet', fusion.volume.series, transform ? applyPoint(transform, topLeft) : topLeft, petRight!, petDown!);
+      if (filtered) gl.uniform2i(this.uniform('petGrid'), petX, petY);
       // A PET without SUV is scaled by its own high activity (src/imaging/fusion.ts).
       gl.uniform1f(this.uniform('uSuvFactor'), petScale(fusion.volume));
       gl.uniform1i(this.uniform('uPetBlend'), fusion.blend === 'classic' ? 1 : 0);
@@ -576,8 +728,17 @@ class SharedSliceRenderer {
       const [fullWidth, fullHeight] = volume.series.dimensions;
       gl.uniform3fv(this.uniform('uFull'), [fullWidth, fullHeight, 1]);
       if (tiles.length > 1) { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+      let reductionKey: string | undefined;
       tiles.forEach((tile, index) => {
-        if (index) pinned.add(this.bind(volume, 0, mainKind, sourceFrame, pinned, tile));
+        if (reductionKey) pinned.delete(reductionKey);
+        if (index && !reducedOnly) {
+          pinned.delete(sourceKey);
+          sourceKey = this.bind(volume, 0, mainKind, sourceFrame, pinned, tile); pinned.add(sourceKey);
+        }
+        if (cachedFrame) {
+          reductionKey = this.bindReduction(volume, sourceFrame, grid, tile, sourceKey, pinned, reducedOnly);
+          pinned.add(reductionKey);
+        }
         const [x0, y0, x1, y1] = tile.core;
         // A part's edges in pixel-centre coordinates; the frame's own edges stay open, as outside() leaves them.
         gl.uniform4f(this.uniform('uTile'), x0 ? x0 - 0.5 : -1e9, y0 ? y0 - 0.5 : -1e9, x1 < fullWidth ? x1 - 0.5 : 1e9, y1 < fullHeight ? y1 - 0.5 : 1e9);
