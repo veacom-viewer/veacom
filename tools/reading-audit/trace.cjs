@@ -16,7 +16,12 @@ async function trace(page) {
             await cdp.send('Tracing.end');
             await Promise.race([complete,new Promise((_,reject)=>{timeout=setTimeout(()=>reject(new Error('Trace timed out')),30000);})]);
         } finally {clearTimeout(timeout);await cdp.detach();}
-        return (await analysis).readTrace(events,jpeg);
+        const result=(await analysis).readTrace(events,jpeg);
+        const captures=events.filter(e=>e.name==='Screenshot' && e.args?.snapshot).sort((a,b)=>a.ts-b.ts);
+        result.frames.forEach((f,i)=>{ const raw=captures[i]?.args.expected_display_time;
+            if(Number.isFinite(raw) && Math.abs(raw/1000-f.ts)<10000) f.estimateMs=raw/1000;
+        });
+        return result;
     };
 }
 const median=values=>{const a=[...values].sort((x,y)=>x-y);return a.length?(a[Math.floor((a.length-1)/2)]+a[Math.floor(a.length/2)])/2:null;};

@@ -2,9 +2,9 @@ const {fs,path,os,output,assert,sleep,fresh,tree,launch,closeDesktop,setView,sav
 const {trace,jpeg}=require('./trace.cjs');
 
 async function redrawCorner(page) {
-    // Force a trace screenshot of an otherwise static window. The 2 px square is outside every image ROI.
+    // Force a trace screenshot of an otherwise static window. The corner square is outside every image ROI.
     await page.evaluate(()=>{let e=document.getElementById('reading-audit-tick');
-        if(!e){e=document.createElement('i');e.id='reading-audit-tick';e.style.cssText='position:fixed;top:1px;left:1px;width:2px;height:2px;z-index:99999;pointer-events:none';document.body.append(e);}
+        if(!e){e=document.createElement('i');e.id='reading-audit-tick';e.style.cssText='position:fixed;bottom:2px;right:2px;width:16px;height:16px;z-index:99999;pointer-events:none';document.body.append(e);}
         e.style.backgroundColor=e.style.backgroundColor==='white'?'black':'white';
     });await sleep(40);
 }
@@ -78,7 +78,10 @@ async function mpr(page,depth,calibrating) {
         },{capture:true,once:true});
     });
     const stop=await trace(page);
-    await redrawCorner(page);await sleep(450);await redrawCorner(page);await page.keyboard.press('m');
+    for(let i=0;i<6;i++){await redrawCorner(page);await sleep(100);}
+    const before = PNG.sync.read(await page.screenshot({scale:'css'}));
+    assert.equal(await page.locator('canvas[data-renderer]').count(),1);
+    await redrawCorner(page);await page.keyboard.press('m');
     await page.waitForFunction(()=>new Set([...document.querySelectorAll('canvas[data-renderer]')].map(c=>c.dataset.plane)).size===3,undefined,{timeout:20000});
     await sleep(330);
     const panes=await page.evaluate(()=>[...document.querySelectorAll('canvas[data-renderer]')].map(c=>{
@@ -97,12 +100,16 @@ async function mpr(page,depth,calibrating) {
     const target=references.get(depth);
     assert(target.every(c=>Math.max(...c)-Math.min(...c)>70),'Each MPR plane must show contrast');
     const t=marks['bench:mpr-command'];assert(Number.isFinite(t));
-    const scored=frames.map(f=>({ms:f.ts-t,errors:errors(features(jpeg(f.jpeg),panes),target)}));
+    const scored=frames.map(f=>({ms:f.ts-t,estimateMs:f.estimateMs===undefined?null:f.estimateMs-t,errors:errors(features(jpeg(f.jpeg),panes),target)}));
+    const negative=errors(features({width:before.width,height:before.height,pixels:before.data},panes,8,6),full);
+    await save('most-recent-trace.json',{negative,scored,crossResolutionCorrelation,panes});
+    assert(Math.max(...negative)>10,'The independent single-pane capture must fail the three-plane reference');
     const values=scored.map(s=>Math.max(...s.errors));
     // Score against an independently launched calibration process at the same trace raster.
     const limit=2;
     assert(values.slice(-3).length===3 && values.slice(-3).every(v=>v<=limit),'Three final screenshots must agree with the calibration: '+values.slice(-3));
-    assert(scored.some((s,i)=>s.ms<0 && values[i]>limit),'Single-plane negative control');
+    const traceNegative=scored.some((s,i)=>(s.ms<0 || (s.estimateMs!==null && s.estimateMs<0)) && values[i]>limit);
+    assert(traceNegative,'The trace must cover a single-pane frame before the command');
     assert(values.at(-1)<=limit,'Final MPR image must match the reference: '+values.at(-1));
     const lastWrong=scored.findLastIndex((s,i)=>s.ms>=0&&values[i]>limit);
     const matched=scored.find((s,i)=>s.ms>=0 && i>lastWrong&&values[i]<=limit);
