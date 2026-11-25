@@ -120,6 +120,16 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run build:browser
       - run: node web/site/prepare.mjs
+      - name: Find any CT pixel buffers remaining after the last large study closes
+        run: |
+          jq -n --arg head "$GITHUB_SHA" --arg run "$GITHUB_RUN_ID" '{head_sha:$head,id:$run}' > "$RUNNER_TEMP/source.json"
+          node tools/browser-bench/long-session.mjs web/site/public "$RUNNER_TEMP/closed-ct" 4 "$RUNNER_TEMP/source.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: reading-session-${{ github.run_id }}
+          path: ${{ runner.temp }}/closed-ct
+          retention-days: 90
       - run: node web/tools/browser-check.mjs
       # wrangler, from web/site's own lockfile, reads wrangler.jsonc and bundles worker.js as a deploy would, and stops
       # before publishing: a change that would break the deploy job on main fails here first.
