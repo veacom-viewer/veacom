@@ -24,6 +24,8 @@ export function verifySliceRenderer() {
   const results = [], expectedUploads = new WeakMap(), expectedFloat64Copies = [], expectedFrameViews = [], uploads = [], voiUploads = [];
   const originalUpload3D = gl.texImage3D, originalUpload2D = gl.texImage2D;
   const recordUpload = (dimension, args) => {
+    // The reduced display copy has its own cache and pixel checks. These assertions cover original frame uploads.
+    if (gl.getParameter(gl.ACTIVE_TEXTURE) === gl.TEXTURE5) return;
     // Padding metadata has its own small RGBA32F texture; these assertions cover image pixels.
     if (args[2] === gl.RGBA32F) return;
     // VOI LUT tables use their own texture unit and are checked separately.

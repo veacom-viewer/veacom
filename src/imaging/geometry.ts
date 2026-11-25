@@ -11,7 +11,7 @@ export const length = (a: Vec3): number => Math.hypot(...a);
 export function normalize(a: Vec3): Vec3 { const n = length(a); if (n < 1e-12) throw new Error('Degenerate coordinate direction'); return scale(a, 1 / n); }
 export const clamp = (n: number, a: number, b: number): number => Math.min(b, Math.max(a, n));
 
-function multiply(m: number[], p: Vec3): Vec3 {
+export function multiply(m: number[], p: Vec3): Vec3 {
   return [m[0] * p[0] + m[1] * p[1] + m[2] * p[2], m[3] * p[0] + m[4] * p[1] + m[5] * p[2], m[6] * p[0] + m[7] * p[1] + m[8] * p[2]];
 }
 

@@ -17,6 +17,10 @@ on:
         description: Upload the tested unsigned Windows installer
         type: boolean
         default: false
+      compare_display:
+        description: Compare large-image redraw times against main on two WARP cores
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -72,6 +76,17 @@ jobs:
       - name: Desktop runtimes
         id: runtime
         run: pnpm run setup:runtime
+      - name: Get the reference renderer
+        if: github.event_name == 'workflow_dispatch' && inputs.compare_display
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          path: sampling-reference
+          sparse-checkout: src
+          persist-credentials: false
+      - name: Compare display frame times on WARP
+        if: github.event_name == 'workflow_dispatch' && inputs.compare_display
+        run: node tools/profile-display-sampling.mjs sampling-reference "$env:EVIDENCE\display-sampling.json" --warp
       - name: Engine release build
         id: engine
         if: ${{ !cancelled() }}
