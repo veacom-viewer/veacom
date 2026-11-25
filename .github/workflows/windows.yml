@@ -48,13 +48,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $tree=git rev-parse HEAD:native
-          if ((git -C reference-app rev-parse HEAD:native) -ne $tree -or (git -C candidate-app rev-parse HEAD:native) -ne $tree) { throw 'Different native source trees' }
+          $tree=git -C reference-app rev-parse HEAD:native
+          if ((git -C candidate-app rev-parse HEAD:native) -ne $tree) { throw 'Different native source trees' }
           pnpm install --frozen-lockfile
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pnpm run setup:runtime
-          if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          pnpm run build:core
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           foreach($app in @('reference-app','candidate-app')) {
             pnpm --dir $app install --frozen-lockfile
@@ -62,7 +60,9 @@ jobs:
             pnpm --dir $app run build:web
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
           }
-          "VEACOM_CORE_PATH=$PWD/native/target/release/veacom-core.exe" >> $env:GITHUB_ENV
+          pnpm --dir reference-app run build:core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "VEACOM_CORE_PATH=$PWD/reference-app/native/target/release/veacom-core.exe" >> $env:GITHUB_ENV
       - name: Make the synthetic mammogram and 25 identifiable CT slices
         run: node tools/warp-reading/fixtures.mjs "$env:RUNNER_TEMP/warp-studies" "$env:RUNNER_TEMP/warp-reading"
       - name: Time real window drags and 25-pane resizes

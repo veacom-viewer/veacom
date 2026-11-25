@@ -122,7 +122,31 @@ async function ctTrial(app,page,record,centres,build,pair) {
     else assert.deepEqual(images,expectedImages.get(key),'Wrong pixels or pane size at '+key);}
   record.resizes.push(row);
  }
- if(pair===1)await page.screenshot({path:path.join(out,build+'-25panes.png')});
+ if(pair===1){
+   await page.screenshot({path:path.join(out,build+'-25panes.png')});
+   await page.evaluate(()=>{
+     // Count size assignments separately from the timed trials.
+     const assigned=new WeakMap(),sources=new Set();
+     for(const prop of ['width','height']){
+       const original=Object.getOwnPropertyDescriptor(HTMLCanvasElement.prototype,prop);
+       Object.defineProperty(HTMLCanvasElement.prototype,prop,{...original,set(value){
+         assigned.set(this,(assigned.get(this)??0)+1);return original.set.call(this,value);
+       }});
+     }
+     const draw=CanvasRenderingContext2D.prototype.drawImage;
+     CanvasRenderingContext2D.prototype.drawImage=function(...args){
+       if(this.canvas.matches('[data-testid="viewport-cell"] canvas[data-renderer]'))sources.add(args[0]);
+       return draw.apply(this,args);
+     };
+     window.__surfaceWrites=()=>Array.from(sources,c=>assigned.get(c)??0);
+     window.__warpResize={start:null,canvases:new Set(),ms:null};
+   });
+   await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(1290,825));
+   await page.waitForFunction(()=>window.__warpResize.ms!==null,undefined,{timeout:10000});
+   validate(await read(false));
+   record.surfaceSizeAssignments=await page.evaluate(()=>window.__surfaceWrites());
+   assert.equal(record.surfaceSizeAssignments.length,1);
+ }
 }
 async function main(){
  assert.equal(process.platform,'win32','This benchmark measures the Windows WARP driver');
