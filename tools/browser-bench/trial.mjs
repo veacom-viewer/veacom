@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
-import { readPicture, readTrace, startTrace } from './lib/trace.mjs';
+import { openingTrace, readPicture, readTrace, startTrace } from './lib/trace.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const spec = JSON.parse(fs.readFileSync(process.argv.at(-1), 'utf8'));
@@ -134,7 +134,8 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
 
     // Opening: drop the folder and wait until the window's processes have been quiet for two seconds.
     const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
-    let trace = await startTrace(devtools);
+    const detail = process.env.BENCH_OPEN_TRACE === '1';
+    let trace = await startTrace(devtools, detail ? ['toplevel', 'devtools.timeline', 'gpu', 'cc', 'viz'] : []);
     line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study });
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
@@ -154,7 +155,8 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     const after = processes();
     line.cpuSeconds = +after.reduce((total, m) => total + (m.cpu.cumulativeCPUUsage - (before.get(m.pid) ?? 0)), 0).toFixed(2);
     line.peakMB = peakMB; line.loadedMB = memoryMB(after);
-    let { marks, frames } = readTrace(await trace.stop(), decode);
+    const openingEvents = await trace.stop();
+    let { marks, frames } = readTrace(openingEvents, decode);
     Object.assign(line, openMetrics(marks, frames, MAIN));
     // VEAcom marks its steps of opening (files listed, import, first frame, first image): each one's time after the drop.
     const steps = Object.entries(marks).filter(([name]) => name.startsWith('veacom:')).map(([name, at]) => [name.slice(7), Math.round(at - marks['bench:drop'])]);
@@ -163,6 +165,12 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     if (first) fs.writeFileSync(path.join(outDir, 'shots', `${line.viewer}-${study.name}-r${round}-first.jpg`), Buffer.from(first.jpeg, 'base64'));
     // The window showed a slice but the trace's small screenshots never read it: keep the last one to see why.
     else if (frames.length) fs.writeFileSync(path.join(outDir, 'shots', `${line.viewer}-${study.name}-r${round}-unread.jpg`), Buffer.from(frames.at(-1).jpeg, 'base64'));
+    if (detail && first) {
+      const name = `${line.viewer}-${study.name}-r${round}`;
+      fs.writeFileSync(path.join(outDir, 'shots', name + '-opening.json'), JSON.stringify(openingTrace(openingEvents, frames, marks, first)));
+      const before = frames.findLast(f => f.ts < first.ts && f.ts >= marks['bench:drop']);
+      if (before) fs.writeFileSync(path.join(outDir, 'shots', name + '-preceding.jpg'), Buffer.from(before.jpeg, 'base64'));
+    }
     if (!seen) throw new Error('No slice marker appeared on screen.');
     // The window showed a slice that no trace screenshot read: the opening was not measured, so the trial fails.
     if (line.firstImageMs === null) throw new Error('The trace screenshots never read the slice marker the window showed (picture kept as -unread.jpg).');

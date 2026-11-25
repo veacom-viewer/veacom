@@ -7,7 +7,7 @@ import { findMarkers } from './marker.mjs';
 const CATEGORIES = ['disabled-by-default-devtools.screenshot', 'blink.user_timing'];
 
 /** Starts a trace on a window's DevTools connection; `stop()` ends it and returns its events. */
-export async function startTrace(devtools) {
+export async function startTrace(devtools, extraCategories = []) {
   const events = [];
   let finish;
   const complete = new Promise(resolve => { finish = resolve; });
@@ -16,7 +16,7 @@ export async function startTrace(devtools) {
     if (method === 'Tracing.tracingComplete') finish();
   };
   devtools.on('message', listener);
-  await devtools.sendCommand('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: CATEGORIES, excludedCategories: ['*'] } });
+  await devtools.sendCommand('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { includedCategories: [...CATEGORIES, ...extraCategories], excludedCategories: ['*'] } });
   return {
     async stop() {
       await devtools.sendCommand('Tracing.end');
@@ -53,4 +53,26 @@ export function readPicture({ width, height, pixels }) {
   let sum = 0, count = 0;
   for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) { sum += pixels[(y * width + x) * 4 + 1]; count++; }
   return { index: main.index, unit: main.unit, x: main.x, y: main.y, bandWidth: main.width, mirrored: main.mirrored, grey: count ? sum / count : null, width, height };
+}
+
+/** Bound the diagnostic to startup. Keep task names and timings, and omit trace arguments and image data. */
+export function openingTrace(events, frames, marks, first) {
+  const start = marks['bench:drop'], end = first.ts + 40;
+  const thread = event => event.pid + '/' + event.tid;
+  const names = new Map(events.filter(e => e.ph === 'M' && e.name === 'thread_name').map(e => [thread(e), e.args.name]));
+  const groups = new Map();
+  for (const e of events) {
+    if (e.ph !== 'X' || e.dur < 1000 || e.ts / 1000 > end || (e.ts + e.dur) / 1000 < start) continue;
+    const id = thread(e), tasks = groups.get(id) ?? [];
+    tasks.push({ at: Math.round(e.ts / 1000 - start), ms: Math.round(e.dur / 100) / 10, name: e.name });
+    groups.set(id, tasks);
+  }
+  return {
+    marks: Object.fromEntries(Object.entries(marks).filter(([name]) => name.startsWith('veacom:')).map(([name, at]) => [name, Math.round(at - start)])),
+    screenshots: frames.filter(f => f.ts >= start && f.ts <= end).map(f => ({
+      at: Math.round(f.ts - start), slice: f.index, cell: f.unit, width: f.width, height: f.height,
+    })),
+    threads: [...groups].map(([id, tasks]) => ({ id, name: names.get(id),
+      tasks: tasks.sort((a, b) => b.ms - a.ms).slice(0, 25).sort((a, b) => a.at - b.at) })),
+  };
 }
