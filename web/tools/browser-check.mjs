@@ -144,6 +144,53 @@ async function checkFilePicker(page) {
   assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
 }
 
+/** Hold the real engine requests so a file chooser can finish before startup or import does. */
+async function checkChooseDuringStartup(browser, url, fail) {
+  const page = await browser.newPage(), offline = Promise.withResolvers();
+  try {
+    if (fail) await page.route('**/*.wasm', async route => { await offline.promise; await route.abort('failed'); });
+    await page.addInitScript(() => {
+      const held = new Set(['init', 'import']), send = Worker.prototype.postMessage;
+      window.releaseOpeningRequest = {};
+      Worker.prototype.postMessage = function (request, ...args) {
+        if (!held.delete(request.op)) return send.call(this, request, ...args);
+        window.releaseOpeningRequest[request.op] = () => send.call(this, request, ...args);
+      };
+    });
+    await page.goto(url);
+    const app = page.getByTestId('veacom-app'), choose = page.getByTestId('welcome-open-files');
+    await choose.waitFor();
+    await page.waitForFunction(() => typeof window.releaseOpeningRequest.init === 'function');
+    assert.equal(await app.getAttribute('data-ready'), 'false');
+    for (const kind of ['folder', 'files', 'archive']) assert(await page.getByTestId('welcome-open-' + kind).isEnabled());
+    const picked = page.waitForEvent('filechooser');
+    await choose.click();
+    await (await picked).setFiles(path.join(study, studyFiles[0]));
+    await page.waitForFunction(() => document.querySelector('[data-testid="welcome-open-files"]').disabled);
+    offline.resolve();
+    await page.evaluate(() => window.releaseOpeningRequest.init());
+    if (fail) {
+      await page.waitForFunction(async () => (await window.veacom.getCoreState()).status === 'failed');
+      await page.locator('.connection-error[role="alert"]').waitFor();
+      assert.equal(await app.getAttribute('data-ready'), 'false');
+      assert.equal(await page.locator('canvas[data-series-id]').count(), 0);
+      return;
+    }
+    await page.waitForFunction(() => typeof window.releaseOpeningRequest.import === 'function');
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    assert(await choose.isDisabled(), 'Completing the catalog read must keep the active import busy.');
+    assert.equal(await app.getAttribute('data-ready'), 'false');
+    await page.evaluate(() => window.releaseOpeningRequest.import());
+    await page.locator('canvas[data-series-id][data-slice="0"]').first().waitFor();
+    const result = await page.evaluate(async () => {
+      const bridge = window.veacom, { series } = await bridge.listSeries(), { generation } = await bridge.getCoreState();
+      const [item] = series, pixels = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+      return [series.length, item.patientId, item.dimensions[2], pixels.headers.get('X-SOP-Instance-UID')];
+    });
+    assert.deepEqual(result, [1, 'SYNTHETIC-SMOKE', 1, '2.25.302617644913925066835652647005517224101.3.1']);
+  } finally { offline.resolve(); await page.close(); }
+}
+
 /** The actual browser file list contains the same basename twice, once for each patient. */
 async function checkLooseFileDrop(browser, url) {
   const page = await browser.newPage();
@@ -422,6 +469,8 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      await checkChooseDuringStartup(browser, page.url(), false);
+      if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
