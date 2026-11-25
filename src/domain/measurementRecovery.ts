@@ -16,12 +16,14 @@ export interface SavedMeasurement {
 export interface SavedCalibration {
   scope: string; id: string; reference: string; frame: number | null; calibration: FilmCalibration;
   sources?: string[];
+  partial?: boolean;
 }
 export type RecoveryRecord = SavedMeasurement | SavedCalibration;
 export type CalibrationEdit = { frame: number | null; value: FilmCalibration | null };
+export type RecoveryWrite<T extends RecoveryRecord = RecoveryRecord> = { id: string; put?: T; scale?: { sources: string[]; factor: number | null } };
 
 const scopes = new WeakMap<Series, Promise<string>>();
-const grids = new WeakMap<Series, Promise<string>>();
+const grids = new WeakMap<Series, Map<string, Promise<string>>>();
 const sources = new WeakMap<Series, Map<number, Promise<string>>>();
 const duplicates = new WeakMap<Series, Set<FrameMetadata>>();
 
@@ -67,15 +69,17 @@ async function sourceReference(series: Series, index: number): Promise<string | 
   return reference;
 }
 
-function gridReference(series: Series): Promise<string> | undefined {
-  let reference = grids.get(series);
+function gridReference(series: Series, group = series.id): Promise<string> | undefined {
+  let cache = grids.get(series);
+  const reference = cache?.get(group);
   if (reference) return reference;
   const frames = series.frameMetadata;
   if (frames?.length !== series.dimensions[2] || !frames.every(f => f.sopInstanceUid) || duplicateFrames(series).size) return;
-  reference = uidDigest(JSON.stringify([series.id, series.frameOfReferenceUid, series.dimensions, series.origin, series.direction, series.spacing,
+  const digest = uidDigest(JSON.stringify([group, series.frameOfReferenceUid, series.dimensions, series.origin, series.direction, series.spacing,
     frames.map(f => [f.sopInstanceUid, f.sourceFrameNumber, f.origin, f.direction, f.spacing, f.spacingKnown, f.positionKnown, f.orientationKnown, f.projection?.basis, f.projection?.spacing])]));
-  grids.set(series, reference);
-  return reference;
+  if (!cache) { cache = new Map(); grids.set(series, cache); }
+  cache.set(group, digest);
+  return digest;
 }
 
 function isMeasurementTool(type: unknown): type is (typeof measurementTools)[number] {
@@ -167,18 +171,31 @@ export function calibrationEditId(series: Series, frame: number | null): string 
   return frame === null ? '@series' : '@film:' + filmKey(series, frame);
 }
 
-export async function saveCalibration(series: Series, scope: string, edit: CalibrationEdit): Promise<{ id: string; put?: SavedCalibration }> {
-  const reference = await (edit.frame === null ? gridReference(series) : sourceReference(series, edit.frame));
+export async function saveCalibration(series: Series, scope: string, edit: CalibrationEdit): Promise<RecoveryWrite<SavedCalibration>> {
+  // A catalog group can be renamed when a second acquisition arrives. Its exact ordered DICOM grid survives that rename.
+  const reference = await (edit.frame === null ? gridReference(series, '') : sourceReference(series, edit.frame));
   if (!reference) throw new Error('Missing calibration reference');
-  const id = edit.frame === null ? '@scale:' + series.id : '@film:' + reference;
-  if (!edit.value) return { id };
-  const put: SavedCalibration = { scope, id, frame: edit.frame, reference, calibration: edit.value };
+  const id = edit.frame === null ? '@grid:' + reference : '@film:' + reference;
+  const put = edit.value ? { scope, id, frame: edit.frame, reference, calibration: edit.value } : undefined;
   if (edit.frame === null) {
-    // A reader may reopen just a few slices. Those exact images keep their scale even when the reconstruction changed.
     const hashes = await Promise.all(series.frameMetadata!.map((_, i) => sourceReference(series, i)));
-    put.sources = hashes.filter((hash): hash is string => hash !== undefined);
+    const sources = hashes.filter((hash): hash is string => hash !== undefined);
+    if (edit.value && edit.value.method !== 'scale') throw new Error('Invalid series scale');
+    return { id, ...(put ? { put: { ...put, sources } } : {}), scale: { sources, factor: edit.value?.scale ?? null } };
   }
-  return { id, put };
+  return put ? { id, put } : { id };
+}
+
+/** Keep other acquisitions' images when a reader recalibrates or clears part of a previously saved grid. */
+export function supersededScales(rows: unknown[], updated: ReadonlyMap<string, number | null>): RecoveryWrite[] {
+  const edits: RecoveryWrite[] = [];
+  for (const row of rows) {
+    if (!calibrationRow(row) || row.frame !== null || row.calibration.method !== 'scale' || !Array.isArray(row.sources)) continue;
+    const factor = row.calibration.scale;
+    const sources = row.sources.filter(hash => !updated.has(hash) || updated.get(hash) === factor);
+    if (sources.length !== row.sources.length) edits.push(sources.length ? { id: row.id, put: { ...row, partial: true, sources } } : { id: row.id });
+  }
+  return edits;
 }
 
 function validCalibration(value: unknown): value is FilmCalibration {
@@ -190,19 +207,44 @@ function validCalibration(value: unknown): value is FilmCalibration {
     || ((c.method === 'ball' || c.method === 'ruler') && typeof c.knownMm === 'number' && Number.isFinite(c.knownMm) && c.knownMm > 0));
 }
 
-export async function recoverCalibration(series: Series, scope: string, value: unknown): Promise<CalibrationEdit[]> {
-  if (!value || typeof value !== 'object') return [];
+function calibrationRow(value: unknown): value is SavedCalibration {
+  if (!value || typeof value !== 'object') return false;
   const row = value as Partial<SavedCalibration>;
-  if (row.scope !== scope || !validCalibration(row.calibration) || typeof row.reference !== 'string') return [];
+  return typeof row.scope === 'string' && typeof row.id === 'string' && typeof row.reference === 'string' && validCalibration(row.calibration)
+    && (row.frame === null || (typeof row.frame === 'number' && Number.isSafeInteger(row.frame) && row.frame >= 0));
+}
+
+export async function recoverCalibration(series: Series, scope: string, row: unknown): Promise<CalibrationEdit[]> {
+  if (!calibrationRow(row) || row.scope !== scope) return [];
   if (row.frame === null) {
-    if (row.id !== '@scale:' + series.id || row.calibration.method !== 'scale') return [];
-    if (await gridReference(series) === row.reference) return [{ frame: null, value: row.calibration }];
+    if (row.calibration.method !== 'scale') return [];
+    const legacy = row.id.startsWith('@scale:') && row.id.length > 7;
+    if (!legacy && row.id !== '@grid:' + row.reference) return [];
+    // The first storage format included the original catalog group in the grid digest. All geometry and SOPs must match.
+    if (!row.partial && await gridReference(series, legacy ? row.id.slice(7) : '') === row.reference) return [{ frame: null, value: row.calibration }];
     if (!Array.isArray(row.sources) || !series.frameMetadata) return [];
     const known = new Set(row.sources), calibration = row.calibration;
     const matches = await Promise.all(series.frameMetadata.map((_, i) => sourceReference(series, i)));
     return matches.flatMap((hash, frame) => hash && known.has(hash) ? [{ frame, value: calibration }] : []);
   }
-  if (typeof row.frame !== 'number' || !Number.isSafeInteger(row.frame) || row.frame < 0 || row.id !== '@film:' + row.reference) return [];
+  if (row.id !== '@film:' + row.reference) return [];
   const frame = await findSource(series, row.reference, row.frame);
   return frame === null ? [] : [{ frame, value: row.calibration }];
+}
+
+export async function recoverCalibrations(series: Series, scope: string, rows: unknown[]): Promise<CalibrationEdit[]> {
+  const records = rows.filter(calibrationRow);
+  const scales = new Map<number | null, number>(), films: CalibrationEdit[] = [];
+  const decoded = await Promise.all(records.map(r => recoverCalibration(series, scope, r)));
+  for (const [i, entries] of decoded.entries()) for (const entry of entries) {
+    if (records[i].frame !== null) { films.push(entry); continue; }
+    if (entry.value?.method !== 'scale') continue;
+    const previous = scales.get(entry.frame);
+    if (previous !== undefined && previous !== entry.value.scale) throw new Error('Conflicting saved scales');
+    scales.set(entry.frame, entry.value.scale);
+  }
+  const whole = scales.get(null);
+  if (whole !== undefined && [...scales.values()].some(scale => scale !== whole)) throw new Error('Conflicting saved scales');
+  // A film's own ruler, ball or explicit DICOM calibration overrides its series scale.
+  return [...Array.from(scales, ([frame, scale]) => ({ frame, value: { method: 'scale' as const, scale } })), ...films];
 }

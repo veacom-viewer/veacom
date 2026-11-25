@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Annotation, FrameMetadata, Series, Vec3 } from '../src/model';
 import { getPlaneFrame } from '../src/imaging/geometry';
-import { measurementEdits, measurementScope, recoverCalibration, recoverMeasurement, saveCalibration, saveMeasurement } from '../src/domain/measurementRecovery';
+import { measurementEdits, measurementScope, recoverCalibration, recoverCalibrations, recoverMeasurement, saveCalibration, saveMeasurement,
+  supersededScales, type RecoveryRecord } from '../src/domain/measurementRecovery';
 
 const direction = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 const frames: FrameMetadata[] = [1, 2, 3].map((number, index) => ({
@@ -100,5 +101,45 @@ describe('measurement recovery', () => {
       { calibration: { method: 'ball', scale: 1, knownMm: 5, depthConfirmed: 'yes' } }]) {
       assert.deepEqual(await recoverCalibration(series, scope, { ...saved.put, ...change }), []);
     }
+  });
+
+  it('keeps calibration on the same acquired images when a second acquisition changes the catalog group', async () => {
+    const scope = await scopeOf(series), value = { method: 'scale' as const, scale: 2 };
+    const saved = (await saveCalibration(series, scope, { frame: null, value })).put!;
+    // The original storage format included "stack", the pre-split group ID, in this fixture's grid digest.
+    const legacy = { ...saved, id: '@scale:stack', reference: '80df330bd40a7fa5aa4600e4b96d81dad3d67d7344054c58bf6b40e15bfbde52' };
+    const first = { ...series, id: 'first-acquisition' };
+    const second = { ...first, id: 'second-acquisition', frameMetadata: frames.map(f => ({ ...f, sopInstanceUid: '1.2.345.20' })) };
+    const mixed = { ...first, frameMetadata: [frames[2], second.frameMetadata[1], frames[0]] };
+    for (const row of [saved, legacy]) {
+      assert.deepEqual(await recoverCalibrations(first, scope, [row]), [{ frame: null, value }]);
+      assert.deepEqual(await recoverCalibrations(second, scope, [row]), []);
+      assert.deepEqual(await recoverCalibrations(mixed, scope, [row]), [0, 2].map(frame => ({ frame, value })));
+      assert.deepEqual(await recoverCalibrations(first, await scopeOf({ ...first, patientKey: 'other' }), [row]), []);
+    }
+    const current = (await saveCalibration(first, scope, { frame: null, value })).put!;
+    assert.equal(current.id, saved.id);
+    const conflict = { ...legacy, calibration: { ...value, scale: 3 } };
+    await assert.rejects(recoverCalibrations(first, scope, [saved, conflict]), /Conflicting saved scales/);
+  });
+
+  it('replaces or clears only the source images the reader recalibrated', async () => {
+    const scope = await scopeOf(series), scale = (n: number) => ({ method: 'scale' as const, scale: n });
+    const subset = { ...series, id: 'subset', dimensions: [8, 8, 1] as Vec3, frameMetadata: [frames[1]] };
+    const rows = new Map<string, RecoveryRecord>();
+    const apply = async (s: Series, n: number | null) => {
+      const edit = await saveCalibration(s, scope, { frame: null, value: n === null ? null : scale(n) });
+      const prior = supersededScales([...rows.values()], new Map(edit.scale!.sources.map(hash => [hash, n])));
+      for (const change of [...prior, edit]) { if (change.put) rows.set(change.id, change.put); else rows.delete(change.id); }
+    };
+    await apply(series, 2);
+    await apply(subset, 3);
+    assert.deepEqual((await recoverCalibrations(series, scope, [...rows.values()])).sort((a, b) => Number(a.frame) - Number(b.frame)),
+      [2, 3, 2].map((n, frame) => ({ frame, value: scale(n) })));
+    await apply(subset, null);
+    assert.deepEqual(await recoverCalibrations(subset, scope, [...rows.values()]), []);
+    assert.deepEqual(await recoverCalibrations(series, scope, [...rows.values()]), [0, 2].map(frame => ({ frame, value: scale(2) })));
+    await apply(series, null);
+    assert.equal(rows.size, 0);
   });
 });

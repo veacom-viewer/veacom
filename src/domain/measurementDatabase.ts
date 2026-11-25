@@ -1,4 +1,4 @@
-import type { RecoveryRecord } from './measurementRecovery';
+import { supersededScales, type RecoveryWrite } from './measurementRecovery';
 
 const STORE = 'measurements';
 let opening: Promise<IDBDatabase> | undefined;
@@ -36,16 +36,26 @@ export async function readMeasurements(scope: string): Promise<unknown[]> {
 }
 
 /** Only edit the affected IDs. Other windows can add a measurement to the same study without replacing this one. */
-export async function writeMeasurements(scope: string, put: RecoveryRecord[], remove: string[]): Promise<void> {
+export async function writeMeasurements(scope: string, changes: RecoveryWrite[]): Promise<void> {
   const db = await openDatabase();
   await new Promise<void>((resolve, reject) => {
     const tx = db.transaction(STORE, 'readwrite', { durability: 'strict' });
     tx.oncomplete = () => resolve();
     tx.onabort = () => reject(tx.error);
     const store = tx.objectStore(STORE);
-    try {
-      for (const record of put) store.put(record);
-      for (const id of remove) store.delete([scope, id]);
-    } catch (error) { tx.abort(); reject(error); }
+    const write = (superseded: RecoveryWrite[]) => {
+      try {
+        for (const edit of [...superseded, ...changes]) {
+          if (edit.put) store.put(edit.put);
+          else store.delete([scope, edit.id]);
+        }
+      } catch (error) { tx.abort(); reject(error); }
+    };
+    const updated = new Map<string, number | null>();
+    for (const { scale } of changes) if (scale) for (const hash of scale.sources) updated.set(hash, scale.factor);
+    if (!updated.size) { write([]); return; }
+    // Resolve overlapping grids inside the same transaction, including changes already committed by another window.
+    const read = store.index('scope').getAll(scope);
+    read.onsuccess = () => write(supersededScales(read.result, updated));
   });
 }
