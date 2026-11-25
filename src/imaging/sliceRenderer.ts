@@ -257,8 +257,8 @@ void main() {
   ${dimension === '2d' ? `// A frame over the GPU's 2D limit is drawn as tiles (frameTiles): each draw keeps its own part of the frame.
   vec2 framePixel=p.xy;
   if (outside(p,uFull)) { outColor=vec4(0.0,0.0,0.0,${retained ? 'uSamplePass==1 ? 0.0 : 1.0' : '1.0'}); return; }
-  if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
-  p.xy-=uTileOrigin;` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
+  ${plain ? '' : `if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
+  p.xy-=uTileOrigin;`}` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${color ? `
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
   outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : `texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb`},1.0);
@@ -324,6 +324,20 @@ export function frameTiles(width: number, height: number, limit: number): FrameT
     const x = Math.max(0, x0 - TILE_HALO), y = Math.max(0, y0 - TILE_HALO);
     return { x, y, width: Math.min(width, x1 + TILE_HALO) - x, height: Math.min(height, y1 + TILE_HALO) - y, core: [x0, y0, x1, y1] as [number, number, number, number] };
   }));
+}
+
+/** Clear a letterbox once instead of shading it. The shader still decides which boundary samples are inside. */
+function sourceClip(origin: Vec3, right: Vec3, down: Vec3, nx: number, ny: number, w: number, h: number): [number, number, number, number] | undefined {
+  if (right[1] !== 0 || down[0] !== 0 || !right[0] || !down[1]) return;
+  const span = (start: number, step: number, length: number, dimension: number) => {
+    start = Math.fround(start); step = Math.fround(step);
+    // Allow for GPU rounding of the input coordinate and its step across the viewport.
+    const error = (Math.abs(start) + Math.abs(step) * length + dimension) * 2 ** -21;
+    const a = (-0.5 - error - start) / step, b = (dimension - 0.5 + error - start) / step;
+    return [Math.max(0, Math.min(length, Math.floor(Math.min(a, b)) - 1)), Math.max(0, Math.min(length, Math.ceil(Math.max(a, b)) + 1))];
+  };
+  const [left, end] = span(origin[0], right[0], w, nx), [top, bottom] = span(origin[1], down[1], h, ny);
+  if ((end - left) * (bottom - top) < w * h * 0.8) return [left, h - bottom, end - left, bottom - top];
 }
 
 /** One GPU context and texture cache is shared by all 2D panes, including 5×5 layouts. */
@@ -633,7 +647,7 @@ class SharedSliceRenderer {
   private planSamples(target: HTMLCanvasElement, owner: string, origin: Vec3, right: Vec3, down: Vec3,
     grid: [number, number], footprint: [number, number], pan: [number, number]): SampleDraw | undefined {
     const { width, height } = target, gl = this.gl;
-    if (width * height * 4 > SAMPLE_BUDGET || Math.max(width, height) > this.textureLimit ||
+    if (width * height < 8192 || width * height * 4 > SAMPLE_BUDGET || Math.max(width, height) > this.textureLimit ||
       !(this.sampleSupport ??= !!gl.getExtension('EXT_color_buffer_float'))) return;
     const geometry = [owner, width, height, ...right.map(Math.fround), ...down.map(Math.fround), ...footprint.map(Math.fround), ...grid].join(':');
     const state = this.sampleViews.get(target);
@@ -755,8 +769,6 @@ class SharedSliceRenderer {
     const mprX = samples(indexRight), mprY = samples(indexDown);
     const petX = petRight ? samples(petRight) : 1, petY = petDown ? samples(petDown) : 1;
     const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
-    const plain = this.info.software && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
-      && !view.voiFunction && (!view.palette || view.palette === 'gray');
     let limit = this.textureLimit;
     if (cachedFrame) {
       const overlayBytes = fusion && petKind ? fusion.volume.data.length * bytesPerTexel(petKind) + fusion.volume.series.dimensions[2] * 16 : 0;
@@ -768,9 +780,13 @@ class SharedSliceRenderer {
       }
     }
     const tiles = sourceFrame === undefined ? [] : frameTiles(nx, ny, limit);
+    const plain = this.info.software && tiles.length === 1 && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
+      && !view.voiFunction && (!view.palette || view.palette === 'gray');
     const footprint: [number, number] = [Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny))];
-    const sample = plain && tiles.length === 1 ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
-      worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3, indexRight, indexDown, grid, footprint,
+    const origin = worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3;
+    const clip = plain ? sourceClip(origin, indexRight, indexDown, nx, ny, w, h) : undefined;
+    const sample = plain ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
+      origin, indexRight, indexDown, grid, footprint,
       [view.pan[0] * ratio, view.pan[1] * ratio]) : undefined;
     const sampling: Sampling = sample ? 'window-samples' : plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
     const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
@@ -843,7 +859,12 @@ class SharedSliceRenderer {
         gl.uniform2f(this.uniform('uTileOrigin'), tile.x, tile.y);
         gl.uniform3fv(this.uniform('uDimensions'), [tile.width, tile.height, 1]);
         if (sample) this.drawSamples(sample, sourceKey, volume, w, h, pinned);
+        if (clip) {
+          gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.enable(gl.SCISSOR_TEST); gl.scissor(...clip);
+        }
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        if (clip) gl.disable(gl.SCISSOR_TEST);
       });
     }
     const context = target.getContext('2d', { alpha: false });
