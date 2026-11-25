@@ -12,7 +12,7 @@ import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgres
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, type WaitingSeries } from './components/SeriesBrowser';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, useSeriesFilters, type WaitingSeries } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
@@ -494,7 +494,6 @@ export default function App() {
   // Stable event handlers read refs so their closures do not retain old volume maps.
   const seriesRef = useRef(series);
   const [volumes, setVolumes] = useState<Map<string, Volume>>(() => new Map());
-  const [workspaceRevision, setWorkspaceRevision] = useState(0);
   const [slotFrames, setSlotFrames] = useState<Record<string, Volume>>({});
   const [frameCache] = useState(() => new SourceFrameCache());
   const frameRequests = useRef(new Map<string, { key: string; seriesId: string; controller: AbortController }>());
@@ -517,6 +516,10 @@ export default function App() {
   const [annotations, setAnnotations] = useState<Record<string, Annotation[]>>({});
   const annotationRef = useRef(annotations);
   const [settings, setSettings] = useState(readSettings);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [toolbarExpanded, setToolbarExpanded] = useState(false);
+  const [tagQuery, setTagQuery] = useState('');
+  const seriesFilters = useSeriesFilters();
   const [openSections, setOpenSections] = useState(readOpenSections);
   const [calibrationScales, setCalibrationScales] = useState<Record<string, number>>({});
   // Ball and ruler calibrations from the deformity plan, by series and film: each stands for its own film only.
@@ -3391,13 +3394,13 @@ export default function App() {
     }}>
     {quickMenu}
     <div className={`toolbar-region${show3d ? ' beside-3d' : ''}`} inert={show3d || capturing || undefined} onPointerEnter={() => usage.toolbarHover(true)} onPointerLeave={() => usage.toolbarHover(false)}>
-      <Toolbar label={t('toolbar.label')} start={toolbarStart} end={toolbarEnd} moreLabel={t('toolbar.more')} />
+      <Toolbar secondRow={toolbarExpanded} onSecondRow={setToolbarExpanded} label={t('toolbar.label')} start={toolbarStart} end={toolbarEnd} moreLabel={t('toolbar.more')} />
     </div>
     <TooltipLayer />
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedPreviews} waiting={waiting}
+      <SeriesBrowser filters={seriesFilters} series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
@@ -3479,7 +3482,7 @@ export default function App() {
         return plan && <div className="assessment-overlay">{plan}</div>;
       })()}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} joinedOf={joinedOf} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
-      <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
+      <Inspector query={tagQuery} onQuery={setTagQuery} open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
         {inspectorShown && <>
         <div className="inspector-tabs"><div className="inspector-tablist" role="tablist" aria-label={t('inspector.label')} onKeyDown={event => {
           const order: Exclude<Panel, null>[] = ['measurements', 'display', 'tags'];

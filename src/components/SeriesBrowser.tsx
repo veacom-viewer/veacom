@@ -15,7 +15,15 @@ import { Glyph } from './Glyph';
 import { Menu, MenuDivider, MenuHeading, MenuItem } from './Toolbar';
 import './SeriesBrowser.css';
 
+export function useSeriesFilters() {
+  const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  return { search, setSearch, searchOpen, setSearchOpen, collapsed, setCollapsed };
+}
+
 export interface SeriesBrowserProps {
+  filters: ReturnType<typeof useSeriesFilters>;
   series: Series[];
   activeId: string | null;
   loadingIds: Set<string>;
@@ -306,18 +314,17 @@ function storeGuessNames(enabled: boolean) {
   try { localStorage.setItem('veacom:guess-names', enabled ? '1' : '0'); } catch { /* Storage may be disabled. */ }
 }
 
-export function SeriesBrowser({ series, activeId, loadingIds, shownSegmentations, failedIds, waiting, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
+export function SeriesBrowser({ filters, series, activeId, loadingIds, shownSegmentations, failedIds, waiting, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
   return <div className="series-browser-slot" inert={inert || undefined}>
-    <SeriesList series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedIds} waiting={waiting}
+    <SeriesList filters={filters} series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedIds} waiting={waiting}
       onSelect={item => actionsRef.current.select(item)} onRemove={ids => actionsRef.current.remove(ids)} onOpen={card => actionsRef.current.open(card)} />
   </div>;
 }
 
-function SeriesList({ series, activeId, loadingIds, shownSegmentations, failedIds, waiting, onSelect, onRemove, onOpen }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove']; onOpen: SeriesActions['open'] }) {
+function SeriesList({ filters, series, activeId, loadingIds, shownSegmentations, failedIds, waiting, onSelect, onRemove, onOpen }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove']; onOpen: SeriesActions['open'] }) {
+  const { search, setSearch, searchOpen, setSearchOpen, collapsed, setCollapsed } = filters;
   const shownSegmentationIds = new Set(shownSegmentations);
   const { locale, t } = useTranslation();
-  const [search, setSearch] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
   // The likely sequence in place of a series' own name (VEAcom Next's "sequence names"), remembered.
   const [guessNames, setGuessNames] = useState(() => { try { return localStorage.getItem('veacom:guess-names') === '1'; } catch { return false; } });
   const toggleGuessNames = () => {
@@ -325,7 +332,6 @@ function SeriesList({ series, activeId, loadingIds, shownSegmentations, failedId
     storeGuessNames(!guessNames);
   };
   const findButton = useRef<HTMLButtonElement>(null), searchInput = useRef<HTMLInputElement>(null);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   useEffect(() => { usage.touch('panel'); }, [search, searchOpen, collapsed]);
   const guesses = new Map(series.map(item => [item.id, sequenceGuess(item, t)]));
   const query = foldSearch(search.trim());

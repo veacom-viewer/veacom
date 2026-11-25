@@ -193,7 +193,8 @@ async function checkChooseDuringStartup(browser, url, fail) {
 
 /** Closing the last CT must let the browser collect the full pixel buffer while the reader stays open. */
 async function checkClosedCTBuffer(browser, url) {
-  const page = await browser.newPage(), cdp = await page.context().newCDPSession(page);
+  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const cdp = await page.context().newCDPSession(page);
   try {
     await page.addInitScript(expectedBytes => {
       window.Worker = class extends Worker {
@@ -213,20 +214,17 @@ async function checkClosedCTBuffer(browser, url) {
     await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
       Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
     const paging = await page.evaluate(async () => {
-      const original = Array.prototype.sort, shown = [];
+      const original = Array.prototype.sort;
+      const shown = [];
       let seriesSorts = 0;
       Array.prototype.sort = function (...args) {
-        if (this[0]?.dimensions && this[0]?.modality) {
-          seriesSorts++;
-        }
-        return original.apply(this,args);
+        if (this[0]?.dimensions && this[0]?.modality) seriesSorts++;
+        return original.apply(this, args);
       };
       try {
         for (const slice of [50, 51, 52]) {
           window.__VEACOM_TEST__.setView({ slice });
-          const end = performance.now() + 3000;
-          while (Number(document.querySelector('canvas[data-series-id]').dataset.slice)!==slice && performance.now()<end)
-            await new Promise(done=>requestAnimationFrame(done));
+          await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(done))));
           shown.push(Number(document.querySelector('canvas[data-series-id]').dataset.slice));
         }
       } finally { Array.prototype.sort = original; }
@@ -234,6 +232,15 @@ async function checkClosedCTBuffer(browser, url) {
     });
     assert.deepEqual(paging.shown, [50, 51, 52]);
     assert.equal(paging.seriesSorts, 0, 'Paging must preserve the catalog ordering.');
+    const more = page.getByTestId('tool-more');
+    await more.click();
+    if (!await page.getByTestId('inspector-tab-tags').isVisible()) await page.getByTestId('tool-inspector').click();
+    await page.getByTestId('inspector-tab-tags').click();
+    const tagFilter = page.locator('[data-action="tags-search"]');
+    await tagFilter.fill('modality');
+    await page.getByTestId('series-find').click();
+    const seriesFilter = page.locator('[data-action="series-search"]');
+    await seriesFilter.fill('CT');
     await page.locator('[data-action="series-pick"]').first().click({ button: 'right' });
     await page.locator('[data-action="series-clear"]').click();
     await page.getByTestId('series-remove-confirm').click();
@@ -242,6 +249,9 @@ async function checkClosedCTBuffer(browser, url) {
     await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
     await cdp.send('HeapProfiler.collectGarbage');
     assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The empty viewer still retains the full CT pixel buffer.');
+    assert.equal(await more.getAttribute('aria-expanded'), 'true');
+    assert.equal(await seriesFilter.inputValue(), 'CT');
+    assert.equal(await tagFilter.inputValue(), 'modality');
   } finally { await cdp.detach(); await page.close(); }
 }
 
