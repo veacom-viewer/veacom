@@ -16,6 +16,15 @@ export function openMetrics(marks, frames, minShare) {
   return { firstImageMs: first ? round(first.ts - drop) : null, firstSlice: first?.index ?? null };
 }
 
+/** The handoff mark is on both clocks. Every interval belongs to this one navigation and its first main-pane frame. */
+export function navigationMetrics(ready, handoff, traceDrop, first, expectedSlice) {
+  if (![ready, handoff, traceDrop, first?.ts].every(Number.isFinite) || ready < 0 || handoff < ready || first.ts < traceDrop) {
+    throw new Error('Invalid navigation, file handoff or first image timestamp.');
+  }
+  if (first.index !== expectedSlice) throw new Error(`Expected opening slice ${expectedSlice}, saw ${first.index}.`);
+  return { readySinceNavigationMs: ready, handoffSinceNavigationMs: handoff, navigationToFirstCorrectMs: handoff + (first.ts - traceDrop) };
+}
+
 /**
  * Paging: `notches` wheel notches sent between the marks `bench:<name>:start` and `bench:<name>:end`. `perNotch` is
  * how many slices one notch moves this viewer when sent slowly (its own rule, measured first), so `kept` compares

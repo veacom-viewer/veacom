@@ -9,7 +9,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
+import { navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
 import { openingTrace, readPicture, readTrace, startTrace } from './lib/trace.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -113,6 +113,28 @@ async function openStudy(open, { devtools, js, mark, study }) {
   throw new Error(`Unknown way to open: ${open.type}`);
 }
 
+/** The first animation frame after page load where this viewer shows its opening control and accepts a folder. */
+function waitForFolderDrop(js, { control, bodyDropHandler }) {
+  return js(`new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('The folder-opening control did not become ready.')), 30000);
+    function check() {
+      const control = document.querySelector(${JSON.stringify(control)});
+      const bounds = control?.getBoundingClientRect();
+      if (bounds?.width > 0 && bounds.height > 0 && control.checkVisibility({ visibilityProperty: true, opacityProperty: true })
+          && !control.matches(':disabled') && (!${Boolean(bodyDropHandler)} || typeof document.body.ondrop === 'function')) {
+        clearTimeout(timer); resolve(performance.now());
+      } else requestAnimationFrame(check);
+    }
+    requestAnimationFrame(check);
+  })`);
+}
+
+function rendererName(js) {
+  return js(`(() => { try { const gl = document.createElement('canvas').getContext('webgl2');
+    const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
+    return gl ? String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'no WebGL2'; } catch { return 'unknown'; } })()`);
+}
+
 async function trial({ viewer, served, study, round, order, outDir, machine, idle }) {
   const line = { viewer: viewer.id, version: viewer.adapter.version ?? null, study: study.name, round, warmup: round <= 0, order,
     started: new Date().toISOString(), machine, idle, ...(served.build ? { liveBuild: served.build, liveBuildPinned: served.pinned } : {}) };
@@ -129,25 +151,32 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
   });
   const devtools = win.webContents.debugger;
   try {
+    const detail = process.env.BENCH_OPEN_TRACE === '1';
+    const startOpeningTrace = () => startTrace(devtools, detail ? ['toplevel', 'devtools.timeline', 'gpu', 'cc', 'viz'] : []);
+    let trace, ready;
+    if (spec.fromNavigation) {
+      devtools.attach('1.3');
+      trace = await startOpeningTrace();
+    }
     const loadStart = performance.now();
     await win.loadURL(served.url + (viewer.adapter.path ?? ''));
-    for (let last = requests.length, still = performance.now(); performance.now() - still < 1500 && performance.now() - loadStart < 30_000; await sleep(100)) {
-      if (requests.length !== last) { last = requests.length; still = performance.now(); }
+    if (!spec.fromNavigation) {
+      for (let last = requests.length, still = performance.now(); performance.now() - still < 1500 && performance.now() - loadStart < 30_000; await sleep(100)) {
+        if (requests.length !== last) { last = requests.length; still = performance.now(); }
+      }
+      line.pageMs = Math.round(performance.now() - loadStart - 1500);
+      devtools.attach('1.3');
     }
-    line.pageMs = Math.round(performance.now() - loadStart - 1500);
-    devtools.attach('1.3');
     await viewer.adapter.ready?.({ win, js, devtools, sleep });
     line.display = await js('({ dpr: devicePixelRatio, width: innerWidth, height: innerHeight })');
-    // What draws the pictures: a GPU, or a software rasterizer on a machine without one.
-    line.renderer = await js(`(() => { try { const gl = document.createElement('canvas').getContext('webgl2');
-      const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
-      return gl ? String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'no WebGL2'; } catch { return 'unknown'; } })()`);
-    await sleep(500);
+    if (spec.fromNavigation) ready = await waitForFolderDrop(js, viewer.adapter.navigationDrop);
+    else {
+      line.renderer = await rendererName(js);
+      await sleep(500);
+    }
 
-    // Opening: drop the folder and wait until the window's processes have been quiet for two seconds.
     const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
-    const detail = process.env.BENCH_OPEN_TRACE === '1';
-    let trace = await startTrace(devtools, detail ? ['toplevel', 'devtools.timeline', 'gpu', 'cc', 'viz'] : []);
+    trace ??= await startOpeningTrace();
     line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study });
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
@@ -194,6 +223,13 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     if (!seen && !(await look(win))) throw new Error('No slice marker appeared on screen.');
     // The window showed a slice that no trace screenshot read: the opening was not measured, so the trial fails.
     if (line.firstImageMs === null) throw new Error('The trace screenshots never read the slice marker the window showed (picture kept as -unread.jpg).');
+
+    if (spec.fromNavigation) {
+      const handoff = await js("performance.getEntriesByName('bench:drop', 'mark')[0]?.startTime");
+      Object.assign(line, navigationMetrics(ready, handoff, marks['bench:drop'], first, viewer.adapter.navigationDrop.firstSlice));
+      if (Number.isFinite(line.firstImageEstimatedMs)) line.navigationToEstimatedDisplayMs = handoff + line.firstImageEstimatedMs;
+      line.renderer = await rendererName(js);
+    }
 
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
