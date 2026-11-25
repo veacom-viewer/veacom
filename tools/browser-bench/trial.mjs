@@ -229,6 +229,18 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       Object.assign(line, navigationMetrics(ready, handoff, marks['bench:drop'], first, viewer.adapter.navigationDrop.firstSlice));
       if (Number.isFinite(line.firstImageEstimatedMs)) line.navigationToEstimatedDisplayMs = handoff + line.firstImageEstimatedMs;
       line.renderer = await rendererName(js);
+      if (viewer.id.startsWith('veacom')) {
+        line.readerAssets = await js(`(() => {
+          const resources = performance.getEntriesByType('resource');
+          const hints = [...document.querySelectorAll('link[rel="modulepreload"],link[rel="preload"]')].map(link => link.href);
+          return resources.flatMap(resource => {
+            const url = new URL(resource.name);
+            const match = url.origin === location.origin && /\\/assets\\/main-[^/]+\\.(js|css)$/.exec(url.pathname);
+            return match ? [{ type: match[1], hint: hints.includes(resource.name), initiator: resource.initiatorType,
+              start: resource.startTime, end: resource.responseEnd, bytes: resource.transferSize }] : [];
+          });
+        })()`);
+      }
     }
 
     if (SCENARIOS.has('paging')) {
