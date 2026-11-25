@@ -213,11 +213,16 @@ async function runTrial(dir, mode, locale) {
     assert.deepEqual(await rows(page), expectedSubset.map(e => e.id), 'Only drawings from the six acquired images belong in a partial import');
     const subsetRuler = { ...entries[0], view: source(2) };
     assert.deepEqual(await onScreen(page, subsetRuler), entries[0].before, 'A six-image import keeps the original 80 mm calibration');
-    await stop();
+    const oblique = await draw(page, { mode: 'mpr', plane: 'axial', slice: 2, oblique: [2, -3] }, 'text', 'Six-image landmark');
+    const obliqueBefore = await onScreen(page, oblique);
+    await saved(page);
+    if (mode === 'crash') { await killTree(active.app.process()); active = undefined; }
+    else await stop();
     page = await start('regrouped');
     assert.notEqual(await selectAcquisition(page, 1), firstId);
     await page.locator(`[data-annotation-row="${subsetRuler.id}"]`).waitFor();
-    assert.deepEqual(await rows(page), expectedSubset.map(e => e.id));
+    assert.deepEqual(await rows(page), [...expectedSubset.map(e => e.id), oblique.id]);
+    assert.deepEqual(await onScreen(page, oblique), obliqueBefore, 'The oblique note follows the same ordered six-image reconstruction');
     const regrouped = await onScreen(page, subsetRuler);
     assert.deepEqual(regrouped, entries[0].before, 'The original acquisition keeps its 80 mm ruler after regrouping');
     await selectAcquisition(page, 2);
@@ -234,9 +239,10 @@ async function runTrial(dir, mode, locale) {
       recalibratedLabel = (await onScreen(page, entries[0])).label;
       assert.match(recalibratedLabel, /60[.,]0\s*mm|6[.,]0\s*cm/, 'The recalibrated images keep their new scale in the full study');
       assert.deepEqual(await onScreen(page, entries[10]), entries[10].before, 'An image outside that acquisition keeps its original scale');
+      assert.ok(!(await rows(page)).includes(oblique.id), 'The full reconstruction has different source images');
     }
     return { mode, locale, recovered: entries.length, wrongPatient: 0, partialImport: expectedSubset.length,
-      regroupedLabel: regrouped.label, secondAcquisitionLabel: secondBefore.label, recalibratedLabel, entries };
+      regroupedLabel: regrouped.label, regroupedOblique: obliqueBefore.label, secondAcquisitionLabel: secondBefore.label, recalibratedLabel, entries };
   } finally { if (active) await closeDesktop(active.app); }
 }
 

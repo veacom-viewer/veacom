@@ -5,6 +5,7 @@ import { usesSourceFrames } from './viewState';
 import type { FusionSettings, PixelArray, Series, Vec3, ViewState, VoiLut, Volume } from '../model';
 import { isProjection, multiply, screenMapping, screenToWorld, sourceFrameSeries, sub, worldToIndex, worldToIndexMatrix } from './geometry';
 import { reduceFrame, reducedTile } from './frameReduction';
+import { planePixels, planeTexture, type PlaneTexture } from './planeTexture';
 import { LocalizedError, t } from '../i18n';
 import { isSoftwareRenderer } from './rendererInfo';
 
@@ -75,11 +76,14 @@ function samplerType(kind: TextureKind, dimension: TextureDimension): string {
 
 function scalarSampling(prefix: 'image' | 'pet', sampler: string, dimensions: string, floating: boolean, dimension: TextureDimension): string {
   // Integer texture fetches are converted per sample in the shader, preserving compact GPU storage.
+  const mainVolume = prefix === 'image' && dimension === '3d';
   const voxel = `
+${mainVolume ? 'uniform highp ivec3 imageTextureStart;' : ''}
 uniform sampler2D ${prefix}Padding;
 uniform bool ${prefix}HasPadding;
 float ${prefix}Voxel(ivec3 p) {
   p=clamp(p,ivec3(0),ivec3(${dimensions})-1);
+  ${mainVolume ? 'p-=imageTextureStart;' : ''}
   float value=float(texelFetch(${sampler}, ${dimension === '2d' ? 'p.xy' : 'p'}, 0).r);
   if (${prefix}HasPadding) {
     vec3 padding=texelFetch(${prefix}Padding,ivec2(${dimension === '2d' ? '0' : 'p.z'},0),0).rgb;
@@ -418,9 +422,12 @@ class SharedSliceRenderer {
       compiled.shaders = null;
     }
   }
-  prepareSource(volume: Volume): Promise<void> {
+  prepareSource(source: Volume | Series): Promise<void> {
     if (this.lost || this.gl.isContextLost()) return Promise.resolve();
-    const compiled = this.startProgram(textureKind(volume), '2d');
+    const kind = 'data' in source ? textureKind(source) : source.components === 3 ? 'rgb8'
+      : source.pixelType === 'float64' ? 'float32' : source.pixelType;
+    if (!kind) return Promise.resolve();
+    const compiled = this.startProgram(kind, '2d');
     if (!compiled.shaders || !this.parallel) return Promise.resolve();
     if (compiled.preparation) return compiled.preparation;
     const gl = this.gl, completion = this.parallel.COMPLETION_STATUS_KHR, started = performance.now();
@@ -519,12 +526,13 @@ class SharedSliceRenderer {
       this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
     }
   }
-  private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile): string {
+  private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile, region?: PlaneTexture): string {
     const gl = this.gl, series = volume.series;
     const sourceData = texturePixels(volume, kind, sourceFrame);
     const limit = sourceFrame === undefined ? this.info.max3DTextureSize : this.textureLimit;
-    const [tileWidth, tileHeight] = tile ? [tile.width, tile.height] : [series.dimensions[0], series.dimensions[1]];
-    if (tileWidth > limit || tileHeight > limit || (sourceFrame === undefined && series.dimensions[2] > limit)) {
+    const [tileWidth, tileHeight] = tile ? [tile.width, tile.height] : region?.size ?? series.dimensions;
+    const d = sourceFrame === undefined ? region?.size[2] ?? series.dimensions[2] : 1;
+    if (tileWidth > limit || tileHeight > limit || d > limit) {
       throw new Error(t(sourceFrame === undefined ? 'gpu.volumeTextureLimit' : 'gpu.frameTextureLimit', { limit }));
     }
     const components = kind === 'rgb8' ? 3 : 1;
@@ -533,14 +541,14 @@ class SharedSliceRenderer {
     gl.activeTexture(gl.TEXTURE0 + unit);
     const tiled = tile && (tile.width !== series.dimensions[0] || tile.height !== series.dimensions[1]) ? tile : undefined;
     const owner = this.textureKey(volume, kind, sourceFrame);
-    const key = owner + (tiled ? `:tile:${tiled.x},${tiled.y},${tiled.width},${tiled.height}` : '');
+    const key = owner + (region ? `:region:${region.start}:${region.size}` : tiled ? `:tile:${tiled.x},${tiled.y},${tiled.width},${tiled.height}` : '');
     let cached = this.textures.get(key);
     if (!cached) {
-      const texels = tileWidth * tileHeight * (sourceFrame === undefined ? series.dimensions[2] : 1);
+      const texels = tileWidth * tileHeight * d;
       const byteCount = texels * bytesPerTexel(kind);
-      this.prune(byteCount + (sourceFrame === undefined ? series.dimensions[2] : 1) * 16, protectedKeys);
+      this.prune(byteCount + d * 16, protectedKeys);
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
-      let displayData = sourceData;
+      let displayData = region ? planePixels(sourceData, series.dimensions, region) : sourceData;
       if (sourceData instanceof Float64Array) {
         const depth = sourceFrame === undefined ? series.dimensions[2] : 1;
         const copy = new Float32Array(texels);
@@ -568,7 +576,7 @@ class SharedSliceRenderer {
       gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
       gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       if (sourceFrame === undefined) gl.texParameteri(target, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-      const [w, h] = [tileWidth, tileHeight], d = sourceFrame === undefined ? series.dimensions[2] : 1;
+      const [w, h] = [tileWidth, tileHeight];
       const format: [number, number, number] = kind === 'int16' ? [gl.R16I, gl.RED_INTEGER, gl.SHORT]
         : kind === 'uint16' ? [gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT]
           : kind === 'uint8' ? [gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE]
@@ -583,7 +591,7 @@ class SharedSliceRenderer {
       const error = gl.getError();
       if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
       let padding: WebGLTexture | null = null;
-      const ranges = kind === 'rgb8' || sourceData instanceof Float64Array ? [] : Array.from({ length: d }, (_, index) => series.frameMetadata?.[sourceFrame ?? index]?.paddingRange ?? series.paddingRange);
+      const ranges = kind === 'rgb8' || sourceData instanceof Float64Array ? [] : Array.from({ length: d }, (_, index) => series.frameMetadata?.[sourceFrame ?? index + (region?.start[2] ?? 0)]?.paddingRange ?? series.paddingRange);
       if (ranges.some(Boolean)) {
         const data = new Float32Array(d * 4);
         for (let i = 0; i < ranges.length; i++) {
@@ -805,9 +813,9 @@ class SharedSliceRenderer {
     const plain = this.info.software && tiles.length === 1 && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
       && !view.voiFunction && (!view.palette || view.palette === 'gray');
     const footprint: [number, number] = [Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny))];
-    const origin = worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3;
-    const clip = plain ? sourceClip(origin, indexRight, indexDown, nx, ny, w, h) : undefined;
-    const sample = plain ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
+    const origin = plain ? worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3 : undefined;
+    const clip = origin ? sourceClip(origin, indexRight, indexDown, nx, ny, w, h) : undefined;
+    const sample = origin ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
       origin, indexRight, indexDown, grid, footprint,
       [view.pan[0] * ratio, view.pan[1] * ratio]) : undefined;
     const sampling: Sampling = sample ? 'window-samples' : plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
@@ -817,9 +825,13 @@ class SharedSliceRenderer {
     this.finishProgram(program);
     this.current = program;
     gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
-    let sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0]);
+    const region = sourceFrame === undefined && view.mode === 'mpr' && !view.slab && !fusion && !projection && !view.oblique?.some(v => v !== 0)
+      && mainKind !== 'float32' && volume.data.byteLength >= 32 * 1024 * 1024 && !this.textures.has(this.textureKey(volume, mainKind))
+      ? planeTexture(volume.series.dimensions, worldToIndex(imageSeries, topLeft), indexRight, indexDown, w, h) : undefined;
+    let sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0], region);
     const pinned = new Set(reducedOnly ? [] : [sourceKey]);
     gl.uniform1i(this.uniform('uImage'), 0);
+    if (sourceFrame === undefined) gl.uniform3i(this.uniform('imageTextureStart'), region?.start[0] ?? 0, region?.start[1] ?? 0, region?.start[2] ?? 0);
     if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
     this.indexMapping('u', imageSeries, topLeft, indexRight, indexDown);
     if (reduced) gl.uniform2fv(this.uniform('uFootprint'), footprint);
@@ -908,8 +920,8 @@ export function sliceRenderer(): SharedSliceRenderer {
   return shared;
 }
 
-export function prepareSourceProgram(volume: Volume): Promise<void> {
-  try { return sliceRenderer().prepareSource(volume); }
+export function prepareSourceProgram(source: Volume | Series): Promise<void> {
+  try { return sliceRenderer().prepareSource(source); }
   catch { return Promise.resolve(); } // Loading pixels must still succeed when the viewport cannot use the GPU.
 }
 

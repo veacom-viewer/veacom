@@ -725,6 +725,9 @@ fn phase_split(frames: &[Frame]) -> Option<(PhaseSource, Vec<Vec<usize>>)> {
     })
 }
 
+const MIN_RUN_IMAGES: usize = 5;
+const MAX_RUNS: usize = 8;
+
 /// VEAcom 1.x's last resort for a series that goes through all its slices once for each kind of image with nothing
 /// in the headers to tell the kinds apart: the scanner's numbering, cut where it comes back to a place already
 /// passed. Only when every run holds the same places, each once, at least 5 of them, in 2 to 8 runs.
@@ -750,7 +753,7 @@ fn runs_through_places(frames: &[Frame]) -> Option<Vec<Vec<usize>>> {
         }
         runs.last_mut().expect("one run at least").push(i);
     }
-    if !(2..=8).contains(&runs.len()) {
+    if !(2..=MAX_RUNS).contains(&runs.len()) {
         return None;
     }
     let held = |run: &Vec<usize>| {
@@ -759,7 +762,7 @@ fn runs_through_places(frames: &[Frame]) -> Option<Vec<Vec<usize>>> {
             .collect::<std::collections::BTreeSet<_>>()
     };
     let first = held(&runs[0]);
-    (first.len() >= 5
+    (first.len() >= MIN_RUN_IMAGES
         && runs
             .iter()
             .all(|run| run.len() == first.len() && held(run) == first))
@@ -981,6 +984,37 @@ fn explicit_position(frames: &[Frame]) -> Option<f64> {
         .then_some(position)
 }
 
+/// Older saved drawings hashed the catalog ID together with every source and its geometry.
+fn legacy_grid_ids(base: &str, current: &str, frames: &[Frame]) -> Vec<String> {
+    if frames.len() < 2 {
+        return Vec::new();
+    }
+    let mut keys = vec![base.to_owned()];
+    if frames.len() >= MIN_RUN_IMAGES {
+        keys.extend((1..=MAX_RUNS).map(|n| format!("{base}|run={n}")));
+    }
+    let first = &frames[0].phase_hints;
+    for source in PHASE_SOURCES {
+        if let Some(value) = source.key(first)
+            && frames
+                .iter()
+                .all(|f| source.key(&f.phase_hints) == Some(value))
+        {
+            keys.push(format!(
+                "{base}|phase={}:{}",
+                source.kind(),
+                source.value(first)
+            ));
+        }
+    }
+    keys.sort_unstable();
+    keys.dedup();
+    keys.iter()
+        .filter(|key| key.as_str() != current)
+        .map(|key| crate::random::uuid_v5(&crate::random::NAMESPACE_OID, key.as_bytes()))
+        .collect()
+}
+
 /// Add the groups of one family to `parts`. When the family holds more than one
 /// explicit temporal position, the key has already parted them and they are only
 /// named here; any other group may still be parted by `split_phases`.
@@ -1018,8 +1052,13 @@ fn phase_family(
         .flatten();
     let mut triggers = triggers.into_iter().flatten();
     for (key, mut info, frames, explicit) in family {
+        let base = key.id_key();
+        let mut add = |id: String, mut info: Series, frames: Vec<Frame>| {
+            info.legacy_grid_ids = legacy_grid_ids(&base, &id, &frames);
+            parts.push((id, info, frames));
+        };
         let Some(position) = explicit.filter(|_| named) else {
-            split_phases(key.id_key(), info, frames, parts);
+            split_phases(&base, info, frames, add);
             continue;
         };
         let value = frames[0]
@@ -1051,7 +1090,7 @@ fn phase_family(
             sort_values: vec![position],
             gate,
         });
-        parts.push((key.id_key(), info, frames));
+        add(base.clone(), info, frames);
     }
 }
 
@@ -1131,13 +1170,13 @@ fn share_gate_windows(sources: &mut [SourceSeries]) {
     }
 }
 
-/// Add a group to `parts`, parted into phases when its slice positions repeat and
+/// Emit a group, parted into phases when its slice positions repeat and
 /// one of the phase sources tells them apart; otherwise whole.
 fn split_phases(
-    key: String,
+    key: &str,
     info: Series,
     frames: Vec<Frame>,
-    parts: &mut Vec<(String, Series, Vec<Frame>)>,
+    mut add: impl FnMut(String, Series, Vec<Frame>),
 ) {
     let Some((source, split)) = phase_split(&frames) else {
         if let Some(runs) = runs_through_places(&frames) {
@@ -1152,11 +1191,11 @@ fn split_phases(
                 info.description = format!("{} ({}/{total})", info.description, index + 1)
                     .trim()
                     .to_string();
-                parts.push((format!("{key}|run={}", index + 1), info, part));
+                add(format!("{key}|run={}", index + 1), info, part);
             }
             return;
         }
-        parts.push((key, info, frames));
+        add(key.to_owned(), info, frames);
         return;
     };
     let triggers = match source {
@@ -1194,7 +1233,7 @@ fn split_phases(
             gate: None,
         });
         let key = format!("{key}|phase={}:{value}", source.kind());
-        parts.push((key, info, part));
+        add(key, info, part);
     }
 }
 
@@ -1770,6 +1809,7 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
         ),
         patient_key: String::new(),
         previous_pet_id: None,
+        legacy_grid_ids: Vec::new(),
         study_scoped_patient_key: None,
         study_scoped_pet_id: None,
         patient_id: String::new(),
@@ -2368,6 +2408,7 @@ fn read_frames_budget(
             study_uid: study_uid.clone(),
             patient_key: patient_key.clone(),
             previous_pet_id: None,
+            legacy_grid_ids: Vec::new(),
             study_scoped_patient_key: study_scoped_patient_key.clone(),
             study_scoped_pet_id: None,
             patient_id: patient_id.clone(),
@@ -3623,6 +3664,9 @@ fn catalogue(
         let segmentation = info.segmentation.is_some();
         // Masks are drawn over the image series they reference, never reconstructed.
         info.can_reconstruct = geom.can_reconstruct && info.components == 1 && !segmentation;
+        if !info.can_reconstruct {
+            info.legacy_grid_ids.clear();
+        }
         // An ordinary image's own note says it has no geometry; the stack's missing positions, orientation and
         // spacing would only repeat it. A gamma camera's planar frames have no place in the patient by nature.
         let pictures = frames.first().is_some_and(|f| f.ordinary_image);
@@ -8354,6 +8398,41 @@ mod tests {
     }
     fn source_frames(source: &SourceSeries) -> BTreeSet<u32> {
         source.frames.iter().map(|f| f.index).collect()
+    }
+
+    #[test]
+    fn reconstruction_ids_follow_the_same_sources_into_and_out_of_phases() {
+        for numbered in [false, true] {
+            let slices: Vec<_> = (0..12)
+                .map(|i| {
+                    let mut obj = classic_slice(i + 1, (i % 6) as f64 * 2.);
+                    if numbered {
+                        obj.put_str(Tag(0x0020, 0x0012), VR::IS, (i / 6 + 1).to_string());
+                    }
+                    obj
+                })
+                .collect();
+            let alone = write_slices(slices[..6].to_vec());
+            let combined = write_slices(slices);
+            let alone = import_dir(&alone);
+            let combined = import_dir(&combined);
+            assert_eq!(alone.sources.len(), 1);
+            assert_eq!(combined.sources.len(), 2);
+            let first = &alone.sources[0].info;
+            let regrouped = combined
+                .sources
+                .iter()
+                .map(|s| &s.info)
+                .find(|info| {
+                    info.frame_metadata[0].sop_instance_uid
+                        == first.frame_metadata[0].sop_instance_uid
+                })
+                .unwrap();
+            assert!(first.can_reconstruct && regrouped.can_reconstruct);
+            assert_ne!(first.id, regrouped.id);
+            assert!(regrouped.legacy_grid_ids.contains(&first.id));
+            assert!(first.legacy_grid_ids.contains(&regrouped.id));
+        }
     }
 
     #[test]

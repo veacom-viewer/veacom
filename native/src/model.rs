@@ -371,6 +371,9 @@ pub struct Series {
     pub patient_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_pet_id: Option<String>,
+    /// Other catalog IDs a reconstruction's sources could have had before a phase or run was regrouped.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub legacy_grid_ids: Vec<String>,
     /// Where `patient_key` joins an ID without an issuer across studies (`crate::patient::patient_keys`): the key
     /// earlier builds made, scoped to the study. PET measurements those builds kept are found by it.
     #[serde(skip_serializing_if = "Option::is_none")]
