@@ -15,6 +15,7 @@ import { dataset, element } from '../fixtures/dicom-elements.mjs';
 import { drawBand } from './lib/marker.mjs';
 
 export const STUDIES = {
+  'ct-64-series': { slices: 300, size: 512, series: 64, about: 'a marked CT of 300 slices and 63 additional series of three smaller slices' },
   'ct-300': { slices: 300, size: 512, about: 'a 300-slice CT of 512×512, uncompressed' },
   'ct-1000': { slices: 1000, size: 512, about: 'a thin-slice 1,000-slice CT of 512×512, uncompressed, as in the Weasis comparison' },
 };
@@ -36,9 +37,9 @@ function slice(size, z, slices) {
   return values;
 }
 
-function file(name, size, z, slices) {
+function file(name, size, z, slices, series = 1) {
   const id = BigInt(`0x${createHash('sha256').update(name).digest('hex').slice(0, 24)}`).toString();
-  const root = `2.25.${id}`, uid = `${root}.3.${z + 1}`;
+  const root = `2.25.${id}`, suffix = series === 1 ? '' : '.' + series, uid = `${root}.3${suffix}.${z + 1}`;
   const sopClass = '1.2.840.10008.5.1.4.1.1.2', transferSyntax = '1.2.840.10008.1.2.1';
   const meta = dataset([
     [0x0002, 0x0001, 'OB', [0, 1]], [0x0002, 0x0002, 'UI', sopClass], [0x0002, 0x0003, 'UI', uid],
@@ -49,10 +50,10 @@ function file(name, size, z, slices) {
   return Buffer.concat([Buffer.alloc(128), Buffer.from('DICM'), element(0x0002, 0x0000, 'UL', meta.length), meta, dataset([
     [0x0008, 0x0008, 'CS', ['ORIGINAL', 'PRIMARY', 'AXIAL']], [0x0008, 0x0016, 'UI', sopClass], [0x0008, 0x0018, 'UI', uid],
     [0x0008, 0x0020, 'DA', '20000101'], [0x0008, 0x0030, 'TM', '120000'], [0x0008, 0x0050, 'SH', 'BENCH'], [0x0008, 0x0060, 'CS', 'CT'],
-    [0x0008, 0x0070, 'LO', 'VEAcom bench'], [0x0008, 0x103e, 'LO', `Bench ${name}`], [0x0010, 0x0010, 'PN', 'BENCH^SYNTHETIC'],
+    [0x0008, 0x0070, 'LO', 'VEAcom bench'], [0x0008, 0x103e, 'LO', `Bench ${name}${suffix}`], [0x0010, 0x0010, 'PN', 'BENCH^SYNTHETIC'],
     [0x0010, 0x0020, 'LO', `BENCH-${name}`], [0x0010, 0x0030, 'DA', '19700101'], [0x0010, 0x0040, 'CS', 'O'],
-    [0x0018, 0x0050, 'DS', 1], [0x0018, 0x5100, 'CS', 'HFS'], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2`],
-    [0x0020, 0x0010, 'SH', '1'], [0x0020, 0x0011, 'IS', 1], [0x0020, 0x0013, 'IS', z + 1], [0x0020, 0x0032, 'DS', [-size / 2, -size / 2, -z]],
+    [0x0018, 0x0050, 'DS', 1], [0x0018, 0x5100, 'CS', 'HFS'], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2${suffix}`],
+    [0x0020, 0x0010, 'SH', '1'], [0x0020, 0x0011, 'IS', series], [0x0020, 0x0013, 'IS', z + 1], [0x0020, 0x0032, 'DS', [-size / 2, -size / 2, -z]],
     [0x0020, 0x0037, 'DS', [1, 0, 0, 0, 1, 0]], [0x0020, 0x0052, 'UI', `${root}.5`], [0x0020, 0x1041, 'DS', -z],
     [0x0028, 0x0002, 'US', 1], [0x0028, 0x0004, 'CS', 'MONOCHROME2'], [0x0028, 0x0010, 'US', size], [0x0028, 0x0011, 'US', size],
     [0x0028, 0x0030, 'DS', [1, 1]], [0x0028, 0x0100, 'US', 16], [0x0028, 0x0101, 'US', 16], [0x0028, 0x0102, 'US', 15], [0x0028, 0x0103, 'US', 1],
@@ -69,6 +70,9 @@ export async function makeStudy(name, folder = studyFolder(name), { log = consol
   // Made one at a time (a 1,000-slice study is half a gigabyte).
   const expected = function* () {
     for (let z = 0; z < spec.slices; z++) yield [`S01/IM${String(z).padStart(5, '0')}.dcm`, file(name, spec.size, z, spec.slices)];
+    for (let number = 2; number <= (spec.series ?? 1); number++) {
+      for (let z = 0; z < 3; z++) yield [`S01/ZZ${number}-${z}.dcm`, file(name, 128, z, 3, number)];
+    }
   };
   if (existsSync(manifestPath)) {
     const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
@@ -92,7 +96,7 @@ export async function makeStudy(name, folder = studyFolder(name), { log = consol
     bytes += content.length;
   }
   const manifest = { generator: GENERATOR, synthetic: true, name, about: spec.about, dimensions: [spec.size, spec.size, spec.slices],
-    files: spec.slices, bytes, transferSyntax: '1.2.840.10008.1.2.1', marker: 'tools/browser-bench/lib/marker.mjs', sha256 };
+    files: Object.keys(sha256).length, bytes, transferSyntax: '1.2.840.10008.1.2.1', marker: 'tools/browser-bench/lib/marker.mjs', sha256 };
   await writeFile(path.join(partial, 'manifest.json'), `${JSON.stringify(manifest, null, 1)}\n`);
   await mkdir(path.dirname(folder), { recursive: true });
   await rename(partial, folder);
