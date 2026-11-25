@@ -2,6 +2,6 @@
 import { pinned } from './pinned.mjs';
 
 export default pinned('bluelight', {
-  open: { type: 'drop' },
+  open: { type: 'drop', files: 'list' },
   windowLevel: { button: 'left', select: '#WindowRevision' },
 });

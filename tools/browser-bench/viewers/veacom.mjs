@@ -6,7 +6,7 @@ export default {
   name: 'veacom',
   serve: ({ dist, isolation = true }) => serveVeacom(dist, { isolation }),
   // A dropped folder lands anywhere on the page.
-  drop: null,
+  open: { type: 'drop', files: 'list' },
   // The left button sets the window by default; dragging right widens it.
   windowLevel: { button: 'left' },
 };
