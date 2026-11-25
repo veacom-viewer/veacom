@@ -255,6 +255,54 @@ async function checkClosedCTBuffer(browser, url) {
   } finally { await cdp.detach(); await page.close(); }
 }
 
+async function checkRemoveCTWhileReadingMR(browser, url) {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await page.addInitScript(expectedBytes => {
+      window.Worker = class extends Worker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            const bytes = data?.value?.bytes;
+            if (bytes instanceof Uint8Array && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes.buffer);
+          });
+        }
+      };
+    }, columns * rows * slices * 2);
+    await page.goto(url);
+    const selected = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
+    await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
+      Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
+
+    const ct = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(v => v.modality === 'CT').id);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files: [path.join(mrStudy, studyFiles[0])], dragOperationsMask: 1 } });
+    }
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 2);
+    const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(v => v.patientId === 'SYNTHETIC-OTHER').id);
+    await page.getByTestId('series-' + mr).click();
+    const shown = page.locator('canvas[data-series-id="' + mr + '"]'); await shown.waitFor();
+    await page.getByTestId('series-' + ct).click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
+    await page.waitForTimeout(10000);
+    await cdp.send('HeapProfiler.collectGarbage');
+    const result = await page.evaluate(async () => {
+      const bridge=window.veacom, { generation }=await bridge.getCoreState(), [only]= (await bridge.listSeries()).series;
+      const p=await bridge.fetchPixels({ seriesId:only.id, generation, revision:only.catalogRevision, index:0 });
+      return { patient:only.patientId, id:only.id, shown:document.querySelector('canvas[data-series-id]')?.dataset.seriesId,
+        sop:p.headers.get('X-SOP-Instance-UID'), retainedBytes:window.lastCTBuffer.deref()?.byteLength ?? 0 };
+    });
+    console.log('CT removed while another patient stays on screen', JSON.stringify(result));
+    assert.equal(result.id,mr);assert.equal(result.shown,mr);
+    assert.equal(result.patient,'SYNTHETIC-OTHER');assert.equal(result.sop,'2.25.302617644913925066835652647005517224101.10.3.1');
+    assert.equal(result.retainedBytes,0,'The active MR retained the removed CT.');
+  } finally { await cdp.detach(); await page.close(); }
+}
+
 /** The actual browser file list contains the same basename twice, once for each patient. */
 async function checkLooseFileDrop(browser, url) {
   const page = await browser.newPage();
@@ -552,6 +600,7 @@ try {
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkClosedCTBuffer(browser, page.url());
+      await checkRemoveCTWhileReadingMR(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
