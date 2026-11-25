@@ -792,6 +792,7 @@ export default function App() {
   }
   const cineCount = activeVolume ? Math.max(1, sliceCount(activeVolume.series, activeSlot.view)) : 1;
   const fileTiming = activeVolume && usesSourceFrames(activeVolume.series, activeSlot.view) ? activeVolume.series.cine : undefined;
+  if (playing && fileTiming?.slices.length === 1) setPlaying(false);
   const cineOverride = fileTiming && activeSlot.seriesId ? cineOverrides[activeSlot.seriesId] : undefined;
   // Keep the reading-stack limit for ordinary paging. A short timed clip can play several loops a second.
   const cineMax = fileTiming ? 100_000 : cineCount;

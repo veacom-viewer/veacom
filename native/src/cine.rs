@@ -128,6 +128,15 @@ pub fn for_series(frames: &[Frame]) -> Option<CineTiming> {
     } else {
         &file.intervals[file.start..file.stop - 1]
     };
+    if file.stop - file.start > 1 {
+        let total: f64 = times.iter().sum();
+        if !(total > 0.
+            && (1000. * times.len() as f64 / total).is_finite()
+            && (2. * total).is_finite())
+        {
+            return None;
+        }
+    }
     Some(CineTiming {
         slices: order[file.start..file.stop].to_vec(),
         intervals_ms: times.to_vec(),
