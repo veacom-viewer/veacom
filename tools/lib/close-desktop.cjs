@@ -49,4 +49,4 @@ async function closeDesktop(desktop, ms = QUIT_MS) {
   return false;
 }
 
-module.exports = { closeDesktop };
+module.exports = { closeDesktop, killTree };
