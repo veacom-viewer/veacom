@@ -1750,18 +1750,18 @@ export default function App() {
   });
   useEffect(() => window.veacom?.onOpened?.(() => { void openLaunched(); }), []);
   const connect = async () => {
-    setBusy('status.connecting'); setConnectionError(null);
+    setBusy(current => current ?? 'status.connecting'); setConnectionError(null);
     try { await restoreCatalog(); } catch (error) { if (mounted.current) setConnectionError(errorText(error)); }
-    if (mounted.current) setBusy(null);
+    if (mounted.current) setBusy(current => current === 'status.connecting' ? null : current);
   };
   const connectOnMount = useEffectEvent(connect);
-  useEffect(() => { void connectOnMount(); }, []);
+  useLayoutEffect(() => { void connectOnMount(); }, []);
   const onImport = useEffectEvent(importStudies);
   useEffect(() => {
     const handler = (event: Event) => { const paths = (event as CustomEvent<unknown>).detail; if (Array.isArray(paths) && paths.every(path => typeof path === 'string')) void onImport(paths); };
     window.addEventListener('veacom:import', handler); return () => window.removeEventListener('veacom:import', handler);
   }, []);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const externalFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files')
       && !event.dataTransfer.types.includes('application/x-veacom-series');
     // A link dragged in from elsewhere would make the browser leave the page, and the open studies with it: refused.
@@ -3376,6 +3376,8 @@ export default function App() {
       </div>
     </Menu>
   </div>;
+  // The browser can choose files and enumerate a folder while the engine loads. Its requests are queued.
+  const fileChoiceDisabled = Boolean(busy && !(busy === 'status.connecting' && window.veacom?.web));
   const noticeBar = notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : undefined} data-testid="notice" data-kind={notice.kind} data-code={notice.code ?? notice.key}><span>{notice.key ? t(notice.key, notice.params) : notice.warnings ? warningTexts(notice.warnings, locale).join(' · ') : notice.message}</span>{notice.action && <button type="button" className="notice-action" data-testid="notice-action" onClick={() => { notice.action?.run(); setNotice(null); focusSoon('[data-annotation-row] .annotation-main', '[data-testid="findings-add"]'); }}>{t(notice.action.label)}</button>}<button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="notice-dismiss" onClick={() => { setNotice(null); focusImage(); }}><X size={14} /></button></div>;
 
   return <div className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
@@ -3414,9 +3416,9 @@ export default function App() {
             <h1>{t('welcome.title')}</h1>
             <p>{t('welcome.hint')}</p>
             <div className="welcome-actions">
-              <button type="button" className="primary-button" data-testid="welcome-open-folder" disabled={Boolean(busy)} onClick={() => void open('folder')}><FolderOpen size={16} /> {t('toolbar.openFolder')}<kbd className="button-kbd">{combo(mod, 'O')}</kbd></button>
-              <button type="button" className="secondary-button" data-testid="welcome-open-files" disabled={Boolean(busy)} onClick={() => void open('files')}><Files size={16} /> {t('toolbar.openFiles')}</button>
-              <button type="button" className="secondary-button" data-testid="welcome-open-archive" disabled={Boolean(busy)} onClick={() => void open('archive')}><FileArchive size={16} /> {t('toolbar.openArchive')}</button>
+              <button type="button" className="primary-button" data-testid="welcome-open-folder" disabled={fileChoiceDisabled} onClick={() => void open('folder')}><FolderOpen size={16} /> {t('toolbar.openFolder')}<kbd className="button-kbd">{combo(mod, 'O')}</kbd></button>
+              <button type="button" className="secondary-button" data-testid="welcome-open-files" disabled={fileChoiceDisabled} onClick={() => void open('files')}><Files size={16} /> {t('toolbar.openFiles')}</button>
+              <button type="button" className="secondary-button" data-testid="welcome-open-archive" disabled={fileChoiceDisabled} onClick={() => void open('archive')}><FileArchive size={16} /> {t('toolbar.openArchive')}</button>
             </div>
             {busy && <div className="connection-status" role="status"><LoaderCircle size={14} />{t(busy)}</div>}
             {connectionError && <div className="connection-error" role="alert"><strong>{t('welcome.serviceUnavailable')}</strong><span>{connectionError}</span><button data-action="reconnect" type="button" className="secondary-button compact" onClick={() => void connect()}>{t('welcome.reconnect')}</button></div>}
