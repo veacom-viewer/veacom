@@ -672,9 +672,25 @@ class SharedSliceRenderer {
     const gl = this.gl, key = plan.state.key;
     let entry = this.textures.get(key);
     gl.activeTexture(gl.TEXTURE6);
+    gl.uniform1i(this.uniform('uWindowSamples'), 6);
+    const pass = this.uniform('uSamplePass');
     if (plan.build) {
+      const blank = this.blankPadding();
+      gl.bindTexture(gl.TEXTURE_2D, blank);
+      gl.uniform1i(pass, 0);
+      // This optional copy can always be replaced by the ordinary area-filtered draw.
+      const unavailable = () => {
+        if (entry) this.dropTexture(key, entry);
+        this.sampleSupport = false;
+        gl.getError();
+        gl.bindTexture(gl.TEXTURE_2D, blank);
+        gl.uniform1i(pass, 0);
+      };
+      this.sampleTarget ??= gl.createFramebuffer();
       if (!entry) {
         const bytes = width * height * 4;
+        const required = [...pinned].reduce((sum, id) => sum + (this.textures.get(id)?.bytes ?? 0), bytes);
+        if (required > TEXTURE_BUDGET) return;
         const samples = [...this.textures].filter(([id]) => id.startsWith('window:')).sort((a, b) => a[1].touched - b[1].touched);
         let total = samples.reduce((sum, [, cached]) => sum + cached.bytes, bytes);
         for (const [id, old] of samples) {
@@ -683,32 +699,38 @@ class SharedSliceRenderer {
         }
         this.prune(bytes, pinned);
         const texture = gl.createTexture();
-        gl.bindTexture(gl.TEXTURE_2D, texture); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.R32F, width, height, 0, gl.RED, gl.FLOAT, null);
         entry = { owner, texture, padding: null, data: new WeakRef(volume.data), bytes, touched: 0 };
         this.textures.set(key, entry);
+        if (gl.getError() !== gl.NO_ERROR) { unavailable(); return; }
+        gl.bindTexture(gl.TEXTURE_2D, blank);
       }
-      this.sampleTarget ??= gl.createFramebuffer();
       gl.bindFramebuffer(gl.FRAMEBUFFER, this.sampleTarget);
+      if (!gl.getParameter(gl.FRAMEBUFFER_BINDING)) { unavailable(); return; }
       try {
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, entry.texture, 0);
-        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
-          this.dropTexture(key, entry); this.sampleSupport = false; gl.uniform1i(this.uniform('uSamplePass'), 0);
-          return;
-        }
-        gl.bindTexture(gl.TEXTURE_2D, this.blankPadding());
-        gl.uniform1i(this.uniform('uWindowSamples'), 6); gl.uniform1i(this.uniform('uSamplePass'), 1);
+        if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) { unavailable(); return; }
+        gl.uniform1i(pass, 1);
         gl.drawArrays(gl.TRIANGLES, 0, 3);
+        if (gl.getError() !== gl.NO_ERROR) { unavailable(); return; }
       } finally {
         gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, null, 0);
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       }
     }
     if (entry) {
-      gl.bindTexture(gl.TEXTURE_2D, entry.texture); gl.uniform1i(this.uniform('uWindowSamples'), 6);
-      gl.uniform1i(this.uniform('uSamplePass'), plan.same ? 3 : 2); gl.uniform2iv(this.uniform('uSampleShift'), plan.shift); gl.uniform3fv(this.uniform('uSampleOrigin'), plan.state.origin);
+      gl.bindTexture(gl.TEXTURE_2D, entry.texture);
+      gl.uniform1i(pass, plan.same ? 3 : 2);
+      gl.uniform2iv(this.uniform('uSampleShift'), plan.shift);
+      gl.uniform3fv(this.uniform('uSampleOrigin'), plan.state.origin);
       entry.touched = performance.now(); pinned.add(key);
-    } else gl.uniform1i(this.uniform('uSamplePass'), 0);
+    } else {
+      gl.bindTexture(gl.TEXTURE_2D, this.blankPadding());
+      gl.uniform1i(pass, 0);
+    }
   }
 
   private indexMapping(prefix: string, series: Series, origin: Vec3, indexRight: Vec3, indexDown: Vec3): void {
