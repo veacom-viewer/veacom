@@ -21,7 +21,7 @@ import { holdsFrame } from './ui/discPictures';
 import { carryAnnotations, holdingIn } from './ui/earlySeries';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
-import { advanceCine } from './imaging/cine';
+import { advanceCine, cineCycle, recordedFps } from './imaging/cine';
 import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
 import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
@@ -774,6 +774,8 @@ export default function App() {
   const petStudies = usePetStudies(series, annotations, setAnnotations, displayVolumes, petRecords);
   // Cine: the active pane pages through its slices by itself, at the chosen speed, round and round, until paused.
   const [playing, setPlaying] = useState(false);
+  const [cineOverrides, setCineOverrides] = useState<Record<string, number>>({});
+  const cineSeek = useRef<number | null>(null);
   const activeSlot = slots.find(slot => slot.id === activeId) ?? slots[0];
   const activeSeries = activeSlot.seriesId ? seriesById.get(activeSlot.seriesId) : undefined;
   // Pictures (JPEG, PNG, BMP) in the active pane are not DICOM: said at the top until closed for that study.
@@ -788,9 +790,21 @@ export default function App() {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
   }
-  // At most one pass through the series a second.
-  const cineMax = activeVolume ? Math.max(1, sliceCount(activeVolume.series, activeSlot.view)) : 1;
-  const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
+  const cineCount = activeVolume ? Math.max(1, sliceCount(activeVolume.series, activeSlot.view)) : 1;
+  const fileTiming = activeVolume && usesSourceFrames(activeVolume.series, activeSlot.view) ? activeVolume.series.cine : undefined;
+  const cineOverride = fileTiming && activeSlot.seriesId ? cineOverrides[activeSlot.seriesId] : undefined;
+  // Keep the reading-stack limit for ordinary paging. A short timed clip can play several loops a second.
+  const cineMax = fileTiming ? 100_000 : cineCount;
+  const cineFps = fileTiming ? cineOverride ?? recordedFps(fileTiming) : Math.max(1, Math.min(settings.cineFps, cineMax));
+  const setCineSpeed = (fps: number) => {
+    const id = activeSlot.seriesId;
+    if (fileTiming && id) setCineOverrides(current => ({ ...current, [id]: fps }));
+    else setSettings(current => ({ ...current, cineFps: fps }));
+  };
+  const useRecordedSpeed = () => {
+    const id = activeSlot.seriesId;
+    if (id) setCineOverrides(current => { const next = { ...current }; delete next[id]; return next; });
+  };
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
   // The film the active pane shows, with its calibration (a ball or ruler holds for one film), for the inspector.
@@ -1743,7 +1757,8 @@ export default function App() {
     return () => { document.removeEventListener('dragover', dragOver); document.removeEventListener('drop', drop); };
   }, []);
 
-  const updateView = (slotId: string, patch: Partial<ViewState>) => {
+  const updateView = (slotId: string, patch: Partial<ViewState>, fromCine = false) => {
+    if (playing && fileTiming && !fromCine && slotId === activeIdRef.current && patch.slice !== undefined) cineSeek.current = patch.slice;
     const before = slotsRef.current.find(slot => slot.id === slotId)?.view;
     if (before && arranged.current?.slotIds.includes(slotId) && (['plane', 'mode', 'projection', 'inverted', 'palette'] as const).some(key => key in patch && patch[key] !== before[key])) {
       offerKeep.current(slotId);
@@ -1810,22 +1825,39 @@ export default function App() {
   };
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
     const advance = advanceCine(last, now, cineFps);
-    if (advance.steps && activeVolume && cineMax > 1) {
+    if (advance.steps && activeVolume && cineCount > 1) {
       const next = Math.round(activeSlot.view.slice) + advance.steps * pageStep(activeVolume.series, activeSlot.view, 1);
-      updateView(activeSlot.id, { slice: ((next % cineMax) + cineMax) % cineMax });
+      updateView(activeSlot.id, { slice: ((next % cineCount) + cineCount) % cineCount }, true);
     }
     return advance.last;
   });
+  const currentCineSlice = useEffectEvent(() => Math.round(activeSlot.view.slice));
+  const showCineSlice = useEffectEvent((slice: number) => {
+    if (slice !== activeSlot.view.slice) updateView(activeSlot.id, { slice }, true);
+  });
   useEffect(() => {
     if (!playing) return;
-    let last = performance.now();
+    const cycle = fileTiming && cineCycle(fileTiming, cineOverride);
+    let last: number | undefined, phase = cycle?.startAt(currentCineSlice()) ?? 0;
+    cineSeek.current = null;
     const tick = (now: number) => {
-      last = advancePlayingSlice(last, now);
+      const previous = last ?? now;
+      if (cycle) {
+        if (cineSeek.current !== null) {
+          phase = cycle.startAt(cineSeek.current);
+          cineSeek.current = null;
+        } else if (now - previous < 1000) {
+          // A suspended or hidden viewer resumes at the frame it was showing.
+          phase += Math.max(0, now - previous);
+        }
+        last = now;
+        showCineSlice(cycle.sliceAt(phase));
+      } else last = advancePlayingSlice(previous, now);
       frame = requestAnimationFrame(tick);
     };
     let frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing]);
+  }, [playing, fileTiming, cineOverride, activeSlot.id, activeSlot.seriesId]);
   /** A click on a pane's plane name: the next plane in place, axial, coronal, sagittal (VEAcom 1.x); the plane the
    * series was acquired in shows its own images, unless a thick slab is on: only a reconstruction draws one. Only for a
    * whole volume that can be reconstructed. */
@@ -3051,7 +3083,7 @@ export default function App() {
   // the panes stay near square; the chosen layout stays as it is and comes back when the area widens.
   const gridShape: [number, number] = show3d && layout[0] === 1 && layout[1] === 3 && slots.length === 3 ? [2, 2]
     : gridTall && layout[1] > layout[0] ? [layout[1], layout[0]] : layout;
-  const canPlay = Boolean(!capturing && activeVolume && sliceCount(activeVolume.series, activeSlot.view) > 1);
+  const canPlay = Boolean(!capturing && activeVolume && (fileTiming ? fileTiming.slices.length : cineCount) > 1);
   // A whole-volume MIP in the active pane: its slab is the whole volume already.
   const activeProjection = Boolean(activeVolume && isProjection(activeVolume.series, activeDisplayView));
   const mprWhy = canReconstruct || leadReconstructs || isMpr || !activeSeries ? undefined : loadingIds.has(activeSeries.id) || activeVolume?.sourceFrameIndex !== undefined ? t('mpr.whyLoading')
@@ -3529,7 +3561,8 @@ export default function App() {
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
-        {playing && <CineSpeed fps={cineFps} max={cineMax} onChange={fps => setSettings(current => ({ ...current, cineFps: fps }))} />}
+        {playing && <CineSpeed fps={cineFps} max={cineMax} onChange={setCineSpeed}
+          source={fileTiming && { active: cineOverride === undefined, variable: fileTiming.intervalsMs.length > 1, restore: useRecordedSpeed }} />}
       </div>
       {/* Feedback to the team: always at hand, never over the images (where the bridge can send it). */}
       {bridgeCan('feedback') && <button type="button" className="status-button status-feedback" data-testid="feedback-open" data-usage-ignore aria-label={t('feedback.open')} data-tooltip={t('feedback.open')} onClick={() => setShowFeedback(true)}><MessageSquare size={13} aria-hidden="true" /><span>{t('feedback.open')}</span></button>}

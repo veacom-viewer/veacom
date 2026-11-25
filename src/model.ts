@@ -79,6 +79,13 @@ export interface VoiLut { first: number; bits: number; data: number[]; explanati
 export interface Segment { number: number; label: string; color?: [number, number, number] }
 /** A DICOM Segmentation: masks drawn over the image series it references, never shown as images. */
 export interface Segmentation { kind: string; referencedSeriesUid?: string; referencedSeries?: [studyUid: string, seriesUid: string][]; referencedInstances?: [sopUid: string, frame: number | null][]; segments: Segment[] }
+/** A complete DICOM cine instance. The engine maps its source frame numbers to catalog slices. */
+export interface CineTiming {
+  slices: number[];
+  intervalsMs: number[];
+  sweeping: boolean;
+}
+
 export interface Series {
   engineGeneration?: number;
   patientKey?: string;
@@ -115,6 +122,7 @@ export interface Series {
   orientationKnown?: boolean;
   positionKnown?: boolean;
   frameMetadata?: FrameMetadata[];
+  cine?: CineTiming;
   /** Inclusive padding range in decoded modality values, shared by all frames. */
   paddingRange?: [number, number];
   paddingIsNaN?: boolean;

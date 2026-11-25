@@ -1183,6 +1183,8 @@ export const en = {
   'status.speed': 'Playback speed',
   'status.slower': 'Slower',
   'status.faster': 'Faster',
+  'status.averageFps': 'avg fps',
+  'status.dicomTiming': 'Use DICOM frame timing',
   'status.fpsUnit': 'fps',
   'status.speedValue': 'Frames a second (1–{max})',
   'status.speedEdit': 'Click to type (1–{max})',

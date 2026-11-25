@@ -3,6 +3,10 @@ const LONG_LENGTH = new Set(['OB', 'OW', 'SQ']);
 export function element(group, item, vr, value) {
   let body;
   if (LONG_LENGTH.has(vr)) body = Buffer.from(value);
+  else if (vr === 'AT') {
+    body = Buffer.alloc(value.length * 4);
+    value.forEach(([g, e], i) => { body.writeUInt16LE(g, 4 * i); body.writeUInt16LE(e, 4 * i + 2); });
+  }
   else if (vr === 'US') { body = Buffer.alloc(2); body.writeUInt16LE(value); }
   else if (vr === 'SS') { body = Buffer.alloc(2); body.writeInt16LE(value); }
   else if (vr === 'UL') { body = Buffer.alloc(4); body.writeUInt32LE(value); }
