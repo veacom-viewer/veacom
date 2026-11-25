@@ -482,6 +482,15 @@ class SharedSliceRenderer {
       // Start linking while the panes lay out and resize; validate before the first draw.
       const { mainKind, sourceFrame, petKind } = this.configuration(volume, view, fusion);
       this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
+      if (this.parallel && sourceFrame !== undefined && volume.sourceFrameIndex === undefined
+        && volume.series.canReconstruct && !volume.series.sourceFramesOnly && mainKind !== 'rgb8'
+        && volume.data.byteLength >= 32 * 1024 ** 2 && !sourceFrameOnly(volume, this.info.max3DTextureSize)) {
+        // A large loaded stack can enter three-plane MPR next. Link the reconstruction shaders before the command.
+        const count = this.programs.size;
+        this.startProgram(mainKind, '3d');
+        this.startProgram(mainKind, '3d', undefined, false, 'area');
+        if (this.programs.size !== count) this.gl.flush();
+      }
     }
   }
   private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile, region?: PlaneTexture): string {
