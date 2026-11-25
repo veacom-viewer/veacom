@@ -10,7 +10,7 @@
 // engine, as for a helper.
 import { headerSize, invalidHeader, pngHasOrientation, type PictureSize } from './pictureHeader';
 
-type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
+import * as engine from '../../web/engine/pkg-threads/veacom_web_engine.js';
 // The bytes are a copy out of the shared memory (web/engine/src/pictures.rs), which a Blob can hold.
 interface Task { id: number; want: 'probe' | 'size' | 'pixels'; bytes: Uint8Array<ArrayBuffer> }
 
@@ -55,7 +55,7 @@ async function pixels(bytes: Uint8Array<ArrayBuffer>): Promise<PictureSize & { r
   } finally { bitmap.close(); }
 }
 
-async function answer(engine: ThreadedEngine, { id, want, bytes }: Task): Promise<void> {
+async function answer({ id, want, bytes }: Task): Promise<void> {
   try {
     if (want === 'pixels') {
       const { width, height, rgba } = await pixels(bytes);
@@ -71,13 +71,13 @@ async function answer(engine: ThreadedEngine, { id, want, bytes }: Task): Promis
 }
 
 /** Takes pictures for ever: up to CONCURRENCY at once, waiting in the engine while there are none. */
-async function serve(engine: ThreadedEngine): Promise<never> {
+async function serve(): Promise<never> {
   const running = new Set<Promise<void>>();
   for (;;) {
     // Waiting blocks this thread, so it only waits while no decode needs it to finish.
     const task = running.size < CONCURRENCY ? engine.pictureNext(running.size ? 0 : IDLE_WAIT_MS) as Task | undefined : undefined;
     if (task) {
-      const job: Promise<void> = answer(engine, task).finally(() => running.delete(job));
+      const job: Promise<void> = answer(task).finally(() => running.delete(job));
       running.add(job);
     } else if (running.size) {
       await Promise.race(running);
@@ -87,11 +87,10 @@ async function serve(engine: ThreadedEngine): Promise<never> {
 
 async function start({ module, memory }: Shared): Promise<void> {
   try {
-    const engine: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
     engine.initSync({ module, memory });
     engine.pictureDecoderStarted();
     scope.postMessage({ type: 'ready' });
-    await serve(engine);
+    await serve();
   } catch (error) {
     scope.postMessage({ type: 'failed', error: error instanceof Error ? error.message : String(error) });
   }

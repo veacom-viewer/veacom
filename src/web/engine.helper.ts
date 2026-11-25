@@ -9,7 +9,7 @@
 //
 // The threads build aborts on a panic. Then the engine's calls throw here, and the page hears of it and replaces the
 // engine: a run that lent this thread work would otherwise wait for it for ever.
-type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
+import * as engine from '../../web/engine/pkg-threads/veacom_web_engine.js';
 
 type Shared = { module: WebAssembly.Module; memory: WebAssembly.Memory; files: MessagePort };
 /** From the engine Worker: files to take, answered with `{ took: batch }`, and numbers of files to let go of. */
@@ -27,7 +27,6 @@ const nextTask = () => new Promise<void>(resolve => {
 
 async function help({ module, memory, files }: Shared): Promise<void> {
   try {
-    const engine: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
     engine.initSync({ module, memory });
     files.onmessage = ({ data }: MessageEvent<HelperFiles>) => {
       if ('forget' in data) { engine.helperForgetFiles(Uint32Array.from(data.forget)); return; }

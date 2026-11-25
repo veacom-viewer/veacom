@@ -88,6 +88,26 @@ async function openStudy() {
   };
 }
 
+/** A browser whose picture helper cannot start still reads CT with the single-thread engine. */
+async function checkUnavailablePictureHelper(browser, url) {
+  const page = await browser.newPage();
+  try {
+    let blocked = 0;
+    await page.route(/\/assets\/picture\.worker-[\w-]+\.js$/, async route => {
+      blocked++;
+      await route.abort('failed');
+    });
+    await page.goto(url);
+    await page.waitForFunction(() => document.documentElement.dataset.engineThreads === '1');
+    assert.equal(blocked, 1);
+    const opened = await page.evaluate(openStudy);
+    assert.deepEqual(opened.dimensions, [columns, rows, slices]);
+    assert.deepEqual(opened.frame, { index: '0', bytes: columns * rows * 2 });
+    assert.equal(opened.volume, columns * rows * slices * 2);
+    assert.equal(opened.state.restartCount, 0);
+  } finally { await page.close(); }
+}
+
 /** In the page: makes a PNG, a JPEG and a BMP of one size and colour, opens them together, and asks for each frame's
  * samples. Returns their length, type and components, or the error. */
 async function openPictures() {
@@ -422,6 +442,7 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      if (isolated) await checkUnavailablePictureHelper(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
