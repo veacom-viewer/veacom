@@ -2,6 +2,19 @@ name: Measure the three-plane CT transition
 on:
   workflow_dispatch:
     inputs:
+      reference:
+        description: Reference viewer commit
+        type: string
+        default: '845bc2c8da40ea1e6d7f580695179ff05e5efb62'
+      candidate:
+        description: Candidate viewer commit
+        type: string
+        default: 'd0f6941af6ada8c81d4dbd0003b1b9118b431ecd'
+      rounds:
+        description: Pairs per command timing scenario
+        type: choice
+        default: '8'
+        options: ['4', '8', '12']
       captured_run:
         description: Encode the captures already produced by this run
         type: string
@@ -34,13 +47,13 @@ jobs:
       - name: Check out public main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 845bc2c8da40ea1e6d7f580695179ff05e5efb62
+          ref: ${{ inputs.reference }}
           path: reference-build
           persist-credentials: false
       - name: Check out the candidate renderer
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: d0f6941af6ada8c81d4dbd0003b1b9118b431ecd
+          ref: ${{ inputs.candidate }}
           path: candidate-build
           persist-credentials: false
       - name: Build the candidate UI against the identical engine
@@ -66,8 +79,10 @@ jobs:
           cd reference-build
           node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
           cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
-      - name: Compare eight pairs after scrolling and eight pairs at full-volume readiness
-        run: node tools/reading-audit/reading.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" 8 "$PWD/candidate-build"
+      - name: Compare after scrolling and at full-volume readiness
+        env:
+          PAIRS: ${{ inputs.rounds }}
+        run: node tools/reading-audit/reading.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies" "$PAIRS" "$PWD/candidate-build"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
