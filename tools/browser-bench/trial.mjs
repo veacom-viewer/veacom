@@ -175,6 +175,10 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     Object.assign(line, openMetrics(marks, frames, MAIN));
     // VEAcom marks its steps of opening (files listed, import, first frame, first image): each one's time after the drop.
     const steps = Object.entries(marks).filter(([name]) => name.startsWith('veacom:')).map(([name, at]) => [name.slice(7), Math.round(at - marks['bench:drop'])]);
+    if (viewer.id.startsWith('veacom')) {
+      const stages = await js('document.documentElement.dataset.importStages');
+      if (stages) line.importStages = JSON.parse(stages);
+    }
     if (steps.length) line.openSteps = Object.fromEntries(steps.sort((a, b) => a[1] - b[1]));
     const first = frames.find(f => f.index !== null && f.unit >= MAIN * f.width && f.ts >= marks['bench:drop']);
     // The primary result uses the same screenshot callback clock as earlier runs. Keep Chromium's estimate beside it.

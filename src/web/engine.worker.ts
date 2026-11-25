@@ -188,6 +188,7 @@ async function answer(data: EngineRequest): Promise<void> {
   }
   try {
     let value: unknown, transfer: Transferable[] = [];
+    let importStages: Record<string, number> | undefined;
     engine.beginRequest(data.id);
     switch (data.op) {
       case 'init': {
@@ -202,7 +203,10 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
+        const start = performance.now();
         const first = await readHeads(data.files);
+        const headsReady = performance.now();
+        let registered = headsReady, listed = headsReady;
         const ids: number[] = [];
         try {
           for (const [i, { path, file }] of data.files.entries()) {
@@ -210,7 +214,9 @@ async function answer(data: EngineRequest): Promise<void> {
             ids.push(id);
             pageFiles.set(id, file);
           }
+          registered = performance.now();
           value = JSON.parse(engine.importPaths(data.roots));
+          listed = performance.now();
         } finally {
           if (ids.length < data.files.length) engine.pruneFiles();
           forgetUnlisted();
@@ -221,6 +227,8 @@ async function answer(data: EngineRequest): Promise<void> {
           const kept = ids.flatMap(id => { const file = pageFiles.get(id); return file ? [{ id, file }] : []; });
           shareFiles(loaded.threaded, kept.map(({ id }) => id), kept.map(({ file }) => file));
         }
+        importStages = { files: ids.length, headReadMs: headsReady - start, registerMs: registered - headsReady,
+          catalogMs: listed - registered, cleanupAndShareMs: performance.now() - listed };
         break;
       }
       case 'list': value = JSON.parse(engine.listSeries()); break;
@@ -243,7 +251,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
     }
-    scope.postMessage({ id: data.id, ok: true, value }, transfer);
+    scope.postMessage({ id: data.id, ok: true, value, importStages }, transfer);
   } catch (error) {
     // The engine's own messages arrive as plain Errors holding its JSON body. Anything else is the engine crashing
     // (a WebAssembly trap, a stack overflow): its state cannot be trusted any more, and the page replaces this Worker.

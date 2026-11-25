@@ -78,7 +78,9 @@ async function walk(root: FileSystemEntry): Promise<SelectedFile[]> {
       await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
     }
   };
+  performance.mark('veacom:directory-start');
   await visit(root, root.name);
+  performance.mark('veacom:entries-ready');
   return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
 }
 
@@ -268,6 +270,7 @@ export function createWebBridge(): DesktopBridge {
       if (data.id !== inFlight) return;
       const request = pending.get(data.id);
       if (!request) return;
+      if (data.importStages && request.op === 'import') document.documentElement.dataset.importStages = JSON.stringify(data.importStages);
       inFlight = null;
       pending.delete(data.id);
       releaseWhenDrained();
