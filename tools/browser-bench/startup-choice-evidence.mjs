@@ -61,12 +61,22 @@ try {
           }
           await page.evaluate(() => window.releaseEngineForDemo());
           if (!enabled) { await choose.click({ trial: true }); await pick(); }
-          await page.locator('canvas[data-series-id][data-slice="0"]').first().waitFor();
-          const displayed = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(item => [item.patientId, item.dimensions[2]]));
+          // The three selected slices rise from z=0 to z=2. The axial series opens at its superior end.
+          const canvas = page.locator('canvas[data-series-id][data-slice="2"]').first();
+          await canvas.waitFor();
+          const presented = await canvas.evaluate(async el => {
+            const bridge = window.veacom, { series } = await bridge.listSeries(), { generation } = await bridge.getCoreState();
+            const item = series.find(item => item.id === el.dataset.seriesId), index = Number(el.dataset.slice);
+            const pixels = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index });
+            return { displayed: series.map(item => [item.patientId, item.dimensions[2]]), index, sop: pixels.headers.get('X-SOP-Instance-UID') };
+          });
+          const { displayed, index, sop } = presented;
+          assert.equal(index, 2);
+          assert.equal(sop, '2.25.302617644913925066835652647005517224101.3.3');
           assert.deepEqual(displayed, [['SYNTHETIC-SMOKE', 3]]);
           await page.screenshot({ path: path.join(output, name + '-opened.png') });
           await page.waitForTimeout(650);
-          records.push({ build, locale, enabledDuringConnection: enabled, displayed });
+          records.push({ build, locale, enabledDuringConnection: enabled, displayed, index, sop });
         } finally { await context.close(); }
         await video.saveAs(path.join(output, name + '.webm'));
       }
