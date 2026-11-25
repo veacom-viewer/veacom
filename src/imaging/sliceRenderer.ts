@@ -134,7 +134,8 @@ ${cachedFrame ? `uniform sampler2D uReduced;
 uniform vec2 uReducedScale;
 uniform vec2 uReducedOrigin;
 ${hardwareLinear ? `vec4 readReduced(vec2 coord) {
-  return texture(uReduced,(coord+0.5)/vec2(textureSize(uReduced,0)));
+  // Only level zero is allocated. Extra samples inside edge-dependent branches have no implicit derivatives.
+  return textureLod(uReduced,(coord+0.5)/vec2(textureSize(uReduced,0)),0.0);
 }` : ''}` : ''}
 vec4 frameAverage(vec2 framePixel) {
   vec2 edge=framePixel+0.5;
