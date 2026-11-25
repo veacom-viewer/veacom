@@ -583,7 +583,7 @@ export function remapAnnotationCoordinates(annotation: Annotation, previousSerie
 /** True when `view` (as drawn: renderedView) shows the measurement: its own acquired frame, or a reconstructed plane
  * holding all its points (within half a slice); a whole-volume MIP shows none. The viewport draws exactly these and
  * "Delete on slice" removes exactly these, whatever plane, tilt or slice number the measurement was recorded with. */
-export function shownOnView(annotation: Annotation, series: Series, view: ViewState, frame: PlaneFrame = getPlaneFrame(series, view)): boolean {
+export function shownOnView(annotation: Annotation, series: Series, view: Pick<ViewState, 'plane' | 'slice' | 'mode' | 'projection' | 'oblique'>, frame: PlaneFrame = getPlaneFrame(series, view)): boolean {
   if (!annotation.points.length || isProjection(series, view)) return false;
   if (annotation.type === 'sphere') {
     const sphere = sphereOf(annotation);

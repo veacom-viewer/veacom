@@ -174,6 +174,11 @@ jobs:
           VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
           VEACOM_SMOKE_RENDERER: software
         run: node tools/desktop-smoke.cjs "$env:STUDY\S01" "$env:EVIDENCE\desktop-smoke"
+      - name: Measurement recovery after quit and crash, packaged
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        env:
+          VEACOM_SMOKE_EXECUTABLE: ${{ env.PACKAGED_APP }}
+        run: node tools/check-measurement-recovery.cjs "$env:EVIDENCE/measurement-recovery"
       - name: Software drawing reported, packaged
         if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
         env:

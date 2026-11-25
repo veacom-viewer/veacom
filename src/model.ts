@@ -196,6 +196,8 @@ export interface Volume {
   sourceFrameIndex?: number;
 }
 export interface Annotation {
+  /** Creation time keeps finding numbers in reading order after recovery. */
+  createdAt?: number;
   id: string; type: Tool; points: Vec3[]; plane: Plane; slice: number;
   label?: string; color?: string;
   mode?: ViewMode; sourceFrame?: number;
