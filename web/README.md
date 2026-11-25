@@ -127,7 +127,7 @@ with and without the headers (`tools/browser-check.mjs`). The test studies for `
 `VEACOM_TESTDATA` names.
 
 Open http://127.0.0.1:5199/ and drop a folder or ZIP. `?test=petct|bigct|calisma|jtwok|jpegll&rounds=N`
-opens a test study. `&prefetch=1` reads up to 64 KiB per file ahead of import, up to 16 MiB in total.
+opens a test study. `&prefetch=1` reads up to 16 KiB per file ahead of import, up to 16 MiB in total.
 Files larger than 16 MiB are read on demand. `&checksum=1` adds a SHA-1 of every decoded series (lossless copies must match).
 `&threads=N` picks the build (1: one thread; N > 1: the engine's thread and N − 1 helpers); `&hold=N` lowers the limit for
 holding a series' files, to time the decoding of a series too large to hold.

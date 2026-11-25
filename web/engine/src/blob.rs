@@ -4,7 +4,7 @@
 //!
 //! Each read from a Blob costs about a millisecond whatever its size, so reads are served from pieces: 64 KiB, one read
 //! for a whole DICOM header however the parser walks it; 1 MiB for large files (ZIPs, read from start to end).
-//! Requests of a piece or more (pixel data) go to the Blob directly. The page may also hand over a file's first piece,
+//! Requests of a piece or more (pixel data) go to the Blob directly. The page may also hand over the start of a file,
 //! read in parallel beforehand.
 //!
 //! Blob objects belong to the thread (Worker) that received them, so they are kept per thread and the sources the
@@ -29,6 +29,7 @@ use std::{
 use veacom_core::memory_fs::{self, Source};
 use wasm_bindgen::JsCast;
 
+const HEAD_BYTES: u64 = 16 * 1024;
 const PIECE: u64 = 64 * 1024;
 const LARGE_PIECE: u64 = 1024 * 1024;
 const LARGE_FILE: u64 = 16 * 1024 * 1024;
@@ -93,14 +94,17 @@ fn sources() -> std::sync::MutexGuard<'static, Sources> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: its first 64 KiB, if read already.
+/// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: its leading bytes, if read already.
 /// Returns the number the file is known by, for `unheld` and `hold_read`.
 pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let length = blob.size() as u64;
-    // Kept only when it is exactly the file's first piece.
+    // Accept the current prefix and the full first piece supplied by earlier page builds.
     let head = head
-        .filter(|head| head.len() as u64 == length.min(piece_size(length)))
+        .filter(|head| {
+            let bytes = head.len() as u64;
+            bytes == length.min(HEAD_BYTES) || bytes == length.min(piece_size(length))
+        })
         .map(Arc::new);
     BLOBS.with_borrow_mut(|blobs| blobs.insert(id, blob));
     let source = Arc::new(BlobSource {
@@ -438,7 +442,9 @@ impl Source for BlobSource {
         let mut done = 0;
         while done < output.len() {
             let position = offset + done as u64;
-            if let (0, Some(head)) = (position / size, &head) {
+            if let Some(head) = &head
+                && position < head.len() as u64
+            {
                 let start = position as usize;
                 let count = (output.len() - done).min(head.len() - start);
                 output[done..done + count].copy_from_slice(&head[start..start + count]);

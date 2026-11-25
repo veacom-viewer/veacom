@@ -18,9 +18,9 @@ it('bounds the total bytes read ahead and preserves file indices when reads are 
   assert.equal(heads.length, 1101);
   assert.equal(heads[0], undefined);
   assert.equal(largeReads, 0);
-  assert.equal(heads[1024]?.length, 64 * 1024);
+  assert.equal(heads[1024]?.length, 16 * 1024);
   assert.equal(heads[1025], undefined);
-  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 16 * 1024 * 1024);
 });
 
 it('writes the same MP4 header as the desktop, in both layouts', () => {
