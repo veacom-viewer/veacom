@@ -380,9 +380,12 @@ class SharedSliceRenderer {
       compiled.shaders = null;
     }
   }
-  prepareSource(volume: Volume): Promise<void> {
+  prepareSource(source: Volume | Series): Promise<void> {
     if (this.lost || this.gl.isContextLost()) return Promise.resolve();
-    const compiled = this.startProgram(textureKind(volume), '2d');
+    const kind = 'data' in source ? textureKind(source) : source.components === 3 ? 'rgb8'
+      : source.pixelType === 'float64' ? 'float32' : source.pixelType;
+    if (!kind) return Promise.resolve();
+    const compiled = this.startProgram(kind, '2d');
     if (!compiled.shaders || !this.parallel) return Promise.resolve();
     if (compiled.preparation) return compiled.preparation;
     const gl = this.gl, completion = this.parallel.COMPLETION_STATUS_KHR, started = performance.now();
@@ -766,8 +769,8 @@ export function sliceRenderer(): SharedSliceRenderer {
   return shared;
 }
 
-export function prepareSourceProgram(volume: Volume): Promise<void> {
-  try { return sliceRenderer().prepareSource(volume); }
+export function prepareSourceProgram(source: Volume | Series): Promise<void> {
+  try { return sliceRenderer().prepareSource(source); }
   catch { return Promise.resolve(); } // Loading pixels must still succeed when the viewport cannot use the GPU.
 }
 
