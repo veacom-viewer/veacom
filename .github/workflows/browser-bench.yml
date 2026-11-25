@@ -25,6 +25,10 @@ on:
         description: What to time (open, paging, wl)
         default: open,paging,wl
         type: string
+      trace_open:
+        description: Keep compositor, GPU and renderer timings through the first readable frame
+        type: boolean
+        default: false
       base:
         description: A branch, tag or commit whose browser build runs as veacom-base, for an A/B of two VEAcom versions
         default: ''
@@ -64,6 +68,7 @@ jobs:
       SCENARIOS: ${{ inputs.scenarios || 'open,paging,wl' }}
       AA: ${{ github.event_name != 'pull_request' }}
       BASE: ${{ inputs.base }}
+      BENCH_OPEN_TRACE: ${{ inputs.trace_open && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
