@@ -129,25 +129,27 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
   });
   const devtools = win.webContents.debugger;
   try {
-    const loadStart = performance.now();
-    await win.loadURL(served.url + (viewer.adapter.path ?? ''));
-    for (let last = requests.length, still = performance.now(); performance.now() - still < 1500 && performance.now() - loadStart < 30_000; await sleep(100)) {
-      if (requests.length !== last) { last = requests.length; still = performance.now(); }
-    }
-    line.pageMs = Math.round(performance.now() - loadStart - 1500);
     devtools.attach('1.3');
-    await viewer.adapter.ready?.({ win, js, devtools, sleep });
-    line.display = await js('({ dpr: devicePixelRatio, width: innerWidth, height: innerHeight })');
-    // What draws the pictures: a GPU, or a software rasterizer on a machine without one.
-    line.renderer = await js(`(() => { try { const gl = document.createElement('canvas').getContext('webgl2');
-      const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
-      return gl ? String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'no WebGL2'; } catch { return 'unknown'; } })()`);
-    await sleep(500);
-
-    // Opening: drop the folder and wait until the window's processes have been quiet for two seconds.
-    const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
     const detail = process.env.BENCH_OPEN_TRACE === '1';
     let trace = await startTrace(devtools, detail ? ['toplevel', 'devtools.timeline', 'gpu', 'cc', 'viz'] : []);
+    await win.loadURL(served.url + (viewer.adapter.path ?? ''));
+    await viewer.adapter.ready?.({ win, js, devtools, sleep });
+    const blueLight = viewer.id === 'bluelight';
+    if (!blueLight && !viewer.id.startsWith('veacom')) throw new Error('This cold-entry comparison uses the two pinned folder-drop viewers.');
+    const selector = blueLight ? '#openFile' : '[data-testid="welcome-open-folder"]';
+    line.pageMs = await js(`new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('The file-opening control never became ready')), 30000);
+      function check() {
+        const control = document.querySelector(${JSON.stringify(selector)});
+        if (control?.getBoundingClientRect().width > 0 && !control.disabled && (!${blueLight} || typeof document.body.ondrop === 'function')) {
+          clearTimeout(timer); resolve(performance.now());
+        } else requestAnimationFrame(check);
+      }
+      requestAnimationFrame(check);
+    })`);
+    line.openScenario = 'fresh navigation, visible open control, immediate folder drop';
+    line.display = await js('({ dpr: devicePixelRatio, width: innerWidth, height: innerHeight })');
+    const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
     line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study });
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
@@ -194,6 +196,18 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     if (!seen && !(await look(win))) throw new Error('No slice marker appeared on screen.');
     // The window showed a slice that no trace screenshot read: the opening was not measured, so the trial fails.
     if (line.firstImageMs === null) throw new Error('The trace screenshots never read the slice marker the window showed (picture kept as -unread.jpg).');
+
+    if (line.firstSlice !== 0) throw new Error('The first captured CT image was not the opening slice.');
+    const navigation = await js(`({start: performance.getEntriesByType('navigation')[0].startTime,
+      drop: performance.getEntriesByName('bench:drop')[0].startTime})`);
+    if (navigation.start !== 0 || navigation.drop < line.pageMs) throw new Error('Invalid navigation and handoff timestamps');
+    line.handoffSinceNavigationMs = navigation.drop;
+    line.navigationToFirstCorrectMs = navigation.drop + first.ts - marks['bench:drop'];
+    if (Number.isFinite(line.firstImageEstimatedMs)) line.navigationToEstimatedDisplayMs = navigation.drop + line.firstImageEstimatedMs;
+    // What draws the pictures: a GPU, or a software rasterizer on a machine without one.
+    line.renderer = await js(`(() => { try { const gl = document.createElement('canvas').getContext('webgl2');
+      const info = gl && gl.getExtension('WEBGL_debug_renderer_info');
+      return gl ? String(gl.getParameter(info ? info.UNMASKED_RENDERER_WEBGL : gl.RENDERER)) : 'no WebGL2'; } catch { return 'unknown'; } })()`);
 
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
