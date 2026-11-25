@@ -230,7 +230,43 @@ export function verifySliceRenderer() {
   }
   const uploadCheck = { name: 'GPU uploads keep compact buffers, permit only intentional Float64 display conversion, and use exact texture formats',
     passed: uploads.length > 0 && uploads.every(u => (u.originalBuffer || u.sourceFrameView || u.convertedFloat64) && u.correctFormat), uploads };
-  results.push(uploadCheck);
+  results.push(uploadCheck, verifyPlaneTextures(renderer, series, view));
   return { passed: results.every(r => r.passed), renderer: renderer.info,
     checks: results.length, failures: results.filter(r => !r.passed), results };
+}
+
+/** Compare every output byte with a full-volume draw on the same GPU. An oblique view requests the full texture. */
+function verifyPlaneTextures(renderer, series, view) {
+  const gl = renderer.gl, dimension = 256;
+  const data = new Int16Array(dimension ** 3);
+  const frameMetadata = Array.from({ length: dimension }, (_, z) => ({ paddingRange: [-2100 - z, -2100 - z] }));
+  for (let z = 0, at = 0; z < dimension; z++) for (let y = 0; y < dimension; y++) for (let x = 0; x < dimension; x++, at++) {
+    data[at] = (x + y + z) % 17 === 0 ? -2100 - z : ((x * 61 + y * 37 + z * 29) % 1600) - 800;
+  }
+  const volume = { data, series: { ...series, id: 'cropped-ct', dimensions: [dimension, dimension, dimension], spacing: [0.6, 0.8, 2], frameMetadata } };
+  const canvas = document.createElement('canvas');
+  canvas.width = 97; canvas.height = 83;
+  const views = [['axial', 0], ['axial', 137.25], ['axial', 255], ['coronal', 7.75], ['coronal', 151.2], ['sagittal', 135.4], ['sagittal', 254.8]]
+    .map(([plane, slice], i) => ({ ...view, plane, slice, zoom: i % 2 ? 1.2 : 0.75, rotation: i % 2 ? 90 : 0,
+      flipX: i % 3 === 0, flipY: i % 2 === 0, pan: [2.5, -4.5], windowWidth: 1600 }));
+  const read = v => {
+    renderer.render(canvas, volume, v);
+    return canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+  };
+  const original = gl.texImage3D, uploads = [];
+  gl.texImage3D = function (...args) { uploads.push(args.slice(3, 6)); return original.apply(this, args); };
+  renderer.setVisibleViews([]);
+  try {
+    const samples = views.map(read), crops = uploads.splice(0);
+    read({ ...view, plane: 'coronal', slice: 128, oblique: [10, -5] });
+    const differences = views.map((v, i) => read(v).reduce((n, byte, j) => n + Number(byte !== samples[i][j]), 0));
+    const levels = samples.map(bytes => new Set(bytes.filter((_, i) => i % 4 === 0)).size);
+    const passed = crops.length >= 3 && crops.every(d => Math.min(...d) <= 16 && Math.max(...d) === dimension)
+      && uploads.length === 1 && uploads[0].every(d => d === dimension) && differences.every(n => n === 0) && levels.every(n => n > 15);
+    return { name: 'Thin MPR textures match the complete volume at borders, fractional slices and per-frame padding',
+      passed, crops, full: uploads, differences, levels };
+  } finally {
+    gl.texImage3D = original;
+    renderer.setVisibleViews([]);
+  }
 }

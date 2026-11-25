@@ -69,7 +69,7 @@ async function sourceReference(series: Series, index: number): Promise<string | 
   return reference;
 }
 
-function gridReference(series: Series, group = series.id): Promise<string> | undefined {
+function gridReference(series: Series, group = ''): Promise<string> | undefined {
   let cache = grids.get(series);
   const reference = cache?.get(group);
   if (reference) return reference;
@@ -123,21 +123,20 @@ function validDrawing(value: unknown): value is Annotation {
     && typeof d.caliper.item === 'string' && point(d.caliper.up) && point(d.caliper.normal));
 }
 
-function drawingGrid(series: Series, drawing: Annotation): Promise<string> | undefined {
-  if (!series.canReconstruct || drawing.slice >= sliceCount(series, drawing)) return;
+function fitsDrawingGrid(series: Series, drawing: Annotation): boolean {
+  if (!series.canReconstruct || drawing.slice >= sliceCount(series, drawing)) return false;
   // A volume sphere can be moved from another section. Planar drawings must still lie on their own plane.
-  if (drawing.type === 'sphere' ? !sphereOf(drawing) : !shownOnView(drawing, series, drawing)) return;
-  return gridReference(series);
+  return drawing.type === 'sphere' ? !!sphereOf(drawing) : shownOnView(drawing, series, drawing);
 }
 
 export async function saveMeasurement(series: Series, scope: string, annotation: Annotation): Promise<SavedMeasurement> {
   if (!validDrawing(annotation)) throw new Error('Invalid measurement');
   const index = annotation.mode === 'source' && annotation.sourceSopInstanceUid ? annotationSourceIndex(annotation, series) : null;
-  const reference = await (annotation.mode === 'source' ? index !== null && sourceReference(series, index) : drawingGrid(series, annotation));
+  const reference = await (annotation.mode === 'source' ? index !== null && sourceReference(series, index) : fitsDrawingGrid(series, annotation) && gridReference(series));
   if (!reference) throw new Error('Missing measurement reference');
   const drawing = { ...annotation };
   delete drawing.sourceSopInstanceUid;
-  return { scope, id: annotation.id, reference, drawing };
+  return { scope, id: annotation.id, reference: annotation.mode === 'mpr' ? 'grid:' + reference : reference, drawing };
 }
 
 /** Resolve the image anew on every import. A source image may have moved to another index, or be missing or ambiguous. */
@@ -147,7 +146,16 @@ export async function recoverMeasurement(series: Series, scope: string, value: u
   if (record.scope !== scope || !validDrawing(record.drawing) || record.id !== record.drawing.id
     || !managed(series, record.drawing) || typeof record.reference !== 'string') return null;
   const a = record.drawing;
-  if (a.mode === 'mpr') return await drawingGrid(series, a) === record.reference ? a : null;
+  if (a.mode === 'mpr') {
+    if (!fitsDrawingGrid(series, a)) return null;
+    if (record.reference.startsWith('grid:')) return await gridReference(series) === record.reference.slice(5) ? a : null;
+    if (!/^[0-9a-f]{64}$/.test(record.reference)) return null;
+    // The old digest included a catalog ID. Every ordered SOP/frame and the entire physical grid must still match.
+    for (const id of [series.id, ...(series.legacyGridIds ?? [])]) {
+      if (await gridReference(series, id) === record.reference) return a;
+    }
+    return null;
+  }
   const index = await findSource(series, record.reference, a.sourceFrame ?? a.slice);
   if (index === null) return null;
   const frame = series.frameMetadata![index];
@@ -173,7 +181,7 @@ export function calibrationEditId(series: Series, frame: number | null): string 
 
 export async function saveCalibration(series: Series, scope: string, edit: CalibrationEdit): Promise<RecoveryWrite<SavedCalibration>> {
   // A catalog group can be renamed when a second acquisition arrives. Its exact ordered DICOM grid survives that rename.
-  const reference = await (edit.frame === null ? gridReference(series, '') : sourceReference(series, edit.frame));
+  const reference = await (edit.frame === null ? gridReference(series) : sourceReference(series, edit.frame));
   if (!reference) throw new Error('Missing calibration reference');
   const id = edit.frame === null ? '@grid:' + reference : '@film:' + reference;
   const put = edit.value ? { scope, id, frame: edit.frame, reference, calibration: edit.value } : undefined;
