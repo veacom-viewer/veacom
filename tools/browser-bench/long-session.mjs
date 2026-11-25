@@ -165,6 +165,13 @@ try {
   await input.send('HeapProfiler.collectGarbage');
   await wait(1500);
   snapshots.afterGarbageCollection = await snapshot();
+  const language = page.getByTestId('tool-language');
+  await language.click();
+  assert.equal(await language.getAttribute('aria-expanded'),'true');
+  await page.keyboard.press('Escape');
+  assert.equal(await language.getAttribute('aria-expanded'),'false');
+  await input.send('HeapProfiler.collectGarbage');
+  snapshots.afterOpeningAndClosingTheLanguageMenu = await snapshot();
   await writeFile(path.join(output,'buffer-paths.json'),JSON.stringify(await closedBufferPaths(input),null,2)+'\n');
   await page.close();
   await wait(2000);
