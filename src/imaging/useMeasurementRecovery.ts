@@ -89,7 +89,9 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Ser
         readFailures.current.delete(id);
         for (const edit of failed.current.get(id)?.edits ?? []) edited.add(edit.id);
         const back = drawings.filter((a): a is Annotation => a !== null && !edited.has(a.id));
-        const scales = calibrations.filter(c => !edited.has(calibrationEditId(item, c.frame)));
+        // An edit to the series scale also supersedes inherited per-image scales while this read was in flight.
+        const inherited = edited.has(calibrationEditId(item, null)) ? [] : calibrations.seriesScales;
+        const scales = [...inherited, ...calibrations.films].filter(c => !edited.has(calibrationEditId(item, c.frame)));
         restore(item, back, scales, edited);
       }).catch(() => {
         if (reads.current.get(id) !== read) return;

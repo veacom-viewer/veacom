@@ -97,16 +97,16 @@ async function onScreen(page, entry) {
   }));
 }
 
-async function calibrate(page, entry) {
+async function calibrate(page, entry, mm = 80) {
   await page.getByTestId('inspector-tab-display').click();
   const toggle = page.locator('#section-units-toggle');
   if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
   await page.locator('[data-action="calibration-line"]').selectOption(entry.id);
-  await page.locator('[data-action="calibration-length"]').fill('80');
+  await page.locator('[data-action="calibration-length"]').fill(String(mm));
   await page.locator('[data-action="calibrate"]').click();
   await page.getByTestId('inspector-tab-measurements').click();
   await saved(page);
-  assert.match((await onScreen(page, entry)).label, /80[.,]0\s*mm|8[.,]0\s*cm/);
+  assert.match((await onScreen(page, entry)).label, new RegExp(mm + '[.,]0\\s*mm|' + mm / 10 + '[.,]0\\s*cm'));
 }
 
 async function selectAcquisition(page, number) {
@@ -224,8 +224,19 @@ async function runTrial(dir, mode, locale) {
     await page.locator(`[data-annotation-row="${second.id}"]`).waitFor();
     assert.deepEqual(await rows(page), [second.id]);
     assert.deepEqual(await onScreen(page, second), secondBefore, 'The second acquisition keeps its own ruler and scale');
+    let recalibratedLabel;
+    if (mode === 'normal') {
+      await selectAcquisition(page, 1);
+      await calibrate(page, subsetRuler, 60);
+      await stop();
+      page = await start('first');
+      await page.locator(`[data-annotation-row="${entries[0].id}"]`).waitFor();
+      recalibratedLabel = (await onScreen(page, entries[0])).label;
+      assert.match(recalibratedLabel, /60[.,]0\s*mm|6[.,]0\s*cm/, 'The recalibrated images keep their new scale in the full study');
+      assert.deepEqual(await onScreen(page, entries[10]), entries[10].before, 'An image outside that acquisition keeps its original scale');
+    }
     return { mode, locale, recovered: entries.length, wrongPatient: 0, partialImport: expectedSubset.length,
-      regroupedLabel: regrouped.label, secondAcquisitionLabel: secondBefore.label, entries };
+      regroupedLabel: regrouped.label, secondAcquisitionLabel: secondBefore.label, recalibratedLabel, entries };
   } finally { if (active) await closeDesktop(active.app); }
 }
 

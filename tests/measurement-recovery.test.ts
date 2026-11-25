@@ -23,6 +23,7 @@ const ruler: Annotation = {
   labelShift: [0, 2, 0], color: '#ffcc00',
 };
 const scopeOf = async (item: Series) => { const scope = await measurementScope(item); assert.ok(scope); return scope; };
+const seriesScales = async (item: Series, scope: string, rows: unknown[]) => (await recoverCalibrations(item, scope, rows)).seriesScales;
 
 describe('measurement recovery', () => {
   it('requires patient, study and series identity and stores digests for the source image', async () => {
@@ -112,10 +113,10 @@ describe('measurement recovery', () => {
     const second = { ...first, id: 'second-acquisition', frameMetadata: frames.map(f => ({ ...f, sopInstanceUid: '1.2.345.20' })) };
     const mixed = { ...first, frameMetadata: [frames[2], second.frameMetadata[1], frames[0]] };
     for (const row of [saved, legacy]) {
-      assert.deepEqual(await recoverCalibrations(first, scope, [row]), [{ frame: null, value }]);
-      assert.deepEqual(await recoverCalibrations(second, scope, [row]), []);
-      assert.deepEqual(await recoverCalibrations(mixed, scope, [row]), [0, 2].map(frame => ({ frame, value })));
-      assert.deepEqual(await recoverCalibrations(first, await scopeOf({ ...first, patientKey: 'other' }), [row]), []);
+      assert.deepEqual(await seriesScales(first, scope, [row]), [{ frame: null, value }]);
+      assert.deepEqual(await seriesScales(second, scope, [row]), []);
+      assert.deepEqual(await seriesScales(mixed, scope, [row]), [0, 2].map(frame => ({ frame, value })));
+      assert.deepEqual(await seriesScales(first, await scopeOf({ ...first, patientKey: 'other' }), [row]), []);
     }
     const current = (await saveCalibration(first, scope, { frame: null, value })).put!;
     assert.equal(current.id, saved.id);
@@ -134,11 +135,11 @@ describe('measurement recovery', () => {
     };
     await apply(series, 2);
     await apply(subset, 3);
-    assert.deepEqual((await recoverCalibrations(series, scope, [...rows.values()])).sort((a, b) => Number(a.frame) - Number(b.frame)),
+    assert.deepEqual((await seriesScales(series, scope, [...rows.values()])).sort((a, b) => Number(a.frame) - Number(b.frame)),
       [2, 3, 2].map((n, frame) => ({ frame, value: scale(n) })));
     await apply(subset, null);
-    assert.deepEqual(await recoverCalibrations(subset, scope, [...rows.values()]), []);
-    assert.deepEqual(await recoverCalibrations(series, scope, [...rows.values()]), [0, 2].map(frame => ({ frame, value: scale(2) })));
+    assert.deepEqual(await seriesScales(subset, scope, [...rows.values()]), []);
+    assert.deepEqual(await seriesScales(series, scope, [...rows.values()]), [0, 2].map(frame => ({ frame, value: scale(2) })));
     await apply(series, null);
     assert.equal(rows.size, 0);
   });

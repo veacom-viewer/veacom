@@ -232,7 +232,7 @@ export async function recoverCalibration(series: Series, scope: string, row: unk
   return frame === null ? [] : [{ frame, value: row.calibration }];
 }
 
-export async function recoverCalibrations(series: Series, scope: string, rows: unknown[]): Promise<CalibrationEdit[]> {
+export async function recoverCalibrations(series: Series, scope: string, rows: unknown[]): Promise<{ seriesScales: CalibrationEdit[]; films: CalibrationEdit[] }> {
   const records = rows.filter(calibrationRow);
   const scales = new Map<number | null, number>(), films: CalibrationEdit[] = [];
   const decoded = await Promise.all(records.map(r => recoverCalibration(series, scope, r)));
@@ -245,6 +245,5 @@ export async function recoverCalibrations(series: Series, scope: string, rows: u
   }
   const whole = scales.get(null);
   if (whole !== undefined && [...scales.values()].some(scale => scale !== whole)) throw new Error('Conflicting saved scales');
-  // A film's own ruler, ball or explicit DICOM calibration overrides its series scale.
-  return [...Array.from(scales, ([frame, scale]) => ({ frame, value: { method: 'scale' as const, scale } })), ...films];
+  return { seriesScales: Array.from(scales, ([frame, scale]) => ({ frame, value: { method: 'scale', scale } })), films };
 }
