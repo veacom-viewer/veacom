@@ -80,10 +80,11 @@ async function ctTrial(app,page,record,centres,build,pair) {
  }
  const series=await page.evaluate(()=>window.__VEACOM_TEST__.state().series[0].id);
  for(let i=0;i<25;i++){
-  const cell=cells.nth(i);await cell.locator('header').click({position:{x:5,y:5}});
-  await page.waitForFunction(i=>{const s=window.__VEACOM_TEST__.state();return s.activeSlotId===s.panes[i].id||document.querySelectorAll('[data-testid="viewport-cell"]')[i]?.classList.contains('is-active');},i,{timeout:5000});
-  await page.evaluate(id=>window.__VEACOM_TEST__.selectSeries(id),series);
+  const cell=cells.nth(i);
+  await cell.evaluate((e,id)=>{const data=new DataTransfer();data.setData('application/x-veacom-series',id);e.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:data}));},series);
   await cell.locator('canvas[data-renderer]').waitFor();
+  await cell.getByTestId('dicom-viewport').focus();
+  await page.waitForFunction(i=>document.querySelectorAll('[data-testid="viewport-cell"]')[i]?.classList.contains('is-active'),i,{timeout:5000});
   await page.evaluate(i=>window.__VEACOM_TEST__.setView({mode:'source',plane:'axial',slice:i,windowCenter:2048,windowWidth:4096,zoom:1,pan:[0,0]}),i);
   await page.waitForFunction(i=>Number(document.querySelectorAll('[data-testid="viewport-cell"]')[i]?.querySelector('canvas[data-renderer]')?.dataset.slice)===i,i);
  }
