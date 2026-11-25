@@ -8,6 +8,7 @@ import path from 'node:path';
 import { chromium } from 'playwright';
 import { serveVeacom } from './lib/serve.mjs';
 import { makeStudy } from './make-study.mjs';
+import { closedBufferPaths } from './closed-buffer-paths.mjs';
 
 const [site, output, cycleText, sourceFile, handleMode] = process.argv.slice(2);
 const originalHandle = handleMode === '--original-handle';
@@ -164,6 +165,7 @@ try {
   await input.send('HeapProfiler.collectGarbage');
   await wait(1500);
   snapshots.afterGarbageCollection = await snapshot();
+  await writeFile(path.join(output,'buffer-paths.json'),JSON.stringify(await closedBufferPaths(input),null,2)+'\n');
   await page.close();
   await wait(2000);
   snapshots.afterTabClose = { memory:memory(pid,true) };
