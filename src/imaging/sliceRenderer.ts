@@ -10,7 +10,7 @@ import { isSoftwareRenderer } from './rendererInfo';
 
 type TextureKind = 'float32' | 'int16' | 'uint16' | 'uint8' | 'rgb8';
 type TextureDimension = '2d' | '3d';
-type Sampling = 'native' | 'area' | 'reduced' | 'reduced-with-mask';
+type Sampling = 'native' | 'area' | 'reduced' | 'reduced-grey' | 'reduced-with-mask';
 interface CachedTexture { owner: string; texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number; }
 interface Program { key: string; program: WebGLProgram; shaders: [WebGLShader, WebGLShader] | null;
   preparation?: Promise<void>; uniforms: Map<string, WebGLUniformLocation | null>; }
@@ -171,7 +171,9 @@ vec4 frameAverage(vec2 framePixel) {
 
 function fragment(main: TextureKind, dimension: TextureDimension, pet: TextureKind | undefined, projection: boolean,
   sampling: Sampling, floatLinear: boolean): string {
-  const filtered = sampling !== 'native', reducedOnly = sampling === 'reduced';
+  const plain = sampling === 'reduced-grey';
+  const filtered = sampling !== 'native', reducedOnly = sampling === 'reduced' || plain;
+  const linearWindow = 'uWindow.y<=1.0 ? step(uWindow.x-0.5,value) : clamp((value-(uWindow.x-0.5))/(uWindow.y-1.0)+0.5,0.0,1.0)';
   const cachedFrame = reducedOnly || sampling === 'reduced-with-mask';
   const color = main === 'rgb8';
   return `#version 300 es
@@ -255,20 +257,20 @@ void main() {
   outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : `texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb`},1.0);
   ` : `
   float value=${reducedOnly ? 'frameAverage(framePixel).r' : dimension === '2d' ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};
-  if (nonFinite(value)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
+  ${plain ? '' : 'if (nonFinite(value)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${reducedOnly ? '' : filtered && dimension === '2d' ? `vec2 mean=frameAverage(framePixel).rg;
   if (mean.y<=0.0) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
   value=mean.x/mean.y;` : filtered ? 'if (uSlabMode==0) value=imagePlane(p,value);' : ''}
-  float grey;
+  ${plain ? `float grey=${linearWindow};` : `float grey;
   if (uVoi) {
     // The VOI LUT entry for the nearest input value, clamped at both ends; rows of ${VOI_ROW} entries.
     int entry=int(clamp(floor(value+0.5)-uVoiFirst,0.0,float(uVoiCount-1)));
     grey=float(texelFetch(uVoiLut,ivec2(entry%${VOI_ROW},entry/${VOI_ROW}),0).r)/uVoiMax;
   } else if (uVoiFunction==2) grey=1.0/(1.0+exp(-4.0*(value-uWindow.x)/uWindow.y));
   else if (uVoiFunction==1) grey=clamp((value-uWindow.x)/uWindow.y+0.5,0.0,1.0);
-  else grey=uWindow.y<=1.0 ? step(uWindow.x-0.5,value) : clamp((value-(uWindow.x-0.5))/(uWindow.y-1.0)+0.5,0.0,1.0);
+  else grey=${linearWindow};`}
   if (uInvert) grey=1.0-grey;
-  vec3 rgb=uBasePalette<0 ? vec3(grey) : palette(grey,uBasePalette);
+  vec3 rgb=${plain ? 'vec3(grey)' : 'uBasePalette<0 ? vec3(grey) : palette(grey,uBasePalette)'};
   ${pet ? `
   vec3 q=uPetIndexTopLeft+uPetIndexRight*gl_FragCoord.x+uPetIndexDown*(uScreenHeight-gl_FragCoord.y);
   if (!outside(q,uPetDimensions)) {
@@ -663,7 +665,9 @@ class SharedSliceRenderer {
     const mprX = samples(indexRight), mprY = samples(indexDown);
     const petX = petRight ? samples(petRight) : 1, petY = petDown ? samples(petDown) : 1;
     const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
-    const sampling: Sampling = reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
+    const plain = this.info.software && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
+      && !view.voiFunction && (!view.palette || view.palette === 'gray');
+    const sampling: Sampling = plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
     const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
     if (this.canvas.width !== w) this.canvas.width = w;
     if (this.canvas.height !== h) this.canvas.height = h;
