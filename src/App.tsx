@@ -759,7 +759,9 @@ export default function App() {
   const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
     history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
   };
-  const recovery = useMeasurementRecovery(volumes, (item, restored, calibration, edited) => {
+  const activeSlot = slots.find(slot => slot.id === activeId) ?? slots[0];
+  const activeSeries = activeSlot.seriesId ? seriesById.get(activeSlot.seriesId) : undefined;
+  const recovery = useMeasurementRecovery(volumes, activeSeries, (item, restored, calibration, edited) => {
     if (!edited.has(calibrationEditId(item, null))) {
       const value = calibration.find(edit => edit.frame === null)?.value;
       const scale = value?.method === 'scale' ? value.scale : undefined;
@@ -811,8 +813,6 @@ export default function App() {
   const petStudies = usePetStudies(series, annotations, setAnnotations, displayVolumes, petRecords);
   // Cine: the active pane pages through its slices by itself, at the chosen speed, round and round, until paused.
   const [playing, setPlaying] = useState(false);
-  const activeSlot = slots.find(slot => slot.id === activeId) ?? slots[0];
-  const activeSeries = activeSlot.seriesId ? seriesById.get(activeSlot.seriesId) : undefined;
   // Pictures (JPEG, PNG, BMP) in the active pane are not DICOM: said at the top until closed for that study.
   const pictureNote = activeSeries?.warningNotes?.find(note => note.code === 'series.ordinaryImage');
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
@@ -3458,7 +3458,7 @@ export default function App() {
           </div>
           <button type="button" className="icon-button inspector-close" aria-label={t('inspector.close')} data-tooltip={t('inspector.close')} onClick={() => { setPanel(null); focusSoon('[data-testid="tool-inspector"]', '[data-testid="tool-more"]'); }}><X size={16} /></button>
         </div>
-        {settings.panel === 'measurements' && <div className="inspector-panel" role="tabpanel" id="inspector-panel-measurements" aria-labelledby="inspector-tab-measurements" tabIndex={0}>
+        {settings.panel === 'measurements' && <div className="inspector-panel" role="tabpanel" id="inspector-panel-measurements" aria-labelledby="inspector-tab-measurements" tabIndex={0} aria-busy={recovery.status === 'restoring'}>
           <div className="panel-heading"><h2>{t('inspector.measurements')}</h2><span className="count-badge">{activeAnnotations.length}</span>{activeAnnotations.length > 0 && <button data-action="measurements-delete-all" type="button" className="icon-button danger-hover" aria-label={t('inspector.deleteAll')} data-tooltip={t('inspector.deleteAll')} data-testid="findings-delete-all" onClick={() => {
             if (!activeSeries) return;
             // Undo puts back exactly these measurements, even after other edits; the restore is itself undoable.
@@ -3576,7 +3576,7 @@ export default function App() {
     </div>
     <footer className="app-status">
       <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" />{recovery.status !== 'saved' && <span className="status-export" role={recovery.status === 'failed' ? 'alert' : 'status'}>
-        {t(recovery.status === 'saving' ? 'measurement.saving' : 'measurement.storageFailed')}
+        {t(recovery.status === 'restoring' ? 'measurement.restoring' : recovery.status === 'saving' ? 'measurement.saving' : 'measurement.storageFailed')}
         {recovery.status === 'failed' && <button type="button" className="text-button" data-action="retry-measurements" onClick={recovery.retry}>{t('measurement.retry')}</button>}
       </span>}<span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>

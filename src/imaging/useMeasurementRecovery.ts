@@ -5,25 +5,26 @@ import { readMeasurements, writeMeasurements } from '../domain/measurementDataba
 
 type Edit = { id: string; drawing?: Annotation; calibration?: CalibrationEdit };
 type Batch = { series: Series; edits: Edit[] };
-type Read = { series: Series; edited: Set<string> };
+type Read = { series: Series; edited?: Set<string> };
 
-export function useMeasurementRecovery(volumes: Map<string, Volume>, onRestore: (series: Series, drawings: Annotation[], calibration: CalibrationEdit[], edited: ReadonlySet<string>) => void) {
+export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Series | undefined, onRestore: (series: Series, drawings: Annotation[], calibration: CalibrationEdit[], edited: ReadonlySet<string>) => void) {
   const restore = useEffectEvent(onRestore);
   const reads = useRef(new Map<string, Read>());
   const readFailures = useRef(new Set<string>());
   const failed = useRef(new Map<string, Batch>());
   const writes = useRef(Promise.resolve());
   const pending = useRef(0);
-  const [status, setStatus] = useState<'saved' | 'saving' | 'failed'>('saved');
+  const loading = useRef(0);
+  const [status, setStatus] = useState<'saved' | 'saving' | 'restoring' | 'failed'>('saved');
   const [attempt, setAttempt] = useState(0);
 
   function updateStatus() {
-    setStatus(pending.current ? 'saving' : failed.current.size || readFailures.current.size ? 'failed' : 'saved');
+    setStatus(pending.current ? 'saving' : failed.current.size || readFailures.current.size ? 'failed' : loading.current ? 'restoring' : 'saved');
   }
   function enqueue(series: Series, edits: Edit[]) {
     if (!edits.length) return;
     const read = reads.current.get(series.id);
-    for (const edit of edits) read?.edited.add(edit.id);
+    for (const edit of edits) read?.edited?.add(edit.id);
     pending.current++;
     updateStatus();
     writes.current = writes.current.then(async () => {
@@ -62,17 +63,21 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, onRestore: 
   }
 
   useEffect(() => {
-    for (const id of reads.current.keys()) if (!volumes.has(id)) {
+    // Begin with the selected catalog entry while its pixels are loading. The decoded series takes precedence.
+    const candidates = new Map([...volumes].map(([id, volume]) => [id, volume.series]));
+    if (active && !candidates.has(active.id)) candidates.set(active.id, active);
+    for (const id of reads.current.keys()) if (!candidates.has(id)) {
       reads.current.delete(id);
       if (readFailures.current.delete(id)) updateStatus();
     }
-    for (const [id, volume] of volumes) {
-      const item = volume.series;
+    for (const [id, item] of candidates) {
       if (item.segmentation || reads.current.get(id)?.series === item) continue;
-      const read: Read = { series: item, edited: new Set() };
+      const read: Read = { series: item };
       reads.current.set(id, read);
       const scope = measurementScope(item);
       if (!scope) continue;
+      const edited = new Set<string>(); read.edited = edited;
+      loading.current++; updateStatus();
       // A read started by a reopen follows earlier writes. Edits made during the read still win, including deletions.
       void Promise.all([scope, writes.current]).then(async ([key]) => {
         const rows = await readMeasurements(key);
@@ -85,25 +90,25 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, onRestore: 
           Promise.all(calibrationRows.map(r => recoverCalibration(item, key, r))),
         ]);
         if (reads.current.get(id) !== read) return;
-        readFailures.current.delete(id); updateStatus();
-        for (const edit of failed.current.get(id)?.edits ?? []) read.edited.add(edit.id);
-        const back = drawings.filter((a): a is Annotation => a !== null && !read.edited.has(a.id));
-        const scales = calibrations.flat().filter(c => !read.edited.has(calibrationEditId(item, c.frame)));
-        restore(item, back, scales, read.edited);
+        readFailures.current.delete(id);
+        for (const edit of failed.current.get(id)?.edits ?? []) edited.add(edit.id);
+        const back = drawings.filter((a): a is Annotation => a !== null && !edited.has(a.id));
+        const scales = calibrations.flat().filter(c => !edited.has(calibrationEditId(item, c.frame)));
+        restore(item, back, scales, edited);
       }).catch(() => {
         if (reads.current.get(id) !== read) return;
-        readFailures.current.add(id); updateStatus();
-      });
+        readFailures.current.add(id);
+      }).finally(() => { delete read.edited; loading.current--; updateStatus(); });
     }
-  }, [volumes, attempt]);
+  }, [volumes, active, attempt]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {
       if (pending.current || failed.current.size) { event.preventDefault(); event.returnValue = ''; }
     };
     window.addEventListener('beforeunload', warn);
-    const active = reads.current;
-    return () => { active.clear(); window.removeEventListener('beforeunload', warn); };
+    const entries = reads.current;
+    return () => { entries.clear(); window.removeEventListener('beforeunload', warn); };
   }, []);
   return { save, calibrate, retry, status };
 }

@@ -1382,6 +1382,7 @@ export const tr: Record<keyof typeof en, string> = {
   'lesion.match': '{name} için önceki lezyon',
   'lesion.differentThreshold': 'Kontur eşikleri farklı',
   'lesion.unmatched': 'Eşleştirilmedi',
+  'measurement.restoring': 'Ölçümler geri yükleniyor…',
   'measurement.saving': 'Ölçümler kaydediliyor…',
   'measurement.storageFailed': 'Bazı ölçümler kaydedilemedi veya geri yüklenemedi.',
   'measurement.retry': 'Yeniden dene',

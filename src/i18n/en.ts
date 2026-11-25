@@ -1379,6 +1379,7 @@ export const en = {
   'lesion.match': 'Prior lesion for {name}',
   'lesion.differentThreshold': 'Different contour thresholds',
   'lesion.unmatched': 'Unmatched',
+  'measurement.restoring': 'Restoring measurements…',
   'measurement.saving': 'Saving measurements…',
   'measurement.storageFailed': 'Some measurements could not be saved or restored.',
   'measurement.retry': 'Retry',
