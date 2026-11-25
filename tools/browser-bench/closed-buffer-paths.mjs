@@ -12,14 +12,18 @@ export async function closedBufferPaths(cdp) {
   const et=ef.indexOf('type'), en=ef.indexOf('name_or_index'), dest=ef.indexOf('to_node');
   const ntypes=m.node_types[nt], etypes=m.edge_types[et], weak=etypes.indexOf('weak');
   const total=nodes.length/N, counts=new Uint32Array(total), start=new Uint32Array(total+1);
-  for(let e=0;e<edges.length;e+=E) if(edges[e+et]!==weak) counts[edges[e+dest]/N]++;
+  const strong = e => {
+    if (edges[e+et] === weak) return false;
+    return etypes[edges[e+et]] !== 'internal' || !strings[edges[e+en]]?.includes('part of key');
+  };
+  for(let e=0;e<edges.length;e+=E) if(strong(e)) counts[edges[e+dest]/N]++;
   for(let n=0;n<total;n++) start[n+1]=start[n]+counts[n];
   const cursor=start.slice(), referrers=new Uint32Array(start[total]), links=new Uint32Array(start[total]), large=[];
   for(let n=0,e=0;n<total;n++) {
     if(nodes[n*N+ns]>=8*2**20) large.push(n);
     const end=e+nodes[n*N+nc]*E;
     for(;e<end;e+=E) {
-      if(edges[e+et]===weak)continue;
+      if(!strong(e))continue;
       const slot=cursor[edges[e+dest]/N]++;
       referrers[slot]=n; links[slot]=e;
     }
@@ -46,6 +50,21 @@ export async function closedBufferPaths(cdp) {
     path.push(label(target));
     return path;
   }
+  function objectOwners(target) {
+    const queue=[[target,0]], seen=new Set([target]), found=[];
+    for(let at=0;at<queue.length&&found.length<24;at++) {
+      const [child,depth]=queue[at];
+      if(depth>=7)continue;
+      for(let j=start[child];j<start[child+1];j++) {
+        const from=referrers[j];if(seen.has(from))continue;seen.add(from);
+        queue.push([from,depth+1]);const item=label(from);
+        if(item.name==='Map'||(item.type==='object'&&item.name.startsWith('system / Context'))) {
+          const path=shortest(from);if(path.length)found.push({owner:item,path});
+        }
+      }
+    }
+    return found;
+  }
   function nearby(target) {
     const queue=[[target,0]],seen=new Set([target]),rows=[];
     for(let at=0;at<queue.length&&rows.length<160;at++) {
@@ -61,5 +80,5 @@ export async function closedBufferPaths(cdp) {
     return rows;
   }
   return {totalNodes:total,strongEdges:start[total],buffers:large.sort((a,b)=>nodes[b*N+ns]-nodes[a*N+ns]).slice(0,8)
-    .map(n=>({node:label(n),path:shortest(n),nearby:nearby(n)}))};
+    .map(n=>({node:label(n),path:shortest(n),nearby:nearby(n),owners:objectOwners(n)}))};
 }
