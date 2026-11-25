@@ -241,6 +241,7 @@ export function createWebBridge(): DesktopBridge {
   /** A fresh engine Worker, in place of the old one. */
   function spawn(): void {
     stop();
+    performance.mark('startup:engine-spawn');
     const own = worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
     own.onmessage = ({ data }) => {
       if (own !== worker) return;
@@ -273,6 +274,7 @@ export function createWebBridge(): DesktopBridge {
       if (own !== worker) return;
       if (info.shared) shared = { cancel: new Int32Array(info.shared.buffer, info.shared.cancel, 1), progress: new Uint32Array(info.shared.buffer, info.shared.progress, 4) };
       // For the measurement tools (web/tools): how many threads decode.
+      performance.mark('startup:engine-ready');
       document.documentElement.dataset.engineThreads = String(info.threads);
     }, () => {});
   }
@@ -283,6 +285,7 @@ export function createWebBridge(): DesktopBridge {
    * replaces the engine: an engine run waiting for that Worker would otherwise wait for ever, and its Worker could hear
    * nothing. */
   function startHelpers(engine: Worker, request: { module: WebAssembly.Module; memory: WebAssembly.Memory; count: number; port: MessagePort; files: MessagePort[] }): void {
+    performance.mark('startup:helpers-start');
     const started: Worker[] = [];
     let waiting = request.count + 1, settled = false;
     const settle = (error?: string) => {
@@ -291,6 +294,7 @@ export function createWebBridge(): DesktopBridge {
       clearTimeout(timer);
       // Not started: the engine runs on one thread instead, without these.
       if (error) { for (const helper of started) helper.terminate(); helpers = helpers.filter(helper => !started.includes(helper)); }
+      performance.mark(error ? 'startup:helpers-failed' : 'startup:helpers-ready');
       request.port.postMessage(error ? { ok: false, error } : { ok: true });
       request.port.close();
     };

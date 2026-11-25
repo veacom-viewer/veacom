@@ -40,4 +40,5 @@ if (window.veacom && !window.veacom.web) {
     });
   }
 }
+performance.mark('startup:request-react-root');
 createRoot(document.getElementById('root')!).render(<ApplicationBoundary><App /></ApplicationBoundary>);

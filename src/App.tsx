@@ -997,7 +997,8 @@ export default function App() {
     let disposed = false;
     const inspect = async () => {
       let info: RendererInfo;
-      try { info = sliceRenderer().info; }
+      performance.mark('startup:graphics-start');
+      try { info = sliceRenderer().info; performance.mark('startup:graphics-ready'); }
       catch (error) { if (!disposed) { setGraphics(null); setGraphicsError(error); } return; }
       const status = await window.veacom?.getGraphicsStatus?.().catch(() => undefined);
       if (disposed) return;
@@ -1312,8 +1313,10 @@ export default function App() {
     const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
     if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
       if (!previewWanted()) return;
+      performance.mark('startup:preview-shader-start');
       await prepareSourceProgram(volume);
-      if (previewWanted()) storeVolume(volume);
+      performance.mark('startup:preview-shader-ready');
+      if (previewWanted()) { storeVolume(volume); performance.mark('startup:preview-published'); }
     }).catch(() => { /* The full decoder supplies the actionable error. */ });
     return full;
   };
@@ -1725,7 +1728,8 @@ export default function App() {
     let startupPaths: string[][] = [];
     try { startupPaths = await window.veacom?.takeStartupPaths() ?? []; }
     catch (error) { if (mounted.current) setNotice({ message: errorText(error), kind: 'error' }); }
-    const result = await listSeries(); if (!mounted.current) return;
+    performance.mark('startup:initial-catalog-request');
+    const result = await listSeries(); performance.mark('startup:initial-catalog-ready'); if (!mounted.current) return;
     setSeries(current => {
       const merged = new Map(current.map(item => [item.id, item]));
       for (const item of result.series) merged.set(item.id, item);
@@ -1794,6 +1798,7 @@ export default function App() {
     };
     const drop = (event: DragEvent) => { void dropFiles(event); };
     document.addEventListener('dragover', dragOver); document.addEventListener('drop', drop);
+    performance.mark('startup:drop-handler-installed');
     return () => { document.removeEventListener('dragover', dragOver); document.removeEventListener('drop', drop); };
   }, []);
 
