@@ -68,17 +68,19 @@ async function notch(page, plane, from, delta) {
 }
 async function calibrate(page) {
   for (const plane of planes) {
-    const c = await focusPlane(page, plane), anchor = Math.floor(Number(await c.getAttribute('data-slice')));
+    const c = await focusPlane(page, plane), initial = Number(await c.getAttribute('data-slice'));
+    const anchor = plane === 'axial' ? 500 : 256;
     await seek(page, plane, anchor);
     const plus = await notch(page, plane, anchor, 120), direction = plus.slice - anchor;
     assert.equal(Math.abs(direction), 1);
     const golden = {};
     for (let z = anchor - 6; z <= anchor + 6; z++) { await seek(page, plane, z); golden[z] = await checksum(c); }
+    report.controls[plane] = { initial, anchor, direction, golden };
+    await c.screenshot({path: path.join(output, 'control-' + plane + '.png')});
+    await persist();
     assert.equal(new Set(Object.values(golden)).size, 13, plane + ' must distinguish all 13 source positions');
     assert.equal(plus.sha, golden[plus.slice]);
     await seek(page, plane, anchor);
-    report.controls[plane] = { anchor, direction, golden };
-    await persist();
   }
 }
 async function main() {

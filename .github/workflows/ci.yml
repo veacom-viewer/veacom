@@ -77,13 +77,19 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm run build:web
       - name: Generate the reference CT and record the machine
+        env:
+          EXERCISE: ${{ inputs.exercise }}
         run: |
           mkdir -p "$RUNNER_TEMP/mpr"
           sysctl -n machdep.cpu.brand_string > "$RUNNER_TEMP/mpr/cpu.txt"
           system_profiler SPDisplaysDataType -json > "$RUNNER_TEMP/mpr/display.json"
-          cd reference-build
-          node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
-          cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
+          if [ "$EXERCISE" = paging ]; then
+            node tools/reading-audit/plane-study.mjs "$RUNNER_TEMP/plane-study" "$RUNNER_TEMP/mpr/study-manifest.json"
+          else
+            cd reference-build
+            node --input-type=module -e "import {makeStudy} from './tools/browser-bench/make-study.mjs'; await makeStudy('ct-1000');"
+            cp "$HOME/.cache/veacom-bench/studies/ct-1000/manifest.json" "$RUNNER_TEMP/mpr/study-manifest.json"
+          fi
       - name: Compare after scrolling and at full-volume readiness
         if: inputs.exercise == 'transition'
         env:
@@ -93,7 +99,7 @@ jobs:
         if: inputs.exercise == 'paging'
         env:
           PAIRS: ${{ inputs.rounds }}
-        run: node tools/reading-audit/plane-paging.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$HOME/.cache/veacom-bench/studies/ct-1000/S01" "$PAIRS" "$PWD/candidate-build"
+        run: node tools/reading-audit/plane-paging.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$RUNNER_TEMP/plane-study" "$PAIRS" "$PWD/candidate-build"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
