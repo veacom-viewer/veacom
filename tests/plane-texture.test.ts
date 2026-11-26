@@ -29,3 +29,21 @@ it('uploads the same integer voxels for every cardinal plane and both trilinear 
   }
   assert.equal(planeTexture(dims, [3, 4, 5], [1, 0.25, 0], [0, 1, 0.25], 256, 256), undefined);
 });
+
+it('reuses a block while scrolling and includes the neighbours at both ends of a nearly axis-aligned plane', () => {
+  const dims: Vec3 = [69, 75, 81];
+  const regionAt = (x: number) => planeTexture(dims, [x, 0, 0], [0.0000002, 1, 0], [-0.0000003, 0, 1], 1000, 1000)!;
+  const first = regionAt(20);
+  for (const x of [19.501, 20, 21, 22, 23, 23.499]) assert.deepEqual(regionAt(x), first);
+  assert.notDeepEqual(regionAt(23.501), first);
+  for (let x = -0.5; x < dims[0]; x += 0.125) {
+    const region = regionAt(x);
+    assert.ok(region.size[0] <= 6);
+    for (const sample of [x - 0.0003, x + 0.0002]) {
+      for (const i of [Math.floor(sample), Math.floor(sample) + 1]) {
+        const voxel = Math.max(0, Math.min(dims[0] - 1, i));
+        assert.ok(voxel >= region.start[0] && voxel < region.start[0] + region.size[0]);
+      }
+    }
+  }
+});

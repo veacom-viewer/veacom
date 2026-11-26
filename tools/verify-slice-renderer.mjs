@@ -261,7 +261,7 @@ function verifyPlaneTextures(renderer, series, view) {
     read({ ...view, plane: 'coronal', slice: 128, oblique: [10, -5] });
     const differences = views.map((v, i) => read(v).reduce((n, byte, j) => n + Number(byte !== samples[i][j]), 0));
     const levels = samples.map(bytes => new Set(bytes.filter((_, i) => i % 4 === 0)).size);
-    const passed = crops.length >= 3 && crops.every(d => Math.min(...d) <= 16 && Math.max(...d) === dimension)
+    const passed = crops.length >= 3 && crops.every(d => Math.min(...d) <= 6 && Math.max(...d) === dimension)
       && uploads.length === 1 && uploads[0].every(d => d === dimension) && differences.every(n => n === 0) && levels.every(n => n > 15);
     return { name: 'Thin MPR textures match the complete volume at borders, fractional slices and per-frame padding',
       passed, crops, full: uploads, differences, levels };

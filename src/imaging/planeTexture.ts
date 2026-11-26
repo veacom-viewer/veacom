@@ -2,17 +2,19 @@ import type { PixelArray, Vec3 } from '../model';
 
 export interface PlaneTexture { start: Vec3; size: Vec3 }
 
+const PLANES_PER_BLOCK = 4;
+
 /** A thin reconstruction parallel to a voxel axis reads only neighbouring planes along that axis. */
 export function planeTexture(dimensions: Vec3, topLeft: Vec3, right: Vec3, down: Vec3, width: number, height: number): PlaneTexture | undefined {
   for (const axis of [0, 1, 2] as const) {
     const across = right[axis] * width, along = down[axis] * height;
     if (dimensions[axis] < 64 || !(Math.abs(across) + Math.abs(along) <= 0.001) || !Number.isFinite(topLeft[axis])) continue;
-    const low = topLeft[axis] + Math.min(0, across) + Math.min(0, along);
-    const high = topLeft[axis] + Math.max(0, across) + Math.max(0, along);
-    const last = dimensions[axis] - 1;
-    // Include both trilinear neighbours, edge clamping and round-off. Nearby slices share one upload.
-    const first = Math.floor(Math.max(0, Math.min(last, low - 2)) / 8) * 8;
-    const end = Math.min(dimensions[axis], (Math.floor(Math.max(0, Math.min(last, high + 2)) / 8) + 1) * 8);
+    const middle = topLeft[axis] + (across + along) / 2;
+    const nearest = Math.max(0, Math.min(dimensions[axis] - 1, Math.round(middle)));
+    const block = Math.floor(nearest / PLANES_PER_BLOCK) * PLANES_PER_BLOCK;
+    // The block covers four slice centres and one extra voxel at each end for trilinear interpolation.
+    const first = Math.max(0, block - 1);
+    const end = Math.min(dimensions[axis], block + PLANES_PER_BLOCK + 1);
     const start: Vec3 = [0, 0, 0], size: Vec3 = [...dimensions];
     start[axis] = first;
     size[axis] = end - first;
