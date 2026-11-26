@@ -1025,14 +1025,17 @@ export default function App() {
     let disposed = false;
     const inspect = async () => {
       let info: RendererInfo;
+      if (window.veacom?.web) performance.mark('veacom:graphics-inspection-start');
       try { info = sliceRenderer().info; }
       catch (error) { if (!disposed) { setGraphics(null); setGraphicsError(error); } return; }
+      if (window.veacom?.web) performance.mark('veacom:graphics-inspection-finished');
       const status = await window.veacom?.getGraphicsStatus?.().catch(() => undefined);
       if (disposed) return;
       setGraphicsError(null);
       setGraphics({ renderer: info.renderer, software: info.software || isSoftwareWebglStatus(status?.webgl), webgl: status?.webgl });
     };
-    const timer = window.setTimeout(() => void inspect());
+    // Timing experiment: move the empty browser's graphics inspection past the initial input opportunity.
+    const timer = window.setTimeout(() => void inspect(), window.veacom?.web ? 250 : 0);
     const restored = () => void inspect();
     window.addEventListener('veacom-gpu-restored', restored);
     return () => { disposed = true; window.clearTimeout(timer); window.removeEventListener('veacom-gpu-restored', restored); };
