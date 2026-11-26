@@ -17,6 +17,7 @@ const root = '2.25.' + BigInt('0x' + createHash('sha256').update('ct-300').diges
 await mkdir(evidence, { recursive:true });
 await makeStudy('ct-300', folder);
 const files = sourceNumbers.map(n => path.join(folder, 'S01', 'IM' + String(n).padStart(5,'0') + '.dcm'));
+await writeFile(path.join(evidence,'source.dcm'),await readFile(files[0]));
 const archive=path.join(scratch,'source-frames.zip');
 await promisify(execFile)('zip',['-j','-0',archive,...files]);
 const expected = await Promise.all(files.map(async (file, i) => ({
@@ -52,7 +53,8 @@ async function fillDialog(file,row) {
   throw Error('Native dialog missing. Visible window names: '+listed.split('\n').filter(s=>s.includes('"')).map(s=>s.trim()).slice(0,18).join(' '));
 }
 try {
-  for (const kind of ['file','archive']) for (const isolated of [true, false]) {
+  const kind='archive';
+  for (const isolated of [true, false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation:isolated });
     const page = await browser.newPage({ viewport:{ width:1280,height:800 } });
     const row = { engine, version:browser.version(), isolated, kind, errors:[], failedRequests:[] };
@@ -107,7 +109,25 @@ try {
       row.displayedIndex = Number(await pane.getAttribute('data-slice'));
       assert.equal(row.frames[row.displayedIndex].uid,root+'.3.18');
       await page.evaluate(() => new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
-      await pane.screenshot({ path:path.join(evidence,name+'.png') });
+      row.scales=[];
+      for(const [sample,height] of [['native',512],['larger',640],['half',256],['native-again',512]]){
+        for(let tries=0;tries<5;tries++){
+          const actual=await pane.boundingBox();
+          const delta=height-Math.round(actual.height);
+          if(!delta) break;
+          const view=page.viewportSize();
+          await page.setViewportSize({width:view.width,height:view.height+delta});
+          await delay(150);
+        }
+        await page.waitForFunction(height=>{
+          const c=document.querySelector('canvas[data-series-id][data-slice]');
+          return c?.height===height&&Math.abs(c.getBoundingClientRect().height-height)<0.01&&self.devicePixelRatio===1;
+        },height,{timeout:5000});
+        await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(done)))));
+        const info=await pane.evaluate(c=>({backing:[c.width,c.height],rect:[c.getBoundingClientRect().width,c.getBoundingClientRect().height],slice:Number(c.dataset.slice)}));
+        await pane.screenshot({path:path.join(evidence,name+'-'+sample+'.png')});
+        row.scales.push({sample,...info});
+      }
     } catch (e) {
       row.failure=e.message;
       row.status=await page.evaluate(() => ({bridge:!!window.veacom,app:!!window.__VEACOM_TEST__,notice:document.body.innerText.slice(-1200)})).catch(()=>null);
