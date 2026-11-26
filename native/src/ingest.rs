@@ -2781,7 +2781,8 @@ pub fn is_zip_file(path: &Path) -> bool {
         && fs::is_file(path)
 }
 
-/// A RAR import asks the system's archive reader for a file with a .rar extension (system_archive.rs).
+/// A file with a .rar extension: the system's archive reader reads it on Windows (system_archive.rs), and it is refused
+/// elsewhere.
 fn is_rar_file(path: &Path) -> bool {
     path.extension()
         .is_some_and(|ext| ext.eq_ignore_ascii_case("rar"))
@@ -2863,15 +2864,16 @@ pub fn import_session_from(
             archives.push(dir);
             root
         } else if is_rar_file(path) {
-            // The browser has no archive reader of the system's to ask.
-            #[cfg(target_arch = "wasm32")]
+            // Only Windows starts the system's archive reader restricted from its first instruction
+            // (archive_reader_windows.rs); macOS, Linux and the browser do not ask a reader at all.
+            #[cfg(not(windows))]
             bail!(coded!(
                 "rar.unsupported",
                 "RAR archives cannot be opened. Extract the archive, then open the folder."
             ));
             // A RAR's files are not listed before they arrive (system_archive.rs): the archive is extracted now, then
             // read as a folder is.
-            #[cfg(not(target_arch = "wasm32"))]
+            #[cfg(windows)]
             {
                 let dir = crate::archive_temp::create("veacom-import-")?;
                 // The room the import's discs and earlier archives leave, less the spare, as for a ZIP; what the RAR
@@ -6903,15 +6905,20 @@ mod tests {
         let error = import(&[file.to_string_lossy().into_owned()])
             .err()
             .unwrap();
-        // An archive that ends after its first bytes, where the system has an archive reader; where it has none, the
-        // message says that instead.
+        // On Windows, an archive that ends after its first bytes, or a Windows without the archive reader, which says
+        // so instead. Elsewhere RAR is refused.
         let code = crate::message::coded(&error).map(|note| note.code);
-        assert!(
-            matches!(code, Some("rar.damaged" | "rar.noReader")),
-            "{code:?}"
-        );
+        if cfg!(windows) {
+            assert!(
+                matches!(code, Some("rar.damaged" | "rar.noReader")),
+                "{code:?}"
+            );
+        } else {
+            assert_eq!(code, Some("rar.unsupported"));
+        }
     }
     /// The folder as a RAR archive whose files are stored (system_archive.rs).
+    #[cfg(windows)]
     fn rar_folder(folder: &Path, file: &Path) {
         let mut pending = vec![folder.to_owned()];
         let mut files = Vec::new();
@@ -6934,6 +6941,7 @@ mod tests {
         fs::write(file, crate::system_archive::tests::stored_rar(&entries)).unwrap();
     }
     #[test]
+    #[cfg(windows)]
     fn a_rar_archive_gives_its_folder_catalogue_where_the_system_reads_rar() {
         let study = two_series_study();
         let archive = crate::test_dir::tempdir().unwrap();
@@ -6941,7 +6949,7 @@ mod tests {
         rar_folder(study.path(), &file);
         let from_archive = match import(&[file.to_string_lossy().into_owned()]) {
             Ok(imported) => imported,
-            // A system without bsdtar (a Linux that never installed libarchive's tools) says so.
+            // A Windows without tar.exe (Windows 10 before version 1803) says so.
             Err(error) => {
                 let code = crate::message::coded(&error).map(|note| note.code);
                 assert_eq!(code, Some("rar.noReader"));

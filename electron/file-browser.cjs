@@ -6,8 +6,9 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 
-// ZIP and RAR archives. The engine reads a RAR through the system's own archive reader (native/src/system_archive.rs).
-const ARCHIVES = /\.(zip|rar)$/i;
+// ZIP archives, and RAR archives on Windows: the engine reads a RAR there through the system's own archive reader, and
+// refuses it elsewhere (native/src/system_archive.rs).
+const ARCHIVES = process.platform === 'win32' ? /\.(zip|rar)$/i : /\.zip$/i;
 const MAX_ENTRIES = 5000;
 const collator = new Intl.Collator('tr', { numeric: true, sensitivity: 'base' });
 /** `promise`'s value, or `fallback` if it has not come within `ms`. The timer ends with the promise. */

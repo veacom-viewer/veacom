@@ -21,7 +21,7 @@ yerini gösterir (app/... dosyası).
   (sağ tık: Önbelleği temizle), Python'daki tüm durum mesajları
 - [x] Açılış ekranı (logo, "DICOM görüntüleyici", sürüm, tıbbi cihaz uyarısı, adımlar)
 - [x] Ekran kartı yetmezse uyarı; ek yerine "Yazılımla çiz" (SwiftShader ile yeniden başlar, ek indirmek gerekmez)
-- [x] Klasör/dosya/zip tarama (Python ile birebir aynı gruplama; 6 gerçek çalışmada doğrulandı). RAR için VEAcom'un kendi okuyucusu yok (saldırı yüzeyi ve lisans nedeniyle kaldırıldı); masaüstünde sistemin kendi arşiv okuyucusu okuyor (docs/imaging-security.md).
+- [x] Klasör/dosya/zip tarama (Python ile birebir aynı gruplama; 6 gerçek çalışmada doğrulandı). RAR için VEAcom'un kendi okuyucusu yok (saldırı yüzeyi ve lisans nedeniyle kaldırıldı); Windows'ta sistemin kendi arşiv okuyucusu, ilk komutundan kısıtlı olarak okuyor; macOS ve Linux'ta RAR açılmıyor (docs/imaging-security.md).
 - [x] Pencereye sürükle-bırak (klasör, dosya, zip); CD'deki DICOMDIR → disk içe aktarma
 - [x] Dışa aktarma sürerken kapatma sorusu
 

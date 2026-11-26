@@ -45,12 +45,15 @@ pub mod pictures;
 pub mod progress;
 pub mod projection;
 pub mod random;
-#[cfg(not(target_arch = "wasm32"))]
+// RAR, through the system's archive reader started restricted: Windows only (system_archive.rs).
+#[cfg(windows)]
+mod archive_reader_windows;
+#[cfg(windows)]
 mod rar_headers;
 pub mod rle_guard;
 pub mod sampling;
 pub mod source_file;
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(windows)]
 mod system_archive;
 pub mod tags;
 /// Private temporary folders, for the engine's tests and the desktop transport's.

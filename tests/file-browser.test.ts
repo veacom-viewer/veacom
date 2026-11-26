@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { createRequire } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { runInNewContext } from 'node:vm';
 const require = createRequire(import.meta.url);
 const { browse, chosenPaths, driveTypes, listedDrives, localPath, readyDiscs } = require('../electron/file-browser.cjs');
 
@@ -41,15 +43,29 @@ describe('import window paths', () => {
     assert.throws(() => windows('\\\\?\\UNC\\files\\home$\\ayse\\Documents', [documents]), { message: /Invalid folder\./ });
   });
 
-  it('lists a folder\'s folders and its ZIP and RAR archives, and counts its other files', async () => {
+  it('lists a folder\'s folders and its archives, RAR on Windows alone, and counts its other files', async () => {
     const folder = await realpath(await mkdtemp(path.join(tmpdir(), 'veacom-browse-test-')));
     try {
       await mkdir(path.join(folder, 'study'));
       for (const name of ['b.ZIP', 'a.rar', 'notes.txt', 'IM0001', '.hidden.zip']) await writeFile(path.join(folder, name), '');
       const listed = await browse(folder);
-      assert.deepEqual(listed.items.map((item: { name: string; kind: string }) => [item.name, item.kind]), [['study', 'folder'], ['a.rar', 'archive'], ['b.ZIP', 'archive']]);
-      assert.equal(listed.files, 2);
+      // The engine opens a RAR archive on Windows; elsewhere it is one more file.
+      const rar = process.platform === 'win32';
+      assert.deepEqual(listed.items.map((item: { name: string; kind: string }) => [item.name, item.kind]), [['study', 'folder'], ...(rar ? [['a.rar', 'archive']] : []), ['b.ZIP', 'archive']]);
+      assert.equal(listed.files, rar ? 2 : 3);
     } finally { await rm(folder, { recursive: true, force: true }); }
+  });
+
+  it('tells the page that RAR archives open on Windows alone', () => {
+    const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8');
+    for (const platform of ['win32', 'darwin', 'linux']) {
+      let bridge!: { features: { rarImport: boolean } };
+      runInNewContext(preload, {
+        process: { argv: [], platform },
+        require: () => ({ contextBridge: { exposeInMainWorld: (_name: string, api: typeof bridge) => { bridge = api; } } }),
+      });
+      assert.equal(bridge.features.rarImport, platform === 'win32', platform);
+    }
   });
 
   it('lists no network folder', async () => {

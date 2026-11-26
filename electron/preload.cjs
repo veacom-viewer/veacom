@@ -21,6 +21,8 @@ const invoke = (channel, ...args) => ipcRenderer.invoke(channel, ...args).catch(
 
 contextBridge.exposeInMainWorld('veacom', {
   locale, localUsageCheck: argument('veacom-local-usage-check') === '1',
+  // The engine opens a RAR archive on Windows alone (native/src/system_archive.rs).
+  features: { rarImport: process.platform === 'win32' },
   setLocale: value => { if (dropMessages[value]) currentLocale = value; return invoke('app:locale', value); },
   listSeries: () => invoke('imaging:series'),
   importSelected: capabilities => invoke('imaging:import', capabilities),

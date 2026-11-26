@@ -40,18 +40,20 @@ async function checkArchiveCleanup(connection, directory) {
   return { archive, scratch, env };
 }
 
-// The same small study as a RAR archive whose files are stored (fixtures/make-rar-archive.mjs): the engine asks the
-// system's own archive reader for its files. A system without one (a Linux with no bsdtar) says so and opens nothing.
+// The same small study as a RAR archive whose files are stored (fixtures/make-rar-archive.mjs). On Windows the engine
+// asks the system's own archive reader for its files; elsewhere it refuses RAR, says so and opens nothing.
 async function checkRarImport(connection, directory) {
   const archive = path.join(directory, 'study.rar');
   execFileSync(process.execPath, [makeRar, path.join(directory, 'archive-source'), archive]);
   const response = await connection.request('import', { paths: [archive] });
   const result = await response.json();
-  if (response.status !== 200) {
-    assert.equal(result.note?.code, 'rar.noReader', result.error);
-    console.log('No system archive reader here: RAR import says so.');
+  if (process.platform !== 'win32') {
+    assert.notEqual(response.status, 200);
+    assert.equal(result.note?.code, 'rar.unsupported', result.error);
+    console.log('RAR import is refused here, with its message.');
     return;
   }
+  assert.equal(response.status, 200, result.error);
   assert.equal(result.series.length, 1);
   assert.deepEqual(result.series[0].dimensions, [128, 128, 100]);
   const frame = await connection.request('frame', { id: result.series[0].id, index: 0 });

@@ -1,25 +1,23 @@
-//! RAR archives, read by the system's own archive reader.
+//! RAR archives, read by the system's own archive reader, on Windows.
 //!
-//! VEAcom has no RAR decoder of its own. bsdtar, which Windows 10 and later (as tar.exe) and macOS ship and keep up to
-//! date, reads the archive in a process of its own and writes the archive's files to its standard output as a tar
-//! stream. This module reads that stream and writes the files into the import's extraction folder.
+//! VEAcom has no RAR decoder of its own. bsdtar, which Windows 10 and later ship as tar.exe and keep up to date, reads
+//! the archive in a process of its own and writes the archive's files to its standard output as a tar stream. This
+//! module reads that stream and writes the files into the import's extraction folder.
 //!
 //! The reader is given the archive as its standard input and nothing else: no file name, no folder to write to, an
 //! almost empty environment and no window. Every name and size in its stream is checked here before a file is made,
 //! as a ZIP entry's is (ingest.rs): the reader's own checks are not relied on. The archive's own headers are walked
-//! first (rar_headers.rs), and each file written is compared with the CRC-32 they give. On Windows the reader runs in
-//! a job that ends it with the engine, lets it start no program of its own and bounds its memory.
+//! first (rar_headers.rs), and each file written is compared with the CRC-32 they give. The reader runs restricted
+//! from its first instruction (archive_reader_windows.rs). macOS and Linux have no reader started that way here, and
+//! refuse RAR (ingest.rs).
 
-use anyhow::{Context, Result, bail};
+use crate::archive_reader_windows::Reader;
+use anyhow::{Context, Result, anyhow, bail};
 use std::{
     fs::{self, File},
     io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command, ExitStatus, Stdio},
-    sync::{
-        Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
 
@@ -39,123 +37,44 @@ const MAX_EXTENDED: u64 = 64 << 10;
 /// The folders above a file and the bytes of its whole name: a stream cannot make folders without end.
 const MAX_PARTS: usize = 32;
 const MAX_NAME: usize = 1024;
-/// The memory the reader may take (Windows): RAR's own dictionary is at most a quarter of this in common archives.
-#[cfg(windows)]
-const READER_MEMORY: usize = 1 << 30;
+/// What the reader is asked: a tar archive on its standard output, of the archive on its standard input.
+pub(crate) const READ: &[&str] = &["-cf", "-", "-b", "128", "@-"];
 
 /// The system's bsdtar by its full path, or None where the system has none.
-fn reader() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let program = {
-        use std::os::windows::ffi::OsStringExt;
-        use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
-        // The system folder as Windows names it, not as an environment variable or the search path does.
-        let mut folder = [0u16; 260];
-        // SAFETY: the buffer is valid for the length passed.
-        let length =
-            unsafe { GetSystemDirectoryW(folder.as_mut_ptr(), folder.len() as u32) } as usize;
-        if length == 0 || length >= folder.len() {
-            return None;
-        }
-        PathBuf::from(std::ffi::OsString::from_wide(&folder[..length])).join("tar.exe")
-    };
-    #[cfg(not(windows))]
-    let program = PathBuf::from("/usr/bin/bsdtar");
+pub(crate) fn reader() -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::System::SystemInformation::GetSystemDirectoryW;
+    // The system folder as Windows names it, not as an environment variable or the search path does.
+    let mut folder = [0u16; 260];
+    // SAFETY: the buffer is valid for the length passed.
+    let length = unsafe { GetSystemDirectoryW(folder.as_mut_ptr(), folder.len() as u32) } as usize;
+    if length == 0 || length >= folder.len() {
+        return None;
+    }
+    let program = PathBuf::from(std::ffi::OsString::from_wide(&folder[..length])).join("tar.exe");
     program.is_file().then_some(program)
 }
 
-fn start(program: &Path, archive: File) -> io::Result<Child> {
-    let mut command = Command::new(program);
-    // Create a tar archive on standard output from the archive on standard input.
-    command
-        .args(["-cf", "-", "-b", "128", "@-"])
-        .stdin(Stdio::from(archive))
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .env_clear();
-    if let Some(folder) = program.parent() {
-        command.current_dir(folder);
-    }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
-        for name in ["SystemRoot", "windir"] {
-            if let Some(value) = std::env::var_os(name) {
-                command.env(name, value);
-            }
-        }
-        // A console program started by a program without a console would open a window of its own.
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    // Names in the stream are UTF-8 whatever the user's language is.
-    #[cfg(not(windows))]
-    command.env(
-        "LC_ALL",
-        if cfg!(target_os = "macos") {
-            "en_US.UTF-8"
-        } else {
-            "C.UTF-8"
-        },
-    );
-    command.spawn()
+fn no_reader() -> anyhow::Error {
+    anyhow!(coded!(
+        "rar.noReader",
+        "RAR archives cannot be opened on this computer. Extract the archive, then open the folder."
+    ))
 }
 
-/// Puts the reader in a job of its own: it ends with the engine, starts no program, shows no error window and takes
-/// at most READER_MEMORY. The job lasts as long as the handle returned.
-#[cfg(windows)]
-fn confine(child: &Child) -> Result<std::os::windows::io::OwnedHandle> {
-    use anyhow::ensure;
-    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-    use windows_sys::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_ACTIVE_PROCESS,
-        JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOB_OBJECT_LIMIT_PROCESS_MEMORY, JOB_OBJECT_UILIMIT_DESKTOP,
-        JOB_OBJECT_UILIMIT_DISPLAYSETTINGS, JOB_OBJECT_UILIMIT_EXITWINDOWS,
-        JOB_OBJECT_UILIMIT_GLOBALATOMS, JOB_OBJECT_UILIMIT_HANDLES,
-        JOB_OBJECT_UILIMIT_READCLIPBOARD, JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS,
-        JOB_OBJECT_UILIMIT_WRITECLIPBOARD, JOBOBJECT_BASIC_UI_RESTRICTIONS,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
-        JobObjectExtendedLimitInformation, SetInformationJobObject,
-    };
-    // SAFETY: every structure is passed with its own size, and the handles are open for the calls that take them.
-    unsafe {
-        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-        ensure!(!job.is_null(), "Cannot create the archive reader's job");
-        let job = OwnedHandle::from_raw_handle(job as _);
-        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-            | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
-            | JOB_OBJECT_LIMIT_PROCESS_MEMORY
-            | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
-        limits.BasicLimitInformation.ActiveProcessLimit = 1;
-        limits.ProcessMemoryLimit = READER_MEMORY;
-        let screen = JOBOBJECT_BASIC_UI_RESTRICTIONS {
-            UIRestrictionsClass: JOB_OBJECT_UILIMIT_DESKTOP
-                | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
-                | JOB_OBJECT_UILIMIT_EXITWINDOWS
-                | JOB_OBJECT_UILIMIT_GLOBALATOMS
-                | JOB_OBJECT_UILIMIT_HANDLES
-                | JOB_OBJECT_UILIMIT_READCLIPBOARD
-                | JOB_OBJECT_UILIMIT_SYSTEMPARAMETERS
-                | JOB_OBJECT_UILIMIT_WRITECLIPBOARD,
-        };
-        let set = SetInformationJobObject(
-            job.as_raw_handle() as _,
-            JobObjectExtendedLimitInformation,
-            (&raw const limits).cast(),
-            size_of_val(&limits) as u32,
-        ) != 0
-            && SetInformationJobObject(
-                job.as_raw_handle() as _,
-                JobObjectBasicUIRestrictions,
-                (&raw const screen).cast(),
-                size_of_val(&screen) as u32,
-            ) != 0
-            && AssignProcessToJobObject(job.as_raw_handle() as _, child.as_raw_handle() as _) != 0;
-        ensure!(set, "Cannot confine the archive reader");
-        Ok(job)
-    }
+/// The reader, running restricted with `archive` as its standard input; with its standard output and error.
+fn start(program: &Path, archive: File) -> io::Result<(Reader, io::PipeReader, io::PipeReader)> {
+    let (stream, output) = io::pipe()?;
+    let (complaints, errors) = io::pipe()?;
+    let reader = crate::archive_reader_windows::create(
+        program,
+        READ,
+        archive,
+        output.into(),
+        errors.into(),
+    )?;
+    reader.start()?;
+    Ok((reader, stream, complaints))
 }
 
 /// Why reading the stream stopped.
@@ -171,49 +90,21 @@ impl From<anyhow::Error> for Stop {
     }
 }
 
-/// Ends the reader. It may have ended already, which is all a failure here says.
-fn end(child: &Mutex<Child>) {
-    let _ = child
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .kill();
-}
-
 /// Extracts every file of the RAR archive into `dir`, and gives the bytes written.
 pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Result<u64> {
     let Some(program) = reader() else {
-        bail!(coded!(
-            "rar.noReader",
-            "RAR archives cannot be opened on this computer. Extract the archive, then open the folder."
-        ));
+        return Err(no_reader());
     };
     // The reader is started only for a whole RAR archive, and what it hands over is compared with the checksums
     // the archive's own headers give (rar_headers.rs).
     let mut archive = File::open(archive)?;
     let expected = crate::rar_headers::check(&mut archive, limits.files)?;
-    let child = Mutex::new(start(&program, archive).context("Cannot start the archive reader")?);
-    let pipes = {
-        let mut child = child
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        child.stdout.take().zip(child.stderr.take())
-    };
-    #[cfg(windows)]
-    let job = confine(
-        &child
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    );
-    #[cfg(not(windows))]
-    let job: Result<()> = Ok(());
-    let (stream, mut complaints, _job) = match (pipes, job) {
-        (Some((stream, complaints)), Ok(job)) => (stream, complaints, job),
-        (_, job) => {
-            // No reader runs unconfined, or with no way to hear from it.
-            end(&child);
-            job.map(|_| ())
-                .context("The archive reader cannot be started safely")?;
-            bail!("The archive reader has no output");
+    // A reader that cannot be started with its restrictions is not started at all.
+    let (reader, stream, mut complaints) = match start(&program, archive) {
+        Ok(started) => started,
+        Err(error) => {
+            eprintln!("The archive reader could not be started restricted: {error}");
+            return Err(no_reader());
         }
     };
     let over = AtomicBool::new(false);
@@ -239,7 +130,7 @@ pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Resul
         scope.spawn(|| {
             while !over.load(Ordering::Acquire) {
                 if crate::progress::check().is_err() {
-                    end(&child);
+                    reader.end();
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -247,9 +138,9 @@ pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Resul
         });
         let written = write_entries(stream, dir, limits);
         if written.is_err() {
-            end(&child);
+            reader.end();
         }
-        let status = exit_of(&child);
+        let status = reader.wait();
         (written, status, said.join().unwrap_or_default())
     });
     crate::progress::check()?;
@@ -260,29 +151,13 @@ pub(crate) fn extract_into(archive: &Path, dir: &Path, limits: &Limits) -> Resul
     match written {
         Err(Stop::Refused(error)) => Err(error),
         _ if protected => Err(crate::rar_headers::protected()),
-        Ok((written, bytes)) if status.is_some_and(|status| status.success()) => {
+        Ok((written, bytes)) if status == Some(0) => {
             if written != expected {
                 bail!(crate::rar_headers::damaged());
             }
             Ok(bytes)
         }
         _ => Err(crate::rar_headers::unreadable()),
-    }
-}
-
-/// How the reader ended, once its output has. Asked again and again rather than waited for, so that the watch can
-/// still end a reader that lingers when the import is cancelled.
-fn exit_of(child: &Mutex<Child>) -> Option<ExitStatus> {
-    loop {
-        let exited = child
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .try_wait();
-        match exited {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => std::thread::sleep(Duration::from_millis(5)),
-            Err(_) => return None,
-        }
     }
 }
 
@@ -531,8 +406,8 @@ fn extended(mut records: &[u8]) -> Option<Vec<(&[u8], &[u8])>> {
 }
 
 /// `name` as a path of plain parts, in this system's separators, that stays inside the folder it is joined to; None
-/// for anything else: an absolute name, "..", an empty name, a name too deep or too long, and on Windows a part that
-/// Windows reads specially (a colon, a device name, a trailing dot or space, a control character).
+/// for anything else: an absolute name, "..", an empty name, a name too deep or too long, and a part that Windows
+/// reads specially (a colon, a device name, a trailing dot or space, a control character).
 pub(crate) fn enclosed(name: &str) -> Option<PathBuf> {
     if name.len() > MAX_NAME || name.starts_with(['/', '\\']) || name.contains('\0') {
         return None;
@@ -554,13 +429,7 @@ pub(crate) fn enclosed(name: &str) -> Option<PathBuf> {
     (parts > 0).then_some(inside)
 }
 
-#[cfg(not(windows))]
-fn plain(_part: &str) -> bool {
-    true
-}
-
 /// Whether Windows takes `part` as the plain name of a file or folder.
-#[cfg(windows)]
 fn plain(part: &str) -> bool {
     // Windows reads a device's name with any extension, and with spaces after it, as the device (Naming Files,
     // Paths, and Namespaces: CON, PRN, AUX, NUL, COM1 to COM9 and LPT1 to LPT9, the last digit also as ¹, ² or ³).
@@ -713,7 +582,6 @@ pub(crate) mod tests {
         ] {
             assert_eq!(enclosed(name), None, "{name:?}");
         }
-        #[cfg(windows)]
         for name in [
             "C:a",
             "a/C:b/c",
