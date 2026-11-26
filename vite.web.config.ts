@@ -5,8 +5,7 @@ import { onnxRuntime, reactCompiler } from './vite.config';
 // (src/web), compiled to WebAssembly by web/build.ps1 first. Built apart from the desktop's pages, so neither
 // carries the other's code: `pnpm run build:browser`, then web/site/prepare.mjs makes the site's files.
 export default defineConfig({
-  // The persistent browser root can otherwise keep a closed CT in its memo cache.
-  plugins: [reactCompiler(['use no web memo'])],
+  plugins: [reactCompiler()],
   resolve: { alias: [onnxRuntime] },
   base: './', server: { host: '127.0.0.1', port: 5174, strictPort: true },
   // The bundled packages' licences go with the site, as the desktop build's go with the app (Help links to them).
