@@ -52,7 +52,7 @@ function runTrial(spec) {
     const child = spawn(electron, [path.join(here, 'trial.mjs'), file], { stdio: ['ignore', 'ignore', 'pipe'] });
     let errors = '';
     child.stderr.on('data', chunk => { errors += chunk; });
-    const timer = setTimeout(() => child.kill('SIGKILL'), 10 * 60_000);
+    const timer = setTimeout(() => child.kill('SIGKILL'), 45_000);
     child.on('exit', code => {
       clearTimeout(timer);
       if (fs.existsSync(spec.result)) resolve(JSON.parse(fs.readFileSync(spec.result, 'utf8')));

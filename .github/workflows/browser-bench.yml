@@ -138,6 +138,19 @@ jobs:
           key: bench-viewers-${{ hashFiles('tools/browser-bench/viewers.json') }}
       # Fetches what the cache lacks and checks every viewer against its pinned tree hash either way.
       - run: node tools/browser-bench/bench.mjs fetch
+      - name: Load the same memory probe before each locally served viewer
+        run: |
+          node --input-type=module - "$BASE_DIST" <<'NODE'
+          import { readFileSync, writeFileSync, copyFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          for (const folder of ['dist-web', process.argv[2]]) {
+            const file = join(folder, 'index.html');
+            const html = readFileSync(file, 'utf8');
+            if (!html.includes('<head>')) throw new Error('The viewer has no HTML head');
+            copyFileSync('tools/browser-bench/ct-opening-memory.js', join(folder,'ct-opening-memory.js'));
+            writeFileSync(file, html.replace('<head>', '<head><script src="./ct-opening-memory.js"></script>'));
+          }
+          NODE
       - name: Time the viewers
         run: |
           args=(--viewers "$VIEWERS" --studies "$STUDIES" --rounds "$ROUNDS" --warmup "$WARMUP" --scenarios "$SCENARIOS" --out "$RESULTS")
