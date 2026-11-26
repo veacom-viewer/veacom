@@ -341,9 +341,9 @@ jobs:
         env:
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: '120000'
         run: pnpm exec playwright install --only-shell chromium
-      - run: node tools/browser-bench/early-file-drops.mjs web/site/public early-drop-evidence
+      - run: node tools/browser-bench/catalog-transfer.mjs web/site/public catalog-transfer
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: early-drops-${{ matrix.os }}-${{ github.run_id }}
-          path: early-drop-evidence
+          name: catalog-transfer-${{ matrix.os }}-${{ github.run_id }}
+          path: catalog-transfer
