@@ -150,6 +150,52 @@ async function checkFilePicker(page) {
   assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
 }
 
+async function dropOnPage(devtools, files, x = 100, y = 120) {
+  for (const type of ['dragEnter', 'dragOver', 'drop']) {
+    await devtools.send('Input.dispatchDragEvent', { type, x, y, data: { items: [], files, dragOperationsMask: 1 } });
+  }
+}
+
+async function checkDropDuringStartup(browser, url) {
+  const page = await browser.newPage(), release = Promise.withResolvers();
+  try {
+    const reader = /\/assets\/main-[^/]+\.js(?:\?.*)?$/;
+    await page.route(reader, async route => { await release.promise; await route.continue(); });
+    const requested = page.waitForRequest(reader);
+    await page.goto(url, { waitUntil: 'commit' });
+    await requested;
+    await page.waitForFunction(() => window.veacom?.web);
+    assert.equal(await page.getByTestId('welcome-open-folder').count(), 0);
+    await page.evaluate(() => {
+      const select = window.veacom.importSelected;
+      const first = Promise.withResolvers();
+      window.releaseFirstDrop = first.resolve;
+      window.completedDrops = [];
+      window.veacom.importSelected = async paths => {
+        if (!window.firstDropStarted) { window.firstDropStarted = true; await first.promise; }
+        const result = await select(paths);
+        window.completedDrops.push(result.series.map(s => [s.modality, s.patientId, s.dimensions[2], s.frameMetadata[0].sopInstanceUid]));
+        return result;
+      };
+    });
+    const cdp = await page.context().newCDPSession(page);
+    await dropOnPage(cdp, [path.join(study, 'S01')]);
+    await dropOnPage(cdp, [mkdtempSync(path.join(scratch, 'empty-'))]);
+    await dropOnPage(cdp, [path.join(mrStudy, studyFiles[0])]);
+    release.resolve();
+    await page.waitForFunction(() => window.firstDropStarted);
+    await dropOnPage(cdp, [path.join(mrStudy, 'S01')]);
+    await page.evaluate(() => window.releaseFirstDrop());
+    await page.waitForFunction(() => window.completedDrops.length >= 3 && window.__VEACOM_TEST__?.state().series.length === 2);
+    const root = '2.25.302617644913925066835652647005517224101';
+    assert.deepEqual(await page.evaluate(() => window.completedDrops), [
+      [['CT', 'SYNTHETIC-SMOKE', slices, root + '.3.1']],
+      [['MR', 'SYNTHETIC-OTHER', 1, root + '.10.3.1']],
+      [['MR', 'SYNTHETIC-OTHER', slices, root + '.10.3.1']],
+    ]);
+  } finally { release.resolve(); await page.close(); }
+}
+
 /** Hold the real engine requests so a file chooser can finish before startup or import does. */
 async function checkChooseDuringStartup(browser, url, fail) {
   const page = await browser.newPage(), offline = Promise.withResolvers();
@@ -303,9 +349,7 @@ async function checkClosedCTBuffer(browser, url) {
     await chooseCT();
     const ct = await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId);
     const files = studyFiles.slice(0, 3).map(name => path.join(mrStudy, name));
-    for (const type of ['dragEnter', 'dragOver', 'drop']) {
-      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files, dragOperationsMask: 1 } });
-    }
+    await dropOnPage(cdp, files, 120, 125);
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
     const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(item => item.modality === 'MR').id);
     await page.getByTestId('series-' + mr).click();
@@ -423,9 +467,7 @@ async function checkPatientDrop(browser, url, folders) {
     const devtools = await page.context().newCDPSession(page);
     const files = folders ? [study, mrStudy].map(folder => path.join(folder, 'S01'))
       : [study, mrStudy].flatMap(folder => studyFiles.slice(0, 3).map(name => path.join(folder, name)));
-    for (const type of ['dragEnter', 'dragOver', 'drop']) {
-      await devtools.send('Input.dispatchDragEvent', { type, x: 100, y: 120, data: { items: [], files, dragOperationsMask: 1 } });
-    }
+    await dropOnPage(devtools, files);
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
     const results = await page.evaluate(async () => {
       const bridge = window.veacom, { generation } = await bridge.getCoreState();
@@ -728,6 +770,7 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      await checkDropDuringStartup(browser, page.url());
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkWelcomeBeforeGraphics(browser, page.url());

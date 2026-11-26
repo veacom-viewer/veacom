@@ -13,7 +13,7 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 import { createLabelFolder, type FolderEntry } from './labelFolder';
-import { droppedFileGroups, importFileSources, type CapturedDrop, type FileSource, type SelectedFile } from './droppedFiles';
+import { droppedFileGroups, importFileSources, watchFileDrops, type CapturedDrop, type FileSource, type SelectedFile } from './droppedFiles';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -48,22 +48,6 @@ function storedLocale(): 'tr' | 'en' {
     if (saved === 'tr' || saved === 'en') return saved;
   } catch { /* No storage (private window): the browser's language decides. */ }
   return navigator.language.toLowerCase().startsWith('tr') ? 'tr' : 'en';
-}
-
-/** Files from the last drop on the page, taken before the interface's own drop handler (see `watchDrops`). */
-let dropped: CapturedDrop | null = null;
-
-/** The files of dropped folders can only be read through the drop's entries, and only while the drop event runs: this
- * capture-phase listener keeps them for `importFiles`, which the interface calls from its own drop handler. */
-export function watchDrops(): void {
-  document.addEventListener('drop', event => {
-    const transfer = event.dataTransfer;
-    if (!transfer?.types.includes('Files')) return;
-    dropped = {
-      files: Array.from(transfer.files),
-      entries: Array.from(transfer.items).map(item => item.webkitGetAsEntry()).filter((entry): entry is FileSystemEntry => Boolean(entry)),
-    };
-  }, true);
 }
 
 type FileHandle = { kind: 'file'; name: string; getFile(): Promise<File> };
@@ -133,6 +117,7 @@ function download(name: string, data: Blob): void {
 }
 
 export function createWebBridge(): DesktopBridge {
+  const drops = watchFileDrops(document);
   let locale = storedLocale();
   let generation = 0, restartCount = 0, crashes = 0, requestId = 0, selectionNumber = 0;
   let worker: Worker | undefined;
@@ -445,6 +430,11 @@ export function createWebBridge(): DesktopBridge {
   const videos = new Map<string, { name: string; fps: number; config?: { width: number; height: number; config: Uint8Array<ArrayBuffer> };
     samples: Uint8Array<ArrayBuffer>[]; sizes: number[]; keyFrames: number[] }>();
 
+  async function droppedPaths(files: File[], capture: CapturedDrop | null) {
+    const selected = await droppedFileGroups(files, capture);
+    performance.mark('veacom:files-listed');
+    return remember(selected);
+  }
   start();
 
   return {
@@ -469,14 +459,8 @@ export function createWebBridge(): DesktopBridge {
       download: (name, text) => download(name, new Blob([text], { type: 'application/json' })),
       refused: { invalid: () => t('label.invalidPlan'), changed: () => t('label.planChanged'), notAPlan: () => t('label.notAPlan'), expired: () => t('label.expired') },
     }),
-    async importFiles(files) {
-      const drop = dropped;
-      dropped = null;
-      const selected = await droppedFileGroups(files, drop);
-      // Steps of opening a study, on the page's timeline for tools/browser-bench (performance marks cost next to nothing).
-      performance.mark('veacom:files-listed');
-      return remember(selected);
-    },
+    importFiles: files => droppedPaths(files, drops.takeLatest()),
+    takePendingFileDrops: () => drops.takePending().map(drop => () => droppedPaths(drop.files, drop)),
     async importSelected(capabilities) {
       const chosen = capabilities.map(token => selections.get(token));
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
