@@ -5,6 +5,7 @@ const path=require('node:path');
 const {createHash}=require('node:crypto');
 const [known,directory]=process.argv.slice(2).map(s=>path.resolve(s));
 const sha=buffer=>createHash('sha256').update(buffer).digest('hex');
+assert.equal(sha(fs.readFileSync(known)),'494441e9b22bfd80c68df2af91d969822197604223c3b530fcd9847d2f8e5ceb');
 const heads={old:'95810d2c902ecc3521ee886b2c2c9826695abcf1',fixed:'7f8142a1e6c1cc92ec44138f14559e1856e2ee44'};
 fs.mkdirSync(directory,{recursive:true});
 const rows=[],checkFile=path.join(__dirname,'video-presentation-replay.cjs');

@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04]
+        os: [ubuntu-24.04, windows-2022]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:
@@ -28,11 +28,13 @@ jobs:
         with:
           github-token: ${{ github.token }}
           run-id: 45853479297
-          name: macos-smoke-45853479297
+          artifact-ids: '15135331233'
+          merge-multiple: true
           path: input-film
       - run: pnpm install --frozen-lockfile
       - run: pnpm run setup:runtime
       - name: Configure Electron's sandbox helper on the hosted Linux machine
+        if: runner.os == 'Linux'
         run: |
           helper=$(node -p "require('node:path').join(require('node:path').dirname(require('electron')), 'chrome-sandbox')")
           sudo chown root:root "$helper"
