@@ -312,6 +312,11 @@ async function checkRemoveCTWhileReadingMR(browser, url) {
     }
     await cdp.send('HeapProfiler.collectGarbage');
     console.log('Removed CT after paging the remaining MR', await page.evaluate(()=>window.lastCTBuffer.deref()?.byteLength ?? 0));
+    const afterPaging=await closedBufferPaths(cdp);
+    for (const b of afterPaging.buffers) {
+      console.log('After paging CT owner paths:',JSON.stringify(b.owners.map(owner=>owner.path.map(node=>[node.name,node.out]))));
+      console.log('After paging CT near owners:',JSON.stringify(b.nearby.slice(0,16)));
+    }
     assert(await shown.isVisible());
 
   } finally { await cdp.detach(); await page.close(); }
