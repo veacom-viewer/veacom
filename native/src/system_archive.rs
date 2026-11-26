@@ -39,6 +39,9 @@ const MAX_PARTS: usize = 32;
 const MAX_NAME: usize = 1024;
 /// What the reader is asked: a tar archive on its standard output, of the archive on its standard input.
 pub(crate) const READ: &[&str] = &["-cf", "-", "-b", "128", "@-"];
+/// The pipe the reader writes its stream to holds one of its records (`-b 128`: 64 KiB), as Rust's own pipes to a
+/// child process do: the reader goes on while the engine writes out what it handed over.
+const STREAM_BYTES: u32 = 64 << 10;
 
 /// The system's bsdtar by its full path, or None where the system has none.
 pub(crate) fn reader() -> Option<PathBuf> {
@@ -64,7 +67,7 @@ fn no_reader() -> anyhow::Error {
 
 /// The reader, running restricted with `archive` as its standard input; with its standard output and error.
 fn start(program: &Path, archive: File) -> io::Result<(Reader, io::PipeReader, io::PipeReader)> {
-    let (stream, output) = io::pipe()?;
+    let (stream, output) = crate::archive_reader_windows::pipe(STREAM_BYTES)?;
     let (complaints, errors) = io::pipe()?;
     let reader = crate::archive_reader_windows::create(
         program,

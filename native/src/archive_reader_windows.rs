@@ -6,12 +6,15 @@
 //! (PROC_THREAD_ATTRIBUTE_HANDLE_LIST). Its first thread runs only once Windows says the reader is in that job.
 //!
 //! - The job ends the reader with the engine, lets it start no program, shows no error window for it, keeps it from
-//!   the clipboard, the desktop and the computer's settings, and bounds its memory.
+//!   other programs' windows, the clipboard, other desktops and the computer's settings, and bounds its memory.
 //! - The token is the engine's, restricted (Restricted Tokens, in the Windows security documentation): every access is
-//!   checked a second time against the restricting SIDs alone, and the folders of the user's own profile let in the user
-//!   and the system only. It holds no privilege but bypassing traverse checking, and runs at low integrity (Mandatory
-//!   Integrity Control): it can write nowhere the user can, and open none of the user's programs.
+//!   checked a second time against the restricting SIDs alone, which the user's own folders and registry do not name.
+//!   It holds no privilege but bypassing traverse checking, and runs at low integrity (Mandatory Integrity Control): it
+//!   can write nowhere the user can, and open none of the user's programs.
 //! - It starts with no console, so no console host runs beside it.
+//!
+//! Neither the job nor the token separates the reader from the desktop it runs on or from the network: a window
+//! station of its own, or an AppContainer, would.
 
 use std::{
     ffi::OsStr,
@@ -29,12 +32,13 @@ use windows_sys::Win32::{
     Foundation::{GENERIC_ALL, HANDLE, HANDLE_FLAG_INHERIT, SetHandleInformation, WAIT_OBJECT_0},
     Security::{
         ACCESS_ALLOWED_ACE, ACL, ACL_REVISION, AddAccessAllowedAce, CreateRestrictedToken,
-        CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetLengthSid, GetTokenInformation,
-        InitializeAcl, PSID, SECURITY_MAX_SID_SIZE, SID_AND_ATTRIBUTES, SetTokenInformation,
-        TOKEN_ADJUST_DEFAULT, TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE,
-        TOKEN_GROUPS, TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER,
-        TokenDefaultDacl, TokenGroups, TokenIntegrityLevel, TokenUser, WELL_KNOWN_SID_TYPE,
-        WinBuiltinUsersSid, WinLocalSystemSid, WinLowLabelSid, WinRestrictedCodeSid, WinWorldSid,
+        CreateWellKnownSid, DISABLE_MAX_PRIVILEGE, GetLengthSid, GetSidSubAuthority,
+        GetTokenInformation, InitializeAcl, InitializeSid, PSID, SECURITY_MAX_SID_SIZE,
+        SID_AND_ATTRIBUTES, SID_IDENTIFIER_AUTHORITY, SetTokenInformation, TOKEN_ADJUST_DEFAULT,
+        TOKEN_ASSIGN_PRIMARY, TOKEN_DEFAULT_DACL, TOKEN_DUPLICATE, TOKEN_GROUPS,
+        TOKEN_INFORMATION_CLASS, TOKEN_MANDATORY_LABEL, TOKEN_QUERY, TOKEN_USER, TokenDefaultDacl,
+        TokenGroups, TokenIntegrityLevel, TokenUser, WELL_KNOWN_SID_TYPE, WinBuiltinUsersSid,
+        WinLocalSystemSid, WinLowLabelSid, WinWorldSid,
     },
     System::{
         JobObjects::{
@@ -48,6 +52,7 @@ use windows_sys::Win32::{
             JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectBasicUIRestrictions,
             JobObjectExtendedLimitInformation, SetInformationJobObject,
         },
+        Pipes::CreatePipe,
         SystemServices::{SE_GROUP_INTEGRITY, SE_GROUP_LOGON_ID},
         Threading::{
             CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, DETACHED_PROCESS,
@@ -68,8 +73,8 @@ const LIMITS: JOB_OBJECT_LIMIT = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     | JOB_OBJECT_LIMIT_ACTIVE_PROCESS
     | JOB_OBJECT_LIMIT_PROCESS_MEMORY
     | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
-/// What the job keeps from the reader: other programs' windows and handles, the clipboard, the desktop, the display's,
-/// the computer's and its session's settings.
+/// What the job keeps from the reader: other programs' windows and handles, global atoms, the clipboard, other
+/// desktops, the display's and the computer's settings, and logging off or shutting down.
 const SCREEN: JOB_OBJECT_UILIMIT = JOB_OBJECT_UILIMIT_DESKTOP
     | JOB_OBJECT_UILIMIT_DISPLAYSETTINGS
     | JOB_OBJECT_UILIMIT_EXITWINDOWS
@@ -190,7 +195,7 @@ pub(crate) fn create(
                 | EXTENDED_STARTUPINFO_PRESENT,
             environment.as_ptr().cast(),
             folder.as_ptr(),
-            &startup.StartupInfo,
+            (&raw const startup).cast(),
             &mut created,
         )
     };
@@ -209,6 +214,23 @@ pub(crate) fn create(
         thread,
         job,
     })
+}
+
+/// A pipe whose buffer holds `bytes`; Windows' own default holds a few KiB.
+pub(crate) fn pipe(bytes: u32) -> io::Result<(io::PipeReader, io::PipeWriter)> {
+    let (mut read, mut write) = (null_mut(), null_mut());
+    // SAFETY: `read` and `write` receive handles the engine owns; with no attributes neither is inheritable.
+    if unsafe { CreatePipe(&mut read, &mut write, null(), bytes) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: Windows opened both handles for the engine, which owns them from here.
+    let (read, write) = unsafe {
+        (
+            OwnedHandle::from_raw_handle(read),
+            OwnedHandle::from_raw_handle(write),
+        )
+    };
+    Ok((read.into(), write.into()))
 }
 
 /// The reader's job, its limits set.
@@ -249,8 +271,9 @@ fn job() -> io::Result<OwnedHandle> {
 }
 
 /// The reader's token: the engine's, restricted to what the Users group and everyone may reach (the system's own
-/// files), restricted code (what the reader makes itself, below) and this logon session (its desktop and named
-/// objects), with no privilege but bypassing traverse checking, at low integrity.
+/// files), a SID made for this reader alone (what the reader makes itself, below) and this logon session (its desktop
+/// and named objects), with no privilege but bypassing traverse checking, at low integrity. RESTRICTED, the SID
+/// Windows has for restricted code, is not among them: the user's registry lets it read.
 fn token() -> io::Result<OwnedHandle> {
     let mut own = null_mut();
     // SAFETY: the pseudo-handle of this process needs no closing, and `own` receives a handle the engine owns.
@@ -270,12 +293,15 @@ fn token() -> io::Result<OwnedHandle> {
         token_information(&own, TokenGroups)?,
         token_information(&own, TokenUser)?,
     );
-    // SAFETY: Windows wrote a TOKEN_GROUPS and a TOKEN_USER there, aligned by their storage, and their SIDs point into
-    // the storage, which lives to the end of this function.
+    // SAFETY: Windows wrote a TOKEN_GROUPS and a TOKEN_USER there, aligned by their storage; the groups run on from
+    // the first in the same storage, and their SIDs point into it. The storage lives to the end of this function.
     let (groups, user) = unsafe {
-        let groups = &*group_storage.as_ptr().cast::<TOKEN_GROUPS>();
+        let groups = group_storage.as_ptr().cast::<TOKEN_GROUPS>();
         (
-            std::slice::from_raw_parts(groups.Groups.as_ptr(), groups.GroupCount as usize),
+            std::slice::from_raw_parts(
+                (&raw const (*groups).Groups).cast::<SID_AND_ATTRIBUTES>(),
+                (*groups).GroupCount as usize,
+            ),
             (*user_storage.as_ptr().cast::<TOKEN_USER>()).User.Sid,
         )
     };
@@ -284,14 +310,14 @@ fn token() -> io::Result<OwnedHandle> {
         .iter()
         .find(|group| group.Attributes & logon_session == logon_session)
         .map(|group| group.Sid);
-    let (users, everyone, restricted, system, low) = (
-        WellKnown::new(WinBuiltinUsersSid)?,
-        WellKnown::new(WinWorldSid)?,
-        WellKnown::new(WinRestrictedCodeSid)?,
-        WellKnown::new(WinLocalSystemSid)?,
-        WellKnown::new(WinLowLabelSid)?,
+    let (users, everyone, alone, system, low) = (
+        Sid::known(WinBuiltinUsersSid)?,
+        Sid::known(WinWorldSid)?,
+        Sid::random()?,
+        Sid::known(WinLocalSystemSid)?,
+        Sid::known(WinLowLabelSid)?,
     );
-    let restricting: Vec<SID_AND_ATTRIBUTES> = [users.sid(), everyone.sid(), restricted.sid()]
+    let restricting: Vec<SID_AND_ATTRIBUTES> = [users.sid(), everyone.sid(), alone.sid()]
         .into_iter()
         .chain(logon)
         .map(|sid| SID_AND_ATTRIBUTES {
@@ -319,9 +345,9 @@ fn token() -> io::Result<OwnedHandle> {
     }
     // SAFETY: the token's handle was just created, and nothing else owns it.
     let token = unsafe { OwnedHandle::from_raw_handle(token) };
-    // What the reader makes itself, a thread say, lets in the user, the system and restricted code, so that the reader
-    // passes both checks for its own objects.
-    let owners = [user, system.sid(), restricted.sid()];
+    // What the reader makes itself, a thread say, lets in the user, the system and the reader's own SID, so that the
+    // reader passes both checks for its own objects.
+    let owners = [user, system.sid(), alone.sid()];
     // An entry is its header and access mask, then its SID in place of SidStart.
     let entry = |sid: PSID| {
         // SAFETY: each SID is valid: the user's from the token, the others made above.
@@ -339,7 +365,7 @@ fn token() -> io::Result<OwnedHandle> {
         },
     };
     // SAFETY: the list's storage holds `length` bytes, which its entries are counted into; each structure is passed
-    // with its size, the label's with its SID's; the SIDs and the list live through the calls.
+    // with its own size; the SIDs and the list live through the calls.
     let made = unsafe {
         InitializeAcl(list, length, ACL_REVISION) != 0
             && owners
@@ -355,7 +381,7 @@ fn token() -> io::Result<OwnedHandle> {
                 token.as_raw_handle(),
                 TokenIntegrityLevel,
                 (&raw const label).cast(),
-                size_of_val(&label) as u32 + GetLengthSid(low.sid()),
+                size_of_val(&label) as u32,
             ) != 0
     };
     if !made {
@@ -389,11 +415,12 @@ fn token_information(
     Ok(storage)
 }
 
-/// A SID Windows knows by name.
-struct WellKnown([usize; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>())]);
+/// A SID, in storage of the largest size.
+struct Sid([usize; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>())]);
 
-impl WellKnown {
-    fn new(kind: WELL_KNOWN_SID_TYPE) -> io::Result<Self> {
+impl Sid {
+    /// A SID Windows knows by name.
+    fn known(kind: WELL_KNOWN_SID_TYPE) -> io::Result<Self> {
         let mut sid = Self([0; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>())]);
         let mut length = SECURITY_MAX_SID_SIZE;
         // SAFETY: the storage holds SECURITY_MAX_SID_SIZE bytes, the length the call is given.
@@ -401,6 +428,26 @@ impl WellKnown {
             == 0
         {
             return Err(io::Error::last_os_error());
+        }
+        Ok(sid)
+    }
+
+    /// A SID no object names: the null authority's, with four random numbers.
+    fn random() -> io::Result<Self> {
+        let mut sid = Self([0; (SECURITY_MAX_SID_SIZE as usize).div_ceil(size_of::<usize>())]);
+        let authority = SID_IDENTIFIER_AUTHORITY { Value: [0; 6] };
+        // SAFETY: the storage holds SECURITY_MAX_SID_SIZE bytes, more than a SID of four numbers takes.
+        if unsafe { InitializeSid(sid.0.as_mut_ptr().cast(), &authority, 4) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let random = crate::random::bytes::<16>();
+        let (numbers, _) = random.as_chunks::<4>();
+        for (index, number) in numbers.iter().enumerate() {
+            // SAFETY: the SID was just made with four numbers, and this is one of them.
+            unsafe {
+                *GetSidSubAuthority(sid.0.as_mut_ptr().cast(), index as u32) =
+                    u32::from_le_bytes(*number);
+            }
         }
         Ok(sid)
     }
@@ -531,10 +578,18 @@ mod tests {
     use crate::system_archive::{READ, reader, tests::stored_rar};
     use std::io::Read;
     use windows_sys::Win32::{
-        Foundation::{INVALID_HANDLE_VALUE, LUID},
+        Foundation::{ERROR_SUCCESS, INVALID_HANDLE_VALUE, LUID},
         Security::{
-            GetSidSubAuthority, GetSidSubAuthorityCount, IsTokenRestricted, LookupPrivilegeValueW,
-            TOKEN_PRIVILEGES, TokenPrivileges,
+            AccessCheck, AddAccessAllowedAceEx,
+            Authorization::{SE_FILE_OBJECT, SetNamedSecurityInfoW},
+            CONTAINER_INHERIT_ACE, DACL_SECURITY_INFORMATION, DuplicateTokenEx, GENERIC_MAPPING,
+            GROUP_SECURITY_INFORMATION, GetFileSecurityW, GetSidSubAuthorityCount,
+            IsTokenRestricted, LUID_AND_ATTRIBUTES, LookupPrivilegeValueW, OBJECT_INHERIT_ACE,
+            OWNER_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SecurityImpersonation,
+            TOKEN_IMPERSONATE, TOKEN_PRIVILEGES, TokenImpersonation, TokenPrivileges,
+        },
+        Storage::FileSystem::{
+            FILE_ALL_ACCESS, FILE_GENERIC_EXECUTE, FILE_GENERIC_READ, FILE_GENERIC_WRITE,
         },
         System::{
             IO::{CreateIoCompletionPort, GetQueuedCompletionStatus},
@@ -542,6 +597,10 @@ mod tests {
                 JOBOBJECT_ASSOCIATE_COMPLETION_PORT, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION,
                 JobObjectAssociateCompletionPortInformation, JobObjectBasicAccountingInformation,
                 QueryInformationJobObject,
+            },
+            Registry::{
+                HKEY_CURRENT_USER, KEY_ALL_ACCESS, KEY_EXECUTE, KEY_READ, KEY_WRITE,
+                RegGetKeySecurity,
             },
             SystemServices::{JOB_OBJECT_MSG_ACTIVE_PROCESS_LIMIT, SECURITY_MANDATORY_LOW_RID},
         },
@@ -590,6 +649,144 @@ mod tests {
 
     fn holds(bytes: &[u8], part: &[u8]) -> bool {
         bytes.windows(part.len()).any(|window| window == part)
+    }
+
+    /// The reader's own token, as Windows gave it to the process: `TOKEN_DUPLICATE` and `TOKEN_QUERY`.
+    fn token_of(reader: &Reader) -> OwnedHandle {
+        let mut token = null_mut();
+        // SAFETY: the process's handle is open, and `token` receives a handle owned below.
+        let opened = unsafe {
+            OpenProcessToken(
+                reader.process.as_raw_handle(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut token,
+            )
+        };
+        assert_ne!(opened, 0, "{}", io::Error::last_os_error());
+        // SAFETY: the token's handle was just opened, and nothing else owns it.
+        unsafe { OwnedHandle::from_raw_handle(token) }
+    }
+
+    /// Whether `token` is let `desired` of what `descriptor` (owner, group and access list) guards.
+    fn may(
+        token: &OwnedHandle,
+        descriptor: &[usize],
+        desired: u32,
+        mapping: &GENERIC_MAPPING,
+    ) -> bool {
+        let mut acting = null_mut();
+        // SAFETY: the token's handle is open with TOKEN_DUPLICATE, and `acting` receives a handle owned below.
+        let duplicated = unsafe {
+            DuplicateTokenEx(
+                token.as_raw_handle(),
+                TOKEN_QUERY | TOKEN_IMPERSONATE,
+                null(),
+                SecurityImpersonation,
+                TokenImpersonation,
+                &mut acting,
+            )
+        };
+        assert_ne!(duplicated, 0, "{}", io::Error::last_os_error());
+        // SAFETY: the token's handle was just made, and nothing else owns it.
+        let acting = unsafe { OwnedHandle::from_raw_handle(acting) };
+        let mut privileges = [0usize; 64];
+        let mut length = size_of_val(&privileges) as u32;
+        let (mut granted, mut allowed) = (0, 0);
+        // SAFETY: the descriptor is a whole self-relative one, the buffers are of the sizes given.
+        let checked = unsafe {
+            AccessCheck(
+                descriptor.as_ptr().cast_mut().cast(),
+                acting.as_raw_handle(),
+                desired,
+                mapping,
+                privileges.as_mut_ptr().cast(),
+                &mut length,
+                &mut granted,
+                &mut allowed,
+            )
+        };
+        assert_ne!(checked, 0, "{}", io::Error::last_os_error());
+        allowed != 0
+    }
+
+    const OWNER_GROUP_LIST: u32 =
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+
+    /// The owner, group and access list of the file or folder at `path`.
+    fn file_descriptor(path: &Path) -> Vec<usize> {
+        let name = wide(path.as_os_str());
+        let mut length = 0;
+        // SAFETY: with no buffer the call only says how long one must be.
+        unsafe { GetFileSecurityW(name.as_ptr(), OWNER_GROUP_LIST, null_mut(), 0, &mut length) };
+        let mut descriptor = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        // SAFETY: the buffer holds at least `length` bytes.
+        let read = unsafe {
+            GetFileSecurityW(
+                name.as_ptr(),
+                OWNER_GROUP_LIST,
+                descriptor.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        };
+        assert_ne!(read, 0, "{}", io::Error::last_os_error());
+        descriptor
+    }
+
+    /// The owner, group and access list of the user's registry, HKEY_CURRENT_USER.
+    fn registry_descriptor() -> Vec<usize> {
+        let mut length = 0;
+        // SAFETY: with no buffer the call only says how long one must be.
+        unsafe { RegGetKeySecurity(HKEY_CURRENT_USER, OWNER_GROUP_LIST, null_mut(), &mut length) };
+        let mut descriptor = vec![0usize; (length as usize).div_ceil(size_of::<usize>())];
+        // SAFETY: the buffer holds at least `length` bytes.
+        let read = unsafe {
+            RegGetKeySecurity(
+                HKEY_CURRENT_USER,
+                OWNER_GROUP_LIST,
+                descriptor.as_mut_ptr().cast(),
+                &mut length,
+            )
+        };
+        assert_eq!(read, ERROR_SUCCESS);
+        descriptor
+    }
+
+    /// A new folder in `parent` whose own access list, not inherited, lets everyone do everything in it: only an
+    /// integrity level keeps a process out.
+    fn open_to_everyone(parent: &Path) -> std::path::PathBuf {
+        let folder = parent.join("open");
+        std::fs::create_dir(&folder).unwrap();
+        let everyone = Sid::known(WinWorldSid).unwrap();
+        // SAFETY: the SID was made above.
+        let length = size_of::<ACL>() as u32
+            + (size_of::<ACCESS_ALLOWED_ACE>() - size_of::<u32>()) as u32
+            + unsafe { GetLengthSid(everyone.sid()) };
+        let mut storage = vec![0u32; (length as usize).div_ceil(size_of::<u32>())];
+        let list: *mut ACL = storage.as_mut_ptr().cast();
+        let name = wide(folder.as_os_str());
+        // SAFETY: the list's storage holds `length` bytes, its one entry counted in; the name is NUL-terminated.
+        let set = unsafe {
+            InitializeAcl(list, length, ACL_REVISION) != 0
+                && AddAccessAllowedAceEx(
+                    list,
+                    ACL_REVISION,
+                    OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE,
+                    FILE_ALL_ACCESS,
+                    everyone.sid(),
+                ) != 0
+                && SetNamedSecurityInfoW(
+                    name.as_ptr(),
+                    SE_FILE_OBJECT,
+                    DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                    null_mut(),
+                    null_mut(),
+                    list,
+                    null_mut(),
+                ) == ERROR_SUCCESS
+        };
+        assert!(set, "{}", io::Error::last_os_error());
+        folder
     }
 
     /// What Windows says of `job` in a structure of type `T`.
@@ -665,10 +862,13 @@ mod tests {
             0
         );
         let privileges = token_information(&token, TokenPrivileges).unwrap();
-        // SAFETY: Windows wrote a TOKEN_PRIVILEGES there, with its count of entries after it.
+        // SAFETY: Windows wrote a TOKEN_PRIVILEGES there, whose entries run on from the first in the same storage.
         let privileges = unsafe {
-            let held = &*privileges.as_ptr().cast::<TOKEN_PRIVILEGES>();
-            std::slice::from_raw_parts(held.Privileges.as_ptr(), held.PrivilegeCount as usize)
+            let held = privileges.as_ptr().cast::<TOKEN_PRIVILEGES>();
+            std::slice::from_raw_parts(
+                (&raw const (*held).Privileges).cast::<LUID_AND_ATTRIBUTES>(),
+                (*held).PrivilegeCount as usize,
+            )
         };
         assert!(
             privileges.iter().all(
@@ -757,6 +957,8 @@ mod tests {
         let private = crate::archive_temp::create("veacom-import-").unwrap();
         let own = private.path().join("own.dcm");
         std::fs::write(&own, b"a file of this user's").unwrap();
+        let shared = crate::test_dir::tempdir().unwrap();
+        let open = open_to_everyone(shared.path());
         let run = |args: &[&str]| {
             let (reader, stream, complaints) = created(&program, args, &[("a.dcm", b"first file")]);
             reader.start().unwrap();
@@ -766,15 +968,79 @@ mod tests {
         let (written, said, code) = run(&["-cf", "-", own.to_str().unwrap()]);
         assert_ne!(code, Some(0), "{said}");
         assert!(!holds(&written, b"a file of this user's"));
-        // while a file every user may read, its own program, is handed over: what kept the first out is its token.
+        // while a file every user may read, its own program, is handed over byte for byte: what kept the first out is
+        // its token.
         let (written, said, code) = run(&["-cf", "-", program.to_str().unwrap()]);
         assert_eq!(code, Some(0), "{said}");
-        assert!(holds(&written, b"tar.exe"));
-        // Asked to write the archive's files into the folder, it writes nothing there.
+        let bytes = std::fs::read(&program).unwrap();
+        assert!(holds(&written, &bytes[bytes.len() / 2..][..64]));
+        // Asked to write the archive's files into the user's folder, it writes nothing there,
         let (_, said, code) = run(&["-xf", "-", "-C", private.path().to_str().unwrap()]);
         assert_ne!(code, Some(0), "{said}");
         assert!(!private.path().join("a.dcm").exists());
         assert_eq!(std::fs::read(&own).unwrap(), b"a file of this user's");
+        // nor into a folder that lets everyone write: its integrity level keeps it out.
+        let (_, said, code) = run(&["-xf", "-", "-C", open.to_str().unwrap()]);
+        assert_ne!(code, Some(0), "{said}");
+        assert!(!open.join("a.dcm").exists());
+    }
+
+    #[test]
+    fn the_readers_token_is_let_into_neither_this_users_registry_nor_their_folders() {
+        let Some(program) = reader() else {
+            eprintln!("skipped: this system has no bsdtar");
+            return;
+        };
+        let keys = GENERIC_MAPPING {
+            GenericRead: KEY_READ,
+            GenericWrite: KEY_WRITE,
+            GenericExecute: KEY_EXECUTE,
+            GenericAll: KEY_ALL_ACCESS,
+        };
+        let files = GENERIC_MAPPING {
+            GenericRead: FILE_GENERIC_READ,
+            GenericWrite: FILE_GENERIC_WRITE,
+            GenericExecute: FILE_GENERIC_EXECUTE,
+            GenericAll: FILE_ALL_ACCESS,
+        };
+        let private = crate::archive_temp::create("veacom-import-").unwrap();
+        let shared = crate::test_dir::tempdir().unwrap();
+        let open = open_to_everyone(shared.path());
+        let (registry, own, everyones, program_file) = (
+            registry_descriptor(),
+            file_descriptor(private.path()),
+            file_descriptor(&open),
+            file_descriptor(&program),
+        );
+        // The token the reader runs with from its first instruction, taken before it starts.
+        let (reader, _, _) = created(&program, READ, &[("a.dcm", b"first file")]);
+        let token = token_of(&reader);
+        // The user's registry lets restricted code read it, so a reader restricted to that SID could.
+        assert!(!may(&token, &registry, KEY_READ, &keys));
+        assert!(!may(&token, &own, FILE_GENERIC_READ, &files));
+        assert!(!may(&token, &everyones, FILE_GENERIC_WRITE, &files));
+        assert!(may(
+            &token,
+            &program_file,
+            FILE_GENERIC_READ | FILE_GENERIC_EXECUTE,
+            &files
+        ));
+        // The engine's own token is let into all three.
+        let mut engine = null_mut();
+        // SAFETY: the pseudo-handle of this process needs no closing, and `engine` receives a handle owned below.
+        let opened = unsafe {
+            OpenProcessToken(
+                GetCurrentProcess(),
+                TOKEN_DUPLICATE | TOKEN_QUERY,
+                &mut engine,
+            )
+        };
+        assert_ne!(opened, 0);
+        // SAFETY: the token's handle was just opened, and nothing else owns it.
+        let engine = unsafe { OwnedHandle::from_raw_handle(engine) };
+        assert!(may(&engine, &registry, KEY_READ, &keys));
+        assert!(may(&engine, &own, FILE_GENERIC_READ, &files));
+        assert!(may(&engine, &everyones, FILE_GENERIC_WRITE, &files));
     }
 
     #[test]
