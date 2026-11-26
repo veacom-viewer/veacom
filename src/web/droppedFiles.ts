@@ -13,7 +13,9 @@ async function walk(root: FileSystemEntry): Promise<SelectedFile[]> {
       await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
     }
   };
+  performance.mark('veacom:directory-start');
   await visit(root, root.name);
+  performance.mark('veacom:directory-entries');
   return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
 }
 

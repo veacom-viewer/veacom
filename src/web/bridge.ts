@@ -222,6 +222,7 @@ export function createWebBridge(): DesktopBridge {
     const first = queue.findIndex(item => item.request.op !== 'volume');
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
+    performance.mark(`veacom:send-${next.request.op}`);
     worker.postMessage({ id: next.id, ...next.request });
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
@@ -248,10 +249,12 @@ export function createWebBridge(): DesktopBridge {
         if (data.value.id === inFlight && data.value.running) progress = data.value;
         return;
       }
-      if (data.type === 'helpers') { startHelpers(own, data); return; }
+      if (data.type === 'helpers') { performance.mark('veacom:helpers-start'); startHelpers(own, data); return; }
       if (data.id !== inFlight) return;
       const request = pending.get(data.id);
       if (!request) return;
+      performance.mark(`veacom:reply-${request.op}`);
+      if (data.importStages) document.documentElement.dataset.importStages = JSON.stringify(data.importStages);
       inFlight = null;
       pending.delete(data.id);
       releaseWhenDrained();
@@ -291,6 +294,7 @@ export function createWebBridge(): DesktopBridge {
       clearTimeout(timer);
       // Not started: the engine runs on one thread instead, without these.
       if (error) { for (const helper of started) helper.terminate(); helpers = helpers.filter(helper => !started.includes(helper)); }
+      performance.mark('veacom:helpers-ready');
       request.port.postMessage(error ? { ok: false, error } : { ok: true });
       request.port.close();
     };

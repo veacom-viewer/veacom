@@ -1025,7 +1025,8 @@ export default function App() {
     let disposed = false;
     const inspect = async () => {
       let info: RendererInfo;
-      try { info = sliceRenderer().info; }
+      performance.mark('veacom:graphics-start');
+      try { info = sliceRenderer().info; performance.mark('veacom:graphics-ready'); }
       catch (error) { if (!disposed) { setGraphics(null); setGraphicsError(error); } return; }
       const status = await window.veacom?.getGraphicsStatus?.().catch(() => undefined);
       if (disposed) return;
@@ -1341,8 +1342,10 @@ export default function App() {
     const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
     if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
       if (!previewWanted()) return;
+      performance.mark('veacom:preview-shader-start');
       await prepareSourceProgram(volume);
-      if (previewWanted()) storeVolume(volume);
+      performance.mark('veacom:preview-shader-ready');
+      if (previewWanted()) { storeVolume(volume); performance.mark('veacom:preview-stored'); }
     }).catch(() => { /* The full decoder supplies the actionable error. */ });
     return full;
   };
