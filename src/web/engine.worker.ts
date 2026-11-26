@@ -205,6 +205,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
+        performance.mark('veacom:registration-available');
         const ids: number[] = [];
         const register = ({ path, file }: SelectedFile, head: Uint8Array | undefined) => {
           const id = engine.addFile(path, file, head);
@@ -220,7 +221,9 @@ async function answer(data: EngineRequest): Promise<void> {
             await files.register(register);
           } else await readImportFiles(data.files, register);
           registered = true;
+          performance.mark('veacom:all-files-registered');
           value = JSON.parse(engine.importPaths(data.roots));
+          performance.mark('veacom:catalog-ready');
         } finally {
           if (!registered) engine.pruneFiles();
           forgetUnlisted();
@@ -253,6 +256,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
     }
+    performance.mark('veacom:worker-send-' + data.op);
     scope.postMessage({ id: data.id, ok: true, value }, transfer);
   } catch (error) {
     // The engine's own messages arrive as plain Errors holding its JSON body. Anything else is the engine crashing
@@ -264,6 +268,7 @@ async function answer(data: EngineRequest): Promise<void> {
 
 scope.onmessage = ({ data }) => {
   if ('prepareImport' in data) {
+    performance.mark('veacom:prepared-selection-arrived');
     prepared = { id: data.prepareImport, files: prepareImportFiles(data.files) };
   } else if ('discardImport' in data) {
     if (prepared?.id === data.discardImport) {

@@ -207,6 +207,7 @@ export function createWebBridge(): DesktopBridge {
     const first = queue.findIndex(item => item.request.op !== 'volume');
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
+    performance.mark('veacom:post-' + next.request.op);
     const source = next.request.op === 'import' ? next.request.files : undefined;
     worker.postMessage({ id: next.id, ...next.request }, source && source !== 'prepared' && !Array.isArray(source) ? [source.port] : []);
   }
@@ -240,6 +241,7 @@ export function createWebBridge(): DesktopBridge {
       if (data.id !== inFlight) return;
       const request = pending.get(data.id);
       if (!request) return;
+      performance.mark('veacom:receive-' + request.op);
       inFlight = null;
       pending.delete(data.id);
       releaseWhenDrained();

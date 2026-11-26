@@ -50,7 +50,10 @@ export async function readHeads(files, waitForFiles, onHead) {
           try { group.push({ index, part: file.slice(0, length) }); }
           catch { /* The engine can still read the file on demand. */ }
         }
-        reads.push(group.length ? readGroup(group, result) : undefined);
+        if (group.length && from === 0) {
+          performance.mark('veacom:first-header-read');
+          reads.push(readGroup(group, result).then(() => { performance.mark('veacom:first-headers-ready'); }));
+        } else reads.push(group.length ? readGroup(group, result) : undefined);
       }
       if (registerEarly) {
         for (const [i, pending] of reads.entries()) {
@@ -61,6 +64,7 @@ export async function readHeads(files, waitForFiles, onHead) {
       }
     } finally { await Promise.all(reads); }
   }
+  performance.mark('veacom:all-headers-ready');
   if (onHead && !registerEarly) result.forEach((head, index) => onHead(index, head));
   return result;
 }
