@@ -1318,7 +1318,19 @@ export default function App() {
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     const load = { complete: false };
-    const full = loadVolume(item).then(async volume => {
+    const desktopPixels = window.veacom?.web ? undefined : loadVolume(item);
+    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
+    const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
+    const preview = !cached && item.dimensions[2] > 1 ? frameCache.get(item, openingSlice(item)).then(async volume => {
+      if (!previewWanted()) return;
+      await prepareSourceProgram(volume);
+      if (previewWanted()) storeVolume(volume);
+    }).catch(() => { /* The full decoder supplies the actionable error. */ }) : undefined;
+    const pixels = desktopPixels ?? (preview ? preview.then(() => {
+      if (!mounted.current || !isCurrent()) throw new DOMException('The series has closed.', 'AbortError');
+      return loadVolume(item);
+    }) : loadVolume(item));
+    const full = pixels.then(async volume => {
       load.complete = true;
       await prepareSourceProgram(volume);
       if (mounted.current && isCurrent()) {
@@ -1337,13 +1349,6 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
-    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
-    const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
-    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
-      if (!previewWanted()) return;
-      await prepareSourceProgram(volume);
-      if (previewWanted()) storeVolume(volume);
-    }).catch(() => { /* The full decoder supplies the actionable error. */ });
     return full;
   };
 
