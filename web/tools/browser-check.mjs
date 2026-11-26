@@ -475,7 +475,8 @@ async function checkCachedPatientSwitches(page, series, sourceFrame) {
       const canvas = document.querySelector('[data-testid="dicom-canvas"]');
       // The complete volume can arrive while its middle preview slice is still on the canvas.
       return state.activeSeriesId === id && state.fullVolumeLoaded && state.displayedView?.slice === sourceFrame
-        && canvas?.dataset.seriesId === id && canvas.dataset.sourceFrame === String(sourceFrame) && canvas.toDataURL();
+        && canvas?.dataset.seriesId === id && canvas.dataset.sourceFrame === String(sourceFrame)
+        && { pixels: canvas.toDataURL(), size: [canvas.width, canvas.height], view: state.displayedView };
     }, { id, sourceFrame });
     references.set(id, await reference.jsonValue());
     await reference.dispose();
