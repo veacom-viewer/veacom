@@ -149,6 +149,10 @@ try {
   await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:210,y:320,id:1},{x:410,y:320,id:2}]});
   await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await settle();
   check('Two-finger touch gesture zooms and pans',Math.abs((await state()).view.zoom-2)<0.01&&(await state()).view.pan[1]!==0);
+  if (process.env.TOUCH_CASE === 'fresh') {
+    await page.goto(base); await page.waitForFunction(()=>document.querySelector('canvas')?.dataset.slice==='16'); await settle();
+  }
+  await page.evaluate(()=>{window.touchLog=[];for(const type of ['pointerdown','pointerup','pointercancel','pointermove']) document.addEventListener(type,e=>{if(e.pointerType==='touch') window.touchLog.push([type,e.pointerId,e.clientX,e.clientY,e.target.tagName]);},true);});
   await page.evaluate(() => {
     const harness = window.viewportTest, [coronal, sagittal] = harness.referencePlanes;
     harness.reset(); harness.clear(); harness.setCrosshair([32, 32, 32]);
@@ -166,6 +170,7 @@ try {
   const held = page.locator('[data-reference-plane] path[stroke-width="3"]');
   const initialPoint = (await state()).crosshair;
   await touch('touchStart', [middle]); await settle();
+  console.log('touch-diagnostic',JSON.stringify(await page.evaluate(inputs=>({inputs,events:window.touchLog,active:document.activeElement?.tagName,viewport:[visualViewport.width,visualViewport.height,visualViewport.scale,visualViewport.offsetLeft,visualViewport.offsetTop],page:[innerWidth,innerHeight,scrollX,scrollY],hit:document.elementFromPoint(inputs.x,inputs.y)?.tagName,lines:[...document.querySelectorAll('[data-reference-plane] path')].map(p=>[p.getAttribute('d'),p.getAttribute('stroke-width')]),bounds:document.querySelector('[data-testid="dicom-viewport"]').getBoundingClientRect().toJSON(),state:window.viewportTest.state()}),middle)));
   check('One finger takes hold of the MPR crossing', await held.count() === 2);
   const second = { x: middle.x + 45, y: middle.y, id: 2 };
   await touch('touchStart', [second]);
