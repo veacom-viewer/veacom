@@ -208,11 +208,18 @@ async function checkClosedCTBuffer(browser, url) {
       };
     }, columns * rows * slices * 2);
     await page.goto(url);
-    const selected = page.waitForEvent('filechooser');
-    await page.getByTestId('welcome-open-files').click();
-    await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
-    await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
-      Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
+    async function chooseCT() {
+      const selected = page.waitForEvent('filechooser');
+      await page.getByTestId('welcome-open-files').click();
+      await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
+      await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) && window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    }
+    async function checkReleased() {
+      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+      await cdp.send('HeapProfiler.collectGarbage');
+      assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The closed CT pixel buffer is still reachable.');
+    }
+    await chooseCT();
     const paging = await page.evaluate(async () => {
       const original = Array.prototype.sort;
       const shown = [];
@@ -246,12 +253,47 @@ async function checkClosedCTBuffer(browser, url) {
     await page.getByTestId('series-remove-confirm').click();
     await page.waitForFunction(() => Number(document.documentElement.dataset.engineReleases) > 0 && !document.querySelector('canvas[data-series-id]'));
     assert.deepEqual(await page.evaluate(async () => (await window.veacom.listSeries()).series), []);
-    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
-    await cdp.send('HeapProfiler.collectGarbage');
-    assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The empty viewer still retains the full CT pixel buffer.');
+    await checkReleased();
     assert.equal(await more.getAttribute('aria-expanded'), 'true');
     assert.equal(await seriesFilter.inputValue(), 'CT');
     assert.equal(await tagFilter.inputValue(), 'modality');
+
+    await seriesFilter.fill('');
+    await chooseCT();
+    const ct = await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId);
+    const files = studyFiles.slice(0, 3).map(name => path.join(mrStudy, name));
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files, dragOperationsMask: 1 } });
+    }
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 2);
+    const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(item => item.modality === 'MR').id);
+    await page.getByTestId('series-' + mr).click();
+    const image = page.locator('canvas[data-series-id="' + mr + '"]');
+    await image.waitFor();
+    await image.evaluate(canvas => { window.remainingMRCanvas = new WeakRef(canvas); });
+    await cdp.send('HeapProfiler.collectGarbage');
+
+    // An operation that already has the pixels can finish reading them even if the reader removes the series.
+    async function readCT(finished) {
+      const buffer = window.borrowedCT ??= window.lastCTBuffer.deref();
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      if (finished) delete window.borrowedCT;
+      return { bytes: buffer.byteLength, sha256: Array.from(new Uint8Array(digest)) };
+    }
+    const before = await page.evaluate(readCT, false);
+    assert.equal(before.bytes, columns * rows * slices * 2);
+    await page.getByTestId('series-' + ct).click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
+    assert.deepEqual(await page.evaluate(readCT, true), before);
+    await checkReleased();
+    assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
+    const remaining = await page.evaluate(async () => {
+      const bridge = window.veacom, { generation } = await bridge.getCoreState(), [item] = (await bridge.listSeries()).series;
+      const frame = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+      return [item.id, item.patientId, frame.headers.get('X-SOP-Instance-UID')];
+    });
+    assert.deepEqual(remaining, [mr, 'SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1']);
   } finally { await cdp.detach(); await page.close(); }
 }
 
@@ -284,22 +326,6 @@ async function checkLooseFileDrop(browser, url) {
       ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 1, -1000, -1000],
       ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 1, 0, 0],
     ]);
-    // Keep reading the MR while removing the other patient's CT.
-    const { CT, MR } = await page.evaluate(async () => Object.fromEntries((await window.veacom.listSeries()).series.map(item => [item.modality, item.id])));
-    await page.getByTestId('series-' + MR).click();
-    const image = page.locator('canvas[data-series-id="' + MR + '"]');
-    await image.waitFor();
-    await image.evaluate(canvas => { window.remainingMRCanvas = new WeakRef(canvas); });
-    await page.getByTestId('series-' + CT).click({ button: 'right' });
-    await page.locator('[data-action="series-remove"]').click();
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
-    assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
-    const remaining = await page.evaluate(async () => {
-      const bridge = window.veacom, { generation } = await bridge.getCoreState(), [item] = (await bridge.listSeries()).series;
-      const frame = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
-      return [item.id, item.patientId, frame.headers.get('X-SOP-Instance-UID')];
-    });
-    assert.deepEqual(remaining, [MR, 'SYNTHETIC-OTHER', root + '.10.3.1']);
   } finally { await page.close(); }
 }
 

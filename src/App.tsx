@@ -38,7 +38,7 @@ import { useEngineRecovery } from './useEngineRecovery';
 import { captureViewportCanvas, captureViewportPng } from './export-video';
 import { copyCanvas } from './ui/clipboard';
 import type { ExportDialogProps } from './components/ExportDialog';
-import { trimInactiveVolumes } from './domain/volumeCache';
+import { trimInactiveVolumes, VolumeIndex } from './domain/volumeCache';
 import { createVolumeDecorator } from './domain/decoratedVolumes';
 import { measureWindow } from './imaging/nativeMeasurements';
 import { annotationSourceIndex, distanceMm, quantitativeScale, shownOnView, storedUnit, viewOfAnnotation } from './imaging/annotations';
@@ -467,6 +467,36 @@ function useViewportGrid() {
   return { gridRef, gridTall, attachGrid };
 }
 
+function indexVolumes(volumes: Map<string, Volume>) {
+  return window.veacom?.web ? new VolumeIndex(volumes) : volumes;
+}
+
+function useSeriesCatalog(series: Series[]) {
+  const seriesById = new Map(series.map(item => [item.id, item]));
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
+  // each such image's stack.
+  const references = referenceImages(series);
+  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  const petSeries = series.filter(fusesAsOverlay);
+  const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
+  return { seriesById, references, stackOfReference, petSeries, totalFrames };
+}
+
+function displayIndex(entries: Iterable<[string, Volume]>, decorate: (volume: Volume) => Volume) {
+  return indexVolumes(new Map(Array.from(entries, ([id, volume]) => [id, decorate(volume)])));
+}
+
+function useDisplayVolumes(volumes: Iterable<[string, Volume]>, slotFrames: Record<string, Volume>, scales: Record<string, number>,
+  films: Partial<Record<string, FilmCalibrations>>, units: Settings['measurementUnits'], suvNormalization: SuvNormalization, typedGlucose: (item: Series) => number | undefined) {
+  const [cached] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
+  const decorate = (volume: Volume) => cached(volume, {
+    scale: scales[volume.series.id], films: films[volume.series.id], units, suvNormalization, glucose: typedGlucose(volume.series),
+  });
+  const displayVolumes = displayIndex(volumes, decorate);
+  const displaySlotFrames = displayIndex(Object.entries(slotFrames), decorate);
+  return { displayVolumes, displaySlotFrames };
+}
+
 export default function App() {
   'use no web memo';
   const { locale, t } = useTranslation();
@@ -475,11 +505,7 @@ export default function App() {
   const stageLabel = (stage: string) => { const key = STAGES[stage]; return key ? t(key) : stage; };
   const planeLabel = (plane: Plane) => t(`planeLower.${plane}` as const);
   const [series, setSeries] = useState<Series[]>([]);
-  const seriesById = new Map(series.map(item => [item.id, item]));
-  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
-  // each such image's stack.
-  const references = referenceImages(series);
-  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  const { seriesById, references, stackOfReference, petSeries, totalFrames } = useSeriesCatalog(series);
   /** The sequence a series is part of where it is a stack with a reference image, or such an image. */
   const joinedOf = (item: Series): Joined | null => {
     const reference = references.get(item.id), stack = stackOfReference.get(item.id);
@@ -493,11 +519,11 @@ export default function App() {
   };
   // Stable event handlers read refs so their closures do not retain old volume maps.
   const seriesRef = useRef(series);
-  const [volumes, setVolumes] = useState<Map<string, Volume>>(() => new Map());
+  const volumesRef = useRef(new Map<string, Volume>());
+  const [volumes, setVolumes] = useState<VolumeIndex | Map<string, Volume>>(() => new Map());
   const [slotFrames, setSlotFrames] = useState<Record<string, Volume>>({});
   const [frameCache] = useState(() => new SourceFrameCache());
   const frameRequests = useRef(new Map<string, { key: string; seriesId: string; controller: AbortController }>());
-  const volumesRef = useRef(volumes);
   const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const [slots, setSlots] = useState<Slot[]>(() => [makeSlot()]);
@@ -795,9 +821,8 @@ export default function App() {
     setAnnotations(add);
     followHistory(snapshot => ({ ...snapshot, annotations: add(snapshot.annotations) }));
   });
-  const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
-  const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+  const { displayVolumes, displaySlotFrames } = useDisplayVolumes(volumes, slotFrames, calibrationScales, filmCalibrations,
+    settings.measurementUnits, settings.suvNormalization, petRecords.typedGlucose);
   const resolvedSlots = slots.map(slot => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
@@ -806,8 +831,6 @@ export default function App() {
     return view === slot.view ? slot : { ...slot, view };
   });
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
-  const displaySlotFrames = new Map(Object.entries(slotFrames).map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const volumeForSlot = (slot: Slot) => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     const frame = displaySlotFrames.get(slot.id);
@@ -917,7 +940,6 @@ export default function App() {
   const paneShows = activeVolume ? (['axial', 'coronal', 'sagittal'] as const).find(plane => showsPlane(plane, activeVolume.series, activeDisplayView)) ?? null : null;
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
-  const petSeries = series.filter(fusesAsOverlay);
   // The PET chosen for fusion: one without SUV is drawn on its own values, and its scale is not called SUV.
   const fusionPet = fusionId ? seriesById.get(fusionId) : undefined;
   const acquisitionPet = panelPet(activeSeries, fusionPet);
@@ -947,8 +969,7 @@ export default function App() {
   const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
-  const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
-  const assessmentVolumes = [...displayVolumes.values()].filter(volume => volume.sourceFrameIndex === undefined);
+  const assessmentVolumes = Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined);
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
   const activeReferences = !settings.showReferences || slots.length < 2 ? EMPTY_REFERENCES : (isMpr ? slots : [activeSlot]).flatMap(slot => {
@@ -1182,7 +1203,7 @@ export default function App() {
     for (const id of result.evicted) { fullyLoaded.current.delete(id); volumeAccess.current.delete(id); }
     if (result.volumes !== volumesRef.current) {
       volumesRef.current = result.volumes;
-      setVolumes(result.volumes);
+      setVolumes(indexVolumes(result.volumes));
     }
   };
 

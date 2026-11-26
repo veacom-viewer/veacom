@@ -203,7 +203,7 @@ export function usePetRecords(series: readonly Series[], setAnnotations: Dispatc
 }
 
 export function usePetStudies(series: readonly Series[], annotations: Annotations, setAnnotations: Dispatch<SetStateAction<Annotations>>,
-  volumes: ReadonlyMap<string, Volume>, store: ReturnType<typeof usePetRecords>) {
+  volumes: Pick<ReadonlyMap<string, Volume>, 'get'>, store: ReturnType<typeof usePetRecords>) {
   const { keys, saved, records, save, saveFailed } = store;
 
   useEffect(() => {
