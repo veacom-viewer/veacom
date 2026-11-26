@@ -3672,8 +3672,17 @@ fn catalogue(
             });
         }
         let segmentation = info.segmentation.is_some();
-        // Masks are drawn over the image series they reference, never reconstructed.
-        info.can_reconstruct = geom.can_reconstruct && info.components == 1 && !segmentation;
+        // CT localizers are projections even when several have parallel planes (PS3.3 C.8.2.1.1.1).
+        let ct_localizer = info.modality == "CT"
+            && info
+                .acquisition
+                .image_type
+                .split('\\')
+                .nth(2)
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("LOCALIZER"));
+        // Masks are drawn over the image series they reference.
+        info.can_reconstruct =
+            geom.can_reconstruct && info.components == 1 && !segmentation && !ct_localizer;
         if !info.can_reconstruct {
             info.legacy_grid_ids.clear();
         }
@@ -3682,14 +3691,10 @@ fn catalogue(
         let pictures = frames.first().is_some_and(|f| f.ordinary_image);
         let planar =
             info.modality == "NM" && crate::gamma_camera::planar(&info.acquisition.image_type);
-        // A localizer (Image Type value 3 LOCALIZER, PS3.3 C.8.2.1.1.1) is a projection, never reconstructed: that it
-        // cannot be is no news. What it says of its place in the patient stays.
-        let localizer = (info.acquisition.image_type.split('\\').nth(2))
-            .is_some_and(|value| value.trim().eq_ignore_ascii_case("LOCALIZER"));
         if !segmentation && !pictures && !planar {
             info.warnings.extend(
                 (geom.warnings.iter())
-                    .filter(|note| !(localizer && RECONSTRUCTION_NOTES.contains(&note.code)))
+                    .filter(|note| !(ct_localizer && RECONSTRUCTION_NOTES.contains(&note.code)))
                     .cloned(),
             );
         }
@@ -9843,6 +9848,29 @@ mod tests {
         let mut placeless = facing(1, CORONAL, 0.);
         placeless.remove_element(Tag(0x0020, 0x0032));
         assert!(notes(vec![placeless], LOCALIZER).contains(&"geometry.missingPosition"));
+    }
+
+    #[test]
+    fn parallel_ct_localizer_projections_do_not_make_a_reconstructable_stack() {
+        let scan = |kind: &str| {
+            let slices = (1..=3)
+                .map(|index| {
+                    let mut image = facing(index, AXIAL, index as f64 * 2.0);
+                    image.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.2");
+                    image.put_str(Tag(0x0008, 0x0060), VR::CS, "CT");
+                    image.put_str(Tag(0x0008, 0x0008), VR::CS, kind);
+                    image
+                })
+                .collect();
+            let imported = import_dir(&write_slices(slices));
+            assert_eq!(imported.sources.len(), 1);
+            imported.sources[0].info.clone()
+        };
+        let scout = scan(r"ORIGINAL\PRIMARY\LOCALIZER");
+        assert_eq!(scout.dimensions[2], 3);
+        assert!(scout.spacing_known && scout.orientation_known);
+        assert!(!scout.can_reconstruct);
+        assert!(scan(r"ORIGINAL\PRIMARY\AXIAL").can_reconstruct);
     }
 
     #[test]
