@@ -12,7 +12,9 @@ import { isSoftwareRenderer } from './rendererInfo';
 type TextureKind = 'float32' | 'int16' | 'uint16' | 'uint8' | 'rgb8';
 type TextureDimension = '2d' | '3d';
 type Sampling = 'native' | 'area' | 'reduced' | 'reduced-grey' | 'window-samples' | 'reduced-with-mask';
-interface CachedTexture { owner: string; texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number; }
+interface CachedTexture { owner: string; texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number;
+  /** An acquired frame's padding range as its shader compares it: enabled, low and high, as `padding` holds them. */
+  frameRange?: Float32Array; }
 interface WindowSamples {
   key: string; geometry: string; lastPan: [number, number];
   anchor: [number, number]; origin: Vec3;
@@ -149,7 +151,7 @@ ${hardwareLinear ? `vec4 readReduced(vec2 coord) {
 vec4 frameAverage(vec2 framePixel) {
   vec2 edge=framePixel+0.5;
   ${cachedFrame ? 'edge*=uReducedScale;' : ''}
-  vec2 start=mix(edge-0.5*uFootprint,floor(edge),lessThanEqual(uFootprint,vec2(1.0)));
+  vec2 start=edge-0.5*uFootprint;
   vec2 base=floor(start);
   vec2 first=min(uFootprint,1.0-fract(start)), second=min(vec2(1.0),uFootprint-first);
   vec2 last=max(vec2(0.0),uFootprint-first-second);
@@ -176,6 +178,43 @@ vec4 frameAverage(vec2 framePixel) {
     if (!nonFinite(v)) sum.rg+=weight*vec2(v,1.0);`}`}
   }
   return sum;`}
+}`;
+}
+
+/** An acquired frame shown larger, or turned, between its stored values: the four pixels nearest to the screen pixel,
+ * weighted by distance (bilinear), as reconstructed planes are between eight. Shown at one screen pixel to one stored
+ * pixel along the frame's own axes, each screen pixel shows its stored pixel as it is. */
+function frameInterpolation(color: boolean, floating: boolean): string {
+  // The pixel at or left of and above the screen pixel's centre q, the next one each way, and q's place between them.
+  const corners = `ivec2 edge=ivec2(uDimensions.xy)-1, b=ivec2(floor(q));
+  vec2 f=q-vec2(b);
+  ivec2 b0=clamp(b,ivec2(0),edge), b1=clamp(b+1,ivec2(0),edge);`;
+  if (color) return `
+uniform bool uStoredPixels;
+vec3 colourPixel(vec2 q) {
+  if (uStoredPixels) return texelFetch(uImage,clamp(ivec2(floor(q+0.5)),ivec2(0),ivec2(uDimensions.xy)-1),0).rgb;
+  ${corners}
+  return mix(mix(texelFetch(uImage,b0,0).rgb,texelFetch(uImage,ivec2(b1.x,b0.y),0).rgb,f.x),
+    mix(texelFetch(uImage,ivec2(b0.x,b1.y),0).rgb,texelFetch(uImage,b1,0).rgb,f.x),f.y);
+}`;
+  return `
+uniform bool uStoredPixels;
+uniform vec3 uFramePadding;
+float imagePixel(vec2 q) {
+  if (uStoredPixels) return imageVoxel(ivec3(floor(q+0.5),0.0));
+  ${corners}
+  vec4 v=vec4(texelFetch(uImage,b0,0).r,texelFetch(uImage,ivec2(b1.x,b0.y),0).r,texelFetch(uImage,ivec2(b0.x,b1.y),0).r,texelFetch(uImage,b1,0).r);
+  vec4 w=vec4((1.0-f.x)*(1.0-f.y),f.x*(1.0-f.y),(1.0-f.x)*f.y,f.x*f.y);
+  ${floating ? '' : 'if (!imageHasPadding) return dot(w,v);'}
+  // Padding and missing values are left out as in imageLinear: a screen pixel whose nearest stored pixel is one stays
+  // empty, and otherwise the remaining weights are renormalized, so padding never darkens its neighbours.
+  vec4 bad=${floating ? 'vec4(equal(floatBitsToUint(v)&uvec4(0x7f800000u),uvec4(0x7f800000u)))' : 'vec4(0.0)'};
+  // The frame's padding range, as imagePadding holds it, read once for the four pixels.
+  if (uFramePadding.x>0.5) bad=max(bad,vec4(greaterThanEqual(v,vec4(uFramePadding.y)))*vec4(lessThanEqual(v,vec4(uFramePadding.z))));
+  vec2 near=step(vec2(0.5),f);
+  if (mix(mix(bad.x,bad.y,near.x),mix(bad.z,bad.w,near.x),near.y)>0.5) return uintBitsToFloat(0x7fc00000u);
+  w*=1.0-bad;
+  return dot(w,mix(v,vec4(0.0),greaterThan(bad,vec4(0.5))))/(w.x+w.y+w.z+w.w);
 }`;
 }
 
@@ -225,6 +264,7 @@ ${pet ? scalarSampling('pet', 'uPet', 'uPetDimensions', pet === 'float32', '3d')
 ${filtered && dimension === '3d' ? planeAverage('image', 'u') : ''}
 ${filtered && pet ? planeAverage('pet', 'uPet') : ''}
 ${filtered && dimension === '2d' ? frameSampling(color, cachedFrame, cachedFrame && !color && floatLinear) : ''}
+${!filtered && dimension === '2d' ? frameInterpolation(color, main === 'float32') : ''}
 ${color || dimension !== '3d' ? '' : `
 // Thick slab: the brightest, darkest or mean value of the samples either side of the slice, along its normal.
 float slabValue(vec3 p,float centre) {
@@ -265,7 +305,7 @@ void main() {
   p.xy-=uTileOrigin;`}` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${color ? `
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
-  outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : `texelFetch(uImage,${dimension === '2d' ? 'sourcePixel.xy' : 'sourcePixel'},0).rgb`},1.0);
+  outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : dimension === '2d' ? 'colourPixel(p.xy)' : 'texelFetch(uImage,sourcePixel,0).rgb'},1.0);
   ` : `
   ${retained ? `if (uSamplePass==1) { outColor=vec4(frameAverage(framePixel).r,0.0,0.0,1.0); return; }
   float value;
@@ -278,7 +318,7 @@ void main() {
     if (all(lessThan(uvec2(at),uvec2(size)))&&!outside(old,uFull)&&all(equal(old.xy,framePixel)))
       value=texelFetch(uWindowSamples,at,0).r;
     else value=frameAverage(framePixel).r;
-  } else value=frameAverage(framePixel).r;` : `float value=${reducedOnly ? 'frameAverage(framePixel).r' : dimension === '2d' ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};`}
+  } else value=frameAverage(framePixel).r;` : `float value=${reducedOnly ? 'frameAverage(framePixel).r' : dimension === '2d' ? filtered ? 'imageVoxel(ivec3(floor(p+vec3(0.5))))' : 'imagePixel(p.xy)' : 'imageLinear(p);\n  if (uSlabMode>0) value=slabValue(p,value)'};`}
   ${plain ? '' : 'if (nonFinite(value)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
   ${reducedOnly ? '' : filtered && dimension === '2d' ? `vec2 mean=frameAverage(framePixel).rg;
   if (mean.y<=0.0) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
@@ -590,7 +630,7 @@ class SharedSliceRenderer {
       } else gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData);
       const error = gl.getError();
       if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
-      let padding: WebGLTexture | null = null;
+      let padding: WebGLTexture | null = null, frameRange: Float32Array | undefined;
       const ranges = kind === 'rgb8' || sourceData instanceof Float64Array ? [] : Array.from({ length: d }, (_, index) => series.frameMetadata?.[sourceFrame ?? index + (region?.start[2] ?? 0)]?.paddingRange ?? series.paddingRange);
       if (ranges.some(Boolean)) {
         const data = new Float32Array(d * 4);
@@ -601,6 +641,7 @@ class SharedSliceRenderer {
           const high = kind === 'float32' ? Math.max(...range) : Math.floor(Math.max(...range));
           if (low <= high) data.set([1, low, high, 0], i * 4);
         }
+        if (sourceFrame !== undefined) frameRange = data.slice(0, 3);
         padding = gl.createTexture();
         gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
@@ -608,7 +649,7 @@ class SharedSliceRenderer {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
         if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
       }
-      cached = { owner, texture, padding, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
+      cached = { owner, texture, padding, frameRange, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
       this.textures.set(key, cached);
     } else gl.bindTexture(target, cached.texture);
     if (kind !== 'rgb8') {
@@ -783,6 +824,9 @@ class SharedSliceRenderer {
     const footprintX = Math.max(1, Math.hypot(indexRight[0], indexDown[0]));
     const footprintY = Math.max(1, Math.hypot(indexRight[1], indexDown[1]));
     const reduced = sourceFrame !== undefined && Math.max(footprintX, footprintY) > 1.00001;
+    // One screen pixel to one stored pixel along the frame's own axes: each screen pixel shows a stored pixel as it is.
+    const unit = (step: Vec3) => Math.abs(Math.hypot(step[0], step[1]) - 1) < 1e-5 && Math.min(Math.abs(step[0]), Math.abs(step[1])) < 1e-5;
+    const storedPixels = unit(indexRight) && unit(indexDown);
     // Keep at most three cells across the residual footprint. Pans, windows and nearby zoom levels reuse these means.
     const grid: [number, number] = [
       Math.max(1, Math.floor(nx / Math.ceil(footprintX / 2 - 1e-6))),
@@ -813,9 +857,11 @@ class SharedSliceRenderer {
     const plain = this.info.software && tiles.length === 1 && reducedOnly && mainKind !== 'rgb8' && !petKind && view.voiLut === undefined
       && !view.voiFunction && (!view.palette || view.palette === 'gray');
     const footprint: [number, number] = [Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny))];
-    const origin = plain ? worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3 : undefined;
+    // On the CPU, the letterbox around a frame shown at full size or larger is cleared too, not shaded.
+    const unreduced = sourceFrame !== undefined && !reduced && this.info.software && tiles.length === 1;
+    const origin = plain || unreduced ? worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3 : undefined;
     const clip = origin ? sourceClip(origin, indexRight, indexDown, nx, ny, w, h) : undefined;
-    const sample = origin ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
+    const sample = plain && origin ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
       origin, indexRight, indexDown, grid, footprint,
       [view.pan[0] * ratio, view.pan[1] * ratio]) : undefined;
     const sampling: Sampling = sample ? 'window-samples' : plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
@@ -839,6 +885,10 @@ class SharedSliceRenderer {
     if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
     this.indexMapping('u', imageSeries, topLeft, indexRight, indexDown);
     if (reduced) gl.uniform2fv(this.uniform('uFootprint'), footprint);
+    else if (sourceFrame !== undefined) {
+      gl.uniform1i(this.uniform('uStoredPixels'), Number(storedPixels));
+      gl.uniform3fv(this.uniform('uFramePadding'), this.textures.get(sourceKey)?.frameRange ?? [0, 0, 0]);
+    }
     if (filtered && sourceFrame === undefined) gl.uniform2i(this.uniform('imageGrid'), mprX, mprY);
     gl.uniform1f(this.uniform('uScreenHeight'), h);
     gl.uniform3fv(this.uniform('uDimensions'), sourceFrame === undefined ? volume.series.dimensions : [volume.series.dimensions[0], volume.series.dimensions[1], 1]);
