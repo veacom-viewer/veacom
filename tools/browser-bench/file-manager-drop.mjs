@@ -45,6 +45,8 @@ try {
   }
   assert.ok(point,'The study folder must be visible in the file manager');
   async function drag(){
+    await command('wmctrl','-i','-a',source);
+    await delay(150);
     await command('xdotool','mousemove','--sync',...point);
     await command('xdotool','mousedown',1);
     try{
@@ -64,7 +66,7 @@ try {
       await page.addInitScript(()=>{
         window.nativeDrags=[];
         for(const type of ['dragenter','dragover','drop']) addEventListener(type,e=>{
-          const row={type,trusted:e.isTrusted,files:e.dataTransfer.files.length};
+          const row={type,trusted:e.isTrusted,files:e.dataTransfer.files.length,types:[...e.dataTransfer.types],x:e.clientX,y:e.clientY};
           queueMicrotask(()=>window.nativeDrags.push({...row,prevented:e.defaultPrevented}));
         });
       });
@@ -73,7 +75,10 @@ try {
       await page.waitForFunction(()=>window.veacom?.web);
       assert.equal(await page.getByTestId('welcome-open-files').count(),0);
       const target=await windowId(/chrom(e|ium).*VEAcom/i);
+      await command('wmctrl','-i','-r',target,'-b','remove,maximized_vert,maximized_horz');
       await command('wmctrl','-i','-r',target,'-e','0,510,30,1100,800');
+      console.log('Source point',point,'Windows',await command('wmctrl','-lxG'));
+      await command('import','-window','root',path.join(out,prefix+'-desktop.png'));
       await drag();
       hold.resolve();
       await page.waitForFunction(()=>window.__VEACOM_TEST__&&document.documentElement.dataset.engineThreads);
@@ -96,6 +101,10 @@ try {
       assert.equal(early.filter(e=>e.type==='drop'&&e.trusted).length,Number(label==='after'));
       await page.locator('canvas[data-series-id][data-slice]').first().screenshot({path:path.join(out,prefix+'-ct.png')});
       results.push({label,isolated,early,...receipt});
+    }catch(e){
+      console.log('Observed events',await page.evaluate(()=>window.nativeDrags),'layout',await command('wmctrl','-lxG'));
+      await command('import','-window','root',path.join(out,prefix+'-failure.png'));
+      throw e;
     }finally{hold.resolve();await page.close();await site.close();}
   }
 }finally{
