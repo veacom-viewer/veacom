@@ -75,7 +75,7 @@ const studyFiles = study => fs.readdirSync(path.join(study.folder, 'S01')).filte
  * dropped on the page (a real drag from the browser, with the files' folder entries), set on its file input, or
  * given to the file chooser one of its buttons opens.
  */
-async function openStudy(open, { devtools, js, mark, study }) {
+async function openStudy(open, { devtools, js, mark, study, chooserOpened }) {
   if (open.type === 'drop') {
     const at = open.at ?? { x: WIDTH / 2, y: HEIGHT / 2 };
     // A folder, or (for a viewer that takes only files) the study's files selected together and dragged in.
@@ -97,18 +97,29 @@ async function openStudy(open, { devtools, js, mark, study }) {
     await devtools.sendCommand('Page.enable');
     await devtools.sendCommand('Page.setInterceptFileChooserDialog', { enabled: true });
     const opened = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error(`${open.click ?? open.clickText} opened no file chooser.`)), 10_000);
-      const listener = (_event, method, params) => { if (method === 'Page.fileChooserOpened') { clearTimeout(timer); devtools.removeListener('message', listener); resolve(params); } };
+      const timer = setTimeout(() => reject(new Error(`${open.pointer ?? open.click ?? open.clickText} opened no file chooser.`)), 10_000);
+      const listener = (_event, method, params) => { if (method === 'Page.fileChooserOpened') { clearTimeout(timer); devtools.removeListener('message', listener); chooserOpened(); resolve(params); } };
       devtools.on('message', listener);
     });
-    // A button by its selector, or the element showing a text (VolView's "Click to open local files.").
-    // As a user's click: a page may open a file chooser only during one.
-    await js(open.click ? `document.querySelector(${JSON.stringify(open.click)}).click(); 0`
-      : `[...document.querySelectorAll('body *')].find(e => !e.childElementCount && e.textContent.trim() === ${JSON.stringify(open.clickText)}).click(); 0`, true);
+    if (open.pointer) {
+      const point = await js(`(() => {
+        const button = document.querySelector(${JSON.stringify(open.pointer)}), box = button.getBoundingClientRect();
+        const x = box.x + box.width / 2, y = box.y + box.height / 2;
+        if (button.disabled || !button.contains(document.elementFromPoint(x, y))) throw new Error('The file button cannot receive the pointer.');
+        return { x, y };
+      })()`);
+      await devtools.sendCommand('Input.dispatchMouseEvent', { type: 'mousePressed', ...point, button: 'left', buttons: 1, clickCount: 1 });
+      await devtools.sendCommand('Input.dispatchMouseEvent', { type: 'mouseReleased', ...point, button: 'left', buttons: 0, clickCount: 1 });
+    } else {
+      // A button by its selector, or the element showing a text (VolView's "Click to open local files.").
+      // As a user's click: a page may open a file chooser only during one.
+      await js(open.click ? `document.querySelector(${JSON.stringify(open.click)}).click(); 0`
+        : `[...document.querySelectorAll('body *')].find(e => !e.childElementCount && e.textContent.trim() === ${JSON.stringify(open.clickText)}).click(); 0`, true);
+    }
     const { backendNodeId } = await opened;
     await mark('bench:drop');
     await devtools.sendCommand('DOM.setFileInputFiles', { backendNodeId, files });
-    return `chooser ${open.click ?? open.clickText}`;
+    return `chooser ${open.pointer ?? open.click ?? open.clickText}`;
   }
   throw new Error(`Unknown way to open: ${open.type}`);
 }
@@ -177,7 +188,8 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
 
     const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
     trace ??= await startOpeningTrace();
-    line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study });
+    const chooserOpened = () => { line.fileChooserSinceLoadRequestMs = performance.now() - loadStart; };
+    line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study, chooserOpened });
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
     const afterOpen = Promise.resolve(viewer.adapter.afterOpen?.({ js })).catch(error => { line.afterOpenError = String(error?.message ?? error); });
@@ -229,6 +241,25 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       Object.assign(line, navigationMetrics(ready, handoff, marks['bench:drop'], first, viewer.adapter.navigationDrop.firstSlice));
       if (Number.isFinite(line.firstImageEstimatedMs)) line.navigationToEstimatedDisplayMs = handoff + line.firstImageEstimatedMs;
       line.renderer = await rendererName(js);
+    }
+
+    if (round === 1 && study.name === 'ct-300' && ['veacom', 'veacom-base'].includes(viewer.id) && first) {
+      const navigation = marks['bench:drop'] - line.handoffSinceNavigationMs;
+      const captured = frames.filter(frame => frame.ts >= navigation && frame.ts <= first.ts + 650);
+      const folder = path.join(outDir, 'recordings', viewer.id);
+      fs.mkdirSync(folder, { recursive: true });
+      const times = captured.map((frame, index) => {
+        const filename = 'frame-' + String(index).padStart(3, '0') + '.jpg';
+        fs.writeFileSync(path.join(folder, filename), Buffer.from(frame.jpeg, 'base64'));
+        return { filename, sinceNavigationMs: frame.ts - navigation, sourceIndex: frame.index };
+      });
+      fs.writeFileSync(path.join(folder, 'capture.json'), JSON.stringify({ viewer: viewer.id, navigationToFirstCorrectMs: line.navigationToFirstCorrectMs, times }, null, 2));
+      const concat = times.flatMap((frame, index) => [
+        "file '" + frame.filename + "'",
+        'duration ' + (index + 1 < times.length ? (times[index + 1].sinceNavigationMs - frame.sinceNavigationMs) / 1000 : 0.5),
+      ]);
+      concat.push("file '" + times.at(-1).filename + "'");
+      fs.writeFileSync(path.join(folder, 'frames.txt'), concat.join('\n') + '\n');
     }
 
     if (SCENARIOS.has('paging')) {
