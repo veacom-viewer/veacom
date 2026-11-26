@@ -13,6 +13,7 @@
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -21,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 import site from '../site/worker.js';
 import { zipStored } from '../../src/web/zip.ts';
+import { readStoredZip } from '../../tests/storedZip.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const publicFolder = path.join(repository, 'web/site/public');
@@ -35,6 +37,9 @@ execFileSync(process.execPath, [makeStudy, study], { stdio: 'inherit' });
 execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR', '--other-patient'], { stdio: 'inherit' });
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
+const sourcePixels = createHash('sha256');
+for (const name of studyFiles) sourcePixels.update(readFileSync(path.join(study, name)).subarray(-columns * rows * 2));
+const sourceVolumeHash = Array.from(sourcePixels.digest());
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
@@ -84,6 +89,7 @@ async function openStudy() {
     series: imported.series.length, dimensions: series.dimensions,
     frame: { index: frame.headers.get('X-Source-Frame-Index'), bytes: Number(frame.headers.get('Content-Length')) },
     volume: Number(volume.headers.get('Content-Length')),
+    volumeHash: Array.from(new Uint8Array(await window.smokeCTDigest)),
     state: await bridge.getCoreState(),
   };
 }
@@ -380,7 +386,7 @@ async function checkLooseFileDrop(browser, url) {
     await page.goto(url);
     await page.getByTestId('welcome-open-folder').waitFor();
     const devtools = await page.context().newCDPSession(page);
-    const files = [study, mrStudy].map(folder => path.join(folder, studyFiles[0]));
+    const files = [study, mrStudy].flatMap(folder => studyFiles.slice(0, 3).map(name => path.join(folder, name)));
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
       await devtools.send('Input.dispatchDragEvent', { type, x: 100, y: 120, data: { items: [], files, dragOperationsMask: 1 } });
     }
@@ -399,9 +405,29 @@ async function checkLooseFileDrop(browser, url) {
     });
     const root = '2.25.302617644913925066835652647005517224101';
     assert.deepEqual(results, [
-      ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 1, -1000, -1000],
-      ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 1, 0, 0],
+      ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 3, -1000, -1000],
+      ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 3, 0, 0],
     ]);
+    const series = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(({ id, modality }) => ({ id, modality })));
+    for (const [modality, index] of [['CT', 1], ['MR', 2], ['CT', 0]]) {
+      const { id } = series.find(item => item.modality === modality);
+      await page.getByTestId('series-' + id).click();
+      await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id, id);
+      await page.evaluate(slice => window.__VEACOM_TEST__.setView({ slice }), index);
+      await page.locator(`canvas[data-series-id="${id}"][data-slice="${index}"]`).first().waitFor();
+      await page.getByTestId('tool-export').click();
+      await page.locator('input[data-action="export-scope"][value="slice"]').check();
+      await page.locator('input[data-action="export-anonymity"][value="none"]').check();
+      const pending = page.waitForEvent('download');
+      await page.getByTestId('export-submit').click();
+      const download = await pending;
+      const archive = readStoredZip(readFileSync(await download.path()));
+      assert.equal(archive.length, 1);
+      assert.match(archive[0].name, /(?:^|\/)DICOM\/IM000001$/);
+      const expected = readFileSync(path.join(modality === 'CT' ? study : mrStudy, studyFiles[index]));
+      assert(archive[0].bytes.equals(expected), `The downloaded ${modality} slice ${index} must match its original DICOM file.`);
+      await page.locator('.export-dialog').waitFor({ state: 'detached' });
+    }
   } finally { await page.close(); }
 }
 
@@ -628,17 +654,20 @@ try {
   for (const isolated of [true, false]) {
     const server = await serve(isolated);
     const page = await browser.newPage();
-    await page.addInitScript(() => {
+    await page.addInitScript(volumeBytes => {
       // The bridge hands the transferred buffer to the viewer outside the Response body. Read it at the Worker boundary.
       window.Worker = class extends Worker {
         constructor(...args) {
           super(...args);
           this.addEventListener('message', ({ data }) => {
             if (data.ok && data.value?.bytes && data.value.components === 3) window.checkPictureFrame?.(data.value);
+            if (data.ok && data.value?.bytes?.byteLength === volumeBytes && data.value.index === undefined) {
+              window.smokeCTDigest = crypto.subtle.digest('SHA-256', data.value.bytes);
+            }
           });
         }
       };
-    });
+    }, columns * rows * slices * 2);
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -668,6 +697,7 @@ try {
       check(opened.dimensions.join('x') === `${columns}x${rows}x${slices}`, `dimensions ${opened.dimensions.join('x')}`);
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
+      assert.deepEqual(opened.volumeHash, sourceVolumeHash, 'The decoded CT volume must match all 100 original pixel arrays.');
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
       const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);
