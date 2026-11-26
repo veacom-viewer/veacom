@@ -176,8 +176,8 @@ async function checkChooseDuringStartup(browser, url, fail) {
     offline.resolve();
     await page.evaluate(() => window.releaseOpeningRequest.init());
     if (fail) {
-      await page.waitForFunction(async () => (await window.veacom.getCoreState()).status === 'failed');
       await page.locator('.connection-error[role="alert"]').waitFor();
+      assert.equal(await page.evaluate(async () => (await window.veacom.getCoreState()).status), 'failed');
       assert.equal(await app.getAttribute('data-ready'), 'false');
       assert.equal(await page.locator('canvas[data-series-id]').count(), 0);
       return;
@@ -306,7 +306,7 @@ async function checkClosedCTBuffer(browser, url) {
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
       await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files, dragOperationsMask: 1 } });
     }
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 2);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
     const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(item => item.modality === 'MR').id);
     await page.getByTestId('series-' + mr).click();
     const image = page.locator('canvas[data-series-id="' + mr + '"]');
@@ -325,7 +325,7 @@ async function checkClosedCTBuffer(browser, url) {
     assert.equal(before.bytes, columns * rows * slices * 2);
     await page.getByTestId('series-' + ct).click({ button: 'right' });
     await page.locator('[data-action="series-remove"]').click();
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
     assert.deepEqual(await page.evaluate(readCT, true), before);
     await checkReleased();
     assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
