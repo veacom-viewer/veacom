@@ -9,7 +9,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
+import { mainFrames, navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
 import { openingTrace, readPicture, readTrace, startTrace } from './lib/trace.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +57,21 @@ function wheel(win, at, direction) {
   win.webContents.sendInputEvent({ type: 'mouseWheel', x: Math.round(at.x), y: Math.round(at.y), deltaX: 0, deltaY: -120 * direction, wheelTicksX: 0, wheelTicksY: -direction, canScroll: true });
 }
 
+/** Runs in the page. A passive observer timestamps delivery before the viewer handles the wheel. */
+function recordWheelReceipts(prefix) {
+  const events = [];
+  const received = event => {
+    performance.mark(prefix + events.length);
+    events.push({ detents: event.wheelDeltaY / 120, trusted: event.isTrusted });
+  };
+  window.addEventListener('wheel', received, { capture: true, passive: true });
+  window.finishBenchWheelReceipts = () => {
+    window.removeEventListener('wheel', received, true);
+    delete window.finishBenchWheelReceipts;
+    return events;
+  };
+}
+
 /** Sends `count` notches `rate` a second, on time however long each send takes. */
 async function notches(win, at, direction, count, rate) {
   const started = performance.now();
@@ -65,6 +80,52 @@ async function notches(win, at, direction, count, rate) {
     if (wait > 0) await sleep(wait);
     wheel(win, at, direction);
   }
+}
+
+/** Runs in the benchmark page. The hit target has no image handler and never redraws the CT. */
+function addWheelControl(mode) {
+  const target = document.createElement('div');
+  target.style.cssText = 'position:fixed;inset:0;z-index:2147483647;overflow:hidden;overscroll-behavior:none';
+  document.body.append(target);
+  const received = [];
+  target.addEventListener('wheel', event => {
+    if (mode === 'cancelled') event.preventDefault();
+    event.stopPropagation();
+    received.push({ time: performance.now(), detents: event.wheelDeltaY / 120,
+      trusted: event.isTrusted, cancelled: event.defaultPrevented, correctTarget: event.target === target });
+  }, { passive: mode === 'passive' });
+  window.readWheelControl = () => {
+    const end = performance.getEntriesByName('control-end').at(-1).startTime;
+    const result = { events: received.length, detents: received.reduce((sum, e) => sum + Math.abs(e.detents), 0),
+      lastReceiptAfterEndMs: received.length ? received.at(-1).time - end : null,
+      receiptsAfterEnd: received.filter(e => e.time > end).length,
+      allTrusted: received.every(e => e.trusted && e.correctTarget), cancelledEvents: received.filter(e => e.cancelled).length };
+    target.remove();
+    delete window.readWheelControl;
+    return result;
+  };
+}
+
+async function compareWheelTargets(win, js, mark, order) {
+  const at = await look(win);
+  const point = { x: Math.round(at.x), y: Math.round(at.y) };
+  const modes = ['cancelled','uncancelled','passive'];
+  const values = {};
+  for (let i = 0; i < modes.length; i++) {
+    const mode = modes[(order+i)%modes.length];
+    await js(`(${addWheelControl.toString()})(${JSON.stringify(mode)}); 0`);
+    win.webContents.sendInputEvent({ type: 'mouseMove', ...point });
+    await sleep(200);
+    await notches(win, at, 1, 120, 120);
+    const sent = performance.now();
+    await mark('control-end');
+    const endMarkRoundTripMs = performance.now() - sent;
+    await sleep(2200);
+    const reading = await js('window.readWheelControl()');
+    if (!reading.allTrusted || !reading.events || (await look(win)).index !== at.index) throw new Error('Control target or CT image changed');
+    values[mode] = { ...reading, endMarkRoundTripMs };
+  }
+  return values;
 }
 
 /** The study's files, for viewers that take a list rather than a folder. */
@@ -231,6 +292,31 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       line.renderer = await rendererName(js);
     }
 
+    if (study.name === 'ct-64-series') {
+      line.activeCatalog = await js(`(async () => {
+        const bridge = window.veacom, { series } = await bridge.listSeries(), { generation } = await bridge.getCoreState();
+        const canvas = document.querySelector('canvas[data-series-id]'), source = series.find(item => item.id === canvas?.dataset.seriesId);
+        if (!source) throw new Error('Missing active source');
+        const ends = await Promise.all([0, source.dimensions[2] - 1].map(index => bridge.fetchPixels({ seriesId: source.id, generation, revision: source.catalogRevision, index })));
+        const positions = ends.map(frame => Number(frame.headers.get('X-Source-Frame-Index')));
+        const sops = ends.map(frame => frame.headers.get('X-SOP-Instance-UID'));
+        return { series: series.length, unique: new Set(series.map(item => item.uid)).size, depth: source.dimensions[2],
+          patient: source.patientId, positions, sops, uid: source.uid };
+      })()`);
+      const verified = line.activeCatalog;
+      if (verified.series !== 64 || verified.unique !== 64 || verified.depth !== 300 || verified.patient !== 'BENCH-ct-64-series' ||
+          String(verified.positions) !== '0,299' || verified.sops[0] !== verified.uid.replace(/\.2$/, '.3.300') ||
+          verified.sops[1] !== verified.uid.replace(/\.2$/, '.3.1')) throw new Error('Wrong reading study: ' + JSON.stringify(verified));
+    }
+
+    await devtools.sendCommand('Performance.enable', { timeDomain: 'threadTicks' });
+    const threadCost = async () => {
+      const { metrics } = await devtools.sendCommand('Performance.getMetrics');
+      const values = Object.fromEntries(metrics.map(v => [v.name, v.value]));
+      if (![values.TaskDuration, values.ScriptDuration, values.LayoutDuration].every(Number.isFinite)) throw new Error('Missing renderer timing counters');
+      return { mainThreadMs: values.TaskDuration * 1000, scriptMs: values.ScriptDuration * 1000, layoutMs: values.LayoutDuration * 1000 };
+    };
+    const spent = (before, after) => Object.fromEntries(Object.entries(after).map(([name, value]) => [name, Math.round((value - before[name]) * 10) / 10]));
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
       let at = await look(win);
@@ -256,16 +342,39 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
         if (Math.max(at.index, study.slices - 1 - at.index) < travel) at = await recenter();
         const towards = study.slices - 1 - at.index >= at.index ? 1 : -1;
         trace = await startTrace(devtools);
+        const prefix = `bench:receipt-${rate}-`;
+        await js(`(${recordWheelReceipts.toString()})(${JSON.stringify(prefix)}); 0`);
+        const costBefore = await threadCost();
         await mark(`bench:page${rate}:start`);
         await notches(win, at, towards * sign, count, rate);
+        const lastSend = performance.now();
         await mark(`bench:page${rate}:end`);
+        const endMarkRoundTripMs = performance.now() - lastSend;
         await sleep(1500);
         await mark(`bench:page${rate}:settled`);
+        const cost = spent(costBefore, await threadCost());
+        const receipts = await js('window.finishBenchWheelReceipts()');
         ({ marks, frames } = readTrace(await trace.stop(), decode));
-        line.paging.rates[rate] = pagingMetrics(marks, frames, MAIN, `page${rate}`, count, step);
+        const result = pagingMetrics(marks, frames, MAIN, `page${rate}`, count, step);
+        line.paging.rates[rate] = result;
+        result.rendererCost = cost;
+        const times = receipts.map((_, i) => marks[prefix + i]);
+        const notchesReceived = receipts.reduce((sum, event) => sum + Math.abs(event.detents), 0);
+        const net = receipts.reduce((sum, event) => sum + event.detents, 0);
+        const end = marks[`bench:page${rate}:end`];
+        const reached = mainFrames(frames, MAIN).find(f => f.ts > marks[`bench:page${rate}:start`] && f.index === result.to);
+        if (result.kept !== 1 || !reached || !times.length || !times.every(Number.isFinite) || !receipts.every(e => e.trusted)
+            || notchesReceived !== count || Math.abs(net) !== count) throw new Error('Wheel receipts or displayed endpoint did not match the input');
+        const lastReceipt = times.at(-1);
+        result.inputDelivery = { events: times.length, notchesReceived, net, endMarkRoundTripMs,
+          receiptsAfterEnd: times.filter(t => t > end).length, firstReceiptFromStartMs: times[0] - marks[`bench:page${rate}:start`],
+          lastReceiptAfterEndMs: lastReceipt - end, endpointAfterLastReceiptMs: reached.ts - lastReceipt,
+          endpointAfterEndMs: reached.ts - end };
         at = await look(win);
       }
     }
+
+    if (SCENARIOS.has('paging') && !line.warmup) line.wheelTargetControls = await compareWheelTargets(win, js, mark, round + (viewer.id === 'veacom-aa' ? 1 : 0));
 
     if (SCENARIOS.has('wl') && viewer.adapter.windowLevel === null) line.wl = { unavailable: 'this viewer has no window/level drag' };
     else if (SCENARIOS.has('wl')) {
@@ -279,6 +388,7 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       trace = await startTrace(devtools);
       win.webContents.sendInputEvent({ type: 'mouseMove', x: start.x, y: start.y });
       await sleep(200);
+      const costBefore = await threadCost();
       await mark('bench:wl:start');
       win.webContents.sendInputEvent({ type: 'mouseDown', x: start.x, y: start.y, button, clickCount: 1 });
       const held = [`${button}ButtonDown`], began = performance.now();
@@ -291,8 +401,10 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       win.webContents.sendInputEvent({ type: 'mouseUp', x: start.x + 270, y: start.y + 90, button, clickCount: 1 });
       await sleep(1000);
       await mark('bench:wl:settled');
+      const cost = spent(costBefore, await threadCost());
       ({ marks, frames } = readTrace(await trace.stop(), decode));
       line.wl = windowLevelMetrics(marks, frames, MAIN);
+      line.wl.rendererCost = cost;
       if (process.env.BENCH_DEBUG) line.wlFrames = frames.map(f => [Math.round(f.ts - marks['bench:wl:start']), f.index, f.unit && +f.unit.toFixed(1), f.grey && +f.grey.toFixed(1)]);
     }
 
