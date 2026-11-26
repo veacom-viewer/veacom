@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { makeStudy as makeBenchmarkStudy } from '../../tools/browser-bench/make-study.mjs';
 // Opens the browser build as viewer.veacom.app serves it, and again as a host without its cross-origin isolation
 // headers would, in Chromium. Each time the engine must start (the threads build where the page is isolated and the
@@ -269,6 +270,7 @@ async function checkRemoveCTWhileReadingMR(browser, url) {
           super(...args);
           this.addEventListener('message', ({ data }) => {
             const bytes = data?.value?.bytes;
+            if (bytes instanceof Uint8Array && data.value.index===1 && data.value.sopInstanceUid==='2.25.302617644913925066835652647005517224101.10.3.2') window.checkedMRFrame=bytes;
             if (bytes instanceof Uint8Array && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes.buffer);
           });
         }
@@ -305,16 +307,23 @@ async function checkRemoveCTWhileReadingMR(browser, url) {
     await page.waitForFunction(()=>Number(document.querySelector('canvas[data-series-id]').dataset.slice)===1);
     const readMR=async()=>page.evaluate(async ()=>{
       const bridge=window.veacom, {generation}=await bridge.getCoreState(), item=(await bridge.listSeries()).series.find(s=>s.modality==='MR');
+      delete window.checkedMRFrame;
       const frame=await bridge.fetchPixels({seriesId:item.id,generation,revision:item.catalogRevision,index:1});
-      const digest=await crypto.subtle.digest('SHA-256',await frame.arrayBuffer());
+      const actual = window.checkedMRFrame;
+      if (!(actual instanceof Uint8Array) || actual.byteLength!==128*128*2 || Number(frame.headers.get('Content-Length'))!==actual.byteLength) throw new Error('Incorrect MR pixel byte count');
+      const digest=await crypto.subtle.digest('SHA-256',actual);
+      delete window.checkedMRFrame;
       return {uid:item.uid,sop:frame.headers.get('X-SOP-Instance-UID'),series:item.id,drawn:document.querySelector('canvas[data-series-id]').dataset.seriesId,
-        hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
+        bytes:actual.byteLength,hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
     });
     await cdp.send('HeapProfiler.collectGarbage');
     assert.equal(await page.evaluate(()=>window.lastCTBuffer.deref()?.byteLength),524288000);
     const original=await readMR();
     assert.equal(original.sop,'2.25.302617644913925066835652647005517224101.10.3.2');
     assert.equal(original.drawn,mr);
+    // The fixture writer places its uncompressed Pixel Data last in this file.
+    const expectedHash=createHash('sha256').update(readFileSync(path.join(mrStudy,studyFiles[1])).subarray(-128*128*2)).digest('hex');
+    assert.equal(original.hash,expectedHash);
     await page.getByTestId('series-' + ct).click({ button: 'right' });
     await page.locator('[data-action="series-remove"]').click();
     await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
