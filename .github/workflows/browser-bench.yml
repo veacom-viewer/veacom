@@ -144,7 +144,7 @@ jobs:
           import { readFileSync, writeFileSync, copyFileSync } from 'node:fs';
           import { join } from 'node:path';
           for (const folder of ['dist-web', process.argv[2]]) {
-            const file = join(folder, 'index.html');
+            const file = join(folder, 'web.html');
             const html = readFileSync(file, 'utf8');
             if (!html.includes('<head>')) throw new Error('The viewer has no HTML head');
             copyFileSync('tools/browser-bench/ct-opening-memory.js', join(folder,'ct-opening-memory.js'));
