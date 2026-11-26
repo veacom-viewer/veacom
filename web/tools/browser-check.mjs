@@ -19,7 +19,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { chromium, expect } from 'playwright/test';
 import site from '../site/worker.js';
 import { zipStored } from '../../src/web/zip.ts';
 import { readStoredZip } from '../../tests/storedZip.ts';
@@ -176,8 +176,8 @@ async function checkChooseDuringStartup(browser, url, fail) {
     offline.resolve();
     await page.evaluate(() => window.releaseOpeningRequest.init());
     if (fail) {
-      await page.waitForFunction(async () => (await window.veacom.getCoreState()).status === 'failed');
       await page.locator('.connection-error[role="alert"]').waitFor();
+      await expect.poll(() => page.evaluate(async () => (await window.veacom.getCoreState()).status), { timeout: 30_000 }).toBe('failed');
       assert.equal(await app.getAttribute('data-ready'), 'false');
       assert.equal(await page.locator('canvas[data-series-id]').count(), 0);
       return;
@@ -306,7 +306,7 @@ async function checkClosedCTBuffer(browser, url) {
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
       await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files, dragOperationsMask: 1 } });
     }
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 2);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
     const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(item => item.modality === 'MR').id);
     await page.getByTestId('series-' + mr).click();
     const image = page.locator('canvas[data-series-id="' + mr + '"]');
@@ -325,7 +325,7 @@ async function checkClosedCTBuffer(browser, url) {
     assert.equal(before.bytes, columns * rows * slices * 2);
     await page.getByTestId('series-' + ct).click({ button: 'right' });
     await page.locator('[data-action="series-remove"]').click();
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
     assert.deepEqual(await page.evaluate(readCT, true), before);
     await checkReleased();
     assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
@@ -379,18 +379,54 @@ async function checkRestartedCatalog(browser, url) {
   } finally { await page.close(); }
 }
 
-/** The actual browser file list contains the same basename twice, once for each patient. */
-async function checkLooseFileDrop(browser, url) {
+function checkPatientMedia(archive, source) {
+  const directory = archive.find(file => /(?:^|\/)DICOMDIR$/.test(file.name));
+  assert(directory, 'The media export needs a DICOMDIR.');
+  const prefix = directory.name.slice(0, -'DICOMDIR'.length);
+  const files = new Map(archive.map(file => [file.name, file.bytes]));
+  assert.equal(archive.length, slices + 1);
+  const digests = [];
+  for (let i = 1; i <= slices; i++) {
+    const name = prefix + 'DICOM/IM' + String(i).padStart(6, '0');
+    const bytes = files.get(name);
+    assert(bytes, name);
+    digests.push(createHash('sha256').update(bytes).digest('hex'));
+  }
+  const originals = JSON.parse(readFileSync(path.join(source, 'manifest.json'), 'utf8')).sha256;
+  assert.deepEqual(digests.sort(), Object.values(originals).sort());
+}
+
+async function reopenPatientMedia(browser, url, file, modality) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await chooser).setFiles(file);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
+    await page.locator('canvas[data-series-id]').first().waitFor();
+    const opened = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(series => ({
+      patient: series.patientId, modality: series.modality, instances: series.frameMetadata.map(frame => frame.sopInstanceUid),
+    })));
+    const root = '2.25.302617644913925066835652647005517224101' + (modality === 'MR' ? '.10' : '');
+    assert.deepEqual(opened, [{ patient: modality === 'CT' ? 'SYNTHETIC-SMOKE' : 'SYNTHETIC-OTHER', modality,
+      instances: studyFiles.map((_, i) => root + '.3.' + (i + 1)) }]);
+  } finally { await page.close(); }
+}
+
+/** The patients have identical folder and file names. Each export must contain only the active patient's sources. */
+async function checkPatientDrop(browser, url, folders) {
   const page = await browser.newPage();
   try {
     await page.goto(url);
     await page.getByTestId('welcome-open-folder').waitFor();
     const devtools = await page.context().newCDPSession(page);
-    const files = [study, mrStudy].flatMap(folder => studyFiles.slice(0, 3).map(name => path.join(folder, name)));
+    const files = folders ? [study, mrStudy].map(folder => path.join(folder, 'S01'))
+      : [study, mrStudy].flatMap(folder => studyFiles.slice(0, 3).map(name => path.join(folder, name)));
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
       await devtools.send('Input.dispatchDragEvent', { type, x: 100, y: 120, data: { items: [], files, dragOperationsMask: 1 } });
     }
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length >= 2);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
     const results = await page.evaluate(async () => {
       const bridge = window.veacom, { generation } = await bridge.getCoreState();
       const values = [];
@@ -404,28 +440,40 @@ async function checkLooseFileDrop(browser, url) {
       return values.sort((a, b) => a[0].localeCompare(b[0]));
     });
     const root = '2.25.302617644913925066835652647005517224101';
+    const count = folders ? slices : 3;
     assert.deepEqual(results, [
-      ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 3, -1000, -1000],
-      ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 3, 0, 0],
+      ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', count, -1000, -1000],
+      ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', count, 0, 0],
     ]);
     const series = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(({ id, modality }) => ({ id, modality })));
-    for (const [modality, index] of [['CT', 1], ['MR', 2], ['CT', 0]]) {
+    const exports = folders ? [['CT'], ['MR']] : [['CT', 1], ['MR', 2], ['CT', 0]];
+    for (const [modality, index] of exports) {
       const { id } = series.find(item => item.modality === modality);
       await page.getByTestId('series-' + id).click();
       await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id, id);
-      await page.evaluate(slice => window.__VEACOM_TEST__.setView({ slice }), index);
-      await page.locator(`canvas[data-series-id="${id}"][data-slice="${index}"]`).first().waitFor();
+      if (index !== undefined) {
+        await page.evaluate(slice => window.__VEACOM_TEST__.setView({ slice }), index);
+        await page.locator(`canvas[data-series-id="${id}"][data-slice="${index}"]`).first().waitFor();
+      }
       await page.getByTestId('tool-export').click();
-      await page.locator('input[data-action="export-scope"][value="slice"]').check();
+      if (folders) await page.locator('[data-action="export-kind"][data-kind="media"]').click();
+      await page.locator(`input[data-action="export-scope"][value="${folders ? 'series' : 'slice'}"]`).check();
       await page.locator('input[data-action="export-anonymity"][value="none"]').check();
       const pending = page.waitForEvent('download');
       await page.getByTestId('export-submit').click();
       const download = await pending;
-      const archive = readStoredZip(readFileSync(await download.path()));
-      assert.equal(archive.length, 1);
-      assert.match(archive[0].name, /(?:^|\/)DICOM\/IM000001$/);
-      const expected = readFileSync(path.join(modality === 'CT' ? study : mrStudy, studyFiles[index]));
-      assert(archive[0].bytes.equals(expected), `The downloaded ${modality} slice ${index} must match its original DICOM file.`);
+      const buffer = readFileSync(await download.path());
+      const archive = readStoredZip(buffer);
+      const source = modality === 'CT' ? study : mrStudy;
+      if (folders) {
+        checkPatientMedia(archive, source);
+        await reopenPatientMedia(browser, url, { name: download.suggestedFilename(), mimeType: 'application/zip', buffer }, modality);
+      } else {
+        assert.equal(archive.length, 1);
+        assert.match(archive[0].name, /(?:^|\/)DICOM\/IM000001$/);
+        const expected = readFileSync(path.join(source, studyFiles[index]));
+        assert(archive[0].bytes.equals(expected), `The downloaded ${modality} slice ${index} must match its original DICOM file.`);
+      }
       await page.locator('.export-dialog').waitFor({ state: 'detached' });
     }
   } finally { await page.close(); }
@@ -685,7 +733,8 @@ try {
       await checkWelcomeBeforeGraphics(browser, page.url());
       await checkClosedCTBuffer(browser, page.url());
       await checkRestartedCatalog(browser, page.url());
-      await checkLooseFileDrop(browser, page.url());
+      await checkPatientDrop(browser, page.url(), false);
+      await checkPatientDrop(browser, page.url(), true);
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
       const check = (ok, what) => { if (!ok) failures.push(`${mode}: ${what}`); };
