@@ -13,6 +13,7 @@
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -35,6 +36,9 @@ execFileSync(process.execPath, [makeStudy, study], { stdio: 'inherit' });
 execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR', '--other-patient'], { stdio: 'inherit' });
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
+const sourcePixels = createHash('sha256');
+for (const name of studyFiles) sourcePixels.update(readFileSync(path.join(study, name)).subarray(-columns * rows * 2));
+const sourceVolumeHash = sourcePixels.digest('hex');
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
@@ -84,6 +88,7 @@ async function openStudy() {
     series: imported.series.length, dimensions: series.dimensions,
     frame: { index: frame.headers.get('X-Source-Frame-Index'), bytes: Number(frame.headers.get('Content-Length')) },
     volume: Number(volume.headers.get('Content-Length')),
+    volumeHash: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await volume.arrayBuffer())), byte => byte.toString(16).padStart(2, '0')).join(''),
     state: await bridge.getCoreState(),
   };
 }
@@ -658,7 +663,26 @@ try {
       await checkRestartedCatalog(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
-      const opened = await page.evaluate(openStudy);
+      const engine = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
+      assert(engine);
+      await engine.evaluate(() => {
+        const digest = crypto.subtle.digest.bind(crypto.subtle);
+        self.headerHashes = 0;
+        crypto.subtle.digest = (algorithm, bytes) => {
+          if (algorithm === 'SHA-256' && bytes.byteLength === 8192 && ++self.headerHashes === 1) {
+            return Promise.reject(new Error('Synthetic unavailable digest'));
+          }
+          return digest(algorithm, bytes);
+        };
+        self.restoreDigest = () => { delete crypto.subtle.digest; };
+      });
+      let opened;
+      try {
+        opened = await page.evaluate(openStudy);
+        assert.equal(await engine.evaluate(() => self.headerHashes), slices);
+      } finally {
+        await engine.evaluate(() => self.restoreDigest());
+      }
       const check = (ok, what) => { if (!ok) failures.push(`${mode}: ${what}`); };
       check(started.isolated === isolated, `crossOriginIsolated is ${started.isolated}`);
       check(started.threads === started.expected, `the engine runs on ${started.threads} threads, expected ${started.expected}`);
@@ -668,6 +692,7 @@ try {
       check(opened.dimensions.join('x') === `${columns}x${rows}x${slices}`, `dimensions ${opened.dimensions.join('x')}`);
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
+      check(opened.volumeHash === sourceVolumeHash, 'every decoded CT slice matches its source, including after a failed browser digest');
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
       const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);

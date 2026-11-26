@@ -6,7 +6,7 @@ const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
 // Larger files use 1 MiB pieces in web/engine/src/blob.rs and discard a 64 KiB head.
 const LARGE_FILE_BYTES = 16 * 1024 * 1024;
 
-/** @param {{ index: number, part: Blob }[]} group @param {(Uint8Array | undefined)[]} result */
+/** @param {{ index: number, part: Blob }[]} group @param {(Uint8Array<ArrayBuffer> | undefined)[]} result */
 async function readGroup(group, result) {
   try {
     const bytes = new Uint8Array(await new Blob(group.map(item => item.part)).arrayBuffer());
@@ -25,15 +25,19 @@ async function readGroup(group, result) {
   }));
 }
 
-/** @param {ReadonlyArray<{file: Blob}>} files */
-export async function readHeads(files) {
-  /** @type {(Uint8Array | undefined)[]} */
+/** @param {ReadonlyArray<{file: Blob}>} files @param {number} digestBytes */
+export async function readSourceHeads(files, digestBytes) {
+  /** @type {(Uint8Array<ArrayBuffer> | undefined)[]} */
   const result = Array(files.length).fill(undefined);
+  /** @type {(Uint8Array | undefined)[]} */
+  const digests = [];
+  const crypto = globalThis.crypto?.subtle;
   let remaining = MAX_PREFETCH_BYTES;
   for (let start = 0; start < files.length && remaining > 0; start += 256) {
     const reads = [];
     const end = Math.min(start + 256, files.length);
     for (let from = start; from < end && remaining > 0; from += 16) {
+      /** @type {{ index: number, part: Blob }[]} */
       const group = [];
       for (let index = from; index < Math.min(from + 16, end); index++) {
         const { file } = files[index];
@@ -43,9 +47,25 @@ export async function readHeads(files) {
         try { group.push({ index, part: file.slice(0, length) }); }
         catch { /* The engine can still read the file on demand. */ }
       }
-      if (group.length) reads.push(readGroup(group, result));
+      if (!group.length) continue;
+      const read = readGroup(group, result);
+      if (digestBytes && crypto) {
+        reads.push(read.then(() => Promise.all(group.map(async ({ index }) => {
+          const head = result[index];
+          if (!head) return;
+          try { digests[index] = new Uint8Array(await crypto.digest('SHA-256', head.subarray(0, digestBytes))); }
+          catch { /* The engine hashes the source itself if the browser cannot. */ }
+        }))));
+      } else {
+        reads.push(read);
+      }
     }
     await Promise.all(reads);
   }
-  return result;
+  return { heads: result, digests };
+}
+
+/** @param {ReadonlyArray<{file: Blob}>} files */
+export async function readHeads(files) {
+  return (await readSourceHeads(files, 0)).heads;
 }

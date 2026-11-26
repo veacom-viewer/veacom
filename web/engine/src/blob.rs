@@ -70,11 +70,16 @@ struct BlobSource {
     id: u32,
     length: u64,
     /// The file's first piece, when the page has already read it, until the import that wanted it ends.
-    head: Mutex<Option<Arc<Vec<u8>>>>,
+    head: Mutex<Option<Head>>,
     /// The whole file, while a parallel decode needs it on every thread.
     whole: Mutex<Option<Arc<Vec<u8>>>>,
     /// Set once every helper has the Blob (`add_here`, `mark_on_helpers`): then any thread reads it.
     on_helpers: std::sync::atomic::AtomicBool,
+}
+
+struct Head {
+    bytes: Arc<Vec<u8>>,
+    digest: Option<[u8; 32]>,
 }
 
 struct Sources {
@@ -95,13 +100,16 @@ fn sources() -> std::sync::MutexGuard<'static, Sources> {
 
 /// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: its first 64 KiB, if read already.
 /// Returns the number the file is known by, for `unheld` and `hold_read`.
-pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
+pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>, digest: Option<Vec<u8>>) -> u32 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let length = blob.size() as u64;
     // Kept only when it is exactly the file's first piece.
     let head = head
         .filter(|head| head.len() as u64 == length.min(piece_size(length)))
-        .map(Arc::new);
+        .map(|bytes| Head {
+            bytes: Arc::new(bytes),
+            digest: digest.and_then(|value| value.try_into().ok()),
+        });
     BLOBS.with_borrow_mut(|blobs| blobs.insert(id, blob));
     let source = Arc::new(BlobSource {
         id,
@@ -415,6 +423,15 @@ impl Source for BlobSource {
     fn len(&self) -> u64 {
         self.length
     }
+    fn prefetched_header_digest(&self, prefix: &[u8]) -> Option<[u8; 32]> {
+        let head = self.head.lock().unwrap_or_else(|e| e.into_inner());
+        let head = head.as_ref()?;
+        if head.bytes.get(..prefix.len())? == prefix {
+            head.digest
+        } else {
+            None
+        }
+    }
     fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()> {
         if let Some(whole) = self
             .whole
@@ -434,7 +451,8 @@ impl Source for BlobSource {
             .head
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone();
+            .as_ref()
+            .map(|head| head.bytes.clone());
         let mut done = 0;
         while done < output.len() {
             let position = offset + done as u64;

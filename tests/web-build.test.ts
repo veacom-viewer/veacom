@@ -1,5 +1,6 @@
 // The browser build's own pieces (src/web): its MP4 writer against the desktop's, its ZIP, and its Trusted Types rule.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { openAsBlob } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,7 +13,7 @@ import { iconMarkup, ownScript } from '../src/web/trusted-types';
 import { zipStored } from '../src/web/zip';
 
 const desktop = createRequire(import.meta.url)('../electron/mp4.cjs');
-const { readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
+const { readHeads, readSourceHeads } = createRequire(import.meta.url)('../web/file-heads.js');
 
 it('bounds the total bytes read ahead and preserves file indices when reads are skipped', async () => {
   const file = new File([new Uint8Array(64 * 1024)], 'slice.dcm');
@@ -38,10 +39,12 @@ it('returns the exact prefix for each source across batches, empty files and a f
     const files = bytes.map(data => ({ file: new Blob([data]) }));
     files[17] = { file: changed };
     files[64] = { file: new Blob() };
-    const heads: (Uint8Array | undefined)[] = await readHeads(files);
+    const { heads, digests } = await readSourceHeads(files, 8192);
     assert.equal(heads.length, files.length);
     for (const [index, expected] of bytes.entries()) {
       assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, 65536), String(index));
+      assert.deepEqual(digests[index], heads[index] ?
+        Uint8Array.from(createHash('sha256').update(expected.subarray(0, 8192)).digest()) : undefined, String(index));
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

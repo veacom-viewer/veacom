@@ -18,7 +18,7 @@ const READ_AHEAD: usize = 256 * 1024;
 // What import may keep of a file while indexing it.
 const IMPORT_PREFIX: usize = 2 * 1024 * 1024;
 // Both DICOM header passes repeatedly seek inside their initial 8 KiB buffer: import reads no more than that.
-const HEADER_PREFIX: usize = 8192;
+pub const HEADER_PREFIX: usize = 8192;
 pub fn changed() -> crate::message::Coded {
     coded!(
         "file.sourceChanged",
@@ -206,7 +206,11 @@ impl SourceFile {
         let mut prefix = vec![0; HEADER_PREFIX.min(len as usize)];
         file.read_exact(&mut prefix)?;
         ensure!(Fingerprint::of(file)? == fingerprint, changed());
-        let head = Sha256::digest(&prefix).into();
+        let hash = || Sha256::digest(&prefix).into();
+        #[cfg(target_arch = "wasm32")]
+        let head = file.prefetched_header_digest(&prefix).unwrap_or_else(hash);
+        #[cfg(not(target_arch = "wasm32"))]
+        let head = hash();
         prefix.truncate(keep.min(prefix.len()));
         Ok((
             Arc::new(Self {

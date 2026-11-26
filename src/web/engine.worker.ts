@@ -9,7 +9,7 @@
 // shared memory, including when there are no helpers. Without isolation or if startup fails, the single-thread build
 // runs and refuses pictures.
 
-import { readHeads } from '../../web/file-heads.js';
+import { readSourceHeads } from '../../web/file-heads.js';
 import type { HelperFiles } from './engine.helper';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
@@ -202,11 +202,11 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
-        const first = await readHeads(data.files);
+        const { heads, digests } = await readSourceHeads(data.files, engine.sourceHeaderBytes());
         const ids: number[] = [];
         try {
           for (const [i, { path, file }] of data.files.entries()) {
-            const id = engine.addFile(path, file, first[i]);
+            const id = engine.addFile(path, file, heads[i], digests[i]);
             ids.push(id);
             pageFiles.set(id, file);
           }

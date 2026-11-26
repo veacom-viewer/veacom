@@ -30,6 +30,10 @@ pub trait Source: Send + Sync {
     }
     /// Fills `output` with the bytes from `offset`; the engine asks only for bytes within `len`.
     fn read_at(&self, offset: u64, output: &mut [u8]) -> io::Result<()>;
+    /// SHA-256 of these exact header bytes when the browser already computed it during its file read.
+    fn prefetched_header_digest(&self, _prefix: &[u8]) -> Option<[u8; 32]> {
+        None
+    }
 }
 
 #[derive(Clone)]
@@ -328,6 +332,13 @@ impl File {
     }
     pub fn try_clone(&self) -> io::Result<File> {
         Ok(File(self.0.clone()))
+    }
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn prefetched_header_digest(&self, prefix: &[u8]) -> Option<[u8; 32]> {
+        match &self.handle().data {
+            Data::Source(source) => source.prefetched_header_digest(prefix),
+            Data::Memory(_) => None,
+        }
     }
     fn handle(&self) -> MutexGuard<'_, Handle> {
         self.0

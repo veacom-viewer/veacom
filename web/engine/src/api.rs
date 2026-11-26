@@ -252,10 +252,22 @@ pub fn progress() -> String {
 }
 
 /// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold the
-/// file's first 64 KiB, read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
+/// file's first 64 KiB, read by the page beforehand. The optional digest covers its first `sourceHeaderBytes()` bytes.
+/// Returns the number the file is known by (`volumeFiles`).
 #[wasm_bindgen(js_name = addFile)]
-pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
-    crate::blob::add(path, file, head)
+pub fn add_file(
+    path: &str,
+    file: web_sys::Blob,
+    head: Option<Vec<u8>>,
+    digest: Option<Vec<u8>>,
+) -> u32 {
+    crate::blob::add(path, file, head, digest)
+}
+
+/// Number of leading file bytes covered by the source integrity check.
+#[wasm_bindgen(js_name = sourceHeaderBytes)]
+pub fn source_header_bytes() -> usize {
+    veacom_core::source_file::HEADER_PREFIX
 }
 
 /// The numbers of the files listed now: an import and a removal forget the files no series reads from.
