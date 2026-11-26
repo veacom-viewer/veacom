@@ -168,7 +168,7 @@ export interface EngineExport { result: { directory: string; files: number; warn
 export interface EnginePixels { bytes: Uint8Array; pixelType: string; components: number; index?: number; sopInstanceUid?: string; sourceFrameNumber?: number }
 
 type HeaderRequest = { prepareImport: number; files: ImportFiles } | { discardImport: number };
-let prepared: { id: number; register: ReturnType<typeof prepareImportFiles> } | undefined;
+let prepared: { id: number; files: ReturnType<typeof prepareImportFiles> } | undefined;
 
 const ready = load().then(loaded => { engine = loaded.engine; return loaded; });
 const scope = self as unknown as { postMessage(message: unknown, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<EngineRequest | HeaderRequest | { cancelVolume: number }>) => void) | null };
@@ -215,9 +215,9 @@ async function answer(data: EngineRequest): Promise<void> {
         try {
           if (data.files === 'prepared') {
             if (prepared?.id !== data.id) throw new Error('The selected files are no longer available.');
-            const takeFiles = prepared.register;
+            const files = prepared.files;
             prepared = undefined;
-            await takeFiles(register);
+            await files.register(register);
           } else await readImportFiles(data.files, register);
           registered = true;
           value = JSON.parse(engine.importPaths(data.roots));
@@ -264,9 +264,12 @@ async function answer(data: EngineRequest): Promise<void> {
 
 scope.onmessage = ({ data }) => {
   if ('prepareImport' in data) {
-    prepared = { id: data.prepareImport, register: prepareImportFiles(data.files) };
+    prepared = { id: data.prepareImport, files: prepareImportFiles(data.files) };
   } else if ('discardImport' in data) {
-    if (prepared?.id === data.discardImport) prepared = undefined;
+    if (prepared?.id === data.discardImport) {
+      prepared.files.discard();
+      prepared = undefined;
+    }
   } else if ('cancelVolume' in data) {
     if (preparingVolume?.id === data.cancelVolume) preparingVolume.stop();
   } else { void answer(data); }

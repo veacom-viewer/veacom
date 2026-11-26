@@ -151,11 +151,11 @@ it('reads during engine startup and hands the buffered and remaining headers to 
     if (group === 1) firstRead();
     return bytes;
   });
-  const take = prepareImportFiles(files);
+  const prepared = prepareImportFiles(files);
   await first;
   await new Promise<void>(resolve => setImmediate(resolve));
   const registered: [string, number | undefined][] = [];
-  const completed = take((source, head) => { registered.push([source.path, head?.[0]]); });
+  const completed = prepared.register((source, head) => { registered.push([source.path, head?.[0]]); });
   try { assert.equal(registered.length, 16); }
   finally { release(); }
   await completed;
@@ -168,8 +168,21 @@ it('returns an early directory read error to the import that takes the selection
   const entry = { file: (_send: FileCallback, reject: ErrorCallback) => {
     reject(new DOMException('Selection lost', 'NotReadableError')); reportFailure();
   } } as FileSystemFileEntry;
-  const take = prepareImportFiles(importFileSources([{ path: 'folder/image.dcm', entry }]));
+  const prepared = prepareImportFiles(importFileSources([{ path: 'folder/image.dcm', entry }]));
   await failed;
   await new Promise<void>(resolve => setImmediate(resolve));
-  await assert.rejects(take(() => assert.fail('An unreadable selection registered a file')), /Selection lost/);
+  await assert.rejects(prepared.register(() => assert.fail('An unreadable selection registered a file')), /Selection lost/);
+});
+
+it('discards a prepared folder while a missing group still holds its file port open', async t => {
+  const channel = new MessageChannel();
+  const read = t.mock.method(Blob.prototype, 'arrayBuffer');
+  const prepared = prepareImportFiles({ count: 1, port: channel.port2 });
+  prepared.discard();
+  try {
+    await assert.rejects(prepared.register(() => assert.fail('A cancelled file was registered')), { name: 'AbortError' });
+    channel.port1.postMessage({ offset: 0, files: [{ path: 'late.dcm', file: new File(['late'], 'late.dcm') }] });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(read.mock.callCount(), 0);
+  } finally { channel.port1.close(); channel.port2.close(); }
 });
