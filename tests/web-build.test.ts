@@ -19,13 +19,18 @@ it('bounds the total bytes read ahead and preserves file indices when reads are 
   const file = new File([new Uint8Array(64 * 1024)], 'slice.dcm');
   let largeReads = 0;
   const large = { size: 17 * 1024 * 1024, slice: () => { largeReads++; return file; } };
-  const heads: (Uint8Array | undefined)[] = await readHeads([{ file: large }, ...Array(1100).fill({ file })]);
-  assert.equal(heads.length, 1101);
-  assert.equal(heads[0], undefined);
-  assert.equal(largeReads, 0);
-  assert.equal(heads[1024]?.length, 64 * 1024);
-  assert.equal(heads[1025], undefined);
-  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+  const files = [{ file: large }, ...Array(1100).fill({ file })];
+  const batches: number[] = [];
+  for (const wait of [undefined, (offset: number) => { batches.push(offset); return Promise.resolve(); }]) {
+    const heads: (Uint8Array | undefined)[] = await readHeads(files, wait);
+    assert.equal(heads.length, 1101);
+    assert.equal(heads[0], undefined);
+    assert.equal(largeReads, 0);
+    assert.equal(heads[1024]?.length, 64 * 1024);
+    assert.equal(heads[1025], undefined);
+    assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+  }
+  assert.deepEqual(batches, Array.from({ length: Math.ceil(files.length / 16) }, (_, i) => i * 16));
 });
 
 it('returns the exact prefix for each source across batches, empty files and a file changed on disk', async () => {
