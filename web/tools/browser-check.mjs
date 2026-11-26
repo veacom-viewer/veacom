@@ -338,6 +338,35 @@ async function checkMeasurementTabs(browser, url) {
     assert.deepEqual(displayed.sort(), [...ids].sort());
     await first.locator('[data-measurement-save="saved"]').waitFor();
     console.log('Two browser tabs kept both measurements on the same source image.');
+    async function replaceStudy(folder, patientId, sop, expectedIds) {
+      await first.locator('[data-action="series-pick"]').first().click({ button: 'right' });
+      await first.locator('[data-action="series-clear"]').click();
+      await first.getByTestId('series-remove-confirm').click();
+      await first.getByTestId('welcome-open-files').waitFor();
+      await first.waitForFunction(async ()=>(await window.veacom.listSeries()).series.length===0);
+      const picked=first.waitForEvent('filechooser');
+      await first.getByTestId('welcome-open-files').click();
+      await (await picked).setFiles(studyFiles.slice(0,3).map(f=>path.join(folder,f)));
+      await first.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded);
+      await first.evaluate(()=>window.__VEACOM_TEST__.setView({slice:1}));
+      await first.locator('[data-testid="annotation-overlay"][data-mode="source"][data-slice="1"]').waitFor();
+      await first.locator('[data-measurement-save="saved"]').waitFor();
+      if (expectedIds.length) await first.locator('[data-annotation-id="' + expectedIds[0] + '"]').waitFor();
+      const found=await first.locator(selector).evaluateAll(marks=>marks.map(m=>m.dataset.annotationId).sort());
+      assert.deepEqual(found,[...expectedIds].sort());
+      const identity=await first.evaluate(async ()=>{
+        const bridge=window.veacom,{generation}=await bridge.getCoreState(),[item]=(await bridge.listSeries()).series;
+        const drawn=document.querySelector('canvas[data-series-id]'),index=Number(drawn.dataset.slice);
+        const pixels=await bridge.fetchPixels({seriesId:item.id,generation,revision:item.catalogRevision,index});
+        return [item.id===drawn.dataset.seriesId,item.patientId,pixels.headers.get('X-SOP-Instance-UID')];
+      });
+      assert.deepEqual(identity,[true,patientId,sop]);
+      console.log('Same-tab recorded measurements',JSON.stringify({patientId,sourceSOP:sop,expected:expectedIds.length,displayed:found.length}));
+    }
+    const prefix='2.25.302617644913925066835652647005517224101';
+    await replaceStudy(mrStudy,'SYNTHETIC-OTHER',prefix+'.10.3.2',[]);
+    await replaceStudy(study,'SYNTHETIC-SMOKE',prefix+'.3.2',ids);
+
   } finally { await context.close(); }
 }
 
