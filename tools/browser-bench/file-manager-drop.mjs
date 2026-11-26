@@ -83,10 +83,13 @@ try {
       hold.resolve();
       await page.waitForFunction(()=>window.__VEACOM_TEST__&&document.documentElement.dataset.engineThreads);
       const early=await page.evaluate(()=>window.nativeDrags);
+      const afterFirst={visibility:await page.evaluate(()=>document.visibilityState),pages:page.context().pages().length};
       if(label==='before'){
         await page.getByTestId('welcome-open-files').waitFor();
         assert.equal((await page.evaluate(()=>window.veacom.listSeries())).series.length,0);
         await page.screenshot({path:path.join(out,prefix+'-early.png')});
+        await page.bringToFront();
+        await page.waitForFunction(()=>document.visibilityState==='visible');
         await drag();
       }
       await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded,undefined,{timeout:18000});
@@ -100,7 +103,7 @@ try {
       assert.equal(receipt.uid,uid);assert.equal(receipt.patient,'BENCH-ct-300');assert.equal(receipt.depth,300);assert.equal(receipt.index,299);
       assert.equal(early.filter(e=>e.type==='drop'&&e.trusted).length,Number(label==='after'));
       await page.locator('canvas[data-series-id][data-slice]').first().screenshot({path:path.join(out,prefix+'-ct.png')});
-      results.push({label,isolated,early,...receipt});
+      results.push({label,isolated,early,afterFirst,...receipt});
     }catch(e){
       console.log('Observed events',await page.evaluate(()=>window.nativeDrags),'layout',await command('wmctrl','-lxG'));
       await command('import','-window','root',path.join(out,prefix+'-failure.png'));
