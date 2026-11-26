@@ -143,13 +143,6 @@ async function importPickedFiles(page, files, kind = 'files') {
   return frames;
 }
 
-async function checkFilePicker(page) {
-  const frames = await importPickedFiles(page, studyFiles.slice(0, 2).map(name => ({
-    name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
-  })));
-  assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
-}
-
 async function dropOnPage(devtools, files, x = 100, y = 120) {
   for (const type of ['dragEnter', 'dragOver', 'drop']) {
     await devtools.send('Input.dispatchDragEvent', { type, x, y, data: { items: [], files, dragOperationsMask: 1 } });
@@ -454,13 +447,13 @@ function checkPatientMedia(archive, source) {
   assert.deepEqual(digests.sort(), Object.values(originals).sort());
 }
 
-async function reopenPatientMedia(browser, url, file, modality) {
+async function checkChosenStudy(browser, url, files, modality, frameCount) {
   const page = await browser.newPage();
   try {
     await page.goto(url);
     const chooser = page.waitForEvent('filechooser');
     await page.getByTestId('welcome-open-files').click();
-    await (await chooser).setFiles(file);
+    await (await chooser).setFiles(files);
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
     await page.locator('canvas[data-series-id]').first().waitFor();
     const opened = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(series => ({
@@ -468,7 +461,7 @@ async function reopenPatientMedia(browser, url, file, modality) {
     })));
     const root = '2.25.302617644913925066835652647005517224101' + (modality === 'MR' ? '.10' : '');
     assert.deepEqual(opened, [{ patient: modality === 'CT' ? 'SYNTHETIC-SMOKE' : 'SYNTHETIC-OTHER', modality,
-      instances: studyFiles.map((_, i) => root + '.3.' + (i + 1)) }]);
+      instances: Array.from({ length: frameCount }, (_, i) => root + '.3.' + (i + 1)) }]);
   } finally { await page.close(); }
 }
 
@@ -523,7 +516,7 @@ async function checkPatientDrop(browser, url, folders) {
       const source = modality === 'CT' ? study : mrStudy;
       if (folders) {
         checkPatientMedia(archive, source);
-        await reopenPatientMedia(browser, url, { name: download.suggestedFilename(), mimeType: 'application/zip', buffer }, modality);
+        await checkChosenStudy(browser, url, { name: download.suggestedFilename(), mimeType: 'application/zip', buffer }, modality, slices);
       } else {
         assert.equal(archive.length, 1);
         assert.match(archive[0].name, /(?:^|\/)DICOM\/IM000001$/);
@@ -809,7 +802,10 @@ try {
       const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);
       check(model.ok && model.channels === 26 && model.finite, `landmark model: ${JSON.stringify(model)}`);
       check(model.threads === model.expected && model.kept === 2, `landmark model threads and cache: ${JSON.stringify(model)}`);
-      await checkFilePicker(page);
+      const sameNamedSlices = studyFiles.slice(0, 2).map(name => ({
+        name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
+      }));
+      await checkChosenStudy(browser, page.url(), sameNamedSlices, 'CT', sameNamedSlices.length);
       await page.evaluate(checkQueuedImports);
       await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
       await checkArchiveLimit(page);
