@@ -33,7 +33,7 @@
       "mouse-middle-polyline", "mouse-middle-probe", "mouse-middle-rectangle", "mouse-middle-scroll", "mouse-middle-selected", "mouse-middle-text", "mouse-middle-window", "mouse-middle-zoom",
       "mouse-right-angle", "mouse-right-arrow", "mouse-right-binding", "mouse-right-cobb", "mouse-right-crosshair", "mouse-right-ellipse", "mouse-right-length", "mouse-right-pan",
       "mouse-right-polygon", "mouse-right-polyline", "mouse-right-probe", "mouse-right-rectangle", "mouse-right-scroll", "mouse-right-selected", "mouse-right-text", "mouse-right-window",
-      "mouse-right-zoom", "notice", "notice-action", "notice-dismiss", "oblique-handle", "oblique-pitch", "oblique-reset", "oblique-yaw", "open-folder",
+      "mouse-right-zoom", "notice", "notice-action", "notice-dismiss", "oblique-handle", "oblique-line-move", "oblique-pitch", "oblique-reset", "oblique-yaw", "open-folder",
       "operation-cancel", "other", "overlay-show-annotations", "overlay-show-crosshair", "overlay-show-overlay", "overlay-show-references", "palette", "patient-overlay", "pet-acquisition", "pet-flags", "pet-compare-flags", "pet-glucose", "pet-glucose-unit", "pet-limited-view", "pet-prior", "pet-values", "lesion-cautions", "warning-dismiss", "pointer-readout",
       "patient-remove", "pinch-zoom", "plane-axial", "plane-coronal", "plane-cycle", "plane-oblique", "plane-sagittal", "plane-source", "point-angle", "point-arrow",
       "point-cobb", "point-crosshair", "point-ellipse", "point-length", "point-pan", "point-polygon", "point-polyline", "point-probe",
