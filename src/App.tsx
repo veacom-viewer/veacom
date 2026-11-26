@@ -33,7 +33,7 @@ import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
-import { patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
+import { displayWindowWidth, patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
 import { SourceFrameCache } from './sourceFrames';
 import { useEngineRecovery } from './useEngineRecovery';
 import { captureViewportCanvas, captureViewportPng } from './export-video';
@@ -57,7 +57,7 @@ import { LesionTable } from './components/LesionTable';
 import { PetReportCopy } from './components/PetReportCopy';
 import { priorLesions } from './imaging/priorLesions';
 import { useAnnotationSummary } from './imaging/useAnnotationSummary';
-import type { Annotation, CaliperKind, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, Volume, WheelAction } from './model';
+import type { Annotation, CaliperKind, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, VoiFunction, Volume, WheelAction } from './model';
 import { chooseLocale, errorMessage, LOCALES, t, type MessageKey, type MessageParams } from './i18n';
 import { useTranslation } from './i18n/react';
 import { warningTexts } from './i18n/core';
@@ -81,7 +81,7 @@ import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
 import { sequenceGuess, seriesName, shownGuess, sortStudySeries } from './ui/seriesNames';
-import { dicomDate } from './ui/overlayCorners';
+import { dicomDate, general } from './ui/overlayCorners';
 import { withFound, withImported } from './ui/seriesOrder';
 // Tokens first: component rules in styles.css must win over the shared ones at equal specificity.
 import './theme.css';
@@ -248,7 +248,7 @@ function readSettings(): Settings {
 function defaultView(series: Series): ViewState {
   const slice = openingSlice(series), frame = series.frameMetadata?.[slice];
   return { ...DEFAULT_VIEW, pan: [0, 0], slice, windowCenter: frame?.windowCenter ?? series.windowCenter,
-    windowWidth: Math.max(1, frame?.windowWidth ?? series.windowWidth), ...petLook(series) };
+    windowWidth: displayWindowWidth(frame?.windowWidth ?? series.windowWidth, frame?.voiFunction), ...petLook(series) };
 }
 /** How a series opens beside a pane of another study in the comparison screen: in the same kind of view (where that
  * pane shows a reconstructed plane, with its tilt and slab, or a turning MIP, so does this one), level with it (by
@@ -280,6 +280,19 @@ const PET_LAYOUTS = [
 ] as const;
 function readKeptArrangements(): Kept {
   try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
+}
+
+function WindowInput({ kind, value, curve, disabled, change }: { kind: 'width' | 'level'; value: number; curve?: VoiFunction; disabled: boolean; change: (value: number) => void }) {
+  const { t } = useTranslation();
+  const [draft, setDraft] = useState<string | null>(null);
+  const label = t(kind === 'width' ? 'inspector.windowWidth' : 'inspector.windowLevel');
+  return <label>{label}<input data-action={kind === 'width' ? 'window-width-input' : 'window-level-input'} aria-label={label} type="number" step="any"
+    min={kind === 'width' ? (curve ? 0 : 1) : undefined} disabled={disabled} value={draft ?? general(value)}
+    onBlur={() => setDraft(null)} onChange={event => {
+      const field = event.currentTarget, next = field.valueAsNumber;
+      setDraft(field.value);
+      if (Number.isFinite(next) && (kind === 'level' || displayWindowWidth(next, curve) === next)) change(next);
+    }} /></label>;
 }
 
 function windowClass(volume: Volume | undefined, view: ViewState, autoWindows: Map<string, string>, slotId: string): string {
@@ -439,7 +452,7 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
       <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${shownSlice(volume.series, requestedView, atSlice, count, joined).number} / ${at.total}`}
         label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
         onPosition={toPlace} touchpadSpeed={interaction.touchpadSpeed} />
-      <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${Math.round(displayView.windowWidth)} · L ${Math.round(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
+      <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${general(displayView.windowWidth)} · L ${general(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
       <span className="zoom-indicator">{Math.round(displayView.zoom * 100)}%</span>
     </footer>}
   </section>;
@@ -1878,7 +1891,7 @@ export default function App() {
       return current.map(original => {
         if (original.id === slotId) return { ...original, view: nextView };
         if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
-          ...(sharedWindow ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: nextView.windowMode } : {}),
+          ...(sharedWindow ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: nextView.windowMode, sharedWindow: nextView.sharedWindow } : {}),
           ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
         let slot = original;
         const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
@@ -3597,7 +3610,10 @@ export default function App() {
         </div>}
         {settings.panel === 'display' && <div className="inspector-panel display-panel" role="tabpanel" id="inspector-panel-display" aria-labelledby="inspector-tab-display" tabIndex={0}>
           <PanelSection id="window" title={t('inspector.windowSection')} open={openSections.has('window')} onToggle={toggleSection}>
-            <div className="field-pair"><label>{t('inspector.windowWidth')}<input data-action="window-width-input" aria-label={t('inspector.windowWidth')} type="number" min={1} value={Math.round(activeDisplayView.windowWidth)} disabled={!activeVolume || rgb} onChange={event => updateView(activeSlot.id, { windowWidth: Math.max(1, Number(event.target.value)) })} /></label><label>{t('inspector.windowLevel')}<input data-action="window-level-input" aria-label={t('inspector.windowLevel')} type="number" value={Math.round(activeDisplayView.windowCenter)} disabled={!activeVolume || rgb} onChange={event => updateView(activeSlot.id, { windowCenter: Number(event.target.value) })} /></label></div>
+            <div className="field-pair" key={activeImageSeries?.id}>
+              <WindowInput kind="width" value={activeDisplayView.windowWidth} curve={activeDisplayView.voiFunction} disabled={!activeVolume || rgb} change={windowWidth => updateView(activeSlot.id, { windowWidth })} />
+              <WindowInput kind="level" value={activeDisplayView.windowCenter} disabled={!activeVolume || rgb} change={windowCenter => updateView(activeSlot.id, { windowCenter })} />
+            </div>
             <div className="preset-buttons" role="group" aria-label={t('toolbar.windowPresets')}>{PRESETS.map(preset => <button data-action={`preset-${kebab(preset.key)}`} key={preset.key} type="button" aria-pressed={currentPreset?.key === preset.key} className={currentPreset?.key === preset.key ? 'is-active' : ''} disabled={!activeImageSeries || rgb} onClick={() => updateView(activeSlot.id, { windowWidth: preset.width, windowCenter: preset.center })}><span>{presetName(preset)}</span><small>{preset.width} / {preset.center}</small></button>)}</div>
             <div className="inline-actions"><button data-action="preset-auto" type="button" className="text-button" disabled={!activeVolume || rgb || framePending} onClick={applyAutoWindow}>{t('inspector.autoWindowRange')}</button><button type="button" className="text-button" disabled={!activeVolume || rgb} onClick={applyDicomWindow}>{t('toolbar.dicomWindow')}</button></div>
           </PanelSection>

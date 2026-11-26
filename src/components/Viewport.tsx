@@ -791,8 +791,9 @@ export function Viewport(props: ViewportProps) {
     const slop = !twoPointTools.has(active.mode) ? 2 : active.pointerType !== 'mouse' ? 12 : twoClick.current ? 8 : 4;
     active.moved = active.moved || Math.hypot(dx, dy) > slop;
     if (active.mode === 'window' && latest.current.volume.series.components !== 3) {
-      const gain = Math.max(1, initial.windowWidth) / 300;
-      changeView({ windowWidth: Math.max(1, initial.windowWidth + dx * gain), windowCenter: initial.windowCenter - dy * gain });
+      const gain = initial.windowWidth / 300;
+      const width = initial.voiFunction ? initial.windowWidth * Math.exp(dx / 300) : Math.max(1, initial.windowWidth + dx * gain);
+      changeView({ windowWidth: width, windowCenter: initial.windowCenter - dy * gain });
     } else if (active.mode === 'pan') {
       changeView({ pan: [initial.pan[0] + dx, initial.pan[1] + dy] });
     } else if (active.mode === 'zoom') {
@@ -1038,7 +1039,7 @@ export function Viewport(props: ViewportProps) {
   const windowText = props.volume.series.components === 3 ? 'RGB'
     : overlayView.voiLut !== undefined ? `${t('viewport.voiLut')}${props.volume.series.voiLuts?.[overlayView.voiLut]?.explanation ? ` · ${props.volume.series.voiLuts[overlayView.voiLut].explanation}` : ''}`
     // A PET with SUV reads its window in SUV (imaging/quantity.ts); every other series in its stored values.
-    : suvWindowText(props.volume.series, overlayView) ?? `W ${Math.round(overlayView.windowWidth)} / L ${Math.round(overlayView.windowCenter)} ${storedUnit(props.volume.series)}${overlayView.voiFunction ? ` · ${t(overlayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}${windowPreset ? ` [${t(`preset.${windowPreset.key}` as const)}]` : ''}`;
+    : suvWindowText(props.volume.series, overlayView) ?? `W ${general(overlayView.windowWidth)} / L ${general(overlayView.windowCenter)} ${storedUnit(props.volume.series)}${overlayView.voiFunction ? ` · ${t(overlayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}${windowPreset ? ` [${t(`preset.${windowPreset.key}` as const)}]` : ''}`;
   const windowLine = windowText;
   const tilt = source ? 0 : obliqueAngle(props.volume.series, overlayView);
   // The acquired images are named by their plane too ("aksiyel"), as VEAcom 1.x did; a click on it changes the plane.
