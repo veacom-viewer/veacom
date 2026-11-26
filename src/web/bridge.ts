@@ -13,7 +13,8 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 import { createLabelFolder, type FolderEntry } from './labelFolder';
-import { droppedFileGroups, importFileSources, watchFileDrops, type CapturedDrop, type FileSource, type SelectedFile } from './droppedFiles';
+import { droppedFileGroups, importFileSources, type FileSource, type SelectedFile } from './droppedFiles';
+import { watchFileDrops, type CapturedDrop } from './fileDropCapture';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -117,7 +118,8 @@ function download(name: string, data: Blob): void {
 }
 
 export function createWebBridge(): DesktopBridge {
-  const drops = watchFileDrops(document);
+  const drops = window.veacomFileDrops ?? watchFileDrops(document);
+  delete window.veacomFileDrops;
   let locale = storedLocale();
   let generation = 0, restartCount = 0, crashes = 0, requestId = 0, selectionNumber = 0;
   let worker: Worker | undefined;
