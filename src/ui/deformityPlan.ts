@@ -1,15 +1,18 @@
 // One film's plan, measured: what the panel lists and the pane draws, from the store (deformityStore.ts), the film's
 // calibration (imaging/radiograph.ts) and the kernel (imaging/deformity). Also where the kit's image pixels lie in the
-// viewer's patient coordinates, and how a moved fragment is shown as a view of the same film.
+// viewer's patient coordinates, and how moved fragments are shown as views of the same film.
 import type { Series, Vec3, ViewState } from '../model';
 import { indexToWorld, screenMapping, sub, worldToIndex, worldToScreen, type ScreenMapping } from '../imaging/geometry';
 import { millimetresPerPixel, projectionOf } from '../imaging/radiograph';
 import { coras, malalignmentTest, type Cora, type Step } from '../imaging/deformity/analysis';
-import { lateralOnImage, measureLeg, type Leg, type LegInput, type Value } from '../imaging/deformity/measure';
-import { fragmentFor, moved, paleyRule, simulate, type Osteotomy, type Simulation } from '../imaging/deformity/osteotomy';
+import { lateralOnImage, measureLeg, toImage, type Leg, type LegInput, type Value } from '../imaging/deformity/measure';
+import {
+  coraCut, fragmentFor, insertFragmentVertex, MAX_OSTEOTOMIES, moved, paleyRule, removeFragmentVertex,
+  simulateMany, type CutSimulation, type MultiSimulation, type Osteotomy,
+} from '../imaging/deformity/osteotomy';
 import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
-import type { Point } from '../imaging/deformity/plane';
-import { activePlan, withPlan, type FilmPlans, type LegPlan, type ModelRef, type Placing } from './deformityStore';
+import { dot, isIdentityRigid, type Point } from '../imaging/deformity/plane';
+import { activeCutIndex, activePlan, newCutId, withPlan, type FilmPlans, type LegPlan, type ModelRef, type Placing } from './deformityStore';
 
 export interface PlanView {
   film: FilmPlans; plan: LegPlan;
@@ -21,7 +24,10 @@ export interface PlanView {
   input: LegInput; leg: Leg;
   cora: { femur: Cora | null; tibia: Cora | null };
   steps: Step[];
-  simulation: Simulation | null;
+  simulation: MultiSimulation | null;
+  /** Paley rule per cut (in `plan.osteotomies` order; null without a CORA or calibration). */
+  rules: Array<ReturnType<typeof paleyRule> | null>;
+  /** Paley rule of the currently selected cut, or null. */
   rule: ReturnType<typeof paleyRule> | null;
 }
 
@@ -32,11 +38,13 @@ export function planView(film: FilmPlans, series: Series, plan: LegPlan = active
   const input: LegInput = { side: plan.side, points: plan.points, mmPerPixel: mm, lateral };
   const leg = measureLeg(input);
   const cora = coras(leg, mm, lateral);
-  const osteotomy = plan.osteotomy;
-  const simulation = osteotomy ? simulate(input, leg, osteotomy) : null;
-  const bone = osteotomy ? cora[osteotomy.bone] : null;
-  return { film, plan, mm, lateral, askRight, input, leg, cora, steps: malalignmentTest(leg), simulation,
-    rule: osteotomy && bone ? paleyRule(osteotomy, bone, mm) : null };
+  const simulation = plan.osteotomies.length ? simulateMany(input, leg, plan.osteotomies) : null;
+  const rules = plan.osteotomies.map(cut => {
+    const boneCora = cora[cut.bone];
+    return boneCora ? paleyRule(cut, boneCora, mm) : null;
+  });
+  const selected = activeCutIndex(plan);
+  return { film, plan, mm, lateral, askRight, input, leg, cora, steps: malalignmentTest(leg), simulation, rules, rule: selected >= 0 ? rules[selected] ?? null : null };
 }
 
 /**
@@ -60,7 +68,7 @@ export function worldToPixel(frame: Series, world: Vec3): Point {
 }
 
 /**
- * The view that draws the film with the fragment's motion applied: turned by the motion's angle and panned, so that
+ * The view that draws the film with a fragment's motion applied: turned by the motion's angle and panned, so that
  * each point of the film lands where the motion takes it in the pane (`worldToScreen(mapping(result), p)` equals
  * `worldToScreen(mapping(view), T(p))`). The renderer then samples the film's own pixels; nothing is resampled into a
  * new image. `degrees` turns from the image's +x towards +y, as the view's rotation does.
@@ -78,11 +86,36 @@ export function movedView(frame: Series, view: ViewState, size: [number, number]
 /** The screen point of an image pixel point in a pane. */
 export const pixelToScreen = (frame: Series, mapping: ScreenMapping, p: Point): [number, number] => worldToScreen(mapping, pixelToWorld(frame, p));
 
-/** The moved hinge and the motion's turn, ready for `movedView`; null without a simulation. */
+export interface FragmentLayer {
+  cut: CutSimulation;
+  hinge: Point;
+  hingeMoved: Point;
+  degrees: number;
+  /** Whether this cut has non-zero local rotation or shift. */
+  localMoving: boolean;
+  /** Whether this fragment has non-zero cumulative rotation or shift. */
+  moving: boolean;
+}
+
+/** Per-cut fragment layer parameters in proximal-to-distal order, ready for `movedView`. */
+export function fragmentViews(view: PlanView): FragmentLayer[] {
+  const simulation = view.simulation;
+  if (!simulation) return [];
+  return simulation.cuts.map(cut => {
+    const hinge = toImage(cut.totalMotion.pivot, view.mm);
+    const hingeMoved = moved(cut.totalMotion, hinge, view.mm);
+    return {
+      cut, hinge, hingeMoved, degrees: cut.totalMotion.degrees,
+      localMoving: !isIdentityRigid(cut.localMotion),
+      moving: !isIdentityRigid(cut.totalMotion),
+    };
+  });
+}
+
+/** The first cut's moved hinge and turn, ready for `movedView`; null without a simulation. */
 export function fragmentView(view: PlanView): { hinge: Point; hingeMoved: Point; degrees: number } | null {
-  const simulation = view.simulation, osteotomy = view.plan.osteotomy;
-  if (!simulation || !osteotomy) return null;
-  return { hinge: osteotomy.hinge, hingeMoved: moved(simulation.motion, osteotomy.hinge, view.mm), degrees: simulation.motion.degrees };
+  const first = fragmentViews(view).at(0);
+  return first ? { hinge: first.hinge, hingeMoved: first.hingeMoved, degrees: first.degrees } : null;
 }
 
 export { sub };
@@ -185,6 +218,118 @@ export function clearSuggestions(film: FilmPlans): FilmPlans {
   return plan.suggested ? withPlan(film, { ...plan, suggested: undefined }) : film;
 }
 
+/** Adds a cut to the active plan (up to MAX_OSTEOTOMIES) and selects it. */
+function appendOsteotomy(film: FilmPlans, osteotomy: Osteotomy): FilmPlans {
+  const plan = activePlan(film);
+  if (plan.osteotomies.length >= MAX_OSTEOTOMIES) return film;
+  const entry: Osteotomy = { ...osteotomy, id: osteotomy.id ?? newCutId() };
+  const osteotomies = [...plan.osteotomies, entry];
+  return withPlan(film, { ...plan, osteotomies, activeCut: osteotomies.length - 1 });
+}
+
+/** Pre-places a Paley Rule 1 osteotomy right at the bone's computed CORA. */
+export function addCoraCut(film: FilmPlans, bone: 'femur' | 'tibia', series: Series, wedge: Osteotomy['wedge'] = 'opening'): FilmPlans {
+  const plan = activePlan(film);
+  if (plan.osteotomies.length >= MAX_OSTEOTOMIES) return film;
+  const view = planView(film, series, plan);
+  const cora = view.cora[bone];
+  if (!cora) return film;
+  const cut = coraCut(cora, view.leg, view.input, wedge);
+  return cut ? appendOsteotomy(film, cut) : film;
+}
+
+/** Patches one osteotomy of the active plan. */
+export function updateOsteotomy(film: FilmPlans, cutIndex: number, patch: Partial<Osteotomy>): FilmPlans {
+  const plan = activePlan(film);
+  if (cutIndex < 0 || cutIndex >= plan.osteotomies.length) return film;
+  const osteotomies = plan.osteotomies.map((item, i) => i === cutIndex ? { ...item, ...patch } : item);
+  return withPlan(film, { ...plan, osteotomies });
+}
+
+/** Removes one osteotomy from the active plan and adjusts the selected cut index. */
+export function removeOsteotomy(film: FilmPlans, cutIndex: number): FilmPlans {
+  const plan = activePlan(film);
+  if (cutIndex < 0 || cutIndex >= plan.osteotomies.length) return film;
+  const osteotomies = plan.osteotomies.filter((_, i) => i !== cutIndex);
+  const current = activeCutIndex(plan);
+  const activeCut = !osteotomies.length ? undefined : Math.min(osteotomies.length - 1, current > cutIndex ? current - 1 : current);
+  return withPlan(film, { ...plan, osteotomies, activeCut });
+}
+
+/** Selects which osteotomy is active in the panel and on canvas. */
+export function selectOsteotomy(film: FilmPlans, cutIndex: number): FilmPlans {
+  const plan = activePlan(film);
+  if (cutIndex < 0 || cutIndex >= plan.osteotomies.length || activeCutIndex(plan) === cutIndex) return film;
+  return withPlan(film, { ...plan, activeCut: cutIndex });
+}
+
+/** Resets lateral/distal shifts and lengthening of one cut back to zero. */
+export function resetCutShifts(film: FilmPlans, cutIndex: number): FilmPlans {
+  const plan = activePlan(film), cut = cutIndex >= 0 ? plan.osteotomies.at(cutIndex) : undefined;
+  if (!cut || (cut.shiftLateral === 0 && cut.shiftDistal === 0 && cut.lengthen === 0)) return film;
+  return updateOsteotomy(film, cutIndex, { shiftLateral: 0, shiftDistal: 0, lengthen: 0 });
+}
+
+/** Resets one cut's fragment polygon back to the default 4-corner auto-polygon. */
+export function resetCutFragment(film: FilmPlans, cutIndex: number, series: Series): FilmPlans {
+  const plan = activePlan(film), cut = cutIndex >= 0 ? plan.osteotomies.at(cutIndex) : undefined;
+  if (!cut) return film;
+  const view = planView(film, series, plan);
+  const fragment = fragmentFor(cut.cut, cut.bone, view.leg, view.mm);
+  return fragment ? updateOsteotomy(film, cutIndex, { fragment }) : film;
+}
+
+/** Inserts a vertex along an edge of one cut's fragment polygon. */
+export function addFragmentVertex(film: FilmPlans, cutIndex: number, edgeIndex: number, point: Point): FilmPlans {
+  const plan = activePlan(film), cut = cutIndex >= 0 ? plan.osteotomies.at(cutIndex) : undefined;
+  if (!cut) return film;
+  const fragment = insertFragmentVertex(cut.fragment, edgeIndex, point);
+  return fragment.length === cut.fragment.length ? film : updateOsteotomy(film, cutIndex, { fragment });
+}
+
+/** Deletes a vertex from one cut's fragment polygon (keeping at least 3 vertices). */
+export function deleteFragmentVertex(film: FilmPlans, cutIndex: number, vertexIndex: number): FilmPlans {
+  const plan = activePlan(film), cut = cutIndex >= 0 ? plan.osteotomies.at(cutIndex) : undefined;
+  if (!cut) return film;
+  const fragment = removeFragmentVertex(cut.fragment, vertexIndex);
+  return fragment.length === cut.fragment.length ? film : updateOsteotomy(film, cutIndex, { fragment });
+}
+
+/** Computes new `{ degrees, direction }` during a direct on-canvas rotation drag. */
+export function rotatedOsteotomy(
+  initialSignedDeg: number,
+  deltaDeg: number,
+  valgusSign: number,
+  snapDegrees: number,
+  fallbackDirection: Osteotomy['direction'],
+): Pick<Osteotomy, 'degrees' | 'direction'> {
+  let signed = initialSignedDeg + deltaDeg * valgusSign;
+  if (snapDegrees > 0) signed = Math.round(signed / snapDegrees) * snapDegrees;
+  signed = Math.max(-45, Math.min(45, signed));
+  const rounded = Math.round(Math.abs(signed) * 100) / 100;
+  const direction: Osteotomy['direction'] = rounded < 1e-6 ? fallbackDirection : signed >= 0 ? 'valgus' : 'varus';
+  return { degrees: rounded, direction };
+}
+
+/** Computes new `{ shiftLateral, shiftDistal }` during a direct on-canvas fragment translation drag. */
+export function translatedOsteotomy(
+  initialLateral: number,
+  initialDistal: number,
+  deltaPlane: Point,
+  axisDisplay: Point,
+  lateralDisplay: Point,
+  snapUnit: number,
+): Pick<Osteotomy, 'shiftLateral' | 'shiftDistal'> {
+  let shiftLateral = initialLateral + dot(deltaPlane, lateralDisplay);
+  let shiftDistal = initialDistal + dot(deltaPlane, axisDisplay);
+  if (snapUnit > 0) {
+    shiftLateral = Math.round(shiftLateral / snapUnit) * snapUnit;
+    shiftDistal = Math.round(shiftDistal / snapUnit) * snapUnit;
+  }
+  const clampShift = (v: number) => Math.round(Math.max(-200, Math.min(200, v)) * 100) / 100;
+  return { shiftLateral: clampShift(shiftLateral), shiftDistal: clampShift(shiftDistal) };
+}
+
 /** A click on the film while the kit asks for a point: the film after it, and what the next click places. */
 export function place(film: FilmPlans, placing: Placing, point: Point, series: Series): { film: FilmPlans; placing: Placing | null } {
   const plan = activePlan(film);
@@ -211,14 +356,17 @@ export function place(film: FilmPlans, placing: Placing, point: Point, series: S
     const done = placing.kind === 'ruler' ? points.length === 2 : points.length === 8;
     return { film: { ...film, marker: { ...marker, points } }, placing: done ? null : placing };
   }
+  if (placing.kind === 'lasso') return { film, placing };
   if (!placing.first) return { film, placing: { ...placing, first: point } };
   const cut: [Point, Point] = [placing.first, point];
   const view = planView(film, series);
   const fragment = fragmentFor(cut, placing.bone, view.leg, view.mm);
-  if (!fragment) return { film, placing: null };
-  const osteotomy: Osteotomy = { bone: placing.bone, cut, hinge: point, wedge: plan.osteotomy?.wedge ?? 'opening', degrees: plan.osteotomy?.degrees ?? 0,
-    direction: plan.osteotomy?.direction ?? 'valgus', shiftLateral: 0, shiftDistal: 0, lengthen: 0, fragment };
-  return { film: withPlan(film, { ...plan, osteotomy }), placing: null };
+  if (!fragment || plan.osteotomies.length >= MAX_OSTEOTOMIES) return { film, placing: null };
+  const osteotomy: Osteotomy = {
+    id: newCutId(), bone: placing.bone, cut, hinge: point, wedge: 'opening', degrees: 0,
+    direction: 'valgus', shiftLateral: 0, shiftDistal: 0, lengthen: 0, fragment,
+  };
+  return { film: appendOsteotomy(film, osteotomy), placing: null };
 }
 
 /** Where a drag of a handle began: the film (filmKey), its active plan, and the pointer. */
@@ -233,8 +381,13 @@ export function dragContinues(held: DragContext, now: DragContext): 'move' | 'ig
 
 /** What a handle on the film moves. A suggestion dragged moves as a suggestion, and becomes the reader's landmark when it
  * is let go (settleMoved). */
-export type Handle = { kind: 'landmark'; name: LandmarkName; index: number } | { kind: 'suggestion'; name: LandmarkName; index: number } | { kind: 'marker'; index: number }
-  | { kind: 'cut'; index: 0 | 1 } | { kind: 'hinge' } | { kind: 'fragment'; index: number };
+export type Handle =
+  | { kind: 'landmark'; name: LandmarkName; index: number }
+  | { kind: 'suggestion'; name: LandmarkName; index: number }
+  | { kind: 'marker'; index: number }
+  | { kind: 'cut'; cutIndex?: number; index: 0 | 1 }
+  | { kind: 'hinge'; cutIndex?: number }
+  | { kind: 'fragment'; cutIndex?: number; index: number };
 
 export function moveHandle(film: FilmPlans, handle: Handle, point: Point): FilmPlans {
   const plan = activePlan(film);
@@ -254,14 +407,15 @@ export function moveHandle(film: FilmPlans, handle: Handle, point: Point): FilmP
     if (!film.marker || handle.index >= film.marker.points.length) return film;
     return { ...film, marker: { ...film.marker, points: film.marker.points.map((p, i) => i === handle.index ? point : p) } };
   }
-  const osteotomy = plan.osteotomy;
+  const cutIndex = handle.cutIndex ?? activeCutIndex(plan);
+  const osteotomy = cutIndex >= 0 ? plan.osteotomies[cutIndex] : undefined;
   if (!osteotomy) return film;
-  if (handle.kind === 'hinge') return withPlan(film, { ...plan, osteotomy: { ...osteotomy, hinge: point } });
+  if (handle.kind === 'hinge') return updateOsteotomy(film, cutIndex, { hinge: point });
   if (handle.kind === 'cut') {
     const cut: [Point, Point] = handle.index === 0 ? [point, osteotomy.cut[1]] : [osteotomy.cut[0], point];
     // The hinge follows the cut's hinge end while it sits on it.
     const onEnd = handle.index === 1 && osteotomy.hinge[0] === osteotomy.cut[1][0] && osteotomy.hinge[1] === osteotomy.cut[1][1];
-    return withPlan(film, { ...plan, osteotomy: { ...osteotomy, cut, hinge: onEnd ? point : osteotomy.hinge } });
+    return updateOsteotomy(film, cutIndex, { cut, hinge: onEnd ? point : osteotomy.hinge });
   }
-  return withPlan(film, { ...plan, osteotomy: { ...osteotomy, fragment: osteotomy.fragment.map((p, i) => i === handle.index ? point : p) } });
+  return updateOsteotomy(film, cutIndex, { fragment: osteotomy.fragment.map((p, i) => i === handle.index ? point : p) });
 }

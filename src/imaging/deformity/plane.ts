@@ -112,6 +112,94 @@ export const IDENTITY: Rigid = { pivot: [0, 0], degrees: 0, shift: [0, 0] };
 export function applyRigid(motion: Rigid, p: Point): Point {
   return add(add(motion.pivot, rotate(sub(p, motion.pivot), motion.degrees)), motion.shift);
 }
+/** Composes two rigid motions so `applyRigid(composeRigid(outer, inner), p)` equals `applyRigid(outer, applyRigid(inner, p))`. */
+export function composeRigid(outer: Rigid, inner: Rigid): Rigid {
+  const movedPivot = applyRigid(outer, applyRigid(inner, inner.pivot));
+  return { pivot: inner.pivot, degrees: inner.degrees + outer.degrees, shift: sub(movedPivot, inner.pivot) };
+}
+/** The exact inverse of a rigid motion: `applyRigid(invertRigid(m), applyRigid(m, p))` equals `p`. */
+export function invertRigid(motion: Rigid): Rigid {
+  return { pivot: motion.pivot, degrees: -motion.degrees, shift: scale(rotate(motion.shift, -motion.degrees), -1) };
+}
+/** Whether a rigid motion turns and shifts by less than `eps`. */
+export function isIdentityRigid(motion: Rigid, eps = 1e-9): boolean {
+  return Math.abs(motion.degrees) < eps && length(motion.shift) < eps;
+}
+
+/** Closest point on segment `[a, b]` to `p`, with its distance and parameter `t` in [0, 1]. */
+export function pointToSegment(p: Point, a: Point, b: Point): { distance: number; t: number; point: Point } {
+  const ab = sub(b, a), denom = dot(ab, ab);
+  const t = denom > 1e-24 ? Math.max(0, Math.min(1, dot(sub(p, a), ab) / denom)) : 0;
+  const closest = add(a, scale(ab, t));
+  return { distance: distance(p, closest), t, point: closest };
+}
+
+/** Signed area (shoelace) of a polygon; magnitude is its area. */
+export function polygonArea(polygon: readonly Point[]): number {
+  let sum = 0;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    sum += polygon[j][0] * polygon[i][1] - polygon[i][0] * polygon[j][1];
+  }
+  return Math.abs(sum) / 2;
+}
+
+/** Ramer–Douglas–Peucker simplification of a closed 2D polygon ring, keeping at least 3 vertices and at most `maxPoints`. */
+export function simplifyClosedPolygon(points: readonly Point[], tolerance: number, maxPoints: number): Point[] {
+  const deduped: Point[] = [];
+  for (const p of points) {
+    if (!p.every(Number.isFinite)) continue;
+    if (!deduped.length || distance(p, deduped[deduped.length - 1]) > 1e-6) deduped.push(p);
+  }
+  if (deduped.length > 1 && distance(deduped[0], deduped[deduped.length - 1]) <= 1e-6) deduped.pop();
+  if (deduped.length <= 3) return deduped;
+  const limit = Math.max(3, Math.floor(maxPoints));
+  // Anchor on three spread vertices so a closed ring keeps at least a non-degenerate triangle.
+  let farA = 0, distA = -1;
+  for (let i = 1; i < deduped.length; i++) {
+    const d = distance(deduped[0], deduped[i]);
+    if (d > distA) { distA = d; farA = i; }
+  }
+  let farB = -1, distB = -1;
+  for (let i = 1; i < deduped.length; i++) {
+    if (i === farA) continue;
+    const d = pointToSegment(deduped[i], deduped[0], deduped[farA]).distance;
+    if (d > distB) { distB = d; farB = i; }
+  }
+  const anchors = [0, farA, ...(farB > 0 ? [farB] : [])].sort((a, b) => a - b);
+  const run = (tol: number): Point[] => {
+    const keep = new Uint8Array(deduped.length);
+    const closed = [...deduped, deduped[0]];
+    const spans: Array<[number, number]> = [];
+    for (let i = 0; i < anchors.length; i++) {
+      keep[anchors[i]] = 1;
+      spans.push([anchors[i], i + 1 < anchors.length ? anchors[i + 1] : deduped.length]);
+    }
+    while (spans.length) {
+      const span = spans.pop();
+      if (!span) break;
+      const [start, end] = span;
+      let best = -1, bestDist = tol;
+      for (let i = start + 1; i < end; i++) {
+        const d = pointToSegment(closed[i], closed[start], closed[end]).distance;
+        if (d > bestDist) { bestDist = d; best = i; }
+      }
+      if (best < 0) continue;
+      keep[best] = 1;
+      spans.push([start, best], [best, end]);
+    }
+    return deduped.filter((_, i) => keep[i] !== 0);
+  };
+  let tol = Math.max(0, tolerance), result = run(tol);
+  for (let attempt = 0; result.length > limit && attempt < 24; attempt++) {
+    tol = tol > 0 ? tol * 1.5 : 0.5;
+    result = run(tol);
+  }
+  if (result.length > limit) {
+    const step = result.length / limit;
+    result = Array.from({ length: limit }, (_, i) => result[Math.floor(i * step)]);
+  }
+  return result;
+}
 
 /** Whether `p` lies inside the polygon (even–odd rule). */
 export function inside(p: Point, polygon: readonly Point[]): boolean {

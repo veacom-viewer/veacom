@@ -65,7 +65,8 @@ flip, and they do not change when the calibration does.
 | `calibration.appliedMarker` | The ball or ruler that set the saved scale, with its size and depth confirmation at the time. Older version 1 files restore their recorded mm per pixel with the generic manual label. |
 | `plans[].side` | R or L: the leg. |
 | `plans[].landmarks[]` | One label per landmark (below). |
-| `plans[].osteotomy` | The simulated osteotomy: bone, cut and hinge (pixels), wedge, angle and direction, shifts and lengthening (mm), the fragment's outline (pixels). |
+| `plans[].osteotomy` | The first simulated osteotomy (or null), retained for backward compatibility with single-level version 1 files: bone, cut and hinge (pixels), wedge, angle and direction, shifts and lengthening (mm), the fragment's outline (pixels). |
+| `plans[].osteotomies` | Present when a plan has multiple cuts (up to 6): the full list of osteotomies in the same shape as `osteotomy`. Opening a file reads `osteotomies` when present and falls back to `osteotomy` otherwise. |
 | `plans[].values` | The values as measured when saved, to read the file without VEAcom; VEAcom measures again when it opens a file and ignores them. |
 
 The file holds no name, patient ID, birth date, accession number, institution, date of the study or UID.

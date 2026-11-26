@@ -5,9 +5,9 @@ import type { Series } from '../model';
 import { calibrationState, manualCalibration, millimetresPerPixel, projectionOf, type CalibrationState, type FilmCalibration } from '../imaging/radiograph';
 import { t } from '../i18n';
 import { CONTOUR_MAXIMUM, isContour, LANDMARKS, type LandmarkName } from '../imaging/deformity/landmarks';
-import type { Osteotomy } from '../imaging/deformity/osteotomy';
+import { MAX_FRAGMENT_POINTS, MAX_OSTEOTOMIES, type Osteotomy } from '../imaging/deformity/osteotomy';
 import type { Point } from '../imaging/deformity/plane';
-import { activePlan, newPlan, type FilmPlans, type LegPlan, type Marker, type ModelRef, type Provenance } from './deformityStore';
+import { activePlan, newCutId, newPlan, type FilmPlans, type LegPlan, type Marker, type ModelRef, type Provenance } from './deformityStore';
 import { planView } from './deformityPlan';
 import { UNCHECKED } from '../imaging/deformity/suggest';
 import { MODEL } from './landmarkSuggestions';
@@ -43,6 +43,8 @@ export interface LandmarkLabel {
   construction?: 'hipCentreRing';
 }
 
+export type SerializedOsteotomy = Omit<Osteotomy, 'id'>;
+
 export interface PlanFile {
   schema: typeof PLAN_SCHEMA; version: typeof PLAN_VERSION;
   software: { name: 'VEAcom'; version: string; kernel: number };
@@ -55,9 +57,22 @@ export interface PlanFile {
     nominalScannedPixelSpacing?: [number, number]; magnification?: number; calibrationType?: string; marker: Marker | null;
     appliedMarker?: { method: Marker['method']; knownMm: number; depthConfirmed?: boolean } };
   active: number;
-  plans: Array<{ name: string; side: 'R' | 'L'; landmarks: LandmarkLabel[]; osteotomy: Osteotomy | null;
+  plans: Array<{ name: string; side: 'R' | 'L'; landmarks: LandmarkLabel[];
+    /** First osteotomy (or null), retained for backward compatibility with single-level v1 readers. */
+    osteotomy: SerializedOsteotomy | null;
+    /** Full list of osteotomies for multi-level plans (omitted when 0 or 1 cut). */
+    osteotomies?: SerializedOsteotomy[];
     /** The values as measured when saved, for reading the file without VEAcom; ignored when it is opened. */
     values: Record<string, { value: number | null; unit: string }> }>;
+}
+
+function serializeOsteotomy(o: Osteotomy): SerializedOsteotomy {
+  return {
+    bone: o.bone, cut: [[o.cut[0][0], o.cut[0][1]], [o.cut[1][0], o.cut[1][1]]], hinge: [o.hinge[0], o.hinge[1]],
+    wedge: o.wedge, degrees: o.degrees, direction: o.direction,
+    shiftLateral: o.shiftLateral, shiftDistal: o.shiftDistal, lengthen: o.lengthen,
+    fragment: o.fragment.map(p => [p[0], p[1]]),
+  };
 }
 
 export async function sha256(text: string): Promise<string> {
@@ -91,7 +106,9 @@ export async function planFile(film: FilmPlans, frame: Series, now = new Date())
         suggestionShown: Boolean(origin?.shown), ...(name === 'femoralHeadContour' && origin?.model && origin.construction ? { construction: origin.construction } : {}) });
       const landmarks = LANDMARKS.filter(name => plan.points[name]?.length).map(name => label(name, plan.points[name]!, plan.provenance[name] ?? plan.points[name]!.map(() => 'placed' as const)));
       if (view.leg.hip) landmarks.push({ ...label('hipCentre', [view.leg.hip.centre], ['derived']), derivedFrom: 'femoralHeadContour' });
-      return { name: plan.name, side: plan.side, landmarks, osteotomy: plan.osteotomy,
+      const serialized = plan.osteotomies.map(serializeOsteotomy);
+      return { name: plan.name, side: plan.side, landmarks, osteotomy: serialized[0] ?? null,
+        ...(serialized.length > 1 ? { osteotomies: serialized } : {}),
         values: Object.fromEntries(Object.values(view.leg.values).map(value => [value.key, { value: value.value, unit: value.unit }])) };
     }),
   };
@@ -102,7 +119,8 @@ const isObject = (value: unknown): value is Record<string, unknown> => typeof va
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value);
 
 /** Reads a plan file for this film: its plans and marker, or why it cannot be used. Points must lie within the film
- * or half its size around it; text is bounded; unknown fields are ignored. */
+ * or half its size around it; text is bounded; unknown fields are ignored. Accepts both multi-level `osteotomies` and
+ * legacy single-cut `osteotomy` schemas. */
 export async function parsePlanFile(text: string, film: FilmPlans, frame: Series): Promise<{ plans: LegPlan[]; active: number; marker: Marker | null; calibration: FilmCalibration; patientRight?: 'left' | 'right' } | { error: ParseError }> {
   if (text.length > MAX_BYTES) return { error: 'size' };
   let value: unknown;
@@ -119,6 +137,20 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
     if (!Array.isArray(list) || list.length > max) return null;
     const parsed = list.map(point);
     return parsed.every(Boolean) ? parsed as Point[] : null;
+  };
+  const parseCut = (o: unknown): Osteotomy | null => {
+    if (!isObject(o)) return null;
+    const cut = points(o.cut, 2), hinge = point(o.hinge), fragment = points(o.fragment, MAX_FRAGMENT_POINTS);
+    const numbers = [o.degrees, o.shiftLateral, o.shiftDistal, o.lengthen];
+    if (!cut || cut.length !== 2 || !hinge || !fragment || fragment.length < 3 || !numbers.every(finite)
+      || (o.bone !== 'femur' && o.bone !== 'tibia') || (o.wedge !== 'opening' && o.wedge !== 'closing')
+      || (o.direction !== 'valgus' && o.direction !== 'varus') || Math.abs(o.degrees as number) > 45
+      || numbers.slice(1).some(n => Math.abs(n) > 200)) return null;
+    return {
+      id: newCutId(), bone: o.bone, cut: [cut[0], cut[1]], hinge, wedge: o.wedge,
+      degrees: Math.abs(o.degrees as number), direction: o.direction,
+      shiftLateral: o.shiftLateral as number, shiftDistal: o.shiftDistal as number, lengthen: o.lengthen as number, fragment,
+    };
   };
   const text64 = (s: unknown) => typeof s === 'string' ? s.slice(0, 64) : '';
   const hash = (h: unknown) => typeof h === 'string' && /^[0-9a-f]{64}$/.test(h);
@@ -152,15 +184,19 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
       if (shown || from) plan.origin = { ...plan.origin, [name]: { ...(shown ? { shown: true as const } : {}), ...(from ? { model: from } : {}), ...(unchecked ? { unchecked: true as const } : {}),
         ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
     }
-    const o = entry.osteotomy;
-    if (isObject(o)) {
-      const cut = points(o.cut, 2), hinge = point(o.hinge), fragment = points(o.fragment, 32);
-      const numbers = [o.degrees, o.shiftLateral, o.shiftDistal, o.lengthen];
-      if (!cut || cut.length !== 2 || !hinge || !fragment || fragment.length < 3 || !numbers.every(finite) || (o.bone !== 'femur' && o.bone !== 'tibia')
-        || (o.wedge !== 'opening' && o.wedge !== 'closing') || (o.direction !== 'valgus' && o.direction !== 'varus') || Math.abs(o.degrees as number) > 45
-        || numbers.slice(1).some(n => Math.abs(n) > 200)) return { error: 'content' };
-      plan.osteotomy = { bone: o.bone, cut: [cut[0], cut[1]], hinge, wedge: o.wedge, degrees: Math.abs(o.degrees as number), direction: o.direction,
-        shiftLateral: o.shiftLateral as number, shiftDistal: o.shiftDistal as number, lengthen: o.lengthen as number, fragment };
+    if (entry.osteotomies !== undefined) {
+      if (!Array.isArray(entry.osteotomies) || entry.osteotomies.length > MAX_OSTEOTOMIES) return { error: 'content' };
+      const parsed: Osteotomy[] = [];
+      for (const item of entry.osteotomies) {
+        const cut = parseCut(item);
+        if (!cut) return { error: 'content' };
+        parsed.push(cut);
+      }
+      plan.osteotomies = parsed;
+    } else if (entry.osteotomy !== undefined && entry.osteotomy !== null) {
+      const cut = parseCut(entry.osteotomy);
+      if (!cut) return { error: 'content' };
+      plan.osteotomies = [cut];
     }
     plans.push(plan);
   }

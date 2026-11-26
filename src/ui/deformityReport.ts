@@ -70,7 +70,7 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
     y += 44;
     for (const [label, value, normal, caution] of section.rows) {
       context.font = font(31, 500); context.fillStyle = TEXT; context.fillText(label, left, y, width * 0.34);
-      context.font = font(31); context.fillText(value, left + width * 0.36, y, width * 0.34);
+      context.font = font(31); context.fillText(value, left + width * 0.36, y, normal ? width * 0.34 : width * 0.64);
       if (normal) { context.fillStyle = MUTED; context.font = font(27); context.fillText(normal, left + width * 0.72, y, width * 0.28); }
       // A caution takes the line under the value, across the value and normal columns, so it is not squeezed.
       if (caution) { y += 38; context.fillStyle = CAUTION; context.font = font(27); context.fillText(caution, left + width * 0.36, y, width * 0.64); }
