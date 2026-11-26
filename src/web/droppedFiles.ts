@@ -85,10 +85,11 @@ export function importFileSources(sources: FileSource[]): ImportFiles {
 }
 
 /** The engine registers the files in selection order, including those beyond the header read budget. */
-export async function readImportFiles(source: ImportFiles) {
-  if (Array.isArray(source)) return { files: source, heads: await readHeads(source) };
+export async function readImportFiles(source: ImportFiles, onFile?: (file: SelectedFile, head: Uint8Array | undefined) => void) {
+  const files = Array.isArray(source) ? source : new Array<SelectedFile>(source.count);
+  const register = onFile && ((index: number, head: Uint8Array | undefined) => onFile(files[index], head));
+  if (Array.isArray(source)) return { files, heads: await readHeads(files, undefined, register) };
   const { port, count } = source;
-  const files = new Array<SelectedFile>(count);
   const arrived: (() => void)[] = [];
   const groups = Array.from({ length: Math.ceil(count / HEAD_GROUP_SIZE) }, (_, index) =>
     new Promise<void>(resolve => { arrived[index] = resolve; }));
@@ -107,7 +108,7 @@ export async function readImportFiles(source: ImportFiles) {
     const heads = await readHeads(files, async offset => {
       await groups[offset / HEAD_GROUP_SIZE];
       if (error) throw error;
-    });
+    }, register);
     return { files, heads };
   } finally { port.close(); }
 }
