@@ -145,14 +145,20 @@ jobs:
           if [ "$AA" = true ]; then args+=(--aa); fi
           if [ -n "${BASE_DIST:-}" ]; then args+=(--base "$BASE_DIST"); fi
           node tools/browser-bench/bench.mjs run "${args[@]}"
-      # This runner's own report, kept with its results; the report job pools all three. hashFiles() sees only the
-      # workspace, so the results folder in the runner's temp is checked here instead.
+      - name: Install the video encoder
+        run: |
+          if ! command -v ffmpeg > /dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends ffmpeg
+          fi
       - name: Encode the recorded file-picker openings
         run: |
           for frames in "$RESULTS"/recordings/*/frames.txt; do
             test -f "$frames" || continue
             ffmpeg -hide_banner -loglevel error -f concat -safe 1 -i "$frames" -vf 'pad=ceil(iw/2)*2:ceil(ih/2)*2' -fps_mode vfr -c:v libx264 -pix_fmt yuv420p -movflags +faststart "${frames%/*}/opening.mp4"
           done
+      # This runner's own report, kept with its results; the report job pools all three. hashFiles() sees only the
+      # workspace, so the results folder in the runner's temp is checked here instead.
       - name: This runner's report
         if: ${{ !cancelled() }}
         run: |
