@@ -16,6 +16,12 @@ import { drawBand } from './lib/marker.mjs';
 
 export const STUDIES = {
   'ct-300': { slices: 300, size: 512, about: 'a 300-slice CT of 512×512, uncompressed' },
+  'ct-300-long-header': { slices: 300, size: 512, about: 'a 300-slice CT with a 24 KiB private data element in every source header' },
+  'ct-384': { slices: 384, size: 512, about: 'a 384-slice uncompressed CT' },
+  'ct-512': { slices: 512, size: 512, about: 'a 512-slice uncompressed CT' },
+  'ct-768': { slices: 768, size: 512, about: 'a 768-slice uncompressed CT' },
+  'ct-640': { slices: 640, size: 512, about: 'a 640-slice uncompressed CT' },
+  'ct-896': { slices: 896, size: 512, about: 'a 896-slice uncompressed CT' },
   'ct-1000': { slices: 1000, size: 512, about: 'a thin-slice 1,000-slice CT of 512×512, uncompressed, as in the Weasis comparison' },
 };
 const GENERATOR = 'veacom-bench-study-v1';
@@ -51,7 +57,9 @@ function file(name, size, z, slices) {
     [0x0008, 0x0020, 'DA', '20000101'], [0x0008, 0x0030, 'TM', '120000'], [0x0008, 0x0050, 'SH', 'BENCH'], [0x0008, 0x0060, 'CS', 'CT'],
     [0x0008, 0x0070, 'LO', 'VEAcom bench'], [0x0008, 0x103e, 'LO', `Bench ${name}`], [0x0010, 0x0010, 'PN', 'BENCH^SYNTHETIC'],
     [0x0010, 0x0020, 'LO', `BENCH-${name}`], [0x0010, 0x0030, 'DA', '19700101'], [0x0010, 0x0040, 'CS', 'O'],
-    [0x0018, 0x0050, 'DS', 1], [0x0018, 0x5100, 'CS', 'HFS'], [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2`],
+    [0x0018, 0x0050, 'DS', 1], [0x0018, 0x5100, 'CS', 'HFS'],
+    ...(name === 'ct-300-long-header' ? [[0x0019, 0x0010, 'LO', 'VEACOM FIXTURE'], [0x0019, 0x1001, 'OB', Buffer.alloc(24 * 1024, z % 251)]] : []),
+    [0x0020, 0x000d, 'UI', `${root}.1`], [0x0020, 0x000e, 'UI', `${root}.2`],
     [0x0020, 0x0010, 'SH', '1'], [0x0020, 0x0011, 'IS', 1], [0x0020, 0x0013, 'IS', z + 1], [0x0020, 0x0032, 'DS', [-size / 2, -size / 2, -z]],
     [0x0020, 0x0037, 'DS', [1, 0, 0, 0, 1, 0]], [0x0020, 0x0052, 'UI', `${root}.5`], [0x0020, 0x1041, 'DS', -z],
     [0x0028, 0x0002, 'US', 1], [0x0028, 0x0004, 'CS', 'MONOCHROME2'], [0x0028, 0x0010, 'US', size], [0x0028, 0x0011, 'US', size],
