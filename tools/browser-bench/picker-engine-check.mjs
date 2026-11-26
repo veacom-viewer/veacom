@@ -55,8 +55,9 @@ try {
   const kind='archive';
   for (const isolated of [true, false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation:isolated });
-    const page = await browser.newPage({ viewport:{ width:1280,height:800 } });
-    const row = { engine, version:browser.version(), isolated, kind, errors:[], failedRequests:[] };
+    const pixelRatio = 2;
+    const page = await browser.newPage({ viewport:{ width:1280,height:800 }, deviceScaleFactor:pixelRatio });
+    const row = { engine, version:browser.version(), isolated, kind, pixelRatio, errors:[], failedRequests:[] };
     const name=(isolated?'isolated':'single')+'-'+kind;
     page.on('pageerror', error => row.errors.push([error.message,error.stack]));
     page.on('requestfailed', r => row.failedRequests.push([new URL(r.url()).pathname,r.failure()?.errorText]));
@@ -121,16 +122,16 @@ try {
       for(const [sample,height] of [['native',512],['larger',640],['double',1024],['half',256],['native-again',512]]){
         for(let tries=0;tries<5;tries++){
           const actual=await pane.boundingBox();
-          const delta=height-Math.round(actual.height);
+          const delta=height/pixelRatio-Math.round(actual.height);
           if(!delta) break;
           const view=page.viewportSize();
           await page.setViewportSize({width:view.width,height:view.height+delta});
           await delay(150);
         }
-        await page.waitForFunction(height=>{
+        await page.waitForFunction(({height,pixelRatio})=>{
           const c=document.querySelector('canvas[data-series-id][data-slice]');
-          return c?.height===height&&Math.abs(c.getBoundingClientRect().height-height)<0.01&&self.devicePixelRatio===1;
-        },height,{timeout:5000});
+          return c?.height===height&&Math.abs(c.getBoundingClientRect().height*pixelRatio-height)<0.01&&self.devicePixelRatio===pixelRatio;
+        },{height,pixelRatio},{timeout:5000});
         await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(()=>requestAnimationFrame(done)))));
         const info=await pane.evaluate(c=>({backing:[c.width,c.height],rect:[c.getBoundingClientRect().width,c.getBoundingClientRect().height],slice:Number(c.dataset.slice)}));
         await pane.screenshot({path:path.join(evidence,name+'-'+sample+'.png')});
