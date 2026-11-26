@@ -2,7 +2,7 @@ import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, us
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
 import type { Annotation, CaliperTag, FusionSettings, NmFrame, Series, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
-import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, parallelToAcquired, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
+import { acquiredPlane as seriesPlane, add, clamp, cross, dot, getPlaneFrame, isProjection, length, orientationLabel, parallelToAcquired, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
@@ -25,7 +25,7 @@ import { presetFor } from '../ui/presets';
 import { hitAnnotation, leaderLine, movedHandle, screenPaths, type AnnotationPart, type HitTarget } from '../ui/annotationEdit';
 import { draggedFusion, petHasSuv } from '../imaging/fusion';
 import { frameThrough } from '../imaging/registration';
-import { lineAngle, obliqueAngle, rotationComponent, turnedOblique } from '../imaging/oblique';
+import { lineAngle, obliqueAngle, turnedOblique } from '../imaging/oblique';
 import type { PlaneFrame } from '../imaging/geometry';
 import { overlayKeepOut, placeLabelBeside, shapeBox, shapeKeepOut, type Box } from '../ui/labelPlacement';
 import { maskTransform, overlayShapes, planeOutlines, segmentationApplies } from '../imaging/segmentation';
@@ -43,6 +43,10 @@ interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; p
 /** VEAcom Next's MPR line colours (sagittal red, coronal green, axial blue) and the gap left where the lines cross, px. */
 const MPR_LINE_COLORS = { sagittal: 'rgb(255,92,92)', coronal: 'rgb(92,219,107)', axial: 'rgb(84,168,255)' } as const;
 const MPR_LINE_GAP = 14;
+/** How near a press must be to an MPR line's body to take hold of it, and to the lines' crossing to move both. */
+const MPR_LINE_REACH = 6, MPR_CROSSING_REACH = MPR_LINE_GAP;
+/** `heldLine` for both lines at once: the crossing taken hold of. */
+const BOTH_LINES = '*';
 const EDGE_ZONE = 0.88;
 /** Pixels of a paging drag down the edge per slice (VEAcom 1.x). */
 const EDGE_PX_PER_SLICE = 6;
@@ -84,6 +88,13 @@ const overlayStyle: CSSProperties = { position: 'absolute', inset: 0, width: '10
 const UNMEASURED: [number, number] = [1, 1];
 const unmeasuredOverlayStyle: CSSProperties = { ...overlayStyle, visibility: 'hidden' };
 const pointString = (points: Point2[]) => points.map(p => p.join(',')).join(' ');
+/** Where two screen lines, each through `point` along (`dx`, `dy`), cross; null when they run side by side. */
+function linesCross(a: { point: Point2; dx: number; dy: number }, b: { point: Point2; dx: number; dy: number }): Point2 | null {
+  const det = a.dx * b.dy - a.dy * b.dx;
+  if (Math.abs(det) < 1e-6) return null;
+  const t = ((b.point[0] - a.point[0]) * b.dy - (b.point[1] - a.point[1]) * b.dx) / det;
+  return [a.point[0] + t * a.dx, a.point[1] + t * a.dy];
+}
 const LABEL_CHARACTERS = 30, LABEL_LINE = 15, LABEL_PADDING = 5;
 const NO_BOXES: readonly Box[] = [];
 const NO_ANNOTATIONS: Annotation[] = [];
@@ -322,7 +333,10 @@ export function Viewport(props: ViewportProps) {
   // Ctrl + drag on a fused image: the pointer, where it was pressed and the PET's scale then.
   const petDrag = useRef<{ pointer: number; start: Point2; settings: { upperSuv: number; opacity: number } } | null>(null);
   const turning = useRef<{ pointer: number; id: string; pivot: Point2; last: number; turned: number; frame: PlaneFrame; mapping: ScreenMapping;
-    planes: Array<{ reference: NonNullable<ViewportProps['referencePlanes']>[number]; component: 0 | 1 }> } | null>(null);
+    planes: Array<NonNullable<ViewportProps['referencePlanes']>[number]> } | null>(null);
+  // An MPR line's body (or the lines' crossing) taken hold of: the patient point under the press, the crosshair then,
+  // and the way the crosshair moves (across the line, within this pane), or null to move it with the pointer.
+  const sliding = useRef<{ pointer: number; start: Vec3; point: Vec3; across: Vec3 | null } | null>(null);
   // The MPR line under the pointer (or held) is drawn bold, as in VEAcom Next.
   const [heldLine, setHeldLine] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -341,9 +355,9 @@ export function Viewport(props: ViewportProps) {
   const cancelGesture = (keepScroll = false) => {
     if (!keepScroll) {
       gesture.current?.end({ result: 'cancel' }); gesture.current = null;
-      const pointers = new Set([...touches.current.keys(), ...(drag.current ? [drag.current.pointer] : []), ...(freehand.current ? [freehand.current.pointer] : []), ...(editing.current ? [editing.current.pointer] : []), ...(petDrag.current ? [petDrag.current.pointer] : []), ...(turning.current ? [turning.current.pointer] : [])]);
+      const pointers = new Set([...touches.current.keys(), ...(drag.current ? [drag.current.pointer] : []), ...(freehand.current ? [freehand.current.pointer] : []), ...(editing.current ? [editing.current.pointer] : []), ...(petDrag.current ? [petDrag.current.pointer] : []), ...(turning.current ? [turning.current.pointer] : []), ...(sliding.current ? [sliding.current.pointer] : [])]);
       for (const pointer of pointers) if (container.current?.hasPointerCapture(pointer)) container.current.releasePointerCapture(pointer);
-      drag.current = null; touches.current.clear(); pinch.current = null; petDrag.current = null; turning.current = null; setHeldLine(null);
+      drag.current = null; touches.current.clear(); pinch.current = null; petDrag.current = null; turning.current = null; sliding.current = null; setHeldLine(null);
       showCursor();
     }
     editing.current = null; editLive.current = null; setEdited(null);
@@ -610,28 +624,38 @@ export function Viewport(props: ViewportProps) {
         if (!gesture.current) gesture.current = usage.begin('pinch-zoom', 'touch');
         const [a, b] = [...touches.current.values()];
         pinch.current = { center: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], distance: Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1])), view: liveView.current };
-        drag.current = null; editing.current = null; editLive.current = null; discardDraft(); return;
+        drag.current = null; editing.current = null; editLive.current = null; petDrag.current = null;
+        turning.current = null; sliding.current = null; setHeldLine(null);
+        discardDraft(); return;
       }
     }
     const button = event.button === 1 ? 'middle' : event.button === 2 ? 'right' : 'left';
     // A handle on another pane's line turns the crosshair about this pane's normal: both other planes turn together, so
-    // their lines stay square and never lie on each other (as in VEAcom Next). Checked first: a handle is small and
-    // exact, and Ctrl held while turning means 10° steps.
-    const handle = button === 'left' && props.onRotateReference && props.crosshair && !construction.current.length && !twoClick.current
-      ? handleTargets.find(item => Math.hypot(item.x - start[0], item.y - start[1]) <= 9) : undefined;
-    if (handle && props.crosshair) {
-      const pivot = worldToScreen(mapping, props.crosshair);
-      const seenPlane = renderedView(latest.current.volume, liveView.current).plane;
-      const turnable = new Set(handleTargets.map(item => item.id));
-      const planes = (props.referencePlanes ?? []).filter(item => turnable.has(item.id) && lineAngle(frame, mapping, item.series, item.view, item.view.oblique ?? [0, 0], item.transform) !== null)
-        .map(reference => ({ reference, component: rotationComponent(reference.view.plane, seenPlane) }));
-      if (planes.some(item => item.reference.id === handle.id)) {
+    // their lines stay square and never lie on each other. Checked first: a handle is small and exact, and Ctrl held
+    // while turning means 10° steps.
+    const mprPress = button === 'left' && props.onRotateReference && props.crosshair && !construction.current.length && !twoClick.current;
+    const handle = mprPress ? handleTargets.find(item => Math.hypot(item.x - start[0], item.y - start[1]) <= 9) : undefined;
+    if (handle && mprPivot) {
+      // Every plane drawn here turns, its handles shown or not, so the planes stay square to one another.
+      const planes = (props.referencePlanes ?? []).filter(item => lineAngle(frame, mapping, item.series, item.view, item.view.oblique ?? [0, 0], item.transform) !== null);
+      if (planes.some(item => item.id === handle.id)) {
         event.currentTarget.setPointerCapture(event.pointerId);
-        turning.current = { pointer: event.pointerId, id: handle.id, pivot, last: Math.atan2(start[1] - pivot[1], start[0] - pivot[0]), turned: 0, frame, mapping, planes };
+        turning.current = { pointer: event.pointerId, id: handle.id, pivot: mprPivot, last: Math.atan2(start[1] - mprPivot[1], start[0] - mprPivot[0]), turned: 0, frame, mapping, planes };
         setHeldLine(handle.id);
         gesture.current = usage.begin('oblique-handle', input === 'touch' ? 'touch' : 'drag');
         return;
       }
+    }
+    // A press on a line's body moves its plane: the crosshair goes across the line with the pointer, and the pane that
+    // shows that plane pages to it. A press where the lines cross moves the crosshair, and both planes, with the pointer.
+    // A measurement under the press is taken hold of instead (below).
+    const line = mprPress && props.crosshair && !(!latest.current.hideMeasurements && hitAnnotation(hitTargets, selected, start)) ? lineAt(start) : undefined;
+    if (line && props.crosshair) {
+      event.currentTarget.setPointerCapture(event.pointerId);
+      sliding.current = { pointer: event.pointerId, start: world, point: props.crosshair, across: line.across };
+      setHeldLine(line.id);
+      gesture.current = usage.begin('oblique-line-move', input === 'touch' ? 'touch' : 'drag');
+      return;
     }
     // A drag that starts in the right edge pages the slices whatever the tool: with the mouse, one finger or a pen.
     if (button === 'left' && !construction.current.length && !twoClick.current && start[0] >= size.current[0] * EDGE_ZONE) {
@@ -750,17 +774,28 @@ export function Viewport(props: ViewportProps) {
       turn.turned += ((angle - turn.last + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
       turn.last = angle;
       const step = event.shiftKey ? 5 : event.ctrlKey || event.metaKey ? 10 : 0;
-      for (const { reference, component } of turn.planes) {
-        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, component, turn.turned, step, reference.transform));
+      for (const reference of turn.planes) {
+        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, turn.turned, step, reference.transform));
       }
       return;
     }
-    // The pointer shows what a press would take hold of: an MPR handle, a measurement's handle, or a label or line to move.
-    if (!active && event.pointerType === 'mouse' && event.buttons === 0 && container.current && (hitTargets.length || handleTargets.length)) {
-      const nearLine = handleTargets.find(item => Math.hypot(item.x - point[0], item.y - point[1]) <= 9)?.id ?? null, near = nearLine !== null;
-      if (nearLine !== heldLine) setHeldLine(nearLine);
-      const hit = near || construction.current.length || twoClick.current ? null : hitAnnotation(hitTargets, selected, point);
-      container.current.style.cursor = near ? 'grab' : hit ? (typeof hit.part === 'number' ? 'pointer' : 'move') : baseCursor;
+    const slide = sliding.current;
+    if (slide && slide.pointer === event.pointerId) {
+      // Taken once a frame, as a crosshair drag is.
+      const moved = sub(pointAt(...point), slide.start);
+      pendingCrosshair.current = add(slide.point, slide.across ? scale(slide.across, dot(moved, slide.across)) : moved);
+      queue(false);
+      return;
+    }
+    // The pointer shows what a press would take hold of: an MPR handle or line, a measurement's handle, or a label or line
+    // to move.
+    if (!active && event.pointerType === 'mouse' && event.buttons === 0 && container.current && (hitTargets.length || referenceLines.length)) {
+      const onHandle = handleTargets.find(item => Math.hypot(item.x - point[0], item.y - point[1]) <= 9)?.id ?? null;
+      const hit = onHandle || construction.current.length || twoClick.current ? null : hitAnnotation(hitTargets, selected, point);
+      const onLine = onHandle || hit || construction.current.length || twoClick.current || !props.crosshair ? undefined : lineAt(point);
+      const held = onHandle ?? onLine?.id ?? null;
+      if (held !== heldLine) setHeldLine(held);
+      container.current.style.cursor = onHandle ? 'grab' : onLine ? 'move' : hit ? (typeof hit.part === 'number' ? 'pointer' : 'move') : baseCursor;
     }
     if (petDrag.current?.pointer === event.pointerId) {
       const held = petDrag.current;
@@ -836,9 +871,9 @@ export function Viewport(props: ViewportProps) {
       if (kept) latest.current.onAnnotationsChange(latest.current.annotations.map(annotation => annotation.id === next.id ? next : annotation));
       return;
     }
-    if (petDrag.current?.pointer === event.pointerId || turning.current?.pointer === event.pointerId) {
-      if (turning.current) setHeldLine(null);
-      petDrag.current = null; turning.current = null;
+    if (petDrag.current?.pointer === event.pointerId || turning.current?.pointer === event.pointerId || sliding.current?.pointer === event.pointerId) {
+      if (turning.current || sliding.current) setHeldLine(null);
+      petDrag.current = null; turning.current = null; sliding.current = null;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
       gesture.current?.end(); gesture.current = null;
       return;
@@ -1055,7 +1090,7 @@ export function Viewport(props: ViewportProps) {
   const axisLabels = displayedSeries.orientationKnown === true
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
     : projectionEdgeLabels(displayedSeries, mapping) ?? { left: '', right: '', top: '', bottom: '' };
-  const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
+  const segments = (props.referencePlanes ?? []).flatMap(reference => {
     // A plane in a frame of reference of its own is drawn where the alignment puts it in this one.
     const own = getPlaneFrame(reference.series, reference.view), theirs = reference.transform ? frameThrough(own, reference.transform) : own;
     const segment = referenceSegment(frame, theirs);
@@ -1063,17 +1098,40 @@ export function Viewport(props: ViewportProps) {
     const [point, end] = segment.map(p => worldToScreen(mapping, p));
     const magnitude = Math.hypot(end[0] - point[0], end[1] - point[1]);
     if (magnitude < 1e-8) return [];
-    const dx = (end[0] - point[0]) / magnitude, dy = (end[1] - point[1]) / magnitude;
-    // Three-plane MPR: a handle either side of the crosshair, on the line, to turn that plane.
-    const pivot = props.onRotateReference && props.crosshair ? worldToScreen(mapping, props.crosshair) : null;
-    const along = pivot ? (pivot[0] - point[0]) * dx + (pivot[1] - point[1]) * dy : 0, reach = Math.min(...dimensions) * 0.36;
-    const handles: Point2[] = pivot ? [-reach, reach].map(offset => along + offset).filter(t => t >= 0 && t <= magnitude).map(t => [point[0] + t * dx, point[1] + t * dy]) : [];
-    // As in VEAcom Next: in the MPR a solid line in its plane's colour with a gap where the lines cross; elsewhere the
-    // other pane's slice as a solid orange line.
-    const path = (a: number, b: number) => a < b ? `M${point[0] + dx * a},${point[1] + dy * a}L${point[0] + dx * b},${point[1] + dy * b}` : '';
-    return [{ id: reference.id, color: pivot ? MPR_LINE_COLORS[reference.view.plane] : '#ffa600', handles,
-      path: pivot ? path(0, Math.min(magnitude, along - MPR_LINE_GAP)) + path(Math.max(0, along + MPR_LINE_GAP), magnitude) : path(0, magnitude) }];
+    // Across the line within this pane, in the patient: the way the crosshair goes when the line is dragged.
+    const across = cross(frame.normal, sub(segment[1], segment[0])), size = length(across);
+    return [{ reference, point, magnitude, dx: (end[0] - point[0]) / magnitude, dy: (end[1] - point[1]) / magnitude, across: size > 1e-9 ? scale(across, 1 / size) : null }];
   });
+  // Three-plane MPR: where the two lines cross, the crosshair as this pane shows it; the projected crosshair when there
+  // is no crossing to draw.
+  const mprPivot: Point2 | null = props.onRotateReference && props.crosshair
+    ? (segments.length === 2 ? linesCross(segments[0], segments[1]) : null) ?? worldToScreen(mapping, props.crosshair) : null;
+  const referenceLines = segments.map(({ reference, point, magnitude, dx, dy, across }) => {
+    // Three-plane MPR: a handle either side of the crosshair, on the line, to turn that plane; nearer the crosshair on a
+    // line too short for the usual reach, and none on a side with no room past the gap.
+    const along = mprPivot ? (mprPivot[0] - point[0]) * dx + (mprPivot[1] - point[1]) * dy : 0, reach = Math.min(...dimensions) * 0.36;
+    const handles: Point2[] = mprPivot ? [-Math.min(reach, along * 0.85), Math.min(reach, (magnitude - along) * 0.85)]
+      .filter(offset => Math.abs(offset) >= MPR_LINE_GAP + 6).map(offset => along + offset).map(t => [point[0] + t * dx, point[1] + t * dy]) : [];
+    // In the MPR a solid line in its plane's colour with a gap where the lines cross; elsewhere the other pane's slice as
+    // a solid orange line.
+    const path = (a: number, b: number) => a < b ? `M${point[0] + dx * a},${point[1] + dy * a}L${point[0] + dx * b},${point[1] + dy * b}` : '';
+    return { id: reference.id, color: mprPivot ? MPR_LINE_COLORS[reference.view.plane] : '#ffa600', handles, point, magnitude, dx, dy, across,
+      path: mprPivot ? path(0, Math.min(magnitude, along - MPR_LINE_GAP)) + path(Math.max(0, along + MPR_LINE_GAP), magnitude) : path(0, magnitude) };
+  });
+  /** In the three-plane MPR, what a press at `at` takes hold of: the lines' crossing (both planes), or a line's body. */
+  const lineAt = (at: Point2): { id: string; across: Vec3 | null } | undefined => {
+    if (!mprPivot) return undefined;
+    if (referenceLines.length === 2 && Math.hypot(at[0] - mprPivot[0], at[1] - mprPivot[1]) <= MPR_CROSSING_REACH) return { id: BOTH_LINES, across: null };
+    let nearest: { id: string; across: Vec3; distance: number } | undefined;
+    for (const line of referenceLines) {
+      const along = (at[0] - line.point[0]) * line.dx + (at[1] - line.point[1]) * line.dy;
+      const distance = Math.abs((at[0] - line.point[0]) * line.dy - (at[1] - line.point[1]) * line.dx);
+      if (line.across && along >= 0 && along <= line.magnitude && distance <= MPR_LINE_REACH && (!nearest || distance < nearest.distance)) {
+        nearest = { id: line.id, across: line.across, distance };
+      }
+    }
+    return nearest && { id: nearest.id, across: nearest.across };
+  };
   // On a MIP a press picks the hottest voxel, including when a sphere is under the pointer.
   const hitTargets: HitTarget[] = projected ? [] : shownAnnotations.map((annotation, index) => ({ annotation,
     points: shown[index].points.map(point => worldToScreen(mapping, point)), label: labelLayouts[index] }));
@@ -1113,7 +1171,7 @@ export function Viewport(props: ViewportProps) {
       </g>}
       {/* Reference and crosshair lines go under the overlay text, so orientation letters and corner text stay legible on top of them. */}
       {referenceLines.map(line => <g key={line.id} data-reference-plane={line.id} fill="none">
-        <path d={line.path} stroke={line.color} strokeWidth={heldLine === line.id ? 3 : 1.5} />
+        <path d={line.path} stroke={line.color} strokeWidth={heldLine === line.id || heldLine === BOTH_LINES ? 3 : 1.5} />
         {line.handles.map(([x, y], index) => <circle key={index} data-reference-handle={line.id} cx={x} cy={y} r={heldLine === line.id ? 6 : 3.5} fill={line.color} />)}
       </g>)}
       {/* In the three-plane MPR the lines' gap marks the point; elsewhere the crosshair is drawn. */}

@@ -162,6 +162,67 @@ async function main() {
     check('Three-plane MPR');
     await screenshot('after-mpr.png');
 
+    // The MPR's lines: a line's body drags its plane, a handle turns both other planes about the pane's own normal (so
+    // they stay square even where that pane is tilted), and a pane paged takes the crosshair with it, so each pane's
+    // lines cross at the crosshair's gap.
+    {
+      const cells = page.locator('[data-testid="viewport-cell"]');
+      const mprState = () => page.evaluate(() => window.__VEACOM_TEST__.state());
+      const lines = async index => {
+        const box = await cells.nth(index).boundingBox();
+        return cells.nth(index).locator('[data-reference-plane]').evaluateAll((groups, box) => groups.map(group => ({
+          id: group.getAttribute('data-reference-plane'),
+          points: [...(group.querySelector('path').getAttribute('d') ?? '').matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)].map(m => [Number(m[1]) + box.x, Number(m[2]) + box.y]),
+          handles: [...group.querySelectorAll('circle')].map(c => [Number(c.getAttribute('cx')) + box.x, Number(c.getAttribute('cy')) + box.y]),
+        })), box);
+      };
+      const crossing = (a, b) => {
+        const [p, q] = [a.points[0], a.points.at(-1)], [r, s] = [b.points[0], b.points.at(-1)];
+        const d1 = [q[0] - p[0], q[1] - p[1]], d2 = [s[0] - r[0], s[1] - r[1]], det = d1[0] * d2[1] - d1[1] * d2[0];
+        const t = ((r[0] - p[0]) * d2[1] - (r[1] - p[1]) * d2[0]) / det;
+        return [p[0] + t * d1[0], p[1] + t * d1[1]];
+      };
+      const drag = async (from, to) => {
+        await page.mouse.move(...from); await page.mouse.down();
+        for (let i = 1; i <= 10; i++) await page.mouse.move(from[0] + (to[0] - from[0]) * i / 10, from[1] + (to[1] - from[1]) * i / 10);
+        await page.mouse.up(); await page.waitForTimeout(200);
+      };
+      const turn = async (index, degrees) => {
+        const [line, other] = await lines(index), pivot = crossing(line, other), handle = line.handles[0];
+        const radius = Math.hypot(handle[0] - pivot[0], handle[1] - pivot[1]), start = Math.atan2(handle[1] - pivot[1], handle[0] - pivot[0]);
+        await page.mouse.move(...handle); await page.mouse.down();
+        for (let i = 1; i <= 10; i++) { const angle = start + degrees * Math.PI / 180 * i / 10; await page.mouse.move(pivot[0] + radius * Math.cos(angle), pivot[1] + radius * Math.sin(angle)); }
+        await page.mouse.up(); await page.waitForTimeout(200);
+      };
+      const unit = v => { const n = Math.hypot(...v); return v.map(x => x / n); };
+      const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      // The pane's line, dragged 30 px across a fifth of the way along: the pane showing that plane pages, the others stay.
+      const before = await mprState(), [held] = await lines(0), moved = before.panes.findIndex(pane => pane.id === held.id);
+      const [p, q] = [held.points[0], held.points.at(-1)], length = Math.hypot(q[0] - p[0], q[1] - p[1]), at = [p[0] + (q[0] - p[0]) * 0.2, p[1] + (q[1] - p[1]) * 0.2];
+      await drag(at, [at[0] - (q[1] - p[1]) / length * 30, at[1] + (q[0] - p[0]) / length * 30]);
+      const dragged = await mprState();
+      assert.deepEqual(dragged.panes.map((pane, index) => pane.slice !== before.panes[index].slice), [0, 1, 2].map(index => index === moved), 'A line dragged pages its own plane alone.');
+      await turn(0, 30); await turn(1, 25);
+      const turned = await mprState(), normals = turned.panes.map(pane => unit(pane.frame.normal));
+      for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) assert.ok(Math.abs(dot(normals[a], normals[b])) < 0.005, `Planes ${a + 1} and ${b + 1} are no longer square.`);
+      const box = await cells.nth(0).boundingBox();
+      await page.mouse.move(box.x + box.width * 0.6, box.y + box.height * 0.6);
+      for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 120); await page.waitForTimeout(50); }
+      await page.waitForTimeout(300);
+      const paged = await mprState(), plane = paged.panes[0].frame;
+      assert.notEqual(paged.panes[0].slice, turned.panes[0].slice, 'The wheel paged the first pane.');
+      assert.ok(Math.abs(dot(unit(plane.normal), paged.crosshair.map((x, i) => x - plane.center[i]))) < 0.05, 'The crosshair stayed behind the paged plane.');
+      for (let index = 0; index < 3; index++) {
+        const shown = await lines(index), meet = crossing(shown[0], shown[1]);
+        for (const line of shown.filter(item => item.points.length >= 4)) {
+          const gap = [(line.points[1][0] + line.points[2][0]) / 2, (line.points[1][1] + line.points[2][1]) / 2];
+          assert.ok(Math.hypot(gap[0] - meet[0], gap[1] - meet[1]) < 1, `Pane ${index + 1}'s gap is not where its lines cross.`);
+        }
+      }
+      await screenshot('after-mpr-lines.png');
+      check('MPR lines drag their planes, turn square from any pane, and follow paging');
+    }
+
     await budget.task('open-3d', () => page.getByTestId('tool-3d').click(), { until: async () => {
       await page.getByTestId('volume-view').waitFor();
       await page.getByTestId('volume-3d-canvas').waitFor();
