@@ -142,9 +142,8 @@ export function createWebBridge(): DesktopBridge {
   const pending = new Map<number, Pending>();
   const stateListeners = new Set<(state: CoreState) => void>();
   const selections = new Map<string, Selection>();
-  const known = new Map<string, number>();
-  /** Each series as the engine last listed it: its catalog revision, and what the export review names it by. */
-  const described = new Map<string, Series>();
+  /** The current engine's series, including their revisions and the details shown for export review. */
+  const openSeries = new Map<string, Series>();
   // The cancel flag the engine reads while it works: the bridge request id, or zero. Only a cross-origin
   // isolated page has shared memory. Elsewhere (a host without the site's headers) the single-thread engine runs and
   // cannot see a flag while it works, so a Cancel there replaces the engine once CANCEL_GRACE_MS have passed.
@@ -198,7 +197,7 @@ export function createWebBridge(): DesktopBridge {
   function releaseMemory(): void {
     // Files being imported fill the catalog again, and series listed since are open: nothing to give back. Asked again
     // when the requests have drained, since an import answered by then has added its series.
-    if (known.size || [...pending.values()].some(request => request.op === 'import' && !request.abandoned)) {
+    if (openSeries.size || [...pending.values()].some(request => request.op === 'import' && !request.abandoned)) {
       releaseWhenIdle = false;
       return;
     }
@@ -234,7 +233,7 @@ export function createWebBridge(): DesktopBridge {
     for (const helper of helpers) helper.terminate();
     helpers = [];
     queue = []; inFlight = null;
-    known.clear(); clearTimeout(cancelTimer); cancelTimer = undefined; shared = null; setCancel(0);
+    openSeries.clear(); clearTimeout(cancelTimer); cancelTimer = undefined; shared = null; setCancel(0);
     progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
   }
 
@@ -389,7 +388,7 @@ export function createWebBridge(): DesktopBridge {
 
   function catalog(result: ImportResult): ImportResult {
     const series = result.series.map(item => ({ ...item, engineGeneration: generation }) as Series);
-    for (const item of series) { known.set(item.id, generation); described.set(item.id, item); }
+    for (const item of series) openSeries.set(item.id, item);
     return { ...result, series };
   }
 
@@ -404,7 +403,7 @@ export function createWebBridge(): DesktopBridge {
   function reviewPixels(ids: string[], frame?: number): boolean {
     const label = (value: unknown) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/gu, ' ').slice(0, 80);
     const lines = ids.map(id => {
-      const item = described.get(id);
+      const item = openSeries.get(id);
       return (item && [item.patientName, item.patientId, item.description, item.studyUid, item.uid].map(label).filter(Boolean).join(' · ')) || id;
     });
     const pages = Math.ceil(lines.length / REVIEW_PAGE);
@@ -511,17 +510,17 @@ export function createWebBridge(): DesktopBridge {
     },
     async removeSeries(ids, requestGeneration) {
       requireGeneration(requestGeneration);
-      const mine = [...new Set(ids)].filter(id => known.get(id) === generation);
+      const mine = [...new Set(ids)].filter(id => openSeries.has(id));
       if (!mine.length) return { removed: 0 };
       const result = await call<{ removed: number; remaining: number }>({ op: 'remove', ids: mine });
-      for (const id of mine) { known.delete(id); described.delete(id); }
+      for (const id of mine) openSeries.delete(id);
       if (result.remaining === 0 && requestGeneration === generation) releaseMemory();
       return result;
     },
     getPixels: () => Promise.reject(new Error('The browser build hands pixels over with fetchPixels.')),
     async fetchPixels({ seriesId, generation: requestGeneration, revision, index }, signal) {
       requireGeneration(requestGeneration);
-      if (known.get(seriesId) !== generation) throw new Error(t('engine.seriesNotOpen'));
+      if (!openSeries.has(seriesId)) throw new Error(t('engine.seriesNotOpen'));
       performance.mark(index === undefined ? 'veacom:volume-start' : 'veacom:frame-start');
       const pixels = await (index === undefined
         ? call<EnginePixels>({ op: 'volume', seriesId, revision }, { busy: true, signal })
@@ -551,11 +550,11 @@ export function createWebBridge(): DesktopBridge {
     async exportDicom(seriesIds, options) {
       const ids = Array.isArray(seriesIds) ? seriesIds : [seriesIds];
       if (options.engineGeneration !== undefined) requireGeneration(options.engineGeneration);
-      if (ids.some(id => known.get(id) !== generation)) throw new Error(t('engine.seriesNotOpen'));
+      if (ids.some(id => !openSeries.has(id))) throw new Error(t('engine.seriesNotOpen'));
       // A full cleanup exports only the revisions the reader reviewed; declined, nothing is exported.
       const full = options.anonymize && Boolean(options.full);
       if (full && !reviewPixels(ids, options.frame)) return null;
-      const reviewed = full ? Object.fromEntries(ids.flatMap(id => { const revision = described.get(id)?.catalogRevision; return revision === undefined ? [] : [[id, revision]]; })) : {};
+      const reviewed = full ? Object.fromEntries(ids.flatMap(id => { const revision = openSeries.get(id)?.catalogRevision; return revision === undefined ? [] : [[id, revision]]; })) : {};
       const job = { id: 0, cancelled: false };
       exporting = job;
       try {
