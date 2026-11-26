@@ -236,13 +236,16 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
         const bridge = window.veacom, { series } = await bridge.listSeries(), { generation } = await bridge.getCoreState();
         const canvas = document.querySelector('canvas[data-series-id]'), source = series.find(item => item.id === canvas?.dataset.seriesId);
         if (!source) throw new Error('Missing active source');
-        const pixels = await bridge.fetchPixels({ seriesId: source.id, generation, revision: source.catalogRevision, index: 0 });
+        const ends = await Promise.all([0, source.dimensions[2] - 1].map(index => bridge.fetchPixels({ seriesId: source.id, generation, revision: source.catalogRevision, index })));
+        const positions = ends.map(frame => Number(frame.headers.get('X-Source-Frame-Index')));
+        const sops = ends.map(frame => frame.headers.get('X-SOP-Instance-UID'));
         return { series: series.length, unique: new Set(series.map(item => item.uid)).size, depth: source.dimensions[2],
-          patient: source.patientId, sop: pixels.headers.get('X-SOP-Instance-UID'), uid: source.uid };
+          patient: source.patientId, positions, sops, uid: source.uid };
       })()`);
       const verified = line.activeCatalog;
       if (verified.series !== 64 || verified.unique !== 64 || verified.depth !== 300 || verified.patient !== 'BENCH-ct-64-series' ||
-          verified.sop !== verified.uid.replace(/\.2$/, '.3.1')) throw new Error('Wrong reading study: ' + JSON.stringify(verified));
+          String(verified.positions) !== '0,299' || verified.sops[0] !== verified.uid.replace(/\.2$/, '.3.300') ||
+          verified.sops[1] !== verified.uid.replace(/\.2$/, '.3.1')) throw new Error('Wrong reading study: ' + JSON.stringify(verified));
     }
 
     if (SCENARIOS.has('paging')) {
