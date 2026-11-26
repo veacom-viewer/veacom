@@ -85,12 +85,20 @@ async function onScreen(page, entry) {
   const dismiss = page.getByTestId('notice-dismiss');
   if (await dismiss.isVisible()) await dismiss.click();
   await show(page, entry.view);
-  return page.locator(`[data-annotation-id="${entry.id}"]`).evaluate(node => ({
-    viewport: node.ownerSVGElement.getAttribute('viewBox'),
-    geometry: [...node.querySelectorAll('.annotation-casing > *')].map(shape => [shape.tagName,
-      ...['points', 'd', 'cx', 'cy', 'r', 'rx', 'ry', 'transform'].map(attr => shape.getAttribute(attr))]),
-    label: node.querySelector('.annotation-label')?.textContent ?? '',
-  }));
+  return page.locator(`[data-annotation-id="${entry.id}"]`).evaluate(async (node, view) => {
+    const id = window.__VEACOM_TEST__.state().activeSeriesId;
+    const series = (await window.veacom.listSeries()).series.find(item => item.id === id);
+    const frames = view.mode === 'source' ? [series.frameMetadata[view.slice]] : series.frameMetadata;
+    if (!frames.length || frames.some(frame => !frame?.sopInstanceUid)) throw new Error('Missing source frame for the displayed finding');
+    return {
+      patient: series.patientId, study: series.studyUid, series: series.uid,
+      sourceFrames: frames.map(frame => [frame.sopInstanceUid, frame.sourceFrameNumber]),
+      viewport: node.ownerSVGElement.getAttribute('viewBox'),
+      geometry: [...node.querySelectorAll('.annotation-casing > *')].map(shape => [shape.tagName,
+        ...['points', 'd', 'cx', 'cy', 'r', 'rx', 'ry', 'transform'].map(attr => shape.getAttribute(attr))]),
+      label: node.querySelector('.annotation-label')?.textContent ?? '',
+    };
+  }, entry.view);
 }
 
 async function calibrate(page, entry, mm = 80) {
