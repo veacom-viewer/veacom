@@ -972,7 +972,7 @@ export default function App() {
   const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
-  const assessmentVolumes = Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined);
+  const assessmentVolumes = showAssessment ? Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined) : [];
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
   const activeReferences = !settings.showReferences || slots.length < 2 ? EMPTY_REFERENCES : (isMpr ? slots : [activeSlot]).flatMap(slot => {
