@@ -7,7 +7,7 @@ type Edit = { id: string; drawing?: Annotation; calibration?: CalibrationEdit };
 type Batch = { series: Series; edits: Edit[] };
 type Read = { series: Series; edited?: Set<string> };
 
-export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Series | undefined, onRestore: (series: Series, drawings: Annotation[], calibration: CalibrationEdit[], edited: ReadonlySet<string>) => void) {
+export function useMeasurementRecovery(volumes: Iterable<[string, Volume]>, active: Series | undefined, onRestore: (series: Series, drawings: Annotation[], calibration: CalibrationEdit[], edited: ReadonlySet<string>) => void) {
   const restore = useEffectEvent(onRestore);
   const reads = useRef(new Map<string, Read>());
   const readFailures = useRef(new Set<string>());

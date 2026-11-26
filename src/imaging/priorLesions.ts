@@ -10,7 +10,7 @@ export interface PriorLesion { id: string; name: string; threshold?: Annotation[
 /** The prior's lesions, and for an FDG prior the glucose its study was read with (for SULglu), if any. */
 export interface PriorLesions { date: string; kept: boolean; lesions: PriorLesion[]; glucose: StudyGlucose | null }
 
-export function priorLesions(prior: Series | null, annotations: Readonly<Record<string, Annotation[]>>, volumes: ReadonlyMap<string, Volume>,
+export function priorLesions(prior: Series | null, annotations: Readonly<Record<string, Annotation[]>>, volumes: Pick<ReadonlyMap<string, Volume>, 'get'>,
   kept: KeptPrior | null, unit: string): PriorLesions | null {
   const volume = prior && volumes.get(prior.id);
   if (prior && volume && measurableVolume(volume)) {
