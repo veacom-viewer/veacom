@@ -174,9 +174,10 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
             });
           }
         };
-        setInterval(() => {
+        window.recordOpeningMemory = () => {
           window.openingMemory.push([Date.now(), memory?.buffer.byteLength ?? 0, performance.memory?.usedJSHeapSize ?? 0]);
-        }, 50);
+        };
+        new PerformanceObserver(() => window.recordOpeningMemory()).observe({entryTypes:['mark']});
       })();` });
       trace = await startOpeningTrace();
     }
@@ -200,22 +201,22 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
     trace ??= await startOpeningTrace();
     const processSamples=[];
-    const timer=setInterval(() => {
-      const samples=processes().map(m => [m.type, m.pid, m.memory.privateBytes ?? m.memory.workingSetSize]);
-      processSamples.push([Date.now(),samples]);
-    }, 50);
-    timer.unref();
     line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study });
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
     const afterOpen = Promise.resolve(viewer.adapter.afterOpen?.({ js })).catch(error => { line.afterOpenError = String(error?.message ?? error); });
     let peakMB = 0, quietSince = null, lastCpu = before, lastAt = performance.now(), seen = false, lastLook = 0;
-    while (performance.now() - dropped < OPEN_LIMIT_MS) {
+    let transferredAt=0;
+    while (performance.now() - dropped < 12_000) {
       await sleep(250);
       const now = performance.now(), metrics = processes();
+      processSamples.push([Date.now(), metrics.map(m => [m.type, m.pid, m.memory.privateBytes ?? m.memory.workingSetSize])]);
+      const full=await js('window.recordOpeningMemory(); window.openingMessages.some(m=>m[1]===157286400)');
+      if(full && !transferredAt) transferredAt=now;
       const cores = metrics.reduce((total, m) => total + (m.cpu.cumulativeCPUUsage - (lastCpu.get(m.pid) ?? m.cpu.cumulativeCPUUsage)), 0) / ((now - lastAt) / 1000);
       peakMB = Math.max(peakMB, memoryMB(metrics));
       lastCpu = new Map(metrics.map(m => [m.pid, m.cpu.cumulativeCPUUsage])); lastAt = now;
+      if (transferredAt && now-transferredAt >= 1000) { line.doneMs=Math.round(now-dropped); break; }
       quietSince = cores < QUIET_SHARE ? quietSince ?? now : null;
       if (quietSince !== null && now - quietSince >= QUIET_MS && now - lastLook > 1000) {
         lastLook = now;
@@ -225,7 +226,6 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     }
     await afterOpen;
     const after = processes();
-    clearInterval(timer);
     line.memoryTimeline = { processes:processSamples, page: await js('({ memory:window.openingMemory, messages:window.openingMessages, marks:performance.getEntriesByType("mark").map(m=>[m.name,performance.timeOrigin+m.startTime]) })') };
     line.cpuSeconds = +after.reduce((total, m) => total + (m.cpu.cumulativeCPUUsage - (before.get(m.pid) ?? 0)), 0).toFixed(2);
     line.peakMB = peakMB; line.loadedMB = memoryMB(after);
