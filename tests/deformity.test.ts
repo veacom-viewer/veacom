@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
-import { fitCircle, intersect, signedAngle, type Point } from '../src/imaging/deformity/plane';
+import {
+  applyRigid, composeRigid, fitCircle, intersect, invertRigid, isIdentityRigid, pointToSegment, polygonArea,
+  signedAngle, simplifyClosedPolygon, type Point, type Rigid,
+} from '../src/imaging/deformity/plane';
 import { lateralOnImage, measureLeg, type LegInput } from '../src/imaging/deformity/measure';
 import { coraNeeds, coras, malalignmentTest } from '../src/imaging/deformity/analysis';
-import { fragmentFor, movedLandmarks, paleyRule, simulate, solveAngle, type Osteotomy } from '../src/imaging/deformity/osteotomy';
+import {
+  coraCut, fragmentFor, insertFragmentVertex, MAX_FRAGMENT_POINTS, moved, movedLandmarks, paleyRule,
+  removeFragmentVertex, rotationHandlePoint, simplifyFragment, simulate, simulateMany, solveAngle,
+  solveAngleMany, sortOsteotomies, type Osteotomy,
+} from '../src/imaging/deformity/osteotomy';
 
 const deg = Math.PI / 180;
 // Expected values below are worked out by hand from the points (the comment beside each), not by the kernel.
@@ -436,10 +443,185 @@ describe('a simulated osteotomy', () => {
   });
 });
 
+describe('multi-level osteotomies, joint solvers, polygon editing and CORA presets', () => {
+  const mkCut = (input: LegInput, bone: 'femur' | 'tibia', cut: [Point, Point], patch: Partial<Osteotomy> = {}): Osteotomy => {
+    const leg = measureLeg(input);
+    return {
+      bone, cut, hinge: cut[1], wedge: 'opening', degrees: 0, direction: 'valgus',
+      shiftLateral: 0, shiftDistal: 0, lengthen: 0, fragment: fragmentFor(cut, bone, leg, input.mmPerPixel)!, ...patch,
+    };
+  };
+
+  it('composes a double-level DFO + HTO proximally to distally regardless of array order', () => {
+    const input = straight(), before = measureLeg(input);
+    const femurCut = mkCut(input, 'femur', [[20, 300], [-20, 300]], { degrees: 6, direction: 'varus', shiftLateral: 3, shiftDistal: 2 });
+    const tibiaCut = mkCut(input, 'tibia', [[20, 500], [-20, 500]], { degrees: 9, direction: 'valgus', shiftLateral: -2, lengthen: 4 });
+    // Pass tibia first, femur second: simulation must still compose femur (proximal) then tibia (distal).
+    const sim = simulateMany(input, before, [tibiaCut, femurCut])!;
+    assert.deepEqual(sim.cuts.map(c => c.osteotomy.bone), ['femur', 'tibia']);
+    assert.deepEqual(sim.cuts.map(c => c.index), [1, 0]);
+    const [femSim, tibSim] = sim.cuts;
+    // Femoral head stays fixed; knee and plateau move by M_femur only; ankle moves by M_femur ∘ M_tibia.
+    assert.deepEqual(sim.leg.hip?.centre, before.hip?.centre);
+    const expectedKnee = moved(femSim.localMotion, before.knee!, input.mmPerPixel);
+    assertClose(sim.leg.knee![0], expectedKnee[0], 9);
+    assertClose(sim.leg.knee![1], expectedKnee[1], 9);
+    const expectedAnkle = moved(femSim.localMotion, moved(tibSim.localMotion, before.ankle!, input.mmPerPixel), input.mmPerPixel);
+    assertClose(sim.leg.ankle![0], expectedAnkle[0], 9);
+    assertClose(sim.leg.ankle![1], expectedAnkle[1], 9);
+    // Rigid knee joint moves as one: JLCA stays identical.
+    assertClose(sim.leg.values.JLCA.value, before.values.JLCA.value!, 9);
+    // With zero tibial shifts, proximal and distal sides of the tibial hinge meet identically at M_femur(hinge_tibia).
+    const noShiftTib = { ...tibiaCut, shiftLateral: 0, shiftDistal: 0, lengthen: 0 };
+    const connected = simulateMany(input, before, [femurCut, noShiftTib])!;
+    assertClose(connected.cuts[1].hingeMoved[0], connected.cuts[1].hingeAfter[0], 9);
+    assertClose(connected.cuts[1].hingeMoved[1], connected.cuts[1].hingeAfter[1], 9);
+    // Total rotation on distal tibia is the algebraic sum of both local rotations.
+    assertClose(connected.cuts[1].totalMotion.degrees, connected.cuts[0].localMotion.degrees + connected.cuts[1].localMotion.degrees, 9);
+  });
+
+  it('composes a bifocal tibial osteotomy (proximal + distal) accurately', () => {
+    const input = straight(), before = measureLeg(input);
+    const prox = mkCut(input, 'tibia', [[20, 480], [-20, 480]], { degrees: 5, direction: 'valgus' });
+    const dist = mkCut(input, 'tibia', [[18, 720], [-18, 720]], { degrees: 4, direction: 'varus' });
+    const sorted = sortOsteotomies([dist, prox], before, input.mmPerPixel);
+    assert.deepEqual(sorted.map(item => item.index), [1, 0]);
+    const sim = simulateMany(input, before, [dist, prox])!;
+    // Proximal tibial shaft (y=500) moves with proximal cut only; distal shaft (y=700) also with prox only; ankle (y=800) with both.
+    const movedProxShaft = sim.points.tibialShaftProximal![0];
+    const expectedProxShaft = moved(sim.cuts[0].totalMotion, input.points.tibialShaftProximal![0], input.mmPerPixel);
+    assertClose(movedProxShaft[0], expectedProxShaft[0], 9);
+    assertClose(movedProxShaft[1], expectedProxShaft[1], 9);
+    const movedAnkle = sim.points.ankleCentre![0];
+    const expectedAnkle = moved(sim.cuts[1].totalMotion, input.points.ankleCentre![0], input.mmPerPixel);
+    assertClose(movedAnkle[0], expectedAnkle[0], 9);
+    assertClose(movedAnkle[1], expectedAnkle[1], 9);
+  });
+
+  it('solves joint-specific targets (mLDFA, MPTA, LDTA) and chained double-level DFO + HTO corrections', () => {
+    // Combined varus femur (tilted condyles -> mLDFA ~93°) and varus tibia (ankle medial -> MPTA ~82°, high medial MAD).
+    const input = straight();
+    input.points = {
+      ...input.points,
+      femoralCondyleMedial: [[20, 408]], femoralCondyleLateral: [[-20, 412]], // mLDFA ≈ 95.7°
+      tibialPlateauMedial: [[20, 416]], tibialPlateauLateral: [[-20, 416]],
+      ankleCentre: [[60, 800]], plafondMedial: [[75, 805]], plafondLateral: [[45, 805]],
+    };
+    const before = measureLeg(input);
+    assert.ok(before.values.mLDFA.value! > 92);
+    assert.ok(before.values.MPTA.value! < 85);
+    const dfo = mkCut(input, 'femur', [[20, 320], [-20, 320]]);
+    const hto = mkCut(input, 'tibia', [[20, 500], [-20, 500]]);
+
+    // Step 1: Solve femoral cut alone to restore normal mLDFA = 87°.
+    const solvedFemur = solveAngleMany(input, before, [dfo, hto], 0, { kind: 'mLDFA', degrees: 87 })!;
+    const dfoSolved = { ...dfo, ...solvedFemur };
+    const afterDfo = simulateMany(input, before, [dfoSolved, hto])!;
+    assertClose(afterDfo.leg.values.mLDFA.value, 87, 5);
+
+    // Step 2: Keeping the femoral correction in place, solve tibial cut to Fujisawa WBL = 62.5%.
+    const solvedTibia = solveAngleMany(input, before, [dfoSolved, hto], 1, { kind: 'wbl', percent: 62.5 })!;
+    const htoSolved = { ...hto, ...solvedTibia };
+    const afterBoth = simulateMany(input, before, [dfoSolved, htoSolved])!;
+    assertClose(afterBoth.leg.values.mLDFA.value, 87, 5);
+    assertClose(afterBoth.leg.values.WBL.value, 62.5, 5);
+
+    // Also verify MPTA = 87° and LDTA = 89° direct solvers.
+    const solvedMpta = solveAngle(input, before, hto, { kind: 'MPTA', degrees: 87 })!;
+    assertClose(simulate(input, before, { ...hto, ...solvedMpta })!.leg.values.MPTA.value, 87, 5);
+    const distalCut = mkCut(input, 'tibia', [[18, 740], [-18, 740]]);
+    const solvedLdta = solveAngle(input, before, distalCut, { kind: 'LDTA', degrees: 89 })!;
+    assertClose(simulate(input, before, { ...distalCut, ...solvedLdta })!.leg.values.LDTA.value, 89, 5);
+  });
+
+  it('pre-places a Paley Rule 1 CORA-guided cut for opening and closing wedges across orientations', () => {
+    const K: Point = [0, 400], C: Point = [100 * Math.sin(3 * deg), 400 + 100 * Math.cos(3 * deg)];
+    const q: Point = [Math.sin(-7 * deg), Math.cos(-7 * deg)], A: Point = [C[0] + 300 * q[0], C[1] + 300 * q[1]];
+    const turnBy = (v: Point, a: number): Point => [v[0] * Math.cos(a) - v[1] * Math.sin(a), v[0] * Math.sin(a) + v[1] * Math.cos(a)];
+    const up: Point = [-q[0], -q[1]], L = [turnBy(up, 89 * deg), turnBy(up, -89 * deg)].find(v => v[0] < 0)!;
+    const input: LegInput = {
+      side: 'R', mmPerPixel: [0.3, 0.3], lateral: [-1, 0], points: {
+        femoralHeadContour: ([[-20, 0], [0, -20], [20, 0]] as Point[]).map(([x, y]) => [x / 0.3, y / 0.3]),
+        kneeCentre: [[K[0] / 0.3, K[1] / 0.3]], ankleCentre: [[A[0] / 0.3, A[1] / 0.3]],
+        tibialPlateauMedial: [[20 / 0.3, 410 / 0.3]], tibialPlateauLateral: [[-20 / 0.3, 410 / 0.3]],
+        plafondMedial: [[(A[0] - 15 * L[0]) / 0.3, (A[1] - 15 * L[1]) / 0.3]],
+        plafondLateral: [[(A[0] + 15 * L[0]) / 0.3, (A[1] + 15 * L[1]) / 0.3]],
+      },
+    };
+    const before = measureLeg(input), cora = coras(before, input.mmPerPixel, input.lateral).tibia!;
+    assertClose(cora.magnitude, 10, 5);
+    for (const wedge of ['opening', 'closing'] as const) {
+      const cut = coraCut(cora, before, input, wedge)!;
+      assert.equal(cut.bone, 'tibia');
+      assert.equal(cut.wedge, wedge);
+      assertClose(cut.degrees, 10, 1);
+      const rule = paleyRule(cut, cora, input.mmPerPixel)!;
+      assert.equal(rule.rule, 1);
+      assertClose(rule.offset, 0, 5);
+      assertClose(rule.translation, 0, 5);
+      const sim = simulate(input, before, cut)!;
+      assert.equal(sim.wedge, wedge);
+    }
+  });
+
+  it('inserts, removes, and simplifies bone-hugging fragment polygons safely', () => {
+    const poly: Point[] = [[40, 500], [-40, 500], [-40, 860], [40, 860]];
+    const inserted = insertFragmentVertex(poly, 0, [0, 495]);
+    assert.equal(inserted.length, 5);
+    assert.deepEqual(inserted[1], [0, 495]);
+    const removed = removeFragmentVertex(inserted, 1);
+    assert.deepEqual(removed, poly);
+    // Never drops below 3 vertices.
+    const tri: Point[] = [[0, 0], [10, 0], [5, 10]];
+    assert.equal(removeFragmentVertex(tri, 0).length, 3);
+    // Respects MAX_FRAGMENT_POINTS cap.
+    let capped = poly;
+    for (let i = 0; i < 40; i++) capped = insertFragmentVertex(capped, 0, [i, 500]);
+    assert.equal(capped.length, MAX_FRAGMENT_POINTS);
+    // Freehand bone lasso loop of 120 points simplifies cleanly within MAX_FRAGMENT_POINTS while keeping area.
+    const loop: Point[] = Array.from({ length: 120 }, (_, i) => {
+      const a = i / 120 * Math.PI * 2;
+      return [50 * Math.cos(a), 650 + 180 * Math.sin(a)];
+    });
+    const simplified = simplifyFragment(loop, 2)!;
+    assert.ok(simplified.length >= 4 && simplified.length <= MAX_FRAGMENT_POINTS);
+    assert.ok(polygonArea(simplified) > polygonArea(loop) * 0.9);
+    // Degenerate collinear stroke returns null.
+    assert.equal(simplifyFragment([[0, 0], [10, 0], [20, 0]], 1), null);
+  });
+
+  it('places the rotation handle on the moved segment and clears the knee joint line', () => {
+    const input = straight(), before = measureLeg(input);
+    const femurCut = mkCut(input, 'femur', [[20, 330], [-20, 330]], { degrees: 8, direction: 'valgus' });
+    const sim = simulateMany(input, before, [femurCut])!;
+    const handle = rotationHandlePoint(sim.cuts[0], before, input.mmPerPixel);
+    // Handle must stay well clear of the moved knee centre.
+    const distToKnee = Math.hypot(handle[0] - sim.leg.knee![0], handle[1] - sim.leg.knee![1]);
+    assert.ok(distToKnee >= 35, `Expected handle at least 35 mm from knee, got ${distToKnee.toFixed(1)}`);
+  });
+});
+
 describe('plane helpers', () => {
   it('cross lines and turn directions', () => {
     assert.deepEqual(intersect([0, 0], [1, 0], [5, -5], [0, 1]), [5, 0]);
     assert.equal(intersect([0, 0], [1, 0], [0, 1], [2, 0]), null);
     assertClose(signedAngle([1, 0], [0, 1]), 90, 12);
+  });
+
+  it('composes and inverts rigid motions exactly', () => {
+    const a: Rigid = { pivot: [120, 340], degrees: 14.5, shift: [-8, 12] };
+    const b: Rigid = { pivot: [140, 620], degrees: -9.25, shift: [5, -4] };
+    const ab = composeRigid(a, b);
+    for (const p of [[0, 0], [120, 340], [140, 620], [200, 900], [-30, 500]] as Point[]) {
+      const want = applyRigid(a, applyRigid(b, p)), got = applyRigid(ab, p);
+      assertClose(got[0], want[0], 11); assertClose(got[1], want[1], 11);
+      const back = applyRigid(invertRigid(ab), got);
+      assertClose(back[0], p[0], 11); assertClose(back[1], p[1], 11);
+    }
+    assert.equal(isIdentityRigid(composeRigid(invertRigid(ab), ab)), true);
+    assert.equal(isIdentityRigid(ab), false);
+    const seg = pointToSegment([5, 4], [0, 0], [10, 0]);
+    assertClose(seg.t, 0.5, 12); assertClose(seg.distance, 4, 12); assert.deepEqual(seg.point, [5, 0]);
+    assert.equal(simplifyClosedPolygon([[0, 0], [10, 0], [10, 10], [0, 10]], 0.5, 8).length, 4);
   });
 });
