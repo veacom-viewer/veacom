@@ -60,6 +60,7 @@ thread_local! {
     static PIECES: RefCell<VecDeque<Piece>> = const { RefCell::new(VecDeque::new()) };
     static STATS: RefCell<Stats> = RefCell::new(Stats::default());
     static READER: web_sys::FileReaderSync = web_sys::FileReaderSync::new().expect("FileReaderSync is only available in a Worker");
+    static CAN_TRANSFER_READS: bool = js_sys::Reflect::get(&js_sys::ArrayBuffer::new(0), &"transfer".into()).is_ok_and(|value| value.is_function());
     static CLOCK: web_sys::Performance = js_sys::global().unchecked_into::<web_sys::WorkerGlobalScope>().performance().expect("A Worker needs a performance clock");
 }
 
@@ -388,6 +389,10 @@ fn read_blob(id: u32, start: u64, output: &mut [u8]) -> io::Result<()> {
         ));
     }
     bytes.copy_to(output);
+    // The file reader owns this temporary buffer. A full CT decode can finish before a browser collects its reads.
+    if CAN_TRANSFER_READS.with(|available| *available) {
+        let _ = buffer.transfer_with_length(0);
+    }
     STATS.with_borrow_mut(|stats| {
         stats.reads += 1;
         stats.bytes += output.len() as u64;
