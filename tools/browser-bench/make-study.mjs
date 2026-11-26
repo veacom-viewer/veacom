@@ -20,6 +20,8 @@ export const STUDIES = {
   'ct-384': { slices: 384, size: 512, about: 'a 384-slice uncompressed CT' },
   'ct-512': { slices: 512, size: 512, about: 'a 512-slice uncompressed CT' },
   'ct-768': { slices: 768, size: 512, about: 'a 768-slice uncompressed CT' },
+  'ct-640': { slices: 640, size: 512, about: 'a 640-slice uncompressed CT' },
+  'ct-896': { slices: 896, size: 512, about: 'a 896-slice uncompressed CT' },
   'ct-1000': { slices: 1000, size: 512, about: 'a thin-slice 1,000-slice CT of 512×512, uncompressed, as in the Weasis comparison' },
 };
 const GENERATOR = 'veacom-bench-study-v1';

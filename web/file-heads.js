@@ -17,6 +17,16 @@ export function catalogPrefixMap(heads) {
   return bytes > MAX_OWNED_HEAD_BYTES ? new Map() : undefined;
 }
 
+/** Return the Worker's prefetched buffers before decoding starts. Each buffer can back several file heads.
+ * @param {Map<number, Uint8Array> | undefined} prefixes */
+export function releaseCatalogPrefixes(prefixes) {
+  if (!prefixes) return;
+  for (const head of prefixes.values()) {
+    const buffer = head.buffer;
+    if (head.byteLength && 'transfer' in buffer && typeof buffer.transfer === 'function') buffer.transfer(0);
+  }
+}
+
 /** @param {{ index: number, part: Blob }[]} group @param {(Uint8Array | undefined)[]} result */
 async function readGroup(group, result) {
   try {

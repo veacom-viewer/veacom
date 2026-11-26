@@ -10,7 +10,7 @@
 // runs and refuses pictures.
 
 import { readImportFiles, type ImportFiles } from './droppedFiles';
-import { catalogPrefixMap } from '../../web/file-heads.js';
+import { catalogPrefixMap, releaseCatalogPrefixes } from '../../web/file-heads.js';
 import type { HelperFiles } from './engine.helper';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
@@ -216,6 +216,7 @@ async function answer(data: EngineRequest): Promise<void> {
           }
           value = JSON.parse(engine.importPaths(data.roots, prefixes));
         } finally {
+          releaseCatalogPrefixes(prefixes);
           if (ids.length < files.length) engine.pruneFiles();
           forgetUnlisted();
         }
