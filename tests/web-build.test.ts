@@ -22,9 +22,9 @@ it('bounds the total bytes read ahead and preserves file indices when reads are 
   assert.equal(heads.length, 1101);
   assert.equal(heads[0], undefined);
   assert.equal(largeReads, 0);
-  assert.equal(heads[1024]?.length, 64 * 1024);
+  assert.equal(heads[1024]?.length, 8 * 1024);
   assert.equal(heads[1025], undefined);
-  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 8 * 1024 * 1024);
 });
 
 it('returns the exact prefix for each source across batches, empty files and a file changed on disk', async () => {
@@ -41,7 +41,7 @@ it('returns the exact prefix for each source across batches, empty files and a f
     const heads: (Uint8Array | undefined)[] = await readHeads(files);
     assert.equal(heads.length, files.length);
     for (const [index, expected] of bytes.entries()) {
-      assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, 65536), String(index));
+      assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, 8192), String(index));
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

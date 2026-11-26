@@ -52,7 +52,7 @@ function showTimes(run) {
   $('times').hidden = false;
 }
 
-// ?prefetch=1 (or window.__prefetch) reads the files' first 64 KiB in parallel before the engine starts.
+// ?prefetch=1 (or window.__prefetch) reads the files' first 8 KiB in parallel before the engine starts.
 const prefetchDefault = new URLSearchParams(location.search).get('prefetch') === '1';
 // ?checksum=1: after the timings, a SHA-1 of every decoded series (to compare transfer syntaxes).
 const checksum = new URLSearchParams(location.search).get('checksum') === '1';
