@@ -243,6 +243,25 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       line.renderer = await rendererName(js);
     }
 
+    if (round === 1 && study.name === 'ct-300' && ['veacom', 'veacom-base'].includes(viewer.id) && first) {
+      const navigation = marks['bench:drop'] - line.handoffSinceNavigationMs;
+      const captured = frames.filter(frame => frame.ts >= navigation && frame.ts <= first.ts + 650);
+      const folder = path.join(outDir, 'recordings', viewer.id);
+      fs.mkdirSync(folder, { recursive: true });
+      const times = captured.map((frame, index) => {
+        const filename = 'frame-' + String(index).padStart(3, '0') + '.jpg';
+        fs.writeFileSync(path.join(folder, filename), Buffer.from(frame.jpeg, 'base64'));
+        return { filename, sinceNavigationMs: frame.ts - navigation, sourceIndex: frame.index };
+      });
+      fs.writeFileSync(path.join(folder, 'capture.json'), JSON.stringify({ viewer: viewer.id, navigationToFirstCorrectMs: line.navigationToFirstCorrectMs, times }, null, 2));
+      const concat = times.flatMap((frame, index) => [
+        "file '" + frame.filename + "'",
+        'duration ' + (index + 1 < times.length ? (times[index + 1].sinceNavigationMs - frame.sinceNavigationMs) / 1000 : 0.5),
+      ]);
+      concat.push("file '" + times.at(-1).filename + "'");
+      fs.writeFileSync(path.join(folder, 'frames.txt'), concat.join('\n') + '\n');
+    }
+
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
       let at = await look(win);
