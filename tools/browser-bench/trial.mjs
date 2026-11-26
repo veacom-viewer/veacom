@@ -248,6 +248,14 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
           verified.sops[1] !== verified.uid.replace(/\.2$/, '.3.1')) throw new Error('Wrong reading study: ' + JSON.stringify(verified));
     }
 
+    await devtools.sendCommand('Performance.enable', { timeDomain: 'threadTicks' });
+    const threadCost = async () => {
+      const { metrics } = await devtools.sendCommand('Performance.getMetrics');
+      const values = Object.fromEntries(metrics.map(v => [v.name, v.value]));
+      if (![values.TaskDuration, values.ScriptDuration, values.LayoutDuration].every(Number.isFinite)) throw new Error('Missing renderer timing counters');
+      return { mainThreadMs: values.TaskDuration * 1000, scriptMs: values.ScriptDuration * 1000, layoutMs: values.LayoutDuration * 1000 };
+    };
+    const spent = (before, after) => Object.fromEntries(Object.entries(after).map(([name, value]) => [name, Math.round((value - before[name]) * 10) / 10]));
     if (SCENARIOS.has('paging')) {
       // How this viewer pages: slices per notch and which way, from notches sent one at a time.
       let at = await look(win);
@@ -273,13 +281,16 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
         if (Math.max(at.index, study.slices - 1 - at.index) < travel) at = await recenter();
         const towards = study.slices - 1 - at.index >= at.index ? 1 : -1;
         trace = await startTrace(devtools);
+        const costBefore = await threadCost();
         await mark(`bench:page${rate}:start`);
         await notches(win, at, towards * sign, count, rate);
         await mark(`bench:page${rate}:end`);
         await sleep(1500);
         await mark(`bench:page${rate}:settled`);
+        const cost = spent(costBefore, await threadCost());
         ({ marks, frames } = readTrace(await trace.stop(), decode));
         line.paging.rates[rate] = pagingMetrics(marks, frames, MAIN, `page${rate}`, count, step);
+        line.paging.rates[rate].rendererCost = cost;
         at = await look(win);
       }
     }
@@ -296,6 +307,7 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       trace = await startTrace(devtools);
       win.webContents.sendInputEvent({ type: 'mouseMove', x: start.x, y: start.y });
       await sleep(200);
+      const costBefore = await threadCost();
       await mark('bench:wl:start');
       win.webContents.sendInputEvent({ type: 'mouseDown', x: start.x, y: start.y, button, clickCount: 1 });
       const held = [`${button}ButtonDown`], began = performance.now();
@@ -308,8 +320,10 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       win.webContents.sendInputEvent({ type: 'mouseUp', x: start.x + 270, y: start.y + 90, button, clickCount: 1 });
       await sleep(1000);
       await mark('bench:wl:settled');
+      const cost = spent(costBefore, await threadCost());
       ({ marks, frames } = readTrace(await trace.stop(), decode));
       line.wl = windowLevelMetrics(marks, frames, MAIN);
+      line.wl.rendererCost = cost;
       if (process.env.BENCH_DEBUG) line.wlFrames = frames.map(f => [Math.round(f.ts - marks['bench:wl:start']), f.index, f.unit && +f.unit.toFixed(1), f.grey && +f.grey.toFixed(1)]);
     }
 
