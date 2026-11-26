@@ -2,8 +2,6 @@ import type { PixelArray, Vec3 } from '../model';
 
 export interface PlaneTexture { start: Vec3; size: Vec3 }
 
-const PLANES_PER_BLOCK = 4;
-
 /** A thin reconstruction parallel to a voxel axis reads only neighbouring planes along that axis. */
 export function planeTexture(dimensions: Vec3, topLeft: Vec3, right: Vec3, down: Vec3, width: number, height: number): PlaneTexture | undefined {
   for (const axis of [0, 1, 2] as const) {
@@ -11,10 +9,15 @@ export function planeTexture(dimensions: Vec3, topLeft: Vec3, right: Vec3, down:
     if (dimensions[axis] < 64 || !(Math.abs(across) + Math.abs(along) <= 0.001) || !Number.isFinite(topLeft[axis])) continue;
     const middle = topLeft[axis] + (across + along) / 2;
     const nearest = Math.max(0, Math.min(dimensions[axis] - 1, Math.round(middle)));
-    const block = Math.floor(nearest / PLANES_PER_BLOCK) * PLANES_PER_BLOCK;
-    // The block covers four slice centres and one extra voxel at each end for trilinear interpolation.
-    const first = Math.max(0, block - 1);
-    const end = Math.min(dimensions[axis], block + PLANES_PER_BLOCK + 1);
+    // The original padded eight-plane uploads changed on integer slices 6, 10, 14, etc.
+    // Keep the same wheel steps cached, including the wider groups at the volume borders.
+    const block = Math.floor((nearest + 2) / 4) * 4 - 2;
+    const lastBlock = Math.floor((dimensions[axis] - 1) / 8) * 8 + 2;
+    const firstCenter = nearest < 6 ? 0 : Math.min(block, lastBlock);
+    const pastCenters = nearest >= lastBlock ? dimensions[axis] : Math.max(6, block + 4);
+    // One neighbour on either side covers trilinear interpolation up to half a voxel from each centre.
+    const first = Math.max(0, firstCenter - 1);
+    const end = Math.min(dimensions[axis], pastCenters + 1);
     const start: Vec3 = [0, 0, 0], size: Vec3 = [...dimensions];
     start[axis] = first;
     size[axis] = end - first;
