@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -149,8 +149,19 @@ async function dropOnPage(devtools, files, x = 100, y = 120) {
   }
 }
 
-async function checkDropDuringStartup(browser, url) {
+async function checkDropDuringStartup(browser, url, ensurePaint) {
   const page = await browser.newPage(), startBridge = Promise.withResolvers(), release = Promise.withResolvers();
+  let step = 'navigate';
+  await page.addInitScript(() => {
+    window.dragTrace = [];
+    for (const name of ['dragenter','dragover','drop']) window.addEventListener(name, ev => {
+      const row = {type:name, trusted:ev.isTrusted, n:ev.dataTransfer.files.length, time:performance.now(),
+        target:ev.target.tagName, root:Boolean(document.querySelector('#root')), hasBridge:Boolean(window.veacom), hasCapture:Boolean(window.veacomFileDrops)};
+      window.dragTrace.push(row);
+      setTimeout(() => {row.prevented=ev.defaultPrevented;});
+    }, {capture:true, passive:true});
+  });
+  page.setDefaultTimeout(6000);
   try {
     const entry = /\/assets\/web-[^/]+\.js(?:\?.*)?$/;
     const reader = /\/assets\/main-[^/]+\.js(?:\?.*)?$/;
@@ -158,11 +169,19 @@ async function checkDropDuringStartup(browser, url) {
     await page.route(reader, async route => { await release.promise; await route.continue(); });
     const requested = page.waitForRequest(reader);
     await page.goto(url, { waitUntil: 'commit' });
+    step = 'wait for root';
     await page.waitForFunction(() => document.getElementById('root') && !window.veacom);
+    if (ensurePaint) {
+      await page.bringToFront();
+      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+      await page.screenshot();
+    }
+    step = 'send early CT and MR';
     const cdp = await page.context().newCDPSession(page);
     await dropOnPage(cdp, [path.join(study, 'S01')]);
     await dropOnPage(cdp, [path.join(mrStudy, studyFiles[0])]);
     startBridge.resolve();
+    step = 'wait for reader request';
     await requested;
     await page.waitForFunction(() => window.veacom?.web);
     assert.equal(await page.getByTestId('welcome-open-folder').count(), 0);
@@ -180,9 +199,11 @@ async function checkDropDuringStartup(browser, url) {
     });
     await dropOnPage(cdp, [mkdtempSync(path.join(scratch, 'empty-'))]);
     release.resolve();
+    step = 'first import';
     await page.waitForFunction(() => window.firstDropStarted);
     await dropOnPage(cdp, [path.join(mrStudy, 'S01')]);
     await page.evaluate(() => window.releaseFirstDrop());
+    step = 'three exact imports';
     await page.waitForFunction(() => window.completedDrops.length >= 3 && window.__VEACOM_TEST__?.state().series.length === 2);
     const root = '2.25.302617644913925066835652647005517224101';
     assert.deepEqual(await page.evaluate(() => window.completedDrops), [
@@ -190,6 +211,12 @@ async function checkDropDuringStartup(browser, url) {
       [['MR', 'SYNTHETIC-OTHER', 1, root + '.10.3.1']],
       [['MR', 'SYNTHETIC-OTHER', slices, root + '.10.3.1']],
     ]);
+    return {ok:true, step, detail: await page.evaluate(() => ({events:window.dragTrace, results:window.completedDrops}))};
+  } catch (error) {
+    const detail=await page.evaluate(()=>({events:window.dragTrace, completed:window.completedDrops, first:window.firstDropStarted,
+      state:window.__VEACOM_TEST__?.state().series.map(s=>[s.modality,s.patientId]), visibility:document.visibilityState,
+      handler:Boolean(window.veacomFileDrops),url:location.href})).catch(()=>({url:page.url()}));
+    return {ok:false,error:error.stack,step,detail};
   } finally { startBridge.resolve(); release.resolve(); await page.close(); }
 }
 
@@ -750,6 +777,21 @@ async function checkUnacknowledgedFiles(page) {
 }
 
 const browser = await chromium.launch();
+const results=[];
+{
+  for(const isolated of [true,false]){
+    const server=await serve(isolated);
+    try{
+      for(let i=0;i<10;i++){
+        const paint=i%2!==0;
+        const row=await checkDropDuringStartup(browser,'http://127.0.0.1:'+server.address().port+'/',paint);
+        results.push({isolated,paint,...row});writeFileSync('browser-drops.json',JSON.stringify(results,null,2));
+        console.log(isolated,paint,row.ok,row.step);
+      }
+    }finally{server.close();}
+  }
+}
+
 const failures = [];
 try {
   for (const isolated of [true, false]) {
@@ -781,7 +823,9 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
-      await checkDropDuringStartup(browser, page.url());
+      const early=await checkDropDuringStartup(browser,page.url(),false);
+      results.push({isolated,fullSuite:true,...early});writeFileSync('browser-drops.json',JSON.stringify(results,null,2));
+      if(!early.ok)throw Error(early.step+' '+early.error);
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkWelcomeBeforeGraphics(browser, page.url());
@@ -826,7 +870,7 @@ try {
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, landmark model on ${model.threads} thread(s), ${errors.length} errors`);
     } catch (error) {
-      failures.push(`${mode}: ${error.message}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
+      failures.push(`${mode}: ${error.stack}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
     } finally {
       await page.close();
       server.close();
