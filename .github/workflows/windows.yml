@@ -23,26 +23,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install --with-deps chromium
-      - name: Verify the deployed browser entry
+      - name: Open the released viewer and verify the entry the browser received
         env:
-          EXPECTED: ${{ inputs.entry_sha }}
-        run: |
-          mkdir -p evidence
-          python3 - <<'PYTHON'
-          import hashlib,json,os,re
-          from urllib.request import urlopen
-          from urllib.parse import urljoin
-          site='https://viewer.veacom.app/'
-          with urlopen(site,timeout=30) as r: html=r.read().decode()
-          matches=re.findall(r'<script[^>]+src="([^"]+)"',html)
-          entries=[s for s in matches if '/web-' in s]
-          assert len(entries)==1
-          url=urljoin(site,entries[0])
-          with urlopen(url,timeout=45) as r: digest=hashlib.sha256(r.read()).hexdigest()
-          assert re.fullmatch('[0-9a-f]{64}',os.environ['EXPECTED']) and digest==os.environ['EXPECTED'],(url,digest)
-          open('evidence/site.json','w').write(json.dumps({'url':url,'sha256':digest,'scripts':matches},indent=2))
-          PYTHON
-      - run: node tools/browser-bench/patient-switch-frames.mjs live evidence
+          EXPECTED_ENTRY: ${{ inputs.entry_sha }}
+        run: node tools/browser-bench/patient-switch-frames.mjs live evidence
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:

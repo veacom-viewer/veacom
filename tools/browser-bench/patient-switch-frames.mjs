@@ -76,7 +76,25 @@ async function observe(browser, sources, isolated) {
         waiting.clear();return n;
       };
     });
-    await page.goto(site.url);
+    if (siteDirectory === 'live') {
+      const responses = new Map();
+      page.on('response', response => {
+        const url = new URL(response.url());
+        if (url.origin === new URL(site.url).origin && /[/]assets[/]web-[^/]+[.]js$/.test(url.pathname)) responses.set(url.href, response);
+      });
+      const navigation = await page.goto(site.url);
+      assert.equal(navigation.status(), 200, 'The published home page must open in the browser');
+      const scripts = await page.locator('script[src]').evaluateAll(nodes => nodes.map(node => node.src));
+      const matched = scripts.filter(url => responses.has(url));
+      assert.equal(matched.length, 1, 'One main entry named by the published page must load');
+      const entry = responses.get(matched[0]);
+      assert.equal(entry.status(), 200);
+      const sha256 = createHash('sha256').update(await entry.body()).digest('hex');
+      assert.equal(sha256, process.env.EXPECTED_ENTRY);
+      writeFileSync(path.join(out, 'site.json'), JSON.stringify({ url: entry.url(), sha256, scripts }, null, 2));
+    } else {
+      await page.goto(site.url);
+    }
     const picker=page.waitForEvent('filechooser');
     await page.getByTestId('welcome-open-files').click();
     await (await picker).setFiles(sources.map(s=>s.file));
