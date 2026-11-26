@@ -156,8 +156,10 @@ it('reads during engine startup and hands the buffered and remaining headers to 
   await new Promise<void>(resolve => setImmediate(resolve));
   const registered: [string, number | undefined][] = [];
   const completed = prepared.register((source, head) => { registered.push([source.path, head?.[0]]); });
-  try { assert.equal(registered.length, 16); }
-  finally { release(); }
+  try {
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(registered.length, 16);
+  } finally { release(); }
   await completed;
   assert.deepEqual(registered, files.map(({ path }, i) => [path, i % 256]));
 });
@@ -185,4 +187,17 @@ it('discards a prepared folder while a missing group still holds its file port o
     await new Promise<void>(resolve => setImmediate(resolve));
     assert.equal(read.mock.callCount(), 0);
   } finally { channel.port1.close(); channel.port2.close(); }
+});
+
+it('reads at most two header groups before the engine can take the selection', async t => {
+  const read = t.mock.method(Blob.prototype, 'arrayBuffer');
+  const file = new File(['sample'], 'frame.dcm');
+  const files = Array.from({ length: 300 }, (_, i) => ({ path: String(i), file }));
+  const prepared = prepareImportFiles(files);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(read.mock.callCount(), 2);
+  const paths: string[] = [];
+  await prepared.register(source => { paths.push(source.path); });
+  assert.deepEqual(paths, files.map(source => source.path));
+  assert.equal(read.mock.callCount(), 19);
 });

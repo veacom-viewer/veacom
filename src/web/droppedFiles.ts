@@ -5,6 +5,10 @@ export interface SelectedFile { path: string; file: File }
 export type FileSource = SelectedFile | { path: string; entry: FileSystemFileEntry };
 export type ImportFiles = SelectedFile[] | { port: MessagePort; count: number };
 type RegisterFile = (file: SelectedFile, head: Uint8Array | undefined) => void;
+interface StartupRead {
+  signal: AbortSignal;
+  beforeGroup(offset: number): Promise<void> | undefined;
+}
 export interface CapturedDrop { files: File[]; entries: FileSystemEntry[] }
 
 /** Directory entries must be taken during the drop. Keep each early selection until the reader installs its handler. */
@@ -86,11 +90,16 @@ export function importFileSources(sources: FileSource[]): ImportFiles {
 }
 
 /** The engine registers the files in selection order, including those beyond the header read budget. */
-export async function readImportFiles(source: ImportFiles, onFile?: RegisterFile, signal?: AbortSignal) {
+export async function readImportFiles(source: ImportFiles, onFile?: RegisterFile, startup?: StartupRead) {
+  const signal = startup?.signal;
   const files = Array.isArray(source) ? source : new Array<SelectedFile>(source.count);
   const register = onFile && ((index: number, head: Uint8Array | undefined) => onFile(files[index], head));
   if (Array.isArray(source)) {
-    const check = signal ? async () => { signal.throwIfAborted(); } : undefined;
+    const check = startup ? async (offset: number) => {
+      const wait = startup.beforeGroup(offset);
+      if (wait) await wait;
+      startup.signal.throwIfAborted();
+    } : undefined;
     return { files, heads: await readHeads(files, check, register) };
   }
   const { port, count } = source;
@@ -113,6 +122,8 @@ export async function readImportFiles(source: ImportFiles, onFile?: RegisterFile
   };
   try {
     const heads = await readHeads(files, async offset => {
+      const wait = startup?.beforeGroup(offset);
+      if (wait) await wait;
       signal?.throwIfAborted();
       await groups[offset / HEAD_GROUP_SIZE];
       signal?.throwIfAborted();
@@ -129,12 +140,18 @@ export async function readImportFiles(source: ImportFiles, onFile?: RegisterFile
 export function prepareImportFiles(source: ImportFiles) {
   const waiting: { file: SelectedFile; head: Uint8Array | undefined }[] = [];
   const stop = new AbortController();
+  let resume!: () => void, started = false;
+  const queued = new Promise<void>(resolve => { resume = resolve; });
+  const startup: StartupRead = { signal: stop.signal,
+    beforeGroup: offset => !started && offset >= 2 * HEAD_GROUP_SIZE ? queued : undefined };
   let register: RegisterFile = (file, head) => { waiting.push({ file, head }); };
-  const read = readImportFiles(source, (file, head) => { if (!stop.signal.aborted) register(file, head); }, stop.signal)
+  const read = readImportFiles(source, (file, head) => { if (!stop.signal.aborted) register(file, head); }, startup)
     .then(() => undefined, (error: unknown) => ({ error }));
   return {
     async register(onFile: RegisterFile) {
       stop.signal.throwIfAborted();
+      started = true;
+      resume();
       for (const { file, head } of waiting) onFile(file, head);
       waiting.length = 0;
       register = onFile;
@@ -144,6 +161,7 @@ export function prepareImportFiles(source: ImportFiles) {
     discard() {
       waiting.length = 0;
       stop.abort();
+      resume();
     },
   };
 }
