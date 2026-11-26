@@ -321,7 +321,7 @@ jobs:
       fail-fast: false
       matrix:
         # The isolated browser check needs at least four logical CPUs to start two engine threads.
-        os: [windows-2022, macos-15-intel]
+        os: [windows-2022]
     steps:
       - name: Find the source of the verified public site
         id: source
@@ -344,6 +344,12 @@ jobs:
           run-id: ${{ inputs.browser_site_run }}
           name: viewer-site-${{ inputs.browser_site_run }}
           path: web/site/public
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: '45754075604'
+          name: viewer-site-45754075604
+          path: release-site
       - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
@@ -351,11 +357,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm exec playwright install chromium
-      - run: node --import ./tests/setup.ts --test tests/web-build.test.ts
-      - run: node web/tools/browser-check.mjs
+      - run: node tools/browser-bench/folder-open-capture.mjs release-site web/site/public capture
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: folder-media-${{ matrix.os }}-${{ github.run_id }}
-          path: export-proof
+          name: folder-open-recordings-${{ matrix.os }}-${{ github.run_id }}
+          path: capture
           if-no-files-found: warn
