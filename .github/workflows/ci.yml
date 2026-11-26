@@ -24,13 +24,23 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
-        with:
-          github-token: ${{ github.token }}
-          run-id: 45853479297
-          artifact-ids: '15135331233'
-          merge-multiple: true
-          path: input-film
+      - name: Read the exact archive from the first failed Mac job
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PYTHON'
+          from hashlib import sha256
+          from io import BytesIO
+          from pathlib import Path
+          import subprocess
+          from zipfile import ZipFile
+          archive = subprocess.check_output(['gh', 'api', 'repos/veacom-viewer/veacom/actions/artifacts/15135331233/zip'])
+          assert sha256(archive).hexdigest() == '355efc2fb1ac3121b09188b76f10ef345cdce7980feaeb5d4ac278bc13cd1219'
+          target = Path('input-film/video-encoder/video.mp4')
+          target.parent.mkdir(parents=True, exist_ok=True)
+          with ZipFile(BytesIO(archive)) as movie:
+              target.write_bytes(movie.read('video-encoder/video.mp4'))
+          PYTHON
       - run: pnpm install --frozen-lockfile
       - run: pnpm run setup:runtime
       - name: Configure Electron's sandbox helper on the hosted Linux machine
