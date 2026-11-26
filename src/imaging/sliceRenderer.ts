@@ -151,6 +151,8 @@ ${hardwareLinear ? `vec4 readReduced(vec2 coord) {
 vec4 frameAverage(vec2 framePixel) {
   vec2 edge=framePixel+0.5;
   ${cachedFrame ? 'edge*=uReducedScale;' : ''}
+  // Never narrower than one stored pixel: along an axis shown at full size or larger, the two pixels it overlaps are
+  // interpolated.
   vec2 start=edge-0.5*uFootprint;
   vec2 base=floor(start);
   vec2 first=min(uFootprint,1.0-fract(start)), second=min(vec2(1.0),uFootprint-first);
@@ -656,6 +658,7 @@ class SharedSliceRenderer {
       const prefix = unit === 0 ? 'image' : 'pet';
       gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, cached.padding ?? this.blankPadding());
       gl.uniform1i(this.uniform(`${prefix}Padding`), unit + 2); gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(!!cached.padding));
+      if (sourceFrame !== undefined) gl.uniform3fv(this.uniform('uFramePadding'), cached.frameRange ?? [0, 0, 0]);
     }
     cached.touched = performance.now();
     return key;
@@ -885,10 +888,7 @@ class SharedSliceRenderer {
     if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
     this.indexMapping('u', imageSeries, topLeft, indexRight, indexDown);
     if (reduced) gl.uniform2fv(this.uniform('uFootprint'), footprint);
-    else if (sourceFrame !== undefined) {
-      gl.uniform1i(this.uniform('uStoredPixels'), Number(storedPixels));
-      gl.uniform3fv(this.uniform('uFramePadding'), this.textures.get(sourceKey)?.frameRange ?? [0, 0, 0]);
-    }
+    else if (sourceFrame !== undefined) gl.uniform1i(this.uniform('uStoredPixels'), Number(storedPixels));
     if (filtered && sourceFrame === undefined) gl.uniform2i(this.uniform('imageGrid'), mprX, mprY);
     gl.uniform1f(this.uniform('uScreenHeight'), h);
     gl.uniform3fv(this.uniform('uDimensions'), sourceFrame === undefined ? volume.series.dimensions : [volume.series.dimensions[0], volume.series.dimensions[1], 1]);
