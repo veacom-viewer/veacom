@@ -704,9 +704,23 @@ async function main() {
     await viewport.focus(); await page.keyboard.press('w');
     check('Typing a text note after a click goes into the note, not the shortcuts');
 
-    // Single-key shortcuts can be turned off (WCAG 2.1.4).
     if (!await page.locator('.inspector').isVisible()) await page.getByTestId('tool-inspector').click();
     await page.getByTestId('inspector-tab-display').click();
+    const previousWindow = await page.evaluate(() => window.__VEACOM_TEST__.state().view);
+    const widthField = page.locator('[data-action="window-width-input"]');
+    const levelField = page.locator('[data-action="window-level-input"]');
+    if (!await widthField.isVisible()) await page.locator('#section-window-toggle').click();
+    await widthField.fill(''); await widthField.pressSequentially('1.25');
+    await levelField.fill(''); await levelField.pressSequentially('-0.375'); await levelField.press('Tab');
+    assert.equal(await widthField.inputValue(), '1.25');
+    assert.equal(await levelField.inputValue(), '-0.375');
+    const typedWindow = await page.evaluate(() => window.__VEACOM_TEST__.state().displayedView);
+    assert.equal(typedWindow.windowWidth, 1.25);
+    assert.equal(typedWindow.windowCenter, -0.375);
+    await page.evaluate(view => window.__VEACOM_TEST__.setView(view), previousWindow);
+    check('Typing a fractional window and negative level sets the values displayed on the CT');
+
+    // Single-key shortcuts can be turned off (WCAG 2.1.4).
     const singleKeys = page.locator('#section-mouse input[type="checkbox"]').last();
     if (!await singleKeys.isVisible()) await page.locator('#section-mouse-toggle').click();
     await singleKeys.uncheck();
