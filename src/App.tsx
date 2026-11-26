@@ -471,6 +471,32 @@ function indexVolumes(volumes: Map<string, Volume>) {
   return window.veacom?.web ? new VolumeIndex(volumes) : volumes;
 }
 
+function useSeriesCatalog(series: Series[]) {
+  const seriesById = new Map(series.map(item => [item.id, item]));
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
+  // each such image's stack.
+  const references = referenceImages(series);
+  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  const petSeries = series.filter(fusesAsOverlay);
+  const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
+  return { seriesById, references, stackOfReference, petSeries, totalFrames };
+}
+
+function displayIndex(entries: Iterable<[string, Volume]>, decorate: (volume: Volume) => Volume) {
+  return indexVolumes(new Map(Array.from(entries, ([id, volume]) => [id, decorate(volume)])));
+}
+
+function useDisplayVolumes(volumes: Iterable<[string, Volume]>, slotFrames: Record<string, Volume>, scales: Record<string, number>,
+  films: Partial<Record<string, FilmCalibrations>>, units: Settings['measurementUnits'], suvNormalization: SuvNormalization, typedGlucose: (item: Series) => number | undefined) {
+  const [cached] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
+  const decorate = (volume: Volume) => cached(volume, {
+    scale: scales[volume.series.id], films: films[volume.series.id], units, suvNormalization, glucose: typedGlucose(volume.series),
+  });
+  const displayVolumes = displayIndex(volumes, decorate);
+  const displaySlotFrames = displayIndex(Object.entries(slotFrames), decorate);
+  return { displayVolumes, displaySlotFrames };
+}
+
 export default function App() {
   'use no web memo';
   const { locale, t } = useTranslation();
@@ -479,11 +505,7 @@ export default function App() {
   const stageLabel = (stage: string) => { const key = STAGES[stage]; return key ? t(key) : stage; };
   const planeLabel = (plane: Plane) => t(`planeLower.${plane}` as const);
   const [series, setSeries] = useState<Series[]>([]);
-  const seriesById = new Map(series.map(item => [item.id, item]));
-  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
-  // each such image's stack.
-  const references = referenceImages(series);
-  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  const { seriesById, references, stackOfReference, petSeries, totalFrames } = useSeriesCatalog(series);
   /** The sequence a series is part of where it is a stack with a reference image, or such an image. */
   const joinedOf = (item: Series): Joined | null => {
     const reference = references.get(item.id), stack = stackOfReference.get(item.id);
@@ -799,9 +821,8 @@ export default function App() {
     setAnnotations(add);
     followHistory(snapshot => ({ ...snapshot, annotations: add(snapshot.annotations) }));
   });
-  const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
-  const displayVolumes = indexVolumes(new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })])));
+  const { displayVolumes, displaySlotFrames } = useDisplayVolumes(volumes, slotFrames, calibrationScales, filmCalibrations,
+    settings.measurementUnits, settings.suvNormalization, petRecords.typedGlucose);
   const resolvedSlots = slots.map(slot => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
@@ -810,8 +831,6 @@ export default function App() {
     return view === slot.view ? slot : { ...slot, view };
   });
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
-  const displaySlotFrames = new Map(Object.entries(slotFrames).map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const volumeForSlot = (slot: Slot) => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     const frame = displaySlotFrames.get(slot.id);
@@ -921,7 +940,6 @@ export default function App() {
   const paneShows = activeVolume ? (['axial', 'coronal', 'sagittal'] as const).find(plane => showsPlane(plane, activeVolume.series, activeDisplayView)) ?? null : null;
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
-  const petSeries = series.filter(fusesAsOverlay);
   // The PET chosen for fusion: one without SUV is drawn on its own values, and its scale is not called SUV.
   const fusionPet = fusionId ? seriesById.get(fusionId) : undefined;
   const acquisitionPet = panelPet(activeSeries, fusionPet);
@@ -951,7 +969,6 @@ export default function App() {
   const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
-  const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
   const assessmentVolumes = Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined);
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
