@@ -105,27 +105,30 @@ it('rejects the entire import when a file in a later directory batch becomes unr
   await assert.rejects(readImportFiles(importFileSources(sources)), /Selection lost/);
 });
 
-it('registers completed headers in selection order while later reads are running', { timeout: 5000 }, async t => {
-  const sources = Array.from({ length: 33 }, (_, i) => ({ path: String(i), file: new File([Uint8Array.of(i)], 'slice') }));
-  let release!: () => void, observed!: () => void, reads = 0;
-  const delayed = new Promise<void>(resolve => { release = resolve; });
-  const firstGroup = new Promise<void>(resolve => { observed = resolve; });
-  t.mock.method(Blob.prototype, 'arrayBuffer', async function (this: Blob) {
-    if (++reads === 2) await delayed;
-    return new Response(this.stream()).arrayBuffer();
+for (const count of [512, 767, 768]) {
+  it(`registers ${count} sources in selection order with a delayed header group`, { timeout: 5000 }, async t => {
+    const sources = Array.from({ length: count }, (_, i) => ({ path: String(i), file: new File([Uint8Array.of(i % 256)], 'slice') }));
+    let release!: () => void, checked!: () => void, reads = 0;
+    const delayed = new Promise<void>(resolve => { release = resolve; });
+    const firstRead = new Promise<void>(resolve => { checked = resolve; });
+    t.mock.method(Blob.prototype, 'arrayBuffer', async function (this: Blob) {
+      const group = ++reads;
+      if (group === 2) await delayed;
+      const bytes = await new Response(this.stream()).arrayBuffer();
+      if (group === 1) checked();
+      return bytes;
+    });
+    const registered: [string, number | undefined][] = [];
+    const imported = readImportFiles(sources, (source, head) => { registered.push([source.path, head?.[0]]); });
+    try {
+      await firstRead;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      assert.equal(registered.length, count >= 768 ? 16 : 0);
+    } finally { release(); }
+    await imported;
+    assert.deepEqual(registered, sources.map((source, i) => [source.path, i % 256]));
   });
-  const registered: [string, number | undefined][] = [];
-  const imported = readImportFiles(sources, (source, head) => {
-    registered.push([source.path, head?.[0]]);
-    if (registered.length === 16) observed();
-  });
-  try {
-    await firstGroup;
-    assert.deepEqual(registered, sources.slice(0, 16).map((source, i) => [source.path, i]));
-  } finally { release(); }
-  await imported;
-  assert.deepEqual(registered, sources.map((source, i) => [source.path, i]));
-});
+}
 
 it('propagates a directory reading error without returning a partial selection', async () => {
   const files = [new File([], 'study')];
