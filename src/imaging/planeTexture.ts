@@ -7,12 +7,17 @@ export function planeTexture(dimensions: Vec3, topLeft: Vec3, right: Vec3, down:
   for (const axis of [0, 1, 2] as const) {
     const across = right[axis] * width, along = down[axis] * height;
     if (dimensions[axis] < 64 || !(Math.abs(across) + Math.abs(along) <= 0.001) || !Number.isFinite(topLeft[axis])) continue;
-    const low = topLeft[axis] + Math.min(0, across) + Math.min(0, along);
-    const high = topLeft[axis] + Math.max(0, across) + Math.max(0, along);
-    const last = dimensions[axis] - 1;
-    // Include both trilinear neighbours, edge clamping and round-off. Nearby slices share one upload.
-    const first = Math.floor(Math.max(0, Math.min(last, low - 2)) / 8) * 8;
-    const end = Math.min(dimensions[axis], (Math.floor(Math.max(0, Math.min(last, high + 2)) / 8) + 1) * 8);
+    const middle = topLeft[axis] + (across + along) / 2;
+    const nearest = Math.max(0, Math.min(dimensions[axis] - 1, Math.round(middle)));
+    // The original padded eight-plane uploads changed on integer slices 6, 10, 14, etc.
+    // Keep the same wheel steps cached, including the wider groups at the volume borders.
+    const block = Math.floor((nearest + 2) / 4) * 4 - 2;
+    const lastBlock = Math.floor((dimensions[axis] - 1) / 8) * 8 + 2;
+    const firstCenter = nearest < 6 ? 0 : Math.min(block, lastBlock);
+    const pastCenters = nearest >= lastBlock ? dimensions[axis] : Math.max(6, block + 4);
+    // One neighbour on either side covers trilinear interpolation up to half a voxel from each centre.
+    const first = Math.max(0, firstCenter - 1);
+    const end = Math.min(dimensions[axis], pastCenters + 1);
     const start: Vec3 = [0, 0, 0], size: Vec3 = [...dimensions];
     start[axis] = first;
     size[axis] = end - first;
