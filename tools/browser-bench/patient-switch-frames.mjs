@@ -160,6 +160,20 @@ async function observe(browser, sources, isolated, language) {
       } finally { await page.evaluate(()=>window.releaseSwitchPaint()); }
       await settled(code);
     }
+    await page.evaluate(()=>{
+      const proto=CanvasRenderingContext2D.prototype, original=proto.drawImage;
+      proto.drawImage=function(...args){
+        if(this.canvas.getAttribute('data-testid')==='dicom-canvas')throw new Error('Synthetic draw failure');
+        return original.apply(this,args);
+      };
+      window.restoreTestDraw=()=>{proto.drawImage=original;};
+    });
+    try {
+      await choose('B');
+      await page.locator('.viewport-render-error').filter({hasText:'Synthetic draw failure'}).waitFor();
+      report.failedPaint=await page.evaluate(readPane);
+      await page.screenshot({path:path.join(dir,'failed-draw.png')});
+    } finally {await page.evaluate(()=>window.restoreTestDraw());}
     console.log(isolated?'threaded':'single',cdpFrames.length,'composited frames',report.held.map(h=>[h.target,h.state.center?.[0],h.state.name]));
   } catch(error) {
     report.error=String(error?.stack??error);
