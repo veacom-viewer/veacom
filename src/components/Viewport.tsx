@@ -609,7 +609,9 @@ export function Viewport(props: ViewportProps) {
         if (!gesture.current) gesture.current = usage.begin('pinch-zoom', 'touch');
         const [a, b] = [...touches.current.values()];
         pinch.current = { center: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2], distance: Math.max(1, Math.hypot(b[0] - a[0], b[1] - a[1])), view: liveView.current };
-        drag.current = null; editing.current = null; editLive.current = null; discardDraft(); return;
+        drag.current = null; editing.current = null; editLive.current = null; petDrag.current = null;
+        turning.current = null; sliding.current = null; setHeldLine(null);
+        discardDraft(); return;
       }
     }
     const button = event.button === 1 ? 'middle' : event.button === 2 ? 'right' : 'left';
