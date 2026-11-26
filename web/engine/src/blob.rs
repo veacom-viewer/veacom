@@ -56,6 +56,7 @@ struct Stats {
 
 thread_local! {
     static BLOBS: RefCell<HashMap<u32, web_sys::Blob>> = RefCell::new(HashMap::new());
+    static IMPORT_HEADS: RefCell<Option<js_sys::Map>> = const { RefCell::new(None) };
     static PIECES: RefCell<VecDeque<Piece>> = const { RefCell::new(VecDeque::new()) };
     static STATS: RefCell<Stats> = RefCell::new(Stats::default());
     static READER: web_sys::FileReaderSync = web_sys::FileReaderSync::new().expect("FileReaderSync is only available in a Worker");
@@ -64,6 +65,15 @@ thread_local! {
 
 pub(crate) fn now() -> f64 {
     CLOCK.with(|clock| clock.time_origin() + clock.now())
+}
+
+/// The file prefixes belong to the importing Worker. Its synchronous catalog read borrows them
+/// so each source copies only the bytes the parser requests into WebAssembly memory.
+pub(crate) fn with_import_heads<T>(heads: Option<js_sys::Map>, read: impl FnOnce() -> T) -> T {
+    IMPORT_HEADS.set(heads);
+    let result = read();
+    IMPORT_HEADS.take();
+    result
 }
 
 struct BlobSource {
@@ -387,6 +397,29 @@ fn read_blob(id: u32, start: u64, output: &mut [u8]) -> io::Result<()> {
 }
 
 impl BlobSource {
+    fn copy_import_prefix(&self, offset: u64, output: &mut [u8]) -> usize {
+        let length = self.length.min(piece_size(self.length));
+        if offset >= length {
+            return 0;
+        }
+        IMPORT_HEADS
+            .with_borrow(|heads| {
+                let head = heads
+                    .as_ref()?
+                    .get(&self.id.into())
+                    .dyn_into::<js_sys::Uint8Array>()
+                    .ok()?;
+                if u64::from(head.length()) != length {
+                    return None;
+                }
+                let count = output.len().min((length - offset) as usize);
+                head.subarray(offset as u32, offset as u32 + count as u32)
+                    .copy_to(&mut output[..count]);
+                Some(count)
+            })
+            .unwrap_or(0)
+    }
+
     fn piece(&self, index: u64) -> io::Result<Rc<Vec<u8>>> {
         if let Some(found) = PIECES.with_borrow(|pieces| {
             pieces
@@ -424,6 +457,12 @@ impl Source for BlobSource {
         {
             let start = offset as usize;
             output.copy_from_slice(&whole[start..start + output.len()]);
+            return Ok(());
+        }
+        let copied = self.copy_import_prefix(offset, output);
+        let offset = offset + copied as u64;
+        let output = &mut output[copied..];
+        if output.is_empty() {
             return Ok(());
         }
         let size = piece_size(self.length);

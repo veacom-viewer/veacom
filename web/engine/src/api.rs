@@ -275,8 +275,9 @@ pub fn reset() {
 /// are listed on this thread alone: on every thread, the header parsing's many small allocations waited for each other
 /// on the module's one allocator, and the listing took longer.
 #[wasm_bindgen(js_name = importPaths)]
-pub fn import_paths(paths: Vec<String>) -> Result<String, JsError> {
-    let imported = session(|session| session.import(&paths));
+pub fn import_paths(paths: Vec<String>, heads: Option<js_sys::Map>) -> Result<String, JsError> {
+    let imported =
+        crate::blob::with_import_heads(heads, || session(|session| session.import(&paths)));
     release_files();
     json(imported?)
 }

@@ -113,8 +113,12 @@ self.onmessage = async ({ data }) => {
     series = [];
     const heads = data.prefetch ? await readHeads(data.files) : [];
     const prefetched = performance.now() - t0;
-    data.files.forEach(({ path, file }, i) => engine.addFile(`/in/${path}`, file, heads[i]));
-    const result = JSON.parse(engine.importPaths(data.roots.map((root) => `/in/${root}`)));
+    const prefixes = new Map();
+    data.files.forEach(({ path, file }, i) => {
+      const id = engine.addFile(`/in/${path}`, file);
+      if (heads[i]) prefixes.set(id, heads[i]);
+    });
+    const result = JSON.parse(engine.importPaths(data.roots.map((root) => `/in/${root}`), prefixes));
     series = result.series;
     const listed = performance.now() - t0;
     const [listReads, listBytes, listReadMs] = engine.fileReads();

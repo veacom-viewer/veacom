@@ -204,13 +204,16 @@ async function answer(data: EngineRequest): Promise<void> {
       case 'import': {
         const { files, heads } = await readImportFiles(data.files);
         const ids: number[] = [];
+        const prefixes = new Map<number, Uint8Array>();
         try {
           for (const [i, { path, file }] of files.entries()) {
-            const id = engine.addFile(path, file, heads[i]);
+            const id = engine.addFile(path, file);
             ids.push(id);
             pageFiles.set(id, file);
+            const head = heads[i];
+            if (head) prefixes.set(id, head);
           }
-          value = JSON.parse(engine.importPaths(data.roots));
+          value = JSON.parse(engine.importPaths(data.roots, prefixes));
         } finally {
           if (ids.length < files.length) engine.pruneFiles();
           forgetUnlisted();
