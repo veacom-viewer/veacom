@@ -1032,7 +1032,8 @@ export default function App() {
       setGraphicsError(null);
       setGraphics({ renderer: info.renderer, software: info.software || isSoftwareWebglStatus(status?.webgl), webgl: status?.webgl });
     };
-    const timer = window.setTimeout(() => void inspect());
+    // Creating a WebGL context can block the first browser click. A study can still acquire the shared renderer immediately.
+    const timer = window.setTimeout(() => void inspect(), window.veacom?.web ? 250 : 0);
     const restored = () => void inspect();
     window.addEventListener('veacom-gpu-restored', restored);
     return () => { disposed = true; window.clearTimeout(timer); window.removeEventListener('veacom-gpu-restored', restored); };

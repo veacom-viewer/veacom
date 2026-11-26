@@ -191,6 +191,41 @@ async function checkChooseDuringStartup(browser, url, fail) {
   } finally { offline.resolve(); await page.close(); }
 }
 
+async function checkWelcomeBeforeGraphics(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      let frames = 0;
+      function observeWelcome() {
+        const open = document.querySelector('[data-testid="welcome-open-files"]:not(:disabled)');
+        if (open?.getClientRects().length) frames++;
+        if (window.welcomeFramesAtGraphics === undefined) requestAnimationFrame(observeWelcome);
+      }
+      requestAnimationFrame(observeWelcome);
+      const original = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
+        if (kind !== 'webgl2') return original.call(this, kind, ...args);
+        window.welcomeFramesAtGraphics ??= frames;
+        return null;
+      };
+      window.restoreWelcomeGraphics = () => {
+        HTMLCanvasElement.prototype.getContext = original;
+        window.dispatchEvent(new Event('veacom-gpu-restored'));
+      };
+    });
+    await page.goto(url);
+    const unavailable = page.getByTestId('graphics-unavailable-notice');
+    await unavailable.waitFor();
+    assert(await page.evaluate(() => window.welcomeFramesAtGraphics >= 2), 'The opener needs a paint opportunity before the graphics check.');
+    const selected = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await selected).setFiles([]);
+    await page.evaluate(() => window.restoreWelcomeGraphics());
+    await unavailable.waitFor({ state: 'detached' });
+    assert(await page.evaluate(() => Boolean(window.__VEACOM_TEST__.state().graphics)));
+  } finally { await page.close(); }
+}
+
 /** Closing the last CT must let the browser collect the full pixel buffer while the reader stays open. */
 async function checkClosedCTBuffer(browser, url) {
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
@@ -577,6 +612,7 @@ try {
       }));
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
+      await checkWelcomeBeforeGraphics(browser, page.url());
       await checkClosedCTBuffer(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
