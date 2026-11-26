@@ -1032,10 +1032,19 @@ export default function App() {
       setGraphicsError(null);
       setGraphics({ renderer: info.renderer, software: info.software || isSoftwareWebglStatus(status?.webgl), webgl: status?.webgl });
     };
-    const timer = window.setTimeout(() => void inspect());
+    let timer: number | undefined, frame: number | undefined;
+    const soon = () => { timer = window.setTimeout(() => void inspect()); };
+    // Creating the graphics context can block the browser's first click on the welcome screen.
+    if (window.veacom?.web) frame = window.requestAnimationFrame(() => { frame = window.requestAnimationFrame(soon); });
+    else soon();
     const restored = () => void inspect();
     window.addEventListener('veacom-gpu-restored', restored);
-    return () => { disposed = true; window.clearTimeout(timer); window.removeEventListener('veacom-gpu-restored', restored); };
+    return () => {
+      disposed = true;
+      if (frame !== undefined) window.cancelAnimationFrame(frame);
+      window.clearTimeout(timer);
+      window.removeEventListener('veacom-gpu-restored', restored);
+    };
   }, []);
   useEffect(() => window.veacom?.onUpdateStatus(status => {
     if (status.phase === 'available') setNotice(current => current?.kind === 'error' ? current : {
