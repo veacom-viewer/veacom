@@ -13,7 +13,7 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 import { createLabelFolder, type FolderEntry } from './labelFolder';
-import { droppedFileGroups, type CapturedDrop, type SelectedFile } from './droppedFiles';
+import { droppedFileGroups, importFileSources, type CapturedDrop, type FileSource, type SelectedFile } from './droppedFiles';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -27,7 +27,7 @@ interface CallOptions {
   /** Told the request's number as soon as it waits, so it can be cancelled before it starts. */
   onQueued?: (id: number) => void;
 }
-interface Selection { files: SelectedFile[]; roots: string[]; zip: boolean }
+interface Selection { files: FileSource[]; roots: string[]; zip: boolean }
 type Progress = { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean };
 
 const LOCALE_KEY = 'veacom.locale';
@@ -221,7 +221,8 @@ export function createWebBridge(): DesktopBridge {
     const first = queue.findIndex(item => item.request.op !== 'volume');
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
-    worker.postMessage({ id: next.id, ...next.request });
+    const source = next.request.op === 'import' ? next.request.files : undefined;
+    worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
   const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
@@ -416,19 +417,19 @@ export function createWebBridge(): DesktopBridge {
     return true;
   }
 
-  function remember(groups: SelectedFile[][]): string[] {
+  function remember(groups: FileSource[][]): string[] {
     const selected = groups.filter(group => group.length).map(files => ({ name: files[0].path.split('/')[0], files }));
     if (!selected.length) return [];
     const counts = new Map<string, number>();
     for (const { name } of selected) counts.set(name, (counts.get(name) ?? 0) + 1);
     const folder = `/in/${++selectionNumber}`;
-    const files: SelectedFile[] = [], roots: string[] = [];
+    const files: FileSource[] = [], roots: string[] = [];
     for (const root of selected) {
       // Keep unambiguous siblings together for DICOMDIR. Each colliding file or folder gets its own parent.
       const parent = counts.get(root.name) === 1 ? folder : `/in/${++selectionNumber}`;
       roots.push(`${parent}/${root.name}`);
       if (new Set(root.files.map(item => item.path)).size !== root.files.length) throw new Error(t('import.duplicatePaths'));
-      for (const { path, file } of root.files) files.push({ path: `${parent}/${path}`, file });
+      for (const source of root.files) files.push({ ...source, path: `${parent}/${source.path}` });
     }
     const token = `import:${crypto.randomUUID()}`;
     const zip = selected.some(root => root.files[0].path === root.name && root.name.toLowerCase().endsWith('.zip'));
@@ -480,11 +481,15 @@ export function createWebBridge(): DesktopBridge {
       const chosen = capabilities.map(token => selections.get(token));
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
       for (const token of capabilities) selections.delete(token);
-      const files = chosen.flatMap(selection => selection!.files), roots = chosen.flatMap(selection => selection!.roots);
+      const files = importFileSources(chosen.flatMap(selection => selection!.files)), roots = chosen.flatMap(selection => selection!.roots);
       performance.mark('veacom:import-start');
-      const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
-      performance.mark('veacom:import-done');
-      return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
+      try {
+        const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
+        performance.mark('veacom:import-done');
+        return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
+      } finally {
+        if (!Array.isArray(files)) files.port.close();
+      }
     },
     // The engine answers one request at a time, so it cannot publish series while an import runs: every series
     // arrives with the import's own result.
