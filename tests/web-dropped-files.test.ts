@@ -22,6 +22,7 @@ it('hands each early drop to the mounted reader once and preserves the live drop
     target.dispatchEvent(event);
     return [event.defaultPrevented, transfer.dropEffect];
   };
+  assert.deepEqual(send('dragenter', ['Files'], []), [true, 'copy']);
   assert.deepEqual(send('dragover', ['Files'], []), [true, 'copy']);
   assert.deepEqual(send('dragover', ['text/uri-list'], []), [true, 'none']);
   assert.deepEqual(send('drop', ['Files', 'application/x-veacom-series'], [files[0]]), [false, '']);
@@ -29,6 +30,7 @@ it('hands each early drop to the mounted reader once and preserves the live drop
   assert.deepEqual(drops.takePending().map(drop => drop.files[0]), files);
   assert.deepEqual(drops.takePending(), []);
   assert.equal(drops.takeLatest(), null);
+  assert.deepEqual(send('dragenter', ['Files'], []), [false, '']);
   assert.deepEqual(send('dragover', ['Files'], []), [false, '']);
   assert.deepEqual(send('drop', ['Files'], [files[1]]), [false, '']);
   assert.equal(drops.takeLatest()?.files[0], files[1]);

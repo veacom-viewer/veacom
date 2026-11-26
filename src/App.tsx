@@ -1822,9 +1822,15 @@ export default function App() {
       }
       accept(() => bridge.importFiles(files));
     };
-    document.addEventListener('dragover', allowExternalDrop); document.addEventListener('drop', drop);
+    document.addEventListener('dragenter', allowExternalDrop);
+    document.addEventListener('dragover', allowExternalDrop);
+    document.addEventListener('drop', drop);
     for (const selection of window.veacom?.takePendingFileDrops?.() ?? []) accept(selection);
-    return () => { document.removeEventListener('dragover', allowExternalDrop); document.removeEventListener('drop', drop); };
+    return () => {
+      document.removeEventListener('dragenter', allowExternalDrop);
+      document.removeEventListener('dragover', allowExternalDrop);
+      document.removeEventListener('drop', drop);
+    };
   }, []);
 
   const updateView = (slotId: string, patch: Partial<ViewState>, fromCine = false) => {

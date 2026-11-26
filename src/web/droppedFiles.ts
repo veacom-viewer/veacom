@@ -10,6 +10,7 @@ export interface CapturedDrop { files: File[]; entries: FileSystemEntry[] }
 export function watchFileDrops(target: Document) {
   let pending: CapturedDrop[] | undefined = [];
   let latest: CapturedDrop | null = null;
+  target.addEventListener('dragenter', allowExternalDrop, true);
   target.addEventListener('dragover', allowExternalDrop, true);
   target.addEventListener('drop', event => {
     const transfer = event.dataTransfer, effect = externalDropEffect(transfer);
@@ -27,6 +28,7 @@ export function watchFileDrops(target: Document) {
     takePending() {
       const early = pending ?? [];
       pending = undefined;
+      target.removeEventListener('dragenter', allowExternalDrop, true);
       target.removeEventListener('dragover', allowExternalDrop, true);
       return early;
     },
