@@ -202,6 +202,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
+        performance.mark('veacom:registration-available');
         const count = Array.isArray(data.files) ? data.files.length : data.files.count;
         const ids: number[] = [];
         try {
@@ -210,7 +211,9 @@ async function answer(data: EngineRequest): Promise<void> {
             ids.push(id);
             pageFiles.set(id, file);
           });
+          performance.mark('veacom:all-files-registered');
           value = JSON.parse(engine.importPaths(data.roots));
+          performance.mark('veacom:catalog-ready');
         } finally {
           if (ids.length < count) engine.pruneFiles();
           forgetUnlisted();
@@ -243,6 +246,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
     }
+    performance.mark('veacom:worker-send-' + data.op);
     scope.postMessage({ id: data.id, ok: true, value }, transfer);
   } catch (error) {
     // The engine's own messages arrive as plain Errors holding its JSON body. Anything else is the engine crashing
