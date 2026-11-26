@@ -232,6 +232,16 @@ async function checkClosedCTBuffer(browser, url) {
   const cdp = await page.context().newCDPSession(page);
   try {
     await page.addInitScript(expectedBytes => {
+      const observe = ResizeObserver.prototype.observe;
+      ResizeObserver.prototype.observe = function (element, ...args) {
+        observe.call(this, element, ...args);
+        if (!element.matches('[data-testid="dicom-viewport"]') || window.firstPaneFrame) return;
+        // Queue after the pane installs its resize observer and requests its initial draw.
+        window.firstPaneFrame = new Promise(resolve => queueMicrotask(() => requestAnimationFrame(() => {
+          const canvas = element.querySelector('canvas');
+          resolve({ series: canvas?.dataset.seriesId, slice: canvas?.dataset.slice });
+        })));
+      };
       window.Worker = class extends Worker {
         constructor(...args) {
           super(...args);
@@ -255,6 +265,10 @@ async function checkClosedCTBuffer(browser, url) {
       assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The closed CT pixel buffer is still reachable.');
     }
     await chooseCT();
+    const first = await page.evaluate(() => window.firstPaneFrame);
+    const settled = await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId);
+    console.log('Opening pane after one animation frame:', JSON.stringify(first ?? null), 'settled series', settled, 'superior index', slices - 1);
+    assert.equal(await page.locator('canvas[data-series-id="' + settled + '"]').first().getAttribute('data-slice'), String(slices - 1));
     const paging = await page.evaluate(async () => {
       const original = Array.prototype.sort;
       const shown = [];
