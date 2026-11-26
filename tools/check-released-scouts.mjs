@@ -26,6 +26,18 @@ try {
       for(const type of ['LOCALIZER','AXIAL']){
         const source=frames(type), page=await browser.newPage({viewport:{width:1200,height:800}});
         try{
+          await page.addInitScript(() => {
+            window.sourceHashes = new Map();
+            window.Worker = class extends Worker {
+              constructor(...args) {
+                super(...args);
+                this.addEventListener('message', ({data}) => {
+                  const frame = data?.value;
+                  if (frame?.sopInstanceUid && frame.bytes) window.sourceHashes.set(frame.sopInstanceUid, crypto.subtle.digest('SHA-256',frame.bytes));
+                });
+              }
+            };
+          });
           await page.goto(site.url);
           const event=page.waitForEvent('filechooser');await page.getByTestId('welcome-open-files').click();await (await event).setFiles(source.map(x=>x.file));
           await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().series[0]?.dimensions[2]===3&&document.querySelector('canvas[data-series-id][data-slice]'));
@@ -33,8 +45,9 @@ try {
             const b=window.veacom,{generation}=await b.getCoreState(),{series:[s]}=await b.listSeries(),frames=[];
             for(let index=0;index<3;index++){
               const result=await b.fetchPixels({seriesId:s.id,generation,revision:s.catalogRevision,index});
-              const bytes=await result.arrayBuffer(), hash=await crypto.subtle.digest('SHA-256',bytes);
-              frames.push({sop:result.headers.get('X-SOP-Instance-UID'),sha:Array.from(new Uint8Array(hash),v=>v.toString(16).padStart(2,'0')).join('')});
+              const sop=result.headers.get('X-SOP-Instance-UID'), hash=await window.sourceHashes.get(sop);
+              if(!hash) throw new Error('Missing decoded source '+sop);
+              frames.push({sop,sha:Array.from(new Uint8Array(hash),v=>v.toString(16).padStart(2,'0')).join('')});
             }
             return {dimensions:s.dimensions,patient:s.patientId,spacing:s.spacing,canReconstruct:s.canReconstruct,frames,isolated:self.crossOriginIsolated};
           });
