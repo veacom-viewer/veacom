@@ -350,7 +350,10 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm exec playwright install chromium
+      - name: Install the Chromium headless shell used by this check
+        env:
+          PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: '120000'
+        run: pnpm exec playwright install --only-shell chromium
       - run: node --import ./tests/setup.ts --test tests/web-build.test.ts
       - name: Repeat the full browser checks and retain every chooser result
         shell: bash
