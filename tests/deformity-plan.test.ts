@@ -195,7 +195,7 @@ describe('the plan file', () => {
     assert.deepEqual(await parsePlanFile('{', current, frame), { error: 'json' });
     assert.deepEqual(await parsePlanFile('{"schema":"other"}', current, frame), { error: 'schema' });
     const value = JSON.parse(text);
-    assert.deepEqual(await parsePlanFile(JSON.stringify({ ...value, version: 2 }), current, frame), { error: 'version' });
+    assert.deepEqual(await parsePlanFile(JSON.stringify({ ...value, version: 3 }), current, frame), { error: 'version' });
     const far = structuredClone(value); far.plans[0].landmarks[0].points = [[1e9, 0]];
     assert.deepEqual(await parsePlanFile(JSON.stringify(far), current, frame), { error: 'content' });
     const many = structuredClone(value); many.plans[0].landmarks[0].points = Array.from({ length: 13 }, () => [10, 10]);
@@ -546,6 +546,7 @@ describe('multi-level osteotomies, backward-compatible files and direct canvas g
     // Single-cut plan writes legacy `osteotomy` with no extra `osteotomies` array.
     const single = withPlan(base, { ...base.plans[0], osteotomies: [hto] });
     const singleFile = await planFile(single, frame);
+    assert.equal(singleFile.version, 1);
     assert.equal(singleFile.plans[0].osteotomies, undefined);
     assert.equal(singleFile.plans[0].osteotomy?.degrees, 8.2);
     const openedLegacy = await parsePlanFile(JSON.stringify(singleFile), single, frame);
@@ -553,19 +554,27 @@ describe('multi-level osteotomies, backward-compatible files and direct canvas g
     assert.equal(openedLegacy.plans[0].osteotomies.length, 1);
     assert.equal(openedLegacy.plans[0].osteotomies[0].degrees, 8.2);
 
-    // Multi-level plan writes both `osteotomy` (first cut) and `osteotomies` (all cuts) and round-trips identically.
+    // A single-cut reader refuses version 2 before it can show a partial plan.
     const double = withPlan(base, { ...base.plans[0], osteotomies: [dfo, hto] });
     const doubleFile = await planFile(double, frame);
-    assert.equal(doubleFile.plans[0].osteotomy?.bone, 'femur');
+    assert.equal(doubleFile.version, 2);
+    assert.equal(doubleFile.plans[0].osteotomy, undefined);
     assert.equal(doubleFile.plans[0].osteotomies?.length, 2);
     const openedDouble = await parsePlanFile(JSON.stringify(doubleFile), double, frame);
     assert.ok(!('error' in openedDouble));
     assert.equal(openedDouble.plans[0].osteotomies.length, 2);
     assert.deepEqual(openedDouble.plans[0].osteotomies.map(c => [c.bone, c.degrees, c.direction]), [['femur', 5.5, 'varus'], ['tibia', 8.2, 'valgus']]);
 
+    const mixed = { ...double, plans: [...single.plans, ...double.plans] };
+    const mixedFile = await planFile(mixed, frame);
+    assert.equal(mixedFile.version, 2);
+    assert.deepEqual(mixedFile.plans.map(plan => plan.osteotomies?.length), [1, 2]);
+    const missingList = { ...doubleFile, plans: [{ ...singleFile.plans[0] }] };
+    assert.deepEqual(await parsePlanFile(JSON.stringify(missingList), double, frame), { error: 'content' });
+
     // Invalid multi-level payloads are refused cleanly.
     const tooMany = structuredClone(doubleFile);
-    tooMany.plans[0].osteotomies = Array.from({ length: 7 }, () => doubleFile.plans[0].osteotomy!);
+    tooMany.plans[0].osteotomies = Array.from({ length: 7 }, () => hto);
     assert.deepEqual(await parsePlanFile(JSON.stringify(tooMany), double, frame), { error: 'content' });
     const badList = { ...doubleFile, plans: [{ ...doubleFile.plans[0], osteotomies: 'not-an-array' }] };
     assert.deepEqual(await parsePlanFile(JSON.stringify(badList), double, frame), { error: 'content' });

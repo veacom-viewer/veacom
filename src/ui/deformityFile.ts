@@ -15,7 +15,7 @@ import { MODEL } from './landmarkSuggestions';
 const sameModel = (a: ModelRef, b: ModelRef) => a.model === b.model && a.sha256.stageA === b.sha256.stageA && a.sha256.stageB === b.sha256.stageB;
 
 export const PLAN_SCHEMA = 'veacom.deformity-plan';
-export const PLAN_VERSION = 1;
+export const isPlanVersion = (value: unknown): value is 1 | 2 => value === 1 || value === 2;
 /** The kernel's version: a change to what a value means (src/imaging/deformity) raises it. */
 export const KERNEL_VERSION = 1;
 const MAX_BYTES = 2_000_000;
@@ -46,7 +46,7 @@ export interface LandmarkLabel {
 export type SerializedOsteotomy = Omit<Osteotomy, 'id'>;
 
 export interface PlanFile {
-  schema: typeof PLAN_SCHEMA; version: typeof PLAN_VERSION;
+  schema: typeof PLAN_SCHEMA; version: 1 | 2;
   software: { name: 'VEAcom'; version: string; kernel: number };
   savedAt: string;
   coordinates: 'dicom-image-relative';
@@ -58,9 +58,9 @@ export interface PlanFile {
     appliedMarker?: { method: Marker['method']; knownMm: number; depthConfirmed?: boolean } };
   active: number;
   plans: Array<{ name: string; side: 'R' | 'L'; landmarks: LandmarkLabel[];
-    /** First osteotomy (or null), retained for backward compatibility with single-level v1 readers. */
-    osteotomy: SerializedOsteotomy | null;
-    /** Full list of osteotomies for multi-level plans (omitted when 0 or 1 cut). */
+    /** Version 1 stores one cut per plan. */
+    osteotomy?: SerializedOsteotomy | null;
+    /** Version 2 stores every cut for every plan in the file. */
     osteotomies?: SerializedOsteotomy[];
     /** The values as measured when saved, for reading the file without VEAcom; ignored when it is opened. */
     values: Record<string, { value: number | null; unit: string }> }>;
@@ -86,8 +86,9 @@ const software = () => (typeof window !== 'undefined' && window.veacom?.getVersi
 export async function planFile(film: FilmPlans, frame: Series, now = new Date()): Promise<PlanFile> {
   if (!film.sopInstanceUid) throw new Error(t('deformity.noFilmIdentity'));
   const projection = projectionOf(frame), state = calibrationState(frame, 'auto'), version = software(), applied = manualCalibration(frame);
+  const fileVersion = film.plans.some(plan => plan.osteotomies.length > 1) ? 2 : 1;
   return {
-    schema: PLAN_SCHEMA, version: PLAN_VERSION, software: { name: 'VEAcom', version, kernel: KERNEL_VERSION }, savedAt: now.toISOString(),
+    schema: PLAN_SCHEMA, version: fileVersion, software: { name: 'VEAcom', version, kernel: KERNEL_VERSION }, savedAt: now.toISOString(),
     coordinates: 'dicom-image-relative',
     film: { sopInstanceSha256: await sha256(film.sopInstanceUid), frame: film.frameNumber, columns: frame.dimensions[0], rows: frame.dimensions[1], modality: frame.modality,
       ...(projection?.patientOrientation ? { patientOrientation: projection.patientOrientation } : {}), ...(projection?.laterality ? { laterality: projection.laterality } : {}),
@@ -107,8 +108,8 @@ export async function planFile(film: FilmPlans, frame: Series, now = new Date())
       const landmarks = LANDMARKS.filter(name => plan.points[name]?.length).map(name => label(name, plan.points[name]!, plan.provenance[name] ?? plan.points[name]!.map(() => 'placed' as const)));
       if (view.leg.hip) landmarks.push({ ...label('hipCentre', [view.leg.hip.centre], ['derived']), derivedFrom: 'femoralHeadContour' });
       const serialized = plan.osteotomies.map(serializeOsteotomy);
-      return { name: plan.name, side: plan.side, landmarks, osteotomy: serialized[0] ?? null,
-        ...(serialized.length > 1 ? { osteotomies: serialized } : {}),
+      return { name: plan.name, side: plan.side, landmarks,
+        ...(fileVersion === 2 ? { osteotomies: serialized } : { osteotomy: serialized[0] ?? null }),
         values: Object.fromEntries(Object.values(view.leg.values).map(value => [value.key, { value: value.value, unit: value.unit }])) };
     }),
   };
@@ -126,7 +127,7 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
   let value: unknown;
   try { value = JSON.parse(text); } catch { return { error: 'json' }; }
   if (!isObject(value) || value.schema !== PLAN_SCHEMA) return { error: 'schema' };
-  if (value.version !== PLAN_VERSION) return { error: 'version' };
+  if (!isPlanVersion(value.version)) return { error: 'version' };
   const recorded = value.film;
   if (!film.sopInstanceUid || !isObject(recorded) || recorded.sopInstanceSha256 !== await sha256(film.sopInstanceUid) || recorded.frame !== film.frameNumber
     || recorded.columns !== frame.dimensions[0] || recorded.rows !== frame.dimensions[1]) return { error: 'film' };
@@ -184,7 +185,7 @@ export async function parsePlanFile(text: string, film: FilmPlans, frame: Series
       if (shown || from) plan.origin = { ...plan.origin, [name]: { ...(shown ? { shown: true as const } : {}), ...(from ? { model: from } : {}), ...(unchecked ? { unchecked: true as const } : {}),
         ...(ring ? { construction: 'hipCentreRing' as const } : {}) } };
     }
-    if (entry.osteotomies !== undefined) {
+    if (value.version === 2 || entry.osteotomies !== undefined) {
       if (!Array.isArray(entry.osteotomies) || entry.osteotomies.length > MAX_OSTEOTOMIES) return { error: 'content' };
       const parsed: Osteotomy[] = [];
       for (const item of entry.osteotomies) {

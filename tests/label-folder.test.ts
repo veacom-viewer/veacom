@@ -182,10 +182,14 @@ describe('the labelling queue', () => {
     assert.equal(planState({ name: 'a', plan: plan(true) }), 'shown');
     assert.equal(planState({ name: 'a', plan: JSON.stringify({ schema: 'veacom.deformity-plan', version: 1, plans: [{ side: 'R', landmarks: [] }] }) }), 'empty');
     for (const text of ['{', '[]', JSON.stringify({ schema: 'other', plans: [] }), JSON.stringify({ schema: 'veacom.deformity-plan', version: 1, plans: {} }),
-      JSON.stringify({ schema: 'veacom.deformity-plan', version: 2, plans: [] })]) assert.equal(planState({ name: 'a', plan: text }), 'unreadable', text);
+      JSON.stringify({ schema: 'veacom.deformity-plan', version: 3, plans: [] })]) assert.equal(planState({ name: 'a', plan: text }), 'unreadable', text);
     assert.equal(planState({ name: 'a', plan: null, unreadable: true }), 'unreadable');
   });
 
+  it('recognises the labels in a multi-cut plan file', () => {
+    const plan = JSON.stringify({ schema: 'veacom.deformity-plan', version: 2, plans: [{ landmarks: [{ suggestionShown: false }], osteotomies: [] }] });
+    assert.equal(planState({ name: 'synthetic', plan }), 'saved');
+  });
   it('plans the run\'s legs among those a film shows', () => {
     assert.deepEqual(filmSides('R'), ['R']); assert.deepEqual(filmSides('B'), ['R', 'L']); assert.deepEqual(filmSides(undefined), ['R', 'L']);
     assert.deepEqual(sidesFor(['R'], 'B'), ['R']);

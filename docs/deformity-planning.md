@@ -237,7 +237,7 @@ write beside the films; other browsers download each plan instead.
 - **The films** are the DICOM files directly inside the chosen folder (a Part 10 preamble, or a .dcm name), in the order
   a person would number them (2 before 10). Each has a state, read from the plan file beside it,
   `<film's file name>.veacom-plan.json`: no plan, plan saved, plan saved with suggestions shown (any landmark's
-  `suggestionShown`), plan saved with no landmark, or a plan file that cannot be read (not a version 1 plan, or over
+  `suggestionShown`), plan saved with no landmark, or a plan file that cannot be read (unsupported plan version, or over
   2 MB). The run starts at the first film without a plan, so a run stopped halfway goes on where it was. With patient
   data hidden, the folder's and the files' names are not shown: file names can name the patient.
 - **Above the plan**, the queue shows the film, Previous and Next, a list to go to any film, and two settings:

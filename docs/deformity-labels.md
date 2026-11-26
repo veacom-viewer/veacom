@@ -53,7 +53,7 @@ flip, and they do not change when the calibration does.
 
 | Field | Meaning |
 | --- | --- |
-| `schema`, `version` | Always `veacom.deformity-plan` and 1. A later change that alters what a field means raises the version; VEAcom opens only the versions it knows. |
+| `schema`, `version` | The schema is `veacom.deformity-plan`. The writer uses version 2 when any plan has multiple cuts, and version 1 otherwise. A version 1 reader refuses a version 2 file. |
 | `software.version`, `software.kernel` | The VEAcom that saved the file, and the version of its geometry kernel (`KERNEL_VERSION`), raised when a value's definition changes. |
 | `film.sopInstanceSha256` | SHA-256 of the film's SOP Instance UID, in hex: it finds the film again without naming it. The same film gives the same hash on every computer, so files of one film can be linked; anonymisation for research replaces it. |
 | `film.frame` | The frame number in a multi-frame file, 1 otherwise. |
@@ -65,8 +65,8 @@ flip, and they do not change when the calibration does.
 | `calibration.appliedMarker` | The ball or ruler that set the saved scale, with its size and depth confirmation at the time. Older version 1 files restore their recorded mm per pixel with the generic manual label. |
 | `plans[].side` | R or L: the leg. |
 | `plans[].landmarks[]` | One label per landmark (below). |
-| `plans[].osteotomy` | The first simulated osteotomy (or null), retained for backward compatibility with single-level version 1 files: bone, cut and hinge (pixels), wedge, angle and direction, shifts and lengthening (mm), the fragment's outline (pixels). |
-| `plans[].osteotomies` | Present when a plan has multiple cuts (up to 6): the full list of osteotomies in the same shape as `osteotomy`. Opening a file reads `osteotomies` when present and falls back to `osteotomy` otherwise. |
+| `plans[].osteotomy` | Version 1 records a single cut or null. Each cut records the bone, cut and hinge in pixels, wedge, angle and direction, shifts and lengthening in the active unit, and the fragment outline in pixels. |
+| `plans[].osteotomies` | Version 2 requires this list for every plan in the file. It contains zero to six cuts. |
 | `plans[].values` | The values as measured when saved, to read the file without VEAcom; VEAcom measures again when it opens a file and ignores them. |
 
 The file holds no name, patient ID, birth date, accession number, institution, date of the study or UID.
