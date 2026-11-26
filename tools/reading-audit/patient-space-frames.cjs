@@ -45,8 +45,9 @@ async function capture(checkout,build,encoding){
           return c?.dataset.plane===p&&Math.abs(Number(c.dataset.slice)-z)<1e-7&&v.zoom===zoom&&v.windowWidth===width;},[plane,slice,zoom,windowWidth],{timeout:15000});
         await settle(page);
         const image=await canvas.evaluate(c=>{
-          const rect=c.getBoundingClientRect(), state=window.__VEACOM_TEST__.state().displayedView;
+          const rect=c.getBoundingClientRect(),pane=c.closest('[data-testid="dicom-viewport"]').getBoundingClientRect(),state=window.__VEACOM_TEST__.state().displayedView;
           return {width:c.width,height:c.height,cssWidth:rect.width,cssHeight:rect.height,ratio:devicePixelRatio,
+            canvasOrigin:[rect.left,rect.top],paneOrigin:[pane.left,pane.top],paneSize:[pane.width,pane.height],
             adapter:c.dataset.renderer,view:state,png:c.toDataURL('image/png').split(',')[1]};
         });
         const name=build+'-'+encoding+'-'+plane+'-'+label;
