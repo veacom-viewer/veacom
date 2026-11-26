@@ -1,3 +1,4 @@
+import { closedBufferPaths } from '../../tools/browser-bench/closed-buffer-paths.mjs';
 // Opens the browser build as viewer.veacom.app serves it, and again as a host without its cross-origin isolation
 // headers would, in Chromium. Each time the engine must start (the threads build where the page is isolated and the
 // computer has the cores, the single-thread build elsewhere), open a small synthetic CT and hand over a slice and the
@@ -248,6 +249,13 @@ async function checkClosedCTBuffer(browser, url) {
     assert.deepEqual(await page.evaluate(async () => (await window.veacom.listSeries()).series), []);
     await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
     await cdp.send('HeapProfiler.collectGarbage');
+    if (await page.evaluate(() => Boolean(window.lastCTBuffer.deref()))) {
+      const heap = await closedBufferPaths(cdp);
+      for (const buf of heap.buffers) {
+        console.log('Compiled close owners',JSON.stringify(buf.owners.map(v=>v.path.map(n=>[n.name,n.out]))));
+        console.log('Compiled close graph',JSON.stringify(buf.nearby));
+      }
+    }
     assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The empty viewer still retains the full CT pixel buffer.');
     assert.equal(await more.getAttribute('aria-expanded'), 'true');
     assert.equal(await seriesFilter.inputValue(), 'CT');
