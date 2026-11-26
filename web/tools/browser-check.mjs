@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { writeFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -510,6 +510,29 @@ async function checkCachedPatientSwitches(page, series, sourceFrame) {
       observer.observe(pane, { childList: true, characterData: true, subtree: true });
       card.click();
     }), modality);
+    if (process.env.VEACOM_SWITCH_OUT) {
+      const directory = path.join(process.env.VEACOM_SWITCH_OUT, page.url().replace(/[^a-z0-9-]/gi,'_'), modality);
+      mkdirSync(directory,{recursive:true});
+      const save = (name,uri) => writeFileSync(path.join(directory,name+'.png'),Buffer.from(uri.split(',')[1],'base64'));
+      save('reference',references.get(id));save('first',first.pixels);
+      if(first.series!==id || first.frame!==String(sourceFrame) || first.pixels!==references.get(id)){
+        const info=await page.evaluate(()=>{
+          const c=document.querySelector('[data-testid="dicom-canvas"]'),s=window.__VEACOM_TEST__.state();
+          return {isolated:crossOriginIsolated,view:s.displayedView,active:s.activeSeriesId,drawn:{...c.dataset},pane:c.closest('[data-testid="dicom-viewport"]').getBoundingClientRect().toJSON(),size:[c.width,c.height]};
+        });
+        writeFileSync(path.join(directory,'mismatch.json'),JSON.stringify({modality,expectedId:id,sourceFrame,observedId:first.series,observedFrame:first.frame,info},null,2));
+        for (const row of series) {
+          save(row.modality+'-reference',references.get(row.id));
+          await page.getByTestId('series-'+row.id).click();
+          for (let slice=0;slice<3;slice++) {
+            await page.evaluate(slice=>window.__VEACOM_TEST__.setView({slice}),slice);
+            await page.waitForFunction(([id,slice])=>{const c=document.querySelector('[data-testid="dicom-canvas"]');return c?.dataset.seriesId===id && Number(c.dataset.sourceFrame)===slice;},[row.id,slice]);
+            await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
+            save(row.modality+'-settled-'+slice,await page.getByTestId('dicom-canvas').evaluate(c=>c.toDataURL()));
+          }
+        }
+      }
+    }
     assert.equal(first.series, id, 'The first canvas under the new label must show the selected series.');
     assert.equal(first.frame, String(sourceFrame), 'The first canvas under the new label must show the selected source frame.');
     assert(first.pixels === references.get(id), 'The first bitmap under the ' + modality + ' label must match that patient and source frame.');
