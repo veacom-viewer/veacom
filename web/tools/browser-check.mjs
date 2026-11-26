@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -421,7 +421,11 @@ async function checkLooseFileDrop(browser, url) {
       const pending = page.waitForEvent('download');
       await page.getByTestId('export-submit').click();
       const download = await pending;
-      const archive = readStoredZip(readFileSync(await download.path()));
+      const downloadedFile = await download.path();
+      const engineMode = await page.evaluate(() => self.crossOriginIsolated ? 'threaded' : 'single');
+      mkdirSync('export-proof', { recursive: true });
+      copyFileSync(downloadedFile, path.join('export-proof', engineMode + '-' + modality + '-' + index + '.zip'));
+      const archive = readStoredZip(readFileSync(downloadedFile));
       assert.equal(archive.length, 1);
       assert.match(archive[0].name, /(?:^|\/)DICOM\/IM000001$/);
       const expected = readFileSync(path.join(modality === 'CT' ? study : mrStudy, studyFiles[index]));
