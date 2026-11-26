@@ -31,14 +31,20 @@ async function fillDialog(file,row) {
   let listed='';
   for(let i=0;i<40;i++){
     listed=(await command('xwininfo',['-root','-tree'])).stdout;
-    const match=listed.match(/^\s*(0x[\da-f]+) "([^"]*(?:File Upload|Open File|Choose File|Select File|File Chooser)[^"]*)"/im);
-    if(match){
+    const matches=[...listed.matchAll(/^\s*(0x[\da-f]+) "([^"]*(?:File Upload|Open File|Choose File|Select File|File Chooser)[^"]*)"/gim)];
+    for(const match of matches){
+      if(!(await command('xwininfo',['-id',match[1]]).catch(()=>({stdout:''}))).stdout.includes('Map State: IsViewable')) continue;
+      const focused=await command('xdotool',['windowfocus','--sync',match[1]]).then(()=>true,()=>false);
+      if(!focused) continue;
       row.nativeDialog=match[2];
-      await command('xdotool',['windowfocus','--sync',match[1]]);
       await command('xdotool',['key','--clearmodifiers','ctrl+l']);
-      await delay(200);
-      await command('xdotool',['type','--clearmodifiers','--',file]);
+      await delay(350);
+      await command('xdotool',['type','--clearmodifiers','--delay','12','--',file]);
+      await delay(250);
       await command('xdotool',['key','--clearmodifiers','Return']);
+      await delay(450);
+      const visible=await command('xwininfo',['-id',match[1]]).catch(()=>({stdout:''}));
+      if(visible.stdout.includes('Map State: IsViewable')) await command('xdotool',['key','--clearmodifiers','Return']);
       return;
     }
     await delay(150);
