@@ -56,7 +56,7 @@ function readPane() {
 async function observe(browser, sources, isolated, language) {
   const dir=path.join(out,language,isolated?'threaded':'single');mkdirSync(dir,{recursive:true});
   const site=await serveVeacom(path.resolve(siteDirectory),{isolation:isolated});
-  const page=await browser.newPage({viewport:{width:1120,height:760}, deviceScaleFactor:1, locale:language==='tr'?'tr-TR':'en-US',permissions:['clipboard-read','clipboard-write']});
+  const page=await browser.newPage({viewport:{width:1120,height:760}, deviceScaleFactor:1, locale:language==='tr'?'tr-TR':'en-US',permissions:['clipboard-read','clipboard-write'],recordVideo:{dir:path.join(scratch,'recordings'),size:{width:1120,height:760}}});
   const cdp=await page.context().newCDPSession(page);
   const report={isolated,language, references:{}, naturalFrames:[], held:[], switches:[]};
   try {
@@ -169,6 +169,7 @@ async function observe(browser, sources, isolated, language) {
   } finally {
     writeFileSync(path.join(dir,'summary.json'),JSON.stringify(report,null,2)+'\n');
     await cdp.detach();await page.close();await site.close();
+    await page.video().saveAs(path.join(dir,'patient-switch.webm'));
   }
 }
 
