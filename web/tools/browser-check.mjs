@@ -150,12 +150,19 @@ async function dropOnPage(devtools, files, x = 100, y = 120) {
 }
 
 async function checkDropDuringStartup(browser, url) {
-  const page = await browser.newPage(), release = Promise.withResolvers();
+  const page = await browser.newPage(), startBridge = Promise.withResolvers(), release = Promise.withResolvers();
   try {
+    const entry = /\/assets\/web-[^/]+\.js(?:\?.*)?$/;
     const reader = /\/assets\/main-[^/]+\.js(?:\?.*)?$/;
+    await page.route(entry, async route => { await startBridge.promise; await route.continue(); });
     await page.route(reader, async route => { await release.promise; await route.continue(); });
     const requested = page.waitForRequest(reader);
     await page.goto(url, { waitUntil: 'commit' });
+    await page.waitForFunction(() => document.getElementById('root') && !window.veacom);
+    const cdp = await page.context().newCDPSession(page);
+    await dropOnPage(cdp, [path.join(study, 'S01')]);
+    await dropOnPage(cdp, [path.join(mrStudy, studyFiles[0])]);
+    startBridge.resolve();
     await requested;
     await page.waitForFunction(() => window.veacom?.web);
     assert.equal(await page.getByTestId('welcome-open-folder').count(), 0);
@@ -171,10 +178,7 @@ async function checkDropDuringStartup(browser, url) {
         return result;
       };
     });
-    const cdp = await page.context().newCDPSession(page);
-    await dropOnPage(cdp, [path.join(study, 'S01')]);
     await dropOnPage(cdp, [mkdtempSync(path.join(scratch, 'empty-'))]);
-    await dropOnPage(cdp, [path.join(mrStudy, studyFiles[0])]);
     release.resolve();
     await page.waitForFunction(() => window.firstDropStarted);
     await dropOnPage(cdp, [path.join(mrStudy, 'S01')]);
@@ -186,7 +190,7 @@ async function checkDropDuringStartup(browser, url) {
       [['MR', 'SYNTHETIC-OTHER', 1, root + '.10.3.1']],
       [['MR', 'SYNTHETIC-OTHER', slices, root + '.10.3.1']],
     ]);
-  } finally { release.resolve(); await page.close(); }
+  } finally { startBridge.resolve(); release.resolve(); await page.close(); }
 }
 
 /** Hold the real engine requests so a file chooser can finish before startup or import does. */

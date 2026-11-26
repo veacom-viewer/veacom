@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { droppedFileGroups, importFileSources, readImportFiles, watchFileDrops } from '../src/web/droppedFiles';
+import { droppedFileGroups, importFileSources, readImportFiles } from '../src/web/droppedFiles';
+import { watchFileDrops } from '../src/web/fileDropCapture';
 
 function fileEntry(file: File, read = () => file): FileSystemFileEntry {
   return { name: file.name, isFile: true, isDirectory: false, file: (send: FileCallback) => send(read()) } as FileSystemFileEntry;

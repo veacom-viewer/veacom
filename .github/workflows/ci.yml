@@ -556,22 +556,23 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           WRANGLER_SEND_METRICS: 'false'
         run: pnpm --dir web/site exec wrangler deploy --message "main ${GITHUB_SHA}"
-      # The new version is live within seconds: the home page must name this build's entry script and come with the
+      # The new version is live within seconds: the home page must name this build's scripts and come with the
       # headers the threads and the content policy depend on.
       - name: The site serves this build with its headers
         if: steps.main.outputs.current == 'true'
         run: |
           set -euo pipefail
-          entry=$(grep -o 'src="\./assets/[^"]*\.js"' web/site/public/index.html | head -n 1)
-          test -n "$entry"
+          scripts() { grep -o 'src="\./assets/[^"]*\.js"' "$1"; }
+          expected=$(scripts web/site/public/index.html)
+          test -n "$expected"
           for attempt in $(seq 1 12); do
             curl --fail --silent --show-error --dump-header "$RUNNER_TEMP/headers" --output "$RUNNER_TEMP/page.html" https://viewer.veacom.app/
-            if grep -qF "$entry" "$RUNNER_TEMP/page.html"; then break; fi
-            if [ "$attempt" = 12 ]; then echo "viewer.veacom.app still serves a build other than $entry"; exit 1; fi
+            if [ "$(scripts "$RUNNER_TEMP/page.html" || true)" = "$expected" ]; then break; fi
+            if [ "$attempt" = 12 ]; then echo "viewer.veacom.app still serves a different set of browser scripts"; exit 1; fi
             sleep 5
           done
           for header in 'cross-origin-opener-policy: same-origin' 'cross-origin-embedder-policy: require-corp' \
             "content-security-policy: .*require-trusted-types-for 'script'"; do
             grep -qiE "^$header" "$RUNNER_TEMP/headers" || { echo "viewer.veacom.app answers without $header"; exit 1; }
           done
-          echo "viewer.veacom.app serves $entry with its headers."
+          echo "viewer.veacom.app serves the expected browser scripts with its headers."
