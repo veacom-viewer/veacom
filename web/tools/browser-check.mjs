@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { makeStudy as makeBenchmarkStudy } from '../../tools/browser-bench/make-study.mjs';
 // Opens the browser build as viewer.veacom.app serves it, and again as a host without its cross-origin isolation
 // headers would, in Chromium. Each time the engine must start (the threads build where the page is isolated and the
 // computer has the cores, the single-thread build elsewhere), open a small synthetic CT and hand over a slice and the
@@ -35,6 +37,13 @@ execFileSync(process.execPath, [makeStudy, study], { stdio: 'inherit' });
 execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR', '--other-patient'], { stdio: 'inherit' });
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
+
+const largeFolder = path.join(scratch, 'ct-1000');
+await makeBenchmarkStudy('ct-1000', largeFolder);
+
+const petFollowup = path.join(scratch, 'pet-followup');
+execFileSync(process.execPath, [path.join(repository,'tools/fixtures/make-pet-followup.mjs'),petFollowup], {stdio:'inherit'});
+const petFacts = JSON.parse(readFileSync(path.join(petFollowup,'manifest.json'),'utf8'));
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
@@ -208,18 +217,11 @@ async function checkClosedCTBuffer(browser, url) {
       };
     }, columns * rows * slices * 2);
     await page.goto(url);
-    async function chooseCT() {
-      const selected = page.waitForEvent('filechooser');
-      await page.getByTestId('welcome-open-files').click();
-      await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
-      await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) && window.__VEACOM_TEST__.state().fullVolumeLoaded);
-    }
-    async function checkReleased() {
-      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
-      await cdp.send('HeapProfiler.collectGarbage');
-      assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The closed CT pixel buffer is still reachable.');
-    }
-    await chooseCT();
+    const selected = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
+    await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
+      Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
     const paging = await page.evaluate(async () => {
       const original = Array.prototype.sort;
       const shown = [];
@@ -253,48 +255,141 @@ async function checkClosedCTBuffer(browser, url) {
     await page.getByTestId('series-remove-confirm').click();
     await page.waitForFunction(() => Number(document.documentElement.dataset.engineReleases) > 0 && !document.querySelector('canvas[data-series-id]'));
     assert.deepEqual(await page.evaluate(async () => (await window.veacom.listSeries()).series), []);
-    await checkReleased();
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    await cdp.send('HeapProfiler.collectGarbage');
+    assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The empty viewer still retains the full CT pixel buffer.');
     assert.equal(await more.getAttribute('aria-expanded'), 'true');
     assert.equal(await seriesFilter.inputValue(), 'CT');
     assert.equal(await tagFilter.inputValue(), 'modality');
+  } finally { await cdp.detach(); await page.close(); }
+}
 
-    await seriesFilter.fill('');
-    await chooseCT();
-    const ct = await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId);
-    const files = studyFiles.slice(0, 3).map(name => path.join(mrStudy, name));
+async function checkRemoveCTWhileReadingMR(browser, url) {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await page.addInitScript(expectedBytes => {
+      window.Worker = class extends Worker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            const bytes = data?.value?.bytes;
+            if (bytes instanceof Uint8Array && data.value.index===1 && data.value.sopInstanceUid==='2.25.302617644913925066835652647005517224101.10.3.2') window.checkedMRFrame=bytes;
+            if (bytes instanceof Uint8Array && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes.buffer);
+          });
+        }
+      };
+    }, 512 * 512 * 1000 * 2);
+    await page.goto(url);
+    await page.getByTestId('welcome-open-files').waitFor();
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
-      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files, dragOperationsMask: 1 } });
+      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files: [largeFolder], dragOperationsMask: 1 } });
+    }
+    await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) &&
+      Boolean(document.querySelector('canvas[data-series-id]')) && !document.querySelector('[data-action="series-pick"][aria-busy="true"]'));
+
+    await cdp.send('HeapProfiler.collectGarbage');
+    const large = await page.evaluate(async () => {
+      const { series } = await window.veacom.listSeries(), item = series.find(v => v.patientId === 'BENCH-ct-1000');
+      const {generation}=await window.veacom.getCoreState();
+      const ends=await Promise.all([0,999].map(index=>window.veacom.fetchPixels({seriesId:item.id,generation,revision:item.catalogRevision,index})));
+      return { uid:item.uid, width:item.dimensions[0],height:item.dimensions[1],depth:item.dimensions[2],
+        bytes:window.lastCTBuffer.deref()?.byteLength, corners:ends.map(r=>r.headers.get('X-SOP-Instance-UID')) };
+    });
+    assert.deepEqual([large.width,large.height,large.depth,large.bytes],[512,512,1000,524288000]);
+    assert.deepEqual(large.corners,[large.uid.replace(/\.2$/,'.3.1000'),large.uid.replace(/\.2$/,'.3.1')]);
+    const ct = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(v => v.modality === 'CT').id);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files: studyFiles.slice(0,3).map(name => path.join(mrStudy,name)), dragOperationsMask: 1 } });
     }
     await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 2);
-    const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(item => item.modality === 'MR').id);
+    const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(v => v.patientId === 'SYNTHETIC-OTHER').id);
     await page.getByTestId('series-' + mr).click();
-    const image = page.locator('canvas[data-series-id="' + mr + '"]');
-    await image.waitFor();
-    await image.evaluate(canvas => { window.remainingMRCanvas = new WeakRef(canvas); });
+    const shown = page.locator('canvas[data-series-id="' + mr + '"]'); await shown.waitFor();
+    await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    await page.evaluate(()=>window.__VEACOM_TEST__.setView({slice:1}));
+    await page.waitForFunction(()=>Number(document.querySelector('canvas[data-series-id]').dataset.slice)===1);
+    const readMR=async()=>page.evaluate(async ()=>{
+      const bridge=window.veacom, {generation}=await bridge.getCoreState(), item=(await bridge.listSeries()).series.find(s=>s.modality==='MR');
+      delete window.checkedMRFrame;
+      const frame=await bridge.fetchPixels({seriesId:item.id,generation,revision:item.catalogRevision,index:1});
+      const actual = window.checkedMRFrame;
+      if (!(actual instanceof Uint8Array) || actual.byteLength!==128*128*2 || Number(frame.headers.get('Content-Length'))!==actual.byteLength) throw new Error('Incorrect MR pixel byte count');
+      const digest=await crypto.subtle.digest('SHA-256',actual);
+      delete window.checkedMRFrame;
+      return {uid:item.uid,sop:frame.headers.get('X-SOP-Instance-UID'),series:item.id,drawn:document.querySelector('canvas[data-series-id]').dataset.seriesId,
+        bytes:actual.byteLength,hash:Array.from(new Uint8Array(digest),n=>n.toString(16).padStart(2,'0')).join('')};
+    });
     await cdp.send('HeapProfiler.collectGarbage');
-
-    // An operation that already has the pixels can finish reading them even if the reader removes the series.
-    async function readCT(finished) {
-      const buffer = window.borrowedCT ??= window.lastCTBuffer.deref();
-      const digest = await crypto.subtle.digest('SHA-256', buffer);
-      if (finished) delete window.borrowedCT;
-      return { bytes: buffer.byteLength, sha256: Array.from(new Uint8Array(digest)) };
-    }
-    const before = await page.evaluate(readCT, false);
-    assert.equal(before.bytes, columns * rows * slices * 2);
+    assert.equal(await page.evaluate(()=>window.lastCTBuffer.deref()?.byteLength),524288000);
+    const original=await readMR();
+    assert.equal(original.sop,'2.25.302617644913925066835652647005517224101.10.3.2');
+    assert.equal(original.drawn,mr);
+    // The fixture writer places its uncompressed Pixel Data last in this file.
+    const expectedHash=createHash('sha256').update(readFileSync(path.join(mrStudy,studyFiles[1])).subarray(-128*128*2)).digest('hex');
+    assert.equal(original.hash,expectedHash);
     await page.getByTestId('series-' + ct).click({ button: 'right' });
     await page.locator('[data-action="series-remove"]').click();
     await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
-    assert.deepEqual(await page.evaluate(readCT, true), before);
-    await checkReleased();
-    assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
-    const remaining = await page.evaluate(async () => {
-      const bridge = window.veacom, { generation } = await bridge.getCoreState(), [item] = (await bridge.listSeries()).series;
-      const frame = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
-      return [item.id, item.patientId, frame.headers.get('X-SOP-Instance-UID')];
+    await page.waitForTimeout(10000);
+    await cdp.send('HeapProfiler.collectGarbage');
+    const result = await page.evaluate(async () => {
+      const bridge=window.veacom, { generation }=await bridge.getCoreState(), [only]= (await bridge.listSeries()).series;
+      const p=await bridge.fetchPixels({ seriesId:only.id, generation, revision:only.catalogRevision, index:0 });
+      return { patient:only.patientId, id:only.id, shown:document.querySelector('canvas[data-series-id]')?.dataset.seriesId,
+        sop:p.headers.get('X-SOP-Instance-UID'), retainedBytes:window.lastCTBuffer.deref()?.byteLength ?? 0 };
     });
-    assert.deepEqual(remaining, [mr, 'SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1']);
+    console.log('CT removed while another patient stays on screen', JSON.stringify(result));
+    assert.equal(result.id,mr);assert.equal(result.shown,mr);
+    assert.equal(result.patient,'SYNTHETIC-OTHER');assert.equal(result.sop,'2.25.302617644913925066835652647005517224101.10.3.1');
+    assert.equal(result.retainedBytes,0,'The active MR retained the removed CT.');
+    const remaining=await readMR();
+    assert.deepEqual(remaining,original);
+    console.log('Two-patient large CT',JSON.stringify({large,remaining,afterRemoval:result.retainedBytes}));
   } finally { await cdp.detach(); await page.close(); }
+}
+
+async function checkLivePETAfterRemoval(browser,url) {
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const cdp=await page.context().newCDPSession(page);
+  const drop=async files=>{
+    for (const type of ['dragEnter','dragOver','drop']) await cdp.send('Input.dispatchDragEvent',{type,x:160,y:140,data:{items:[],files,dragOperationsMask:1}});
+  };
+  try {
+    await page.goto(url);await page.getByTestId('welcome-open-files').waitFor();
+    await drop([path.join(petFollowup,'current','S02')]);
+    await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    const pet=await page.evaluate(()=>window.__VEACOM_TEST__.state().activeSeriesId);
+    const labels=page.locator('.annotation-label text');
+    async function probe(expected) {
+      await page.evaluate(()=>{window.__VEACOM_TEST__.setTool('probe');window.__VEACOM_TEST__.setView({slice:0});});
+      await page.waitForFunction(()=>Number(document.querySelector('canvas[data-series-id]').dataset.slice)===0);
+      const rect=await page.getByTestId('annotation-overlay').boundingBox();
+      await cdp.send('HeapProfiler.collectGarbage');
+      await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);
+      await labels.getByText(expected,{exact:true}).or(labels.filter({hasText:expected})).first().waitFor({timeout:10000});
+      const reading=(await labels.allTextContents()).map(t=>t.trim());assert(reading.includes(expected),JSON.stringify(reading));
+      await page.keyboard.press('Delete');await page.waitForFunction(()=>!document.querySelector('.annotation-label text'));
+      return expected;
+    }
+    const before=await probe('1.00 SUVbw');
+    await drop([path.join(study,studyFiles[0])]);
+    await page.waitForFunction(async()=>(await window.veacom.listSeries()).series.length===2);
+    await page.getByTestId('series-'+pet).click();
+    const ct=await page.evaluate(async()=>(await window.veacom.listSeries()).series.find(v=>v.modality==='CT').id);
+    await page.getByTestId('series-'+ct).click({button:'right'});await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(async()=>(await window.veacom.listSeries()).series.length===1);
+    const unchanged=await probe('1.00 SUVbw');
+    if(!await page.getByTestId('inspector-tab-display').isVisible())await page.getByTestId('tool-inspector').click();
+    await page.getByTestId('inspector-tab-display').click();
+    if(await page.locator('#section-units-toggle').getAttribute('aria-expanded')!=='true')await page.locator('#section-units-toggle').click();
+    await page.locator('[data-action="pet-values"]').selectOption('lbm');
+    const lean=9270/(6680+216*petFacts.suv.weightKg/petFacts.suv.heightM**2);
+    const sul=await probe(lean.toFixed(2)+' SUL');
+    const source=await page.evaluate(async()=>{const st=window.__VEACOM_TEST__.state(),[item]=(await window.veacom.listSeries()).series;return [st.activeSeriesId,item.id,item.modality,item.uid,item.patientId];});
+    assert.equal(source[0],pet);assert.equal(source[1],pet);assert.equal(source[2],'PT');
+    console.log('PET reader numeric checks with forced collection',JSON.stringify({before,unchanged,sul,source}));
+  } finally {await cdp.detach();await page.close();}
 }
 
 /** The actual browser file list contains the same basename twice, once for each patient. */
@@ -326,6 +421,22 @@ async function checkLooseFileDrop(browser, url) {
       ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', 1, -1000, -1000],
       ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', 1, 0, 0],
     ]);
+    // Keep reading the MR while removing the other patient's CT.
+    const { CT, MR } = await page.evaluate(async () => Object.fromEntries((await window.veacom.listSeries()).series.map(item => [item.modality, item.id])));
+    await page.getByTestId('series-' + MR).click();
+    const image = page.locator('canvas[data-series-id="' + MR + '"]');
+    await image.waitFor();
+    await image.evaluate(canvas => { window.remainingMRCanvas = new WeakRef(canvas); });
+    await page.getByTestId('series-' + CT).click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 1);
+    assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
+    const remaining = await page.evaluate(async () => {
+      const bridge = window.veacom, { generation } = await bridge.getCoreState(), [item] = (await bridge.listSeries()).series;
+      const frame = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+      return [item.id, item.patientId, frame.headers.get('X-SOP-Instance-UID')];
+    });
+    assert.deepEqual(remaining, [MR, 'SYNTHETIC-OTHER', root + '.10.3.1']);
   } finally { await page.close(); }
 }
 
@@ -364,6 +475,36 @@ async function checkMeasurementTabs(browser, url) {
     assert.deepEqual(displayed.sort(), [...ids].sort());
     await first.locator('[data-measurement-save="saved"]').waitFor();
     console.log('Two browser tabs kept both measurements on the same source image.');
+    async function replaceStudy(folder, patientId, sop, expectedIds) {
+      await first.locator('[data-action="series-pick"]').first().click({ button: 'right' });
+      await first.locator('[data-action="series-clear"]').click();
+      await first.getByTestId('series-remove-confirm').click();
+      await first.getByTestId('welcome-open-files').waitFor();
+      await first.waitForFunction(async ()=>(await window.veacom.listSeries()).series.length===0);
+      const picked=first.waitForEvent('filechooser');
+      await first.getByTestId('welcome-open-files').click();
+      await (await picked).setFiles(studyFiles.slice(0,3).map(f=>path.join(folder,f)));
+      await first.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded);
+      await first.evaluate(()=>window.__VEACOM_TEST__.setView({slice:1}));
+      await first.locator('[data-testid="annotation-overlay"][data-mode="source"][data-slice="1"]').waitFor();
+      await first.locator('[data-measurement-save="saved"]').waitFor();
+      if (expectedIds.length) await first.locator('[data-annotation-id="' + expectedIds[0] + '"]').waitFor();
+      const found=await first.locator(selector).evaluateAll(marks=>marks.map(m=>m.dataset.annotationId).sort());
+      assert.deepEqual(found,[...expectedIds].sort());
+      const identity=await first.evaluate(async ()=>{
+        const bridge=window.veacom,{generation}=await bridge.getCoreState(),[item]=(await bridge.listSeries()).series;
+        const drawn=document.querySelector('canvas[data-series-id]'),index=Number(drawn.dataset.slice);
+        const pixels=await bridge.fetchPixels({seriesId:item.id,generation,revision:item.catalogRevision,index});
+        return [item.id===drawn.dataset.seriesId,item.patientId,pixels.headers.get('X-SOP-Instance-UID')];
+      });
+      assert.deepEqual(identity,[true,patientId,sop]);
+      console.log('Same-tab recorded measurements',JSON.stringify({patientId,sourceSOP:sop,expected:expectedIds.length,displayed:found.length}));
+    }
+    const prefix='2.25.302617644913925066835652647005517224101';
+    await replaceStudy(mrStudy,'SYNTHETIC-OTHER',prefix+'.10.3.2',[]);
+    await replaceStudy(study,'SYNTHETIC-SMOKE',prefix+'.3.2',ids);
+
+
   } finally { await context.close(); }
 }
 
@@ -578,6 +719,8 @@ try {
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkClosedCTBuffer(browser, page.url());
+      await checkLivePETAfterRemoval(browser, page.url());
+      await checkRemoveCTWhileReadingMR(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
