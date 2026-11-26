@@ -222,6 +222,7 @@ export function createWebBridge(): DesktopBridge {
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
     const source = next.request.op === 'import' ? next.request.files : undefined;
+    if (source) performance.mark('veacom:import-dispatched');
     worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
@@ -250,6 +251,9 @@ export function createWebBridge(): DesktopBridge {
       }
       if (data.type === 'helpers') { startHelpers(own, data); return; }
       if (data.id !== inFlight) return;
+      if (data.workerMarks) {
+        for (const [name, time] of data.workerMarks) performance.mark('worker-' + name, { startTime: time - performance.timeOrigin });
+      }
       const request = pending.get(data.id);
       if (!request) return;
       inFlight = null;
@@ -273,6 +277,7 @@ export function createWebBridge(): DesktopBridge {
       if (own !== worker) return;
       if (info.shared) shared = { cancel: new Int32Array(info.shared.buffer, info.shared.cancel, 1), progress: new Uint32Array(info.shared.buffer, info.shared.progress, 4) };
       // For the measurement tools (web/tools): how many threads decode.
+      performance.mark('veacom:init-replied');
       document.documentElement.dataset.engineThreads = String(info.threads);
     }, () => {});
   }

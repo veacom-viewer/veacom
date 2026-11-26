@@ -72,11 +72,15 @@ function shareFiles(threaded: ThreadedEngine, ids: number[], files: File[]): voi
 }
 
 async function load(): Promise<{ engine: Engine; threaded?: ThreadedEngine; threads: number; memory: WebAssembly.Memory }> {
+  performance.mark('veacom:engine-worker-started');
   if (self.crossOriginIsolated) {
     try {
       const threaded: ThreadedEngine = await import('../../web/engine/pkg-threads/veacom_web_engine.js');
+      performance.mark('veacom:engine-bindings-loaded');
       const exports = await threaded.default();
+      performance.mark('veacom:wasm-ready');
       await startHelpers(threaded, THREADS - 1);
+      performance.mark('veacom:helpers-ready');
       return { engine: threaded as unknown as Engine, threaded, threads: THREADS, memory: exports.memory };
     } catch (error) {
       console.warn('The threaded engine could not start; using one thread.', error);
@@ -202,7 +206,9 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
+        performance.mark('veacom:worker-reads-start');
         const { files, heads } = await readImportFiles(data.files);
+        performance.mark('veacom:worker-heads-read');
         const ids: number[] = [];
         try {
           for (const [i, { path, file }] of files.entries()) {
@@ -210,7 +216,10 @@ async function answer(data: EngineRequest): Promise<void> {
             ids.push(id);
             pageFiles.set(id, file);
           }
-          value = JSON.parse(engine.importPaths(data.roots));
+          performance.mark('veacom:worker-files-registered');
+          const catalog = engine.importPaths(data.roots);
+          performance.mark('veacom:worker-parsed-sources');
+          value = JSON.parse(catalog);
         } finally {
           if (ids.length < files.length) engine.pruneFiles();
           forgetUnlisted();
@@ -221,6 +230,7 @@ async function answer(data: EngineRequest): Promise<void> {
           const kept = ids.flatMap(id => { const file = pageFiles.get(id); return file ? [{ id, file }] : []; });
           shareFiles(loaded.threaded, kept.map(({ id }) => id), kept.map(({ file }) => file));
         }
+        performance.mark('veacom:worker-import-reply');
         break;
       }
       case 'list': value = JSON.parse(engine.listSeries()); break;
@@ -243,7 +253,8 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
     }
-    scope.postMessage({ id: data.id, ok: true, value }, transfer);
+    const workerMarks = data.op === 'import' ? performance.getEntriesByType('mark').map(mark => [mark.name, performance.timeOrigin + mark.startTime]) : undefined;
+    scope.postMessage({ id: data.id, ok: true, value, workerMarks }, transfer);
   } catch (error) {
     // The engine's own messages arrive as plain Errors holding its JSON body. Anything else is the engine crashing
     // (a WebAssembly trap, a stack overflow): its state cannot be trusted any more, and the page replaces this Worker.

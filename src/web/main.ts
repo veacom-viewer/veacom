@@ -6,4 +6,6 @@ import { createWebBridge, watchDrops } from './bridge';
 installTrustedTypes();
 watchDrops();
 window.veacom = createWebBridge();
+performance.mark('veacom:bridge-ready');
 await import('../main');
+performance.mark('veacom:application-loaded');
