@@ -10,6 +10,7 @@ import glyphs from '../src/assets/glyphs.json';
 import { checkSample, mp4Header } from '../src/web/mp4';
 import { iconMarkup, ownScript } from '../src/web/trusted-types';
 import { zipStored } from '../src/web/zip';
+import { readStoredZip } from './storedZip';
 
 const desktop = createRequire(import.meta.url)('../electron/mp4.cjs');
 const { readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
@@ -63,21 +64,7 @@ it('stores files in a ZIP that reads back byte for byte', async () => {
     { name: 'Görüntü 1.png', bytes: new Uint8Array() },
   ];
   const archive = new Uint8Array(await zipStored(files).arrayBuffer());
-  const view = new DataView(archive.buffer);
-  const end = archive.length - 22;
-  assert.equal(view.getUint32(end, true), 0x06054b50);
-  assert.equal(view.getUint16(end + 10, true), files.length);
-  // Walk the central directory and read each file through its local header.
-  let at = view.getUint32(end + 16, true);
-  for (const file of files) {
-    assert.equal(view.getUint32(at, true), 0x02014b50);
-    const nameLength = view.getUint16(at + 28, true), local = view.getUint32(at + 42, true);
-    assert.equal(new TextDecoder().decode(archive.subarray(at + 46, at + 46 + nameLength)), file.name);
-    const start = local + 30 + view.getUint16(local + 26, true), size = view.getUint32(local + 18, true);
-    assert.equal(view.getUint16(local + 8, true), 0);
-    assert.deepEqual(archive.subarray(start, start + size), file.bytes);
-    at += 46 + nameLength;
-  }
+  assert.deepEqual(readStoredZip(archive), files);
 });
 
 it('lets through every toolbar icon and nothing that could run', () => {
