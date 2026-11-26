@@ -14,7 +14,7 @@ const [previous,changed,out] = process.argv.slice(2);
 const dir=await mkdtemp(path.join(tmpdir(),'veacom-native-drag-')), input=path.join(dir,'files');
 await mkdir(input); await mkdir(out,{recursive:true}); await makeStudy('ct-300',path.join(input,'STUDYFOLDER'));
 const run=promisify(execFile), command=async (name,...args)=>(await run(name,args.map(String),{timeout:12000})).stdout.trim();
-const fileManager=spawn('thunar',['--new-window',input],{stdio:'ignore'});
+const fileManager=spawn('thunar',[input],{stdio:['ignore','inherit','inherit']});
 const browser=await chromium.launch({headless:false,args:['--window-position=510,30','--window-size=1100,800']});
 const results=[];
 async function windowId(pattern){
@@ -23,10 +23,10 @@ async function windowId(pattern){
     if(line)return line.split(/\s+/)[0];
     await delay(150);
   }
-  throw Error('Missing '+pattern+' in '+await command('wmctrl','-lx'));
+  throw Error('Missing '+pattern+' in '+await command('wmctrl','-lx')+' '+(await command('xwininfo','-root','-tree')).slice(0,1500));
 }
 try {
-  const source=await windowId(/thunar\.Thunar/i);
+  const source=await windowId(/thunar/i);
   await command('wmctrl','-i','-r',source,'-e','0,5,70,460,650');
   await command('wmctrl','-i','-a',source);
   await command('xdotool','key','ctrl+2');
