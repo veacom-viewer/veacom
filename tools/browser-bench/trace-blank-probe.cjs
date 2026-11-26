@@ -13,6 +13,7 @@ app.whenReady().then(async () => {
   if (blankFirst) {mark('load initial blank'); await win.loadURL('about:blank');}
   const debug=win.webContents.debugger;
   mark('attach'); debug.attach('1.3');
+  mark('enable page'); await debug.sendCommand('Page.enable');
   mark('register script'); await debug.sendCommand('Page.addScriptToEvaluateOnNewDocument', {source:'window.traceProbe=17'});
   mark('start trace'); await debug.sendCommand('Tracing.start', {transferMode:'ReportEvents',traceConfig:{includedCategories:['blink.user_timing','disabled-by-default-devtools.screenshot'],excludedCategories:['*']}});
   mark('navigate'); await win.loadURL('data:text/html,<p>trace probe</p>');
