@@ -150,6 +150,9 @@ jobs:
         id: packaged
         if: ${{ !cancelled() && steps.package.outcome == 'success' && steps.study.outcome == 'success' }}
         run: if (!(Test-Path -LiteralPath $env:PACKAGED_APP -PathType Leaf)) { throw "No packaged app at $env:PACKAGED_APP" }
+      - name: Capture patient switches in the packaged viewer
+        if: ${{ !cancelled() && steps.packaged.outcome == 'success' }}
+        run: node tools/browser-bench/installed-patient-switch.mjs "$env:PACKAGED_APP" "$env:EVIDENCE/native-patient-switch"
       - name: Source app ready
         id: source
         if: ${{ !cancelled() && steps.runtime.outcome == 'success' && steps.engine.outcome == 'success' && steps.web.outcome == 'success' && steps.study.outcome == 'success' }}
