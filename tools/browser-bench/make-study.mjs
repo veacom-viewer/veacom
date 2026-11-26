@@ -17,6 +17,9 @@ import { drawBand } from './lib/marker.mjs';
 export const STUDIES = {
   'ct-300': { slices: 300, size: 512, about: 'a 300-slice CT of 512×512, uncompressed' },
   'ct-300-long-header': { slices: 300, size: 512, about: 'a 300-slice CT with a 24 KiB private data element in every source header' },
+  'ct-384': { slices: 384, size: 512, about: 'a 384-slice uncompressed CT' },
+  'ct-512': { slices: 512, size: 512, about: 'a 512-slice uncompressed CT' },
+  'ct-768': { slices: 768, size: 512, about: 'a 768-slice uncompressed CT' },
   'ct-1000': { slices: 1000, size: 512, about: 'a thin-slice 1,000-slice CT of 512×512, uncompressed, as in the Weasis comparison' },
 };
 const GENERATOR = 'veacom-bench-study-v1';
