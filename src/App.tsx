@@ -38,7 +38,7 @@ import { useEngineRecovery } from './useEngineRecovery';
 import { captureViewportCanvas, captureViewportPng } from './export-video';
 import { copyCanvas } from './ui/clipboard';
 import type { ExportDialogProps } from './components/ExportDialog';
-import { trimInactiveVolumes } from './domain/volumeCache';
+import { trimInactiveVolumes, VolumeIndex } from './domain/volumeCache';
 import { createVolumeDecorator } from './domain/decoratedVolumes';
 import { measureWindow } from './imaging/nativeMeasurements';
 import { annotationSourceIndex, distanceMm, quantitativeScale, shownOnView, storedUnit, viewOfAnnotation } from './imaging/annotations';
@@ -467,6 +467,10 @@ function useViewportGrid() {
   return { gridRef, gridTall, attachGrid };
 }
 
+function indexVolumes(volumes: Map<string, Volume>) {
+  return window.veacom?.web ? new VolumeIndex(volumes) : volumes;
+}
+
 export default function App() {
   'use no web memo';
   const { locale, t } = useTranslation();
@@ -493,11 +497,11 @@ export default function App() {
   };
   // Stable event handlers read refs so their closures do not retain old volume maps.
   const seriesRef = useRef(series);
-  const [volumes, setVolumes] = useState<Map<string, Volume>>(() => new Map());
+  const volumesRef = useRef(new Map<string, Volume>());
+  const [volumes, setVolumes] = useState<VolumeIndex | Map<string, Volume>>(() => new Map());
   const [slotFrames, setSlotFrames] = useState<Record<string, Volume>>({});
   const [frameCache] = useState(() => new SourceFrameCache());
   const frameRequests = useRef(new Map<string, { key: string; seriesId: string; controller: AbortController }>());
-  const volumesRef = useRef(volumes);
   const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const [slots, setSlots] = useState<Slot[]>(() => [makeSlot()]);
@@ -796,8 +800,8 @@ export default function App() {
     followHistory(snapshot => ({ ...snapshot, annotations: add(snapshot.annotations) }));
   });
   const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
-  const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+  const displayVolumes = indexVolumes(new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
+    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })])));
   const resolvedSlots = slots.map(slot => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
@@ -948,7 +952,7 @@ export default function App() {
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
   const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
-  const assessmentVolumes = [...displayVolumes.values()].filter(volume => volume.sourceFrameIndex === undefined);
+  const assessmentVolumes = Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined);
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
   const activeReferences = !settings.showReferences || slots.length < 2 ? EMPTY_REFERENCES : (isMpr ? slots : [activeSlot]).flatMap(slot => {
@@ -1182,7 +1186,7 @@ export default function App() {
     for (const id of result.evicted) { fullyLoaded.current.delete(id); volumeAccess.current.delete(id); }
     if (result.volumes !== volumesRef.current) {
       volumesRef.current = result.volumes;
-      setVolumes(result.volumes);
+      setVolumes(indexVolumes(result.volumes));
     }
   };
 
