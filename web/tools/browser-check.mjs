@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -467,32 +467,71 @@ async function checkChosenStudy(browser, url, files, modality, frameCount) {
 
 // Read the actual bitmap when the other patient's label commits, before a later animation frame can replace it.
 async function checkCachedPatientSwitches(page, series) {
-  const references = new Map();
-  for (const { id } of series) {
-    await page.getByTestId('series-' + id).click();
-    await page.waitForFunction(id => {
-      const state = window.__VEACOM_TEST__.state();
-      return state.activeSeriesId === id && state.fullVolumeLoaded && document.querySelector('[data-testid="dicom-canvas"]')?.dataset.seriesId === id;
-    }, id);
-    references.set(id, await page.getByTestId('dicom-canvas').evaluate(canvas => canvas.toDataURL()));
+  const captures = [];
+  const mode = await page.evaluate(() => {
+    window.__bitmapDraws = [];
+    document.addEventListener('veacom:frame', e => {
+      const c=e.target;window.__bitmapDraws.push({t:performance.now(),id:c.dataset.seriesId,slice:c.dataset.slice,size:[c.width,c.height]});
+    });
+    window.__bitmapSnapshot = c => {
+      const png=c.toDataURL(), state=window.__VEACOM_TEST__.state(), rect=c.getBoundingClientRect();
+      const pane=c.closest('[data-testid="dicom-viewport"]'), pr=pane.getBoundingClientRect();
+      return {png,drawn:{...c.dataset},size:[c.width,c.height],pane:[pr.x,pr.y,pr.width,pr.height],canvas:[rect.x,rect.y,rect.width,rect.height],
+        ratio:devicePixelRatio,label:pane.querySelector('[data-testid="patient-overlay"]')?.textContent,
+        active:state.activeSeriesId,view:state.view,displayed:state.displayedView,loaded:state.fullVolumeLoaded,partial:state.sourceFrameIndex,t:performance.now()};
+    };
+    return self.crossOriginIsolated?'threaded':'single';
+  });
+  const canvas=page.getByTestId('dicom-canvas');
+  const selected=async id=>page.waitForFunction(id=>{
+    const state=window.__VEACOM_TEST__.state();
+    return state.activeSeriesId===id && state.fullVolumeLoaded && document.querySelector('[data-testid="dicom-canvas"]')?.dataset.seriesId===id;
+  },id);
+  for(const {id,modality} of series){
+    await page.getByTestId('series-'+id).click();
+    await selected(id);
+    captures.push({step:'reference',id,modality,...await canvas.evaluate(c=>window.__bitmapSnapshot(c))});
   }
-  assert.equal(new Set(references.values()).size, 2, 'The two source images must differ.');
-  for (const { id, modality } of series) {
-    const pixels = await page.getByTestId('series-' + id).evaluate((card, modality) => new Promise((resolve, reject) => {
-      const pane = document.querySelector('[data-testid="dicom-viewport"]');
-      const observer = new MutationObserver(() => {
-        const labels = pane.querySelectorAll('[data-testid="patient-overlay"] text');
-        if (![...labels].some(label => label.lastChild?.textContent === modality)) return;
-        observer.disconnect();
-        clearTimeout(timeout);
-        resolve(pane.querySelector('canvas').toDataURL());
+  for(const {id,modality} of series){
+    const atLabel=await page.getByTestId('series-'+id).evaluate((card,modality)=>new Promise((resolve,reject)=>{
+      const pane=document.querySelector('[data-testid="dicom-viewport"]');
+      const observer=new MutationObserver(()=>{
+        const labels=pane.querySelectorAll('[data-testid="patient-overlay"] text');
+        if(![...labels].some(label=>label.lastChild?.textContent===modality))return;
+        observer.disconnect();clearTimeout(timeout);resolve(window.__bitmapSnapshot(pane.querySelector('canvas')));
       });
-      const timeout = setTimeout(() => { observer.disconnect(); reject(new Error('The new patient overlay did not appear.')); }, 5000);
-      observer.observe(pane, { childList: true, characterData: true, subtree: true });
-      card.click();
-    }), modality);
-    assert(pixels === references.get(id), 'The first bitmap under the ' + modality + ' label must match that patient.');
+      const timeout=setTimeout(()=>{observer.disconnect();reject(new Error('The new patient overlay did not appear.'));},5000);
+      observer.observe(pane,{childList:true,characterData:true,subtree:true});card.click();
+    }),modality);
+    captures.push({step:'first',id,modality,...atLabel});
   }
+  for(const {id,modality} of series){
+    await page.getByTestId('series-'+id).click();await selected(id);
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    captures.push({step:'settled',id,modality,...await canvas.evaluate(c=>window.__bitmapSnapshot(c))});
+    for(const index of [0,1,2]){
+      await page.evaluate(index=>window.__VEACOM_TEST__.setView({slice:index}),index);
+      await page.waitForFunction(([id,z])=>{const c=document.querySelector('[data-testid="dicom-canvas"]');return c?.dataset.seriesId===id && Number(c.dataset.slice)===z;},[id,index]);
+      await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+      captures.push({step:'slice-'+index,id,modality,...await canvas.evaluate(c=>window.__bitmapSnapshot(c))});
+    }
+  }
+  const dir=path.join(process.env.VEACOM_SWITCH_OUT,mode);
+  mkdirSync(dir,{recursive:true});
+  const matches={};
+  for(const row of captures){
+    const left=captures.find(c=>c.id===row.id&&c.step==='reference');
+    const other=captures.find(c=>c.id!==row.id&&c.step==='reference');
+    if(row.step==='first')matches[row.modality]={expected:row.png===left.png,other:row.png===other.png};
+    writeFileSync(path.join(dir,row.modality+'-'+row.step+'.png'),Buffer.from(row.png.split(',')[1],'base64'));
+  }
+  for(const [modality,input] of [['CT',study],['MR',mrStudy]]){
+    const filesDir=path.join(dir,'source',modality);mkdirSync(filesDir,{recursive:true});
+    for(const file of studyFiles.slice(0,3))copyFileSync(path.join(input,file),path.join(filesDir,path.basename(file)));
+  }
+  writeFileSync(path.join(dir,'capture.json'),JSON.stringify({series,matches,captures:captures.map(({png,...c})=>c),draws:await page.evaluate(()=>window.__bitmapDraws)},null,2));
+  assert(Object.values(matches).every(row=>row.expected),'First bitmap under the new label differs from the captured reference: '+JSON.stringify(matches));
+
 }
 
 /** The patients have identical folder and file names. Each export must contain only the active patient's sources. */
