@@ -137,10 +137,17 @@ async function observe(browser, sources, isolated, language) {
         const file='delayed-'+i+'-'+code+'.png';await page.screenshot({path:path.join(dir,file),timeout:5000});
         await page.evaluate(()=>navigator.clipboard.writeText('Synthetic switch'));
         await page.keyboard.press('Control+c');
-        await page.waitForFunction(async()=>(await navigator.clipboard.read()).some(item=>item.types.includes('image/png')),null,{polling:40,timeout:5000});
         const copied=await page.evaluate(async()=>{
-          const item=(await navigator.clipboard.read()).find(item=>item.types.includes('image/png'));
-          const blob=await item.getType('image/png'), bit=await createImageBitmap(blob);
+          let blob,types=[];
+          const deadline=performance.now()+5000;
+          while(performance.now()<deadline){
+            const items=await navigator.clipboard.read();types=items.flatMap(i=>Array.from(i.types));
+            const item=items.find(i=>i.types.includes('image/png'));
+            if(item){blob=await item.getType('image/png');break;}
+            await new Promise(done=>setTimeout(done,40));
+          }
+          if(!blob)throw new Error('Clipboard has '+types+'; notice '+document.querySelector('[data-testid="notice"]')?.textContent);
+          const bit=await createImageBitmap(blob);
           const c=document.createElement('canvas');c.width=bit.width;c.height=bit.height;
           const ctx=c.getContext('2d');ctx.drawImage(bit,0,0);bit.close();
           const center=Array.from(ctx.getImageData(c.width>>1,c.height>>1,1,1).data);
