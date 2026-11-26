@@ -230,7 +230,7 @@ export function verifySliceRenderer() {
   }
   const uploadCheck = { name: 'GPU uploads keep compact buffers, permit only intentional Float64 display conversion, and use exact texture formats',
     passed: uploads.length > 0 && uploads.every(u => (u.originalBuffer || u.sourceFrameView || u.convertedFloat64) && u.correctFormat), uploads };
-  results.push(uploadCheck, verifyPlaneTextures(renderer, series, view));
+  results.push(uploadCheck, verifyPlaneTextures(renderer, series, view), verifySoftwareWindow(renderer, series, view));
   return { passed: results.every(r => r.passed), renderer: renderer.info,
     checks: results.length, failures: results.filter(r => !r.passed), results };
 }
@@ -267,6 +267,88 @@ function verifyPlaneTextures(renderer, series, view) {
       passed, crops, full: uploads, differences, levels };
   } finally {
     gl.texImage3D = original;
+    renderer.setVisibleViews([]);
+  }
+}
+
+/** Draw both paths on the same GPU and compare every output byte, including the letterbox. */
+function verifySoftwareWindow(renderer, series, view) {
+  const gl = renderer.gl, software = renderer.info.software;
+  const canvas = document.createElement('canvas');
+  canvas.width = 239; canvas.height = 153;
+  const width = 768, height = 640;
+  const study = offset => {
+    const data = new Int16Array(width * height * 2);
+    for (let z = 0, i = 0; z < 2; z++) for (let y = 0; y < height; y++) for (let x = 0; x < width; x++)
+      data[i++] = Math.abs(x - width / 2) < 110 && Math.abs(y - height / 2) < 95
+        ? offset + 125 * z : ((x * 17 + y * 29 + offset + 301 * z) % 1601) - 800;
+    return { data, series: { ...series, id: 'window-repeat', pixelType: 'int16', dimensions: [width, height, 2] } };
+  };
+  const first = study(100), second = study(300);
+  const masked = { ...first, series: { ...first.series, paddingRange: [100, 100] } };
+  const base = { ...view, mode: 'source', windowCenter: 150, windowWidth: 800 };
+  const area = () => canvas.getContext('2d').getImageData(0, 0, canvas.width, canvas.height).data;
+  const supported = !!gl.getExtension('EXT_color_buffer_float');
+  const cases = [], expectedPasses = [];
+  const draw = (label, volume, changes, expectedPass, expectedCentre) => {
+    const v = { ...base, ...changes };
+    renderer.info.software = false;
+    renderer.render(canvas, volume, v);
+    const reference = area();
+    renderer.info.software = true;
+    renderer.render(canvas, volume, v);
+    const result = area(), program = gl.getParameter(gl.CURRENT_PROGRAM);
+    const location = gl.getUniformLocation(program, 'uSamplePass');
+    const pass = location === null ? 0 : gl.getUniform(program, location);
+    const differences = result.reduce((n, value, i) => n + Number(value !== reference[i]), 0);
+    const centre = result[4 * ((canvas.height >> 1) * canvas.width + (canvas.width >> 1))];
+    cases.push({ label, pass, differences, centre, expectedCentre, glError: gl.getError() });
+    expectedPasses.push(supported ? expectedPass : 0);
+  };
+  const grey = (value, centre, span) => Math.round(255 * Math.max(0, Math.min(1, (value - (centre - 0.5)) / (span - 1) + 0.5)));
+  try {
+    draw('first image', first, {}, 0, grey(100, 150, 800));
+    draw('changed window', first, { windowCenter: 200 }, 3, grey(100, 200, 800));
+    draw('whole-pixel pan', first, { pan: [2, -1] }, 2, grey(100, 150, 800));
+    draw('fractional pan', first, { pan: [2.25, -1.5] }, 0, grey(100, 150, 800));
+    draw('inverted at fractional origin', first, { pan: [2.25, -1.5], inverted: true }, 3, 255 - grey(100, 150, 800));
+    draw('zoom', first, { zoom: 1.14 }, 0, grey(100, 150, 800));
+    draw('next frame', first, { slice: 1 }, 0, grey(225, 150, 800));
+    draw('narrow window on next frame', first, { slice: 1, windowCenter: 225, windowWidth: 2 }, 3, 255);
+    draw('different source with same series ID', second, {}, 0, grey(300, 150, 800));
+    draw('same new source', second, {}, 3, grey(300, 150, 800));
+    draw('source padding under inversion', masked, { inverted: true }, 0, 0);
+    draw('sigmoid', first, { voiFunction: 'SIGMOID' }, 0, Math.round(255 / (1 + Math.exp(-4 * (100 - 150) / 800))));
+    draw('rotation and exact window', first, { rotation: 90, voiFunction: 'LINEAR_EXACT' }, 0, Math.round(255 * ((100 - 150) / 800 + 0.5)));
+    const failedStorage = [];
+    if (supported) for (const failure of ['framebuffer', 'texture']) {
+      const separate = new renderer.constructor(), context = separate.gl;
+      try {
+        separate.info.software = true;
+        separate.render(canvas, first, base);
+        const reference = area();
+        let attempts = 0;
+        if (failure === 'framebuffer') context.createFramebuffer = () => { attempts++; return null; };
+        else {
+          const upload = context.texImage2D;
+          context.texImage2D = function (...args) {
+            if (args[2] === context.R32F && args[8] === null) { attempts++; args[3] = -1; }
+            return upload.apply(this, args);
+          };
+        }
+        separate.render(canvas, first, base);
+        const differences = area().reduce((n, value, i) => n + Number(value !== reference[i]), 0);
+        separate.render(canvas, second, base);
+        const centre = area()[4 * ((canvas.height >> 1) * canvas.width + (canvas.width >> 1))];
+        failedStorage.push({ failure, attempts, differences, centre, glError: context.getError() });
+      } finally { context.getExtension('WEBGL_lose_context')?.loseContext(); }
+    }
+    return { name: 'Software redraw reuses exact filtered values and preserves source identity when optional storage fails',
+      passed: cases.every((c, i) => c.differences === 0 && c.glError === gl.NO_ERROR && c.pass === expectedPasses[i]
+        && Math.abs(c.centre - c.expectedCentre) <= 1) && failedStorage.every(c => c.attempts === 1 && c.differences === 0 && c.glError === gl.NO_ERROR
+          && Math.abs(c.centre - grey(300, 150, 800)) <= 1), supported, cases, failedStorage };
+  } finally {
+    renderer.info.software = software;
     renderer.setVisibleViews([]);
   }
 }

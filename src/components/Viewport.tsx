@@ -555,6 +555,8 @@ export function Viewport(props: ViewportProps) {
         density = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
         density.addEventListener('change', resize);
       }
+      // On first opening the layout already gives the pane its size. Its draw can use the next animation frame.
+      if (!sized.current && window.veacom?.web) { resizePane(element); return; }
       if (resizeState.frame !== null) return;
       resizeState.frame = requestAnimationFrame(() => { resizeState.frame = null; resizePane(element); });
     };

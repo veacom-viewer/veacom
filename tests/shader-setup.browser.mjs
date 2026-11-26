@@ -73,19 +73,29 @@ export async function verifyShaderSetup() {
     }
 
     const asyncInput = volume(Int16Array), checksBeforePreparation = linkChecks;
+    const programsBeforeFrame = count('createProgram');
+    await renderer.prepareSource(metadata);
+    record('A catalog without a pixel type waits for the decoded frame', count('createProgram') === programsBeforeFrame);
     holdCompletion = true;
-    const preparing = renderer.prepareSource(asyncInput);
+    const preparing = renderer.prepareSource({ ...metadata, pixelType: 'int16' });
+    const decoded = renderer.prepareSource(asyncInput);
+    record('The catalog and matching decoded frame link a single program', count('createProgram') === programsBeforeFrame + 1);
     if (parallel) {
-      record('Concurrent loads share one preparation promise', preparing === renderer.prepareSource(asyncInput));
+      record('Concurrent catalog and frame loads share one preparation promise', preparing === decoded);
       let settled = false; preparing.then(() => { settled = true; });
       for (let frame = 0; frame < 3; frame++) await new Promise(requestAnimationFrame);
       record('Animation frames continue while shader readiness is pending', !settled);
     }
     holdCompletion = false;
-    await preparing;
+    await Promise.all([preparing, decoded]);
     record('Preparation defers link validation until drawing', linkChecks === checksBeforePreparation);
     renderer.render(canvas, asyncInput, view);
     record('Prepared program is validated and draws exact pixels', linkChecks === checksBeforePreparation + 1 && exact());
+    const signed = { series: { ...metadata, pixelType: 'uint16' }, data: new Int16Array([-100, 0, 64, 255]) };
+    await renderer.prepareSource(signed.series);
+    renderer.render(canvas, signed, view);
+    record('Decoded signed values select the correct shader after an unsigned catalog hint',
+      pixels().every((value, i) => value === (i % 4 === 3 ? 255 : [0, 0, 64, 255][i >> 2])));
 
     const loss = gl.getExtension('WEBGL_lose_context');
     record('GPU context-loss probe is available', loss);
