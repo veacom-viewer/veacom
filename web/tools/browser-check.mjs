@@ -462,6 +462,7 @@ async function checkChosenStudy(browser, url, files, modality, frameCount) {
     const root = '2.25.302617644913925066835652647005517224101' + (modality === 'MR' ? '.10' : '');
     assert.deepEqual(opened, [{ patient: modality === 'CT' ? 'SYNTHETIC-SMOKE' : 'SYNTHETIC-OTHER', modality,
       instances: Array.from({ length: frameCount }, (_, i) => root + '.3.' + (i + 1)) }]);
+    console.log('Verified chosen study', JSON.stringify({ modality, frameCount, instances: opened[0].instances.length }));
   } finally { await page.close(); }
 }
 
