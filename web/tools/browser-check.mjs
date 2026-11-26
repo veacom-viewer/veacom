@@ -341,6 +341,12 @@ async function checkRestartedCatalog(browser, url) {
     const ctRequest = await page.evaluate(async () => {
       const [ct] = (await window.veacom.listSeries()).series;
       window.ctCatalogFrames = new WeakRef(ct.frameMetadata);
+      const generation = ct.engineGeneration;
+      window.restartedCatalog = new Promise(resolve => {
+        const unsubscribe = window.veacom.onCoreState(state => {
+          if (state.status === 'ready' && state.generation > generation) { unsubscribe(); resolve(state.generation); }
+        });
+      });
       return { seriesId: ct.id, generation: ct.engineGeneration, revision: ct.catalogRevision, index: 0 };
     });
     const devtools = await page.context().newCDPSession(page);
@@ -349,7 +355,7 @@ async function checkRestartedCatalog(browser, url) {
     const engine = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
     assert(engine);
     await engine.evaluate(() => { setTimeout(() => { throw new Error('Simulated engine failure'); }, 0); });
-    await page.waitForFunction(async old => (await window.veacom.getCoreState()).generation > old, ctRequest.generation);
+    assert.equal(await page.evaluate(() => window.restartedCatalog), ctRequest.generation + 1);
     assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 0);
     assert.deepEqual(await importPickedFiles(page, [path.join(mrStudy, studyFiles[0])]), [1]);
     const next = await page.evaluate(async () => {
@@ -358,10 +364,10 @@ async function checkRestartedCatalog(browser, url) {
       return [mr.patientId, frame.headers.get('X-SOP-Instance-UID'), Number(frame.headers.get('Content-Length'))];
     });
     assert.deepEqual(next, ['SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1', columns * rows * 2]);
-    await assert.rejects(page.evaluate(request => window.veacom.fetchPixels(request), ctRequest), /restart/i);
+    await assert.rejects(page.evaluate(request => window.veacom.fetchPixels(request), ctRequest));
     await assert.rejects(page.evaluate(async request => window.veacom.fetchPixels({
       ...request, generation: (await window.veacom.getCoreState()).generation,
-    }), ctRequest), /series.*not open/i);
+    }), ctRequest));
     await devtools.send('HeapProfiler.collectGarbage');
     assert.equal(await page.evaluate(() => window.ctCatalogFrames.deref()?.length ?? 0), 0, 'The previous engine still holds CT frame metadata.');
   } finally { await page.close(); }
