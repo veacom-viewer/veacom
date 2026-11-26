@@ -31,19 +31,19 @@ const ANGLES = ['mLPFA', 'mLDFA', 'aLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA'], LENGT
 async function main() {
   const split = process.argv.indexOf('--'), own = split < 0 ? process.argv.slice(2) : process.argv.slice(2, split), switches = split < 0 ? [] : process.argv.slice(split + 1);
   assert(own[0] && own[1], 'Pass LONGLEG_STUDY MENDELEY_FILMS [OUTPUT_DIR] or --click-budgets OUTPUT_DIR.');
-  if (own[0] === '--click-budgets') {
+  if (own[0] === '--click-budgets' || own[0] === '--two-cuts') {
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-budget-film-'));
     try {
       const study = path.join(scratch, 'study');
       execFileSync(process.execPath, [path.join(__dirname, 'fixtures/make-longleg-study.mjs'), study, '--variants=ips-only']);
-      await checkStudy(study, null, path.resolve(own[1]), switches);
+      await checkStudy(study, null, path.resolve(own[1]), switches, own[0] === '--two-cuts');
     } finally { await fs.rm(scratch, { recursive: true, force: true }); }
     return;
   }
   await checkStudy(path.resolve(own[0]), path.resolve(own[1]), path.resolve(own[2] || 'test-results/deformity-plan'), switches);
 }
 
-async function checkStudy(study, mendeley, output, switches) {
+async function checkStudy(study, mendeley, output, switches, twoCuts = false) {
   const manifest = JSON.parse(await fs.readFile(path.join(study, 'manifest.json'), 'utf8'));
   assert.equal(manifest.generator, 'veacom-longleg-v1', 'Run on the films made by tools/fixtures/make-longleg-study.mjs.');
   await fs.mkdir(output, { recursive: true });
@@ -127,6 +127,43 @@ async function checkStudy(study, mendeley, output, switches) {
       await fs.writeFile(path.join(output, 'deformity-plan.json'), JSON.stringify({ checks, budgets: budget.results }, null, 2) + '\n');
     };
     await open(ips.description);
+    if (twoCuts) {
+      const points = manifest.legs[0].landmarks;
+      await placeAll(points);
+      await panel.locator('[data-action="deformity-bone"]', {hasText:'Tibia'}).click();
+      await panel.locator('[data-action="deformity-cut"]').click();
+      await click(manifest.osteotomy.cut[0]); await click(manifest.osteotomy.cut[1]);
+      const field = panel.locator('[data-action="deformity-angle"]');
+      await field.fill(String(manifest.osteotomy.angle));
+      await panel.getByTestId('deformity-planned').waitFor();
+      const oneCut = await values('[data-testid="deformity-planned"]');
+      near(oneCut.limbLength, manifest.osteotomy.expected.limbLength * ips.mmPerPixel / manifest.objectMm, LENGTH, 'One cut length');
+      const [cx,cy] = points.femoralShaftDistal, hinge = [cx-55,cy];
+      await panel.locator('[data-action="deformity-cut-bone"]', {hasText:'Femur'}).click();
+      await panel.locator('[data-action="deformity-cut-add"]').click();
+      await click([cx+55,cy]); await click(hinge);
+      await field.fill('5');
+      const layer = page.getByTestId('deformity-fragment');
+      await page.waitForFunction(()=>document.querySelector('[data-testid="deformity-fragment"]')?.dataset.cutCount==='2');
+      await page.waitForFunction(()=>document.querySelectorAll('[data-testid="deformity-cut-summary"] tbody tr').length===2);
+      const rotate = ([x,y],[a,b],deg) => {
+        const t=deg*Math.PI/180;
+        return [a+(x-a)*Math.cos(t)-(y-b)*Math.sin(t),b+(x-a)*Math.sin(t)+(y-b)*Math.cos(t)];
+      };
+      const ankle = rotate(rotate(points.ankleCentre,manifest.osteotomy.hinge,manifest.osteotomy.angle),hinge,5);
+      const length = Math.hypot(ankle[0]-points.hipCentre[0],ankle[1]-points.hipCentre[1])*ips.mmPerPixel;
+      const both = await values('[data-testid="deformity-planned"]');
+      near(both.limbLength,length,LENGTH,'Two cuts in physical order');
+      assert.equal(await layer.getAttribute('data-label'),'Simulated');
+      const pane=page.locator('.viewport-cell.is-active canvas[data-renderer]').first();
+      const renderer=await pane.getAttribute('data-renderer');
+      if(process.env.VEACOM_REQUIRE_T4_PLAN==='1') assert.match(renderer,/NVIDIA.*T4/i);
+      await shot('two-cuts');
+      check('The displayed two-cut plan retains the predicted hip-to-ankle length',{renderer,expectedMm:length,measuredMm:both.limbLength,cuts:2});
+      assert.deepEqual(errors,[]);
+      await fs.writeFile(path.join(output,'two-cuts.json'),JSON.stringify({renderer,checks},null,2));
+      return;
+    }
     if (!mendeley) {
       await measureKnee(manifest.legs[0].landmarks.kneeCentre);
       await saveResults();

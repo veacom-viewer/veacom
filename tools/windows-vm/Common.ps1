@@ -11,7 +11,7 @@ if ($DeadlineText -notmatch '(Z|[+-]\d\d:\d\d)$') { throw 'The fixed VM deadline
 $script:StopDeadline = [DateTimeOffset]::Parse($DeadlineText, [Globalization.CultureInfo]::InvariantCulture).ToUniversalTime()
 $script:SafetyMargin = [TimeSpan]::FromMinutes(5)
 # The only variables a desktop-check plan may set for its steps.
-$script:PlanEnvironment = @('VEACOM_SMOKE_EXECUTABLE', 'VEACOM_SMOKE_RENDERER', 'VEACOM_TEST_URL', 'VEACOM_CORE_PATH', 'VEACOM_DEV_URL')
+$script:PlanEnvironment = @('VEACOM_SMOKE_EXECUTABLE', 'VEACOM_SMOKE_RENDERER', 'VEACOM_TEST_URL', 'VEACOM_CORE_PATH', 'VEACOM_DEV_URL', 'VEACOM_REQUIRE_T4_PLAN')
 
 function Assert-TimeRemaining([int]$Minutes = 1) {
     if ([DateTimeOffset]::UtcNow.AddMinutes($Minutes) -ge ($script:StopDeadline - $script:SafetyMargin)) {

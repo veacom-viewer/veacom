@@ -34,9 +34,14 @@ Add-Check 'video-encoder' @('tools\check-video-encoder.cjs', (Join-Path $Output 
 Add-Check 'desktop-smoke' @('tools\desktop-smoke.cjs', $Series, (Join-Path $Output 'desktop-smoke')) $OnPackage 8 $true
 Add-Check 'click-budget' @('tools\check-click-budget.cjs', $Study, (Join-Path $Output 'click-budget')) $OnPackage 12 $true
 Add-Check 'deformity-budgets' @('tools\check-deformity-plan.cjs', '--click-budgets', (Join-Path $Output 'deformity-plan')) $OnSource 5
+Add-Check 'two-cut-plan' @('tools\check-deformity-plan.cjs', '--two-cuts', (Join-Path $Output 'two-cut-plan')) $OnSource 5
+$script:Steps[-1].Env['VEACOM_REQUIRE_T4_PLAN'] = '1'
 Add-Check 'budget-coverage' @('tools\check-budget-coverage.cjs', $Output) $OnPackage 2
 Add-Check 'hardware-rendering' @('tools\check-software-rendering.cjs', $Series, (Join-Path $Output 'hardware-rendering'), '--expect', 'hardware') $OnPackage 6 $true
 Add-Check 'padding-t4' @('tools\check-padding-gpu.mjs', (Join-Path $Output 'padding'), 't4') $OnPackage 8 $true
+Add-Check 'patient-switch' @('tools\browser-bench\patient-switch-frames.mjs', 'web\site\public', (Join-Path $Output 'patient-switch'), 't4') @('pnpm-install') 5 $true
+Add-Check 'window-curves' @('tools\browser-bench\window-curve-capture.mjs', 'web\site\public', (Join-Path $Output 'window-curves'), 't4') @('pnpm-install') 5 $true
+Add-Check 'mpr-point-response' @('tools\check-packaged-parity.cjs', $Packaged, (Join-Path $Output 'mpr-point-response')) $OnPackage 8 $true
 Add-Check 'gpu-startup' @('tools\check-gpu-startup.cjs', $Study, (Join-Path $Output 'gpu-startup.json')) $OnSource 6
 Add-Check 'ui-windows' @('tools\windows-vm\ui-windows-checks.cjs', $Packaged, $Study, (Join-Path $Output 'ui-windows')) $OnPackage 8
 $PlanFile = Join-Path $Output 'plan.json'
