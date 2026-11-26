@@ -1,64 +1,11 @@
-name: Capture both patients when their labels commit
+name: Repeat the original patient switch checks before collecting diagnostics
 on: workflow_dispatch
 permissions:
   contents: read
   actions: read
 jobs:
-  site:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1; reads packageManager
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-          cache: pnpm
-          cache-dependency-path: |
-            pnpm-lock.yaml
-            web/site/pnpm-lock.yaml
-      - name: Rust toolchains for WebAssembly (web/build.ps1 pins both)
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal --component clippy --target wasm32-unknown-unknown
-          rustup toolchain install nightly-2026-11-01 --profile minimal --component rust-src --target wasm32-unknown-unknown
-          # Cargo decides whether the standard library it builds (-Z build-std) is current from its source files' times,
-          # and a fresh install dates them now. Dated to the nightly's own day, the cached build below stays current.
-          find "$(rustc +nightly-2026-11-01 --print sysroot)/lib/rustlib/src" -exec touch -h -d '2026-11-01 00:00:00 UTC' {} +
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          # The one-thread engine build, and wasm-bindgen in ~/.cargo/bin (cached by default).
-          workspaces: . -> web/engine/target
-      # The threaded build compiles the standard library itself (-Z build-std), which rust-cache's cleanup does not
-      # know and deletes, so every run rebuilt std and every crate after it. A plain cache keeps the whole folder.
-      - name: Threaded engine build cache
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: web/engine/target-threads
-          key: wasm-threads-${{ runner.os }}-${{ hashFiles('Cargo.lock', '.cargo/config.toml', 'web/build.ps1', 'web/engine/Cargo.toml', 'native/Cargo.toml') }}
-          restore-keys: wasm-threads-${{ runner.os }}-
-      - run: cargo +1.99.1 install wasm-bindgen-cli --version 0.2.130 --locked
-      # Clippy for the engine as the page runs it, on wasm32: one-thread and threaded builds (workspace lints in
-      # Cargo.toml). The native build is linted in the engine job.
-      - name: Clippy for the WebAssembly engine
-        env:
-          CARGO_TARGET_DIR: web/engine/target
-        run: |
-          cargo +1.99.1 clippy --locked --release --lib -p veacom-web-engine --target wasm32-unknown-unknown -- -D warnings
-          cargo +1.99.1 clippy --locked --release --lib -p veacom-web-engine --target wasm32-unknown-unknown --features threads -- -D warnings
-      - run: pwsh -NoProfile -File web/build.ps1
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run build:browser
-      - run: node web/site/prepare.mjs
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: viewer-site-${{ github.run_id }}
-          path: web/site/public
-          retention-days: 14
   images:
     runs-on: ubuntu-24.04
-    needs: site
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -67,7 +14,7 @@ jobs:
           - { case: released, run: '45819275843' }
           - { case: patient, run: '45819478935' }
           - { case: pair, run: '45831724023' }
-          - { case: integrated, run: '' }
+          - { case: integrated, run: '45850314137' }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -89,7 +36,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/images"
-          for i in 1 2 3 4; do
+          for i in 1 2 3 4 5 6 7 8; do
             rc=0
             VEACOM_SWITCH_OUT="$RUNNER_TEMP/images/trial-$i" node web/tools/browser-check.mjs > "$RUNNER_TEMP/images/trial-$i.log" 2>&1 || rc=$?
             echo "$rc" > "$RUNNER_TEMP/images/trial-$i.exit"
