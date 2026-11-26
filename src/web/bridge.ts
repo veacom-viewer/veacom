@@ -201,7 +201,6 @@ export function createWebBridge(): DesktopBridge {
   let inFlight: number | null = null, dispatching = false;
   const QUICK: ReadonlySet<string> = new Set(['frame', 'tags', 'list']);
   function dispatch(): void {
-    dispatching = false;
     if (!worker || inFlight !== null || !queue.length) return;
     const first = queue.findIndex(item => item.request.op !== 'volume');
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
@@ -210,7 +209,11 @@ export function createWebBridge(): DesktopBridge {
     worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
-  const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
+  const dispatchSoon = () => {
+    if (dispatching) return;
+    dispatching = true;
+    setTimeout(() => { dispatching = false; dispatch(); });
+  };
 
   /** Ends the engine Worker and its helpers, and forgets what was waiting for them. */
   function stop(): void {
@@ -310,7 +313,8 @@ export function createWebBridge(): DesktopBridge {
       if (request.op === 'import') releaseWhenIdle = false;
       queue.push({ id, request });
       signal?.addEventListener('abort', () => abandon(id, signal.reason), { once: true });
-      dispatchSoon();
+      if (request.op === 'frame') dispatch();
+      else dispatchSoon();
     });
   }
 
