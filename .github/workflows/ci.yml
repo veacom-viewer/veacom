@@ -14,7 +14,7 @@ on:
         description: Pairs per command timing scenario
         type: choice
         default: '8'
-        options: ['4', '8', '12']
+        options: ['1', '4', '8', '12']
       exercise:
         description: Measure opening the three planes or scrolling within them
         type: choice
@@ -121,7 +121,7 @@ jobs:
           retention-days: 14
   recording:
     needs: mpr
-    if: always() && inputs.exercise == 'transition' && (needs.mpr.result == 'success' || inputs.captured_run != '')
+    if: always() && (inputs.exercise == 'transition' || (inputs.exercise == 'visible-paging' && inputs.rounds == '1')) && (needs.mpr.result == 'success' || inputs.captured_run != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

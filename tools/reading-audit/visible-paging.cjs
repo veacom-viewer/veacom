@@ -114,6 +114,17 @@ async function measure(page, plane, pair, build) {
     for (const [index, suffix] of [[0,'initial'],[frames.length-1,'final']])
       await fs.writeFile(path.join(output,build+'-'+plane+'-'+suffix+'.jpg'),Buffer.from(frames[index].jpeg,'base64'));
   }
+  if (pairs === 1 && plane === 'sagittal') {
+    const directory = path.join(output,build);
+    await fs.mkdir(directory,{recursive:true});
+    const captured = [];
+    for (const [index,f] of frames.entries()) {
+      const file = String(index).padStart(4,'0')+'.jpg';
+      await fs.writeFile(path.join(directory,file),Buffer.from(f.jpeg,'base64'));
+      captured.push({file,ms:f.ts-times[0]});
+    }
+    await fs.writeFile(path.join(directory,'captured.json'),JSON.stringify(captured));
+  }
   return { plane, pair, build, steps, frames:observed, box };
 }
 
