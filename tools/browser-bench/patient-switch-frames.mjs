@@ -82,6 +82,10 @@ async function observe(browser, sources, isolated, language) {
     await page.getByTestId('welcome-open-files').click();
     await (await picker).setFiles(sources.map(s=>s.file));
     await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().series.length===2);
+    for(const choice of [language==='tr'?'en':'tr',language]){
+      await page.getByTestId('tool-language').click();
+      await page.getByTestId('language-'+choice).click();
+    }
     assert.equal(await page.locator('html').getAttribute('lang'),language);
     const series=await page.evaluate(async()=>(await window.veacom.listSeries()).series.map(s=>({id:s.id,patient:s.patientId,name:s.patientName,frames:s.frameMetadata.map(f=>f.sopInstanceUid)})));
     const ids={};
