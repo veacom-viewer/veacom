@@ -37,6 +37,8 @@ Add-Check 'deformity-budgets' @('tools\check-deformity-plan.cjs', '--click-budge
 Add-Check 'budget-coverage' @('tools\check-budget-coverage.cjs', $Output) $OnPackage 2
 Add-Check 'hardware-rendering' @('tools\check-software-rendering.cjs', $Series, (Join-Path $Output 'hardware-rendering'), '--expect', 'hardware') $OnPackage 6 $true
 Add-Check 'padding-t4' @('tools\check-padding-gpu.mjs', (Join-Path $Output 'padding'), 't4') $OnPackage 8 $true
+Add-Check 'patient-switch' @('tools\browser-bench\patient-switch-frames.mjs', 'web\site\public', (Join-Path $Output 'patient-switch'), 't4') @('pnpm-install') 5 $true
+Add-Check 'window-curves' @('tools\browser-bench\window-curve-capture.mjs', 'web\site\public', (Join-Path $Output 'window-curves'), 't4') @('pnpm-install') 5 $true
 Add-Check 'gpu-startup' @('tools\check-gpu-startup.cjs', $Study, (Join-Path $Output 'gpu-startup.json')) $OnSource 6
 Add-Check 'ui-windows' @('tools\windows-vm\ui-windows-checks.cjs', $Packaged, $Study, (Join-Path $Output 'ui-windows')) $OnPackage 8
 $PlanFile = Join-Path $Output 'plan.json'
