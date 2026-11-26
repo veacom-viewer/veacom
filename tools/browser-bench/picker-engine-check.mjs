@@ -108,6 +108,11 @@ try {
       await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
       row.displayedIndex = Number(await pane.getAttribute('data-slice'));
       assert.equal(row.frames[row.displayedIndex].uid,root+'.3.18');
+      const labels=page.locator('.orientation-labels').first();
+      await labels.waitFor();
+      await page.keyboard.press('F12');
+      await labels.waitFor({state:'hidden'});
+      row.imageAnnotations='off';
       await page.evaluate(() => new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
       row.scales=[];
       for(const [sample,height] of [['native',512],['larger',640],['half',256],['native-again',512]]){
