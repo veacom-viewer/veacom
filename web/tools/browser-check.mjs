@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -761,7 +761,26 @@ async function checkUnacknowledgedFiles(page) {
 
 const browser = await chromium.launch();
 const failures = [];
+const repeats = [];
 try {
+  for (const isolated of [true, false]) {
+    const server = await serve(isolated);
+    try {
+      for (let i = 0; i < 10; i++) {
+        const trial = { isolated, i };
+        try {
+          await checkDropDuringStartup(browser, 'http://127.0.0.1:' + server.address().port + '/');
+          trial.ok = true;
+        } catch (error) {
+          trial.ok = false;
+          trial.failure = error.stack;
+          failures.push(trial.failure);
+        }
+        repeats.push(trial);
+        writeFileSync('browser-drops.json', JSON.stringify(repeats, null, 2));
+      }
+    } finally { server.close(); }
+  }
   for (const isolated of [true, false]) {
     const server = await serve(isolated);
     const page = await browser.newPage();
@@ -836,7 +855,7 @@ try {
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, landmark model on ${model.threads} thread(s), ${errors.length} errors`);
     } catch (error) {
-      failures.push(`${mode}: ${error.message}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
+      failures.push(`${mode}: ${error.stack}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
     } finally {
       await page.close();
       server.close();
