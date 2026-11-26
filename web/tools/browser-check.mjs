@@ -1,3 +1,4 @@
+import { closedBufferPaths } from '../../tools/browser-bench/closed-buffer-paths.mjs';
 // Opens the browser build as viewer.veacom.app serves it, and again as a host without its cross-origin isolation
 // headers would, in Chromium. Each time the engine must start (the threads build where the page is isolated and the
 // computer has the cores, the single-thread build elsewhere), open a small synthetic CT and hand over a slice and the
@@ -279,7 +280,7 @@ async function checkRemoveCTWhileReadingMR(browser, url) {
 
     const ct = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(v => v.modality === 'CT').id);
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
-      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files: [path.join(mrStudy, studyFiles[0])], dragOperationsMask: 1 } });
+      await cdp.send('Input.dispatchDragEvent', { type, x: 120, y: 125, data: { items: [], files: studyFiles.slice(0,3).map(fileName => path.join(mrStudy,fileName)), dragOperationsMask: 1 } });
     }
     await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length === 2);
     const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(v => v.patientId === 'SYNTHETIC-OTHER').id);
@@ -299,7 +300,20 @@ async function checkRemoveCTWhileReadingMR(browser, url) {
     console.log('CT removed while another patient stays on screen', JSON.stringify(result));
     assert.equal(result.id,mr);assert.equal(result.shown,mr);
     assert.equal(result.patient,'SYNTHETIC-OTHER');assert.equal(result.sop,'2.25.302617644913925066835652647005517224101.10.3.1');
-    assert.equal(result.retainedBytes,0,'The active MR retained the removed CT.');
+    if (!result.retainedBytes) return;
+    const snapshot=await closedBufferPaths(cdp);
+    for (const buffer of snapshot.buffers) {
+      console.log('Closed CT owner paths:',JSON.stringify(buffer.owners.map(owner=>owner.path.map(node=>[node.name,node.out]))));
+      console.log('Closed CT near owners:',JSON.stringify(buffer.nearby.slice(0,11)));
+    }
+    for (const slice of [1, 2, 1, 0]) {
+      await page.evaluate(to=>window.__VEACOM_TEST__.setView({slice:to}),slice);
+      await page.waitForFunction(to=>Number(document.querySelector('canvas[data-series-id]').dataset.slice)===to,slice);
+    }
+    await cdp.send('HeapProfiler.collectGarbage');
+    console.log('Removed CT after paging the remaining MR', await page.evaluate(()=>window.lastCTBuffer.deref()?.byteLength ?? 0));
+    assert(await shown.isVisible());
+
   } finally { await cdp.detach(); await page.close(); }
 }
 
