@@ -3,5 +3,6 @@ import { pinned } from './pinned.mjs';
 
 export default pinned('bluelight', {
   open: { type: 'drop' },
+  navigationDrop: { control: '#openFile', bodyDropHandler: true, firstSlice: 0 },
   windowLevel: { button: 'left', select: '#WindowRevision' },
 });

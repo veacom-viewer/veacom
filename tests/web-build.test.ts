@@ -1,11 +1,16 @@
 // The browser build's own pieces (src/web): its MP4 writer against the desktop's, its ZIP, and its Trusted Types rule.
 import assert from 'node:assert/strict';
+import { openAsBlob } from 'node:fs';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { createRequire } from 'node:module';
 import { it } from 'node:test';
 import glyphs from '../src/assets/glyphs.json';
 import { checkSample, mp4Header } from '../src/web/mp4';
 import { iconMarkup, ownScript } from '../src/web/trusted-types';
 import { zipStored } from '../src/web/zip';
+import { readStoredZip } from './storedZip';
 
 const desktop = createRequire(import.meta.url)('../electron/mp4.cjs');
 const { readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
@@ -14,13 +19,37 @@ it('bounds the total bytes read ahead and preserves file indices when reads are 
   const file = new File([new Uint8Array(64 * 1024)], 'slice.dcm');
   let largeReads = 0;
   const large = { size: 17 * 1024 * 1024, slice: () => { largeReads++; return file; } };
-  const heads: (Uint8Array | undefined)[] = await readHeads([{ file: large }, ...Array(1100).fill({ file })]);
-  assert.equal(heads.length, 1101);
-  assert.equal(heads[0], undefined);
-  assert.equal(largeReads, 0);
-  assert.equal(heads[1024]?.length, 64 * 1024);
-  assert.equal(heads[1025], undefined);
-  assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+  const files = [{ file: large }, ...Array(1100).fill({ file })];
+  const batches: number[] = [];
+  for (const wait of [undefined, (offset: number) => { batches.push(offset); return Promise.resolve(); }]) {
+    const heads: (Uint8Array | undefined)[] = await readHeads(files, wait);
+    assert.equal(heads.length, 1101);
+    assert.equal(heads[0], undefined);
+    assert.equal(largeReads, 0);
+    assert.equal(heads[1024]?.length, 64 * 1024);
+    assert.equal(heads[1025], undefined);
+    assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+  }
+  assert.deepEqual(batches, Array.from({ length: Math.ceil(files.length / 16) }, (_, i) => i * 16));
+});
+
+it('returns the exact prefix for each source across batches, empty files and a file changed on disk', async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), 'veacom-file-heads-'));
+  try {
+    const changedPath = path.join(directory, 'changed');
+    await writeFile(changedPath, 'old');
+    const changed = await openAsBlob(changedPath);
+    await writeFile(changedPath, 'new and longer');
+    const bytes = Array.from({ length: 270 }, (_, index) => new Uint8Array(index % 23 === 0 ? 65541 : index).fill(index % 251));
+    const files = bytes.map(data => ({ file: new Blob([data]) }));
+    files[17] = { file: changed };
+    files[64] = { file: new Blob() };
+    const heads: (Uint8Array | undefined)[] = await readHeads(files);
+    assert.equal(heads.length, files.length);
+    for (const [index, expected] of bytes.entries()) {
+      assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, 65536), String(index));
+    }
+  } finally { await rm(directory, { recursive: true, force: true }); }
 });
 
 it('writes the same MP4 header as the desktop, in both layouts', () => {
@@ -40,21 +69,7 @@ it('stores files in a ZIP that reads back byte for byte', async () => {
     { name: 'Görüntü 1.png', bytes: new Uint8Array() },
   ];
   const archive = new Uint8Array(await zipStored(files).arrayBuffer());
-  const view = new DataView(archive.buffer);
-  const end = archive.length - 22;
-  assert.equal(view.getUint32(end, true), 0x06054b50);
-  assert.equal(view.getUint16(end + 10, true), files.length);
-  // Walk the central directory and read each file through its local header.
-  let at = view.getUint32(end + 16, true);
-  for (const file of files) {
-    assert.equal(view.getUint32(at, true), 0x02014b50);
-    const nameLength = view.getUint16(at + 28, true), local = view.getUint32(at + 42, true);
-    assert.equal(new TextDecoder().decode(archive.subarray(at + 46, at + 46 + nameLength)), file.name);
-    const start = local + 30 + view.getUint16(local + 26, true), size = view.getUint32(local + 18, true);
-    assert.equal(view.getUint16(local + 8, true), 0);
-    assert.deepEqual(archive.subarray(start, start + size), file.bytes);
-    at += 46 + nameLength;
-  }
+  assert.deepEqual(readStoredZip(archive), files);
 });
 
 it('lets through every toolbar icon and nothing that could run', () => {

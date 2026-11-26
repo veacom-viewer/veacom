@@ -371,6 +371,9 @@ pub struct Series {
     pub patient_key: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub previous_pet_id: Option<String>,
+    /// Other catalog IDs a reconstruction's sources could have had before a phase or run was regrouped.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub legacy_grid_ids: Vec<String>,
     /// Where `patient_key` joins an ID without an issuer across studies (`crate::patient::patient_keys`): the key
     /// earlier builds made, scoped to the study. PET measurements those builds kept are found by it.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -434,6 +437,8 @@ pub struct Series {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub frame_metadata: Vec<FrameMetadata>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cine: Option<crate::cine::CineTiming>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub padding_range: Option<[f64; 2]>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub segmentation: Option<Segmentation>,
@@ -466,6 +471,7 @@ impl Series {
 pub struct Frame {
     pub source: Arc<SourceFile>,
     pub index: u32,
+    pub cine: Option<Arc<crate::cine::FileCine>>,
     pub sop_uid: String,
     pub instance_number: i32,
     pub geometry: FrameGeometry,

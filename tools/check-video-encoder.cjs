@@ -61,18 +61,34 @@ async function exportAndDecode({ javascript, width, height, slices, fps, grays, 
   const bytes = await window.__readFile(destination);
   const video = document.createElement('video');
   video.muted = true; video.preload = 'auto';
+  document.body.replaceChildren(video);
+  // A completed seek can precede composition. Sample the video frame whose media timestamp identifies the slice.
+  const presented = slice => new Promise(resolve => {
+    const observe = (_now, frame) => {
+      if (Math.round(frame.mediaTime * fps) === slice) resolve(frame.mediaTime);
+      else video.requestVideoFrameCallback(observe);
+    };
+    video.requestVideoFrameCallback(observe);
+  });
+  const firstFrame = presented(0);
+  const loaded = new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error(`The video element rejected the file: ${video.error?.message}`)); });
   video.src = URL.createObjectURL(new Blob([bytes], { type: 'video/mp4' }));
-  await new Promise((resolve, reject) => { video.onloadeddata = resolve; video.onerror = () => reject(new Error(`The video element rejected the file: ${video.error?.message}`)); });
+  await loaded;
   const reading = document.createElement('canvas');
   reading.width = video.videoWidth; reading.height = video.videoHeight;
   const reader = reading.getContext('2d', { willReadFrequently: true });
   const pixel = (x, y) => [...reader.getImageData(x, y, 1, 1).data].slice(0, 3);
   const frames = [];
   for (const slice of [0, 7, 15, slices - 1]) {
-    video.currentTime = (slice + 0.5) / fps;
-    await new Promise(resolve => { video.onseeked = resolve; });
+    let mediaTime;
+    if (slice === 0) mediaTime = await firstFrame;
+    else {
+      const frame = presented(slice), seek = new Promise(resolve => { video.onseeked = resolve; });
+      video.currentTime = (slice + 0.5) / fps;
+      [mediaTime] = await Promise.all([frame, seek]);
+    }
     reader.drawImage(video, 0, 0);
-    frames.push({ slice, grays: grays.map((_, index) => pixel(45 + index * 70, 80)), colors: colors.map((_, index) => pixel(60 + index * 100, 180)),
+    frames.push({ slice, mediaTime, grays: grays.map((_, index) => pixel(45 + index * 70, 80)), colors: colors.map((_, index) => pixel(60 + index * 100, 180)),
       marker: Array.from({ length: slices }, (_, index) => pixel(20 + index * 20, 290)[0]), overlay: pixel(615, 20), padding: pixel(width, 100) });
   }
   return { destination, milliseconds, size: [video.videoWidth, video.videoHeight], duration: video.duration, frames };
@@ -119,7 +135,7 @@ async function main() {
   const keyFrames = file.readUInt32BE(file.indexOf('stss') + 8);
   if (keyFrames < 3) failures.push(`The video should have a key frame every ${2 * FPS} frames, got ${keyFrames} in ${SLICES}.`);
   const summary = { keyFrames, encoderProfile: file[config + 5], level: file[config + 7], bytes: file.length, milliseconds: result.milliseconds,
-    noGpu, size: result.size, duration: result.duration, failures };
+    noGpu, size: result.size, duration: result.duration, sampledFrames: result.frames.map(({ slice, mediaTime }) => ({ slice, mediaTime })), failures };
   fs.writeFileSync(path.join(output, noGpu ? 'video-no-gpu.json' : 'video.json'), `${JSON.stringify(summary, null, 2)}\n`);
   console.log(JSON.stringify(summary));
   if (failures.length) throw new Error(failures.slice(0, 12).join('\n'));

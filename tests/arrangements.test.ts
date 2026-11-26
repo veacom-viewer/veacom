@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose, assertFields } from './support';
-import { deriveKept, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type Plan } from '../src/arrangements';
+import { deriveKept, match, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type Plan, alignmentPair } from '../src/arrangements';
 import { BUILTIN_ARRANGEMENTS, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP, SIDE_BY_SIDE } from '../src/arrangements/builtin';
 import { findRole, ROLE_RANKS } from '../src/arrangements/roles';
 import { isProjection, PROJECTION_STEPS } from '../src/imaging/geometry';
@@ -203,6 +203,21 @@ describe('the PET follow-up screen', () => {
     assert.equal(match([PET_FOLLOW_UP], 'open', { series: current, session: [january, october, psma, unknown] })?.roles.prior.id, 'october');
     const anonymous = { ...ac, patientId: '', patientName: '' };
     assert.equal(match([PET_FOLLOW_UP], 'open', { series: [anonymous], session: [{ ...october, patientId: '', patientName: '' }] }), null);
+  });
+  it('aligns the prior to this study by their CTs, or by the PETs where one study has no CT', () => {
+    assert.deepEqual(PET_FOLLOW_UP.align, { role: 'prior', to: 'pet', by: 'CT' });
+    const before = prior('before'), priorCt = series({ id: 'prior-ct', studyUid: 'prior', studyDate: '19991001', frameOfReferenceUid: 'prior-frame' });
+    const session = [...current, before, priorCt], plan = match([PET_FOLLOW_UP], 'open', { series: current, session })!;
+    const pair = alignmentPair(plan, session)!;
+    assert.deepEqual([pair.fixed.id, pair.moving.id], ['ct', 'prior-ct'], 'this study\'s CT under, the prior\'s over it');
+    const noCt = alignmentPair(plan, [...current, before])!;
+    assert.deepEqual([noCt.fixed.id, noCt.moving.id], ['ac', 'before']);
+    // A prior in this study's own frame needs no alignment; nor does an arrangement that asks for none.
+    assert.equal(alignmentPair({ ...plan, roles: { ...plan.roles, prior: prior('same-frame', { frameOfReferenceUid: 'frame' }) } }, session), null);
+    assert.equal(alignmentPair(match([PET_CT], 'open', { series: current })!, current), null);
+    // A kept variant keeps the alignment.
+    const kept = withKept({ 'pet-follow-up': { grid: [1, 2], panes: [{ role: 'pet' }, { role: 'prior' }] } }).find(item => item.id === 'pet-follow-up')!;
+    assert.deepEqual(kept.align, PET_FOLLOW_UP.align);
   });
   it('opens by itself only when kept, and then only with a prior PET of the same patient, earlier and loaded', () => {
     const followUp = readKept(JSON.stringify({ 'pet-follow-up': { grid: PET_FOLLOW_UP.grid, panes: PET_FOLLOW_UP.panes } }));

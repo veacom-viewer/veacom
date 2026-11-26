@@ -13,7 +13,7 @@ try {
   if (new URLSearchParams(location.search).has('no-parallel')) {
     const original = WebGL2RenderingContext.prototype.getExtension;
     WebGL2RenderingContext.prototype.getExtension = function (name) {
-      return name === 'KHR_parallel_shader_compile' ? null : original.call(this, name);
+      return name === 'KHR_parallel_shader_compile' || name === 'OES_texture_float_linear' ? null : original.call(this, name);
     };
   }
   const setup = await verifyShaderSetup();

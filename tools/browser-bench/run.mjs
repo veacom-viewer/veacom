@@ -16,7 +16,7 @@ const { values: options } = parseArgs({ args: process.argv.slice(3), strict: tru
   viewers: { type: 'string', default: 'veacom' }, studies: { type: 'string', default: 'ct-300' }, rounds: { type: 'string', default: '5' },
   warmup: { type: 'string', default: '1' }, out: { type: 'string' }, veacom: { type: 'string' }, base: { type: 'string' }, aa: { type: 'boolean', default: false },
   rates: { type: 'string', default: '30,60,120' }, width: { type: 'string', default: '1280' }, height: { type: 'string', default: '800' },
-  scenarios: { type: 'string', default: 'open,paging,wl' },
+  scenarios: { type: 'string', default: 'open,paging,wl' }, 'from-navigation': { type: 'boolean', default: false },
 } });
 const electron = createRequire(import.meta.url)('electron');
 const git = (...args) => { try { return execFileSync('git', args, { cwd: repository, encoding: 'utf8' }).trim(); } catch { return null; } };
@@ -26,6 +26,7 @@ async function viewerList() {
   const list = [];
   for (const name of options.viewers.split(',').filter(Boolean)) {
     const adapter = (await import(pathToFileURL(path.join(here, 'viewers', `${name}.mjs`)).href)).default;
+    if (options['from-navigation'] && !adapter.navigationDrop) throw new Error(`${name} has no verified opening control for --from-navigation. Choose veacom or bluelight.`);
     list.push({ id: name, adapter: name, module: adapter, serveWith: name === 'veacom' ? { dist: path.resolve(options.veacom ?? path.join(repository, 'dist-web')) } : {} });
   }
   // The same build twice measures the run's own noise; a base build makes it an A/B of two VEAcom versions.
@@ -60,6 +61,7 @@ function runTrial(spec) {
   });
 }
 
+const viewers = await viewerList();
 const outDir = path.resolve(options.out ?? path.join(here, 'results', new Date().toISOString().replace(/[:.]/g, '-')));
 // A run's folder holds that run alone: an earlier run's trials would be pooled into this one's medians.
 if (fs.existsSync(path.join(outDir, 'run.json')) || fs.existsSync(path.join(outDir, 'results.jsonl'))) {
@@ -72,7 +74,6 @@ for (const name of options.studies.split(',')) {
   await makeStudy(name, folder);
   studies.push({ name, folder, slices: STUDIES[name].slices });
 }
-const viewers = await viewerList();
 const served = new Map();
 const rounds = Number(options.rounds), warmup = Number(options.warmup);
 fs.writeFileSync(path.join(outDir, 'run.json'), `${JSON.stringify({ started: new Date().toISOString(), machine: describe(), options,
@@ -93,7 +94,7 @@ try {
       const idle = await waitIdle();
       const spec = { viewer: { id: viewer.id, adapter: viewer.adapter }, served: served.get(viewer.id), study, round, order: count, outDir,
         result: path.join(outDir, 'trials', `${count}.json`), machine: state(), idle, width: Number(options.width), height: Number(options.height),
-        rates: options.rates.split(',').map(Number), scenarios: options.scenarios.split(',') };
+        rates: options.rates.split(',').map(Number), scenarios: options.scenarios.split(','), fromNavigation: options['from-navigation'] };
       count++;
       let line;
       try { line = await runTrial(spec); } catch (error) { line = { viewer: viewer.id, study: study.name, round, warmup: round <= 0, order: spec.order, error: String(error.message) }; }

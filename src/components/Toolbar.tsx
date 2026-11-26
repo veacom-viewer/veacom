@@ -148,15 +148,14 @@ export interface ToolbarItem { id: string; group: string; priority?: number; nod
 
 /** One toolbar row: arrow keys move between controls (one Tab stop), and when the window is too narrow
  * the lowest-priority items move into a second row, opened with the More button, instead of being cut off. */
-export function Toolbar({ label, start, end, moreLabel }: {
-  label: string; start: ToolbarItem[]; end: ToolbarItem[]; moreLabel: string;
+export function Toolbar({ label, start, end, moreLabel, secondRow, onSecondRow }: {
+  label: string; start: ToolbarItem[]; end: ToolbarItem[]; moreLabel: string; secondRow: boolean; onSecondRow: (open: boolean) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const widths = useRef(new Map<string, number>());
   // The items moved to the second row, and the content width they were planned for.
   const [fit, setFit] = useState<{ hidden: Set<string>; width: number }>(() => ({ hidden: new Set(), width: 0 }));
   const hidden = fit.hidden;
-  const [secondRow, setSecondRow] = useState(false);
   const current = useRef<HTMLElement | null>(null);
   const items = [...start, ...end];
 
@@ -186,7 +185,7 @@ export function Toolbar({ label, start, end, moreLabel }: {
       const same = previous.hidden.size === next.size && [...next].every(id => previous.hidden.has(id));
       return same && previous.width === available ? previous : { hidden: same ? previous.hidden : next, width: available };
     });
-    if (!next.size) setSecondRow(false);
+    if (!next.size) onSecondRow(false);
   });
 
   const structure = items.map(item => `${item.id}:${item.group}:${item.priority ?? ''}`).join('|');
@@ -235,7 +234,7 @@ export function Toolbar({ label, start, end, moreLabel }: {
       {overflowed.length > 0 && <>
         <span className="toolbar-divider" aria-hidden="true" />
         <div className="toolbar-item"><button type="button" className="tool-button toolbar-more" aria-label={moreLabel} aria-expanded={secondRow} data-testid="tool-more" data-tooltip={moreLabel}
-          onClick={() => setSecondRow(open => !open)}>{secondRow ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button></div>
+          onClick={() => onSecondRow(!secondRow)}>{secondRow ? <ChevronUp size={18} /> : <ChevronDown size={18} />}</button></div>
       </>}
       <div className="toolbar-spacer" />
       {render(end)}

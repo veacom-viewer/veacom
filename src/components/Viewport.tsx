@@ -1,8 +1,8 @@
 import { useEffect, useEffectEvent, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from 'react';
-import type { Annotation, NmFrame, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
+import type { Annotation, CaliperTag, FusionSettings, NmFrame, Series, Tool, Vec3, ViewportProps, ViewState, Volume } from '../model';
 import { fusedPetSummary, measurementSpace, quantitativeScale, shownOnView, storedUnit } from '../imaging/annotations';
-import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
+import { acquiredPlane as seriesPlane, add, clamp, dot, getPlaneFrame, isProjection, length, orientationLabel, parallelToAcquired, referenceSegment, projectionAngle, scale, screenMapping, screenToWorld, simplifyPolyline, sliceCount, sourceFrameSeries, stepSlice, sub, worldToIndex, worldToScreen } from '../imaging/geometry';
 import { MIN_SPHERE_RADIUS_MM, PEAK_RADIUS_MM, sphereOf, sphereSection, sphereStatisticsFor, thresholdVolumeFor } from '../imaging/voi';
 import { currentDeauville } from '../imaging/deauvilleReading';
 import { hottestAlongRay } from '../imaging/projection';
@@ -11,6 +11,7 @@ import { suvWindowText } from '../imaging/quantity';
 import { fitWidth, overlayFont, subscribeFont, textWidth } from '../ui/overlayFont';
 import { pointerReadout } from '../imaging/readout';
 import type { ScreenMapping } from '../imaging/geometry';
+import { caliperOrder } from '../imaging/calipers';
 import { sliceRenderer } from '../imaging/sliceRenderer';
 import { streamSlices, streamWheelSteps, TOUCHPAD_SPEED, wheelSteps, type WheelStream } from '../imaging/interaction';
 import { pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from '../imaging/paging';
@@ -23,6 +24,7 @@ import { fusionLine } from '../ui/seriesNames';
 import { presetFor } from '../ui/presets';
 import { hitAnnotation, leaderLine, movedHandle, screenPaths, type AnnotationPart, type HitTarget } from '../ui/annotationEdit';
 import { draggedFusion, petHasSuv } from '../imaging/fusion';
+import { frameThrough } from '../imaging/registration';
 import { lineAngle, obliqueAngle, rotationComponent, turnedOblique } from '../imaging/oblique';
 import type { PlaneFrame } from '../imaging/geometry';
 import { overlayKeepOut, placeLabelBeside, shapeBox, shapeKeepOut, type Box } from '../ui/labelPlacement';
@@ -73,7 +75,8 @@ function sphereOnPlane(annotation: Annotation, frame: PlaneFrame, mapping: Scree
   return { points: [section.center, add(section.center, scale(mapping.right, section.radius))], depth: section.depth };
 }
 const rootStyle: CSSProperties = { position: 'relative', width: '100%', height: '100%', minHeight: 80, overflow: 'hidden', background: '#000', touchAction: 'none' };
-const canvasStyle: CSSProperties = { display: 'block', width: '100%', height: '100%' };
+// The renderer already samples at device resolution. Preserve those pixels at fractional desktop scaling.
+const canvasStyle: CSSProperties = { display: 'block', width: '100%', height: '100%', imageRendering: 'pixelated' };
 const overlayStyle: CSSProperties = { position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none', overflow: 'hidden' };
 /** A pane's size until it is first measured, a frame or two after it opens. The overlay is drawn in a box of the pane's
  * size, so drawn then it is one unit stretched over the pane, and a 3.5-unit handle on an MPR line covers the pane in
@@ -84,13 +87,14 @@ const pointString = (points: Point2[]) => points.map(p => p.join(',')).join(' ')
 const LABEL_CHARACTERS = 30, LABEL_LINE = 15, LABEL_PADDING = 5;
 const NO_BOXES: readonly Box[] = [];
 const NO_ANNOTATIONS: Annotation[] = [];
-// The fused PET's values under each drawing, kept per drawing, PET and chosen SUV (a drawing that changes is a new object).
-const petCache = new WeakMap<Annotation, { volume: Volume; locale: string; text: string }>();
-function petLine(annotation: Annotation, pet: Volume, locale: string): string {
-  const cached = petCache.get(annotation);
-  if (cached && cached.volume === pet && cached.locale === locale) return cached.text;
-  const text = fusedPetSummary(annotation, pet);
-  petCache.set(annotation, { volume: pet, locale, text });
+// The fused PET's values under each drawing, kept per drawing, PET, chosen SUV and alignment (a drawing that changes is
+// a new object, and so is a nudged alignment's transform).
+const petCache = new WeakMap<Annotation, { volume: Volume; locale: string; transform: FusionSettings['transform']; base: Series; text: string }>();
+function petLine(annotation: Annotation, fusion: FusionSettings, base: Series, locale: string): string {
+  const pet = fusion.volume, transform = fusion.transform, cached = petCache.get(annotation);
+  if (cached && cached.volume === pet && cached.locale === locale && cached.transform === transform && (!transform || cached.base === base)) return cached.text;
+  const text = fusedPetSummary(annotation, pet, transform ? { base, transform } : undefined);
+  petCache.set(annotation, { volume: pet, locale, transform, base, text });
   return text;
 }
 /** Turkish writes the percent sign first (%100). */
@@ -144,6 +148,24 @@ function labelLayout(annotation: Annotation, points: readonly Vec3[], mapping: S
   return { lines, width, height, ...placeLabelBeside(shape, { width, height }, mapping, hard, soft, screen[screen.length - 1]) };
 }
 
+/** A caliper's reference lines on screen (imaging/calipers.ts), dashed: for Keros, the level of the olfactory fossa's
+ * floor carried out under the ethmoid roof and up to it, so the depth is the upright leg; or the sella lines through the
+ * tuberculum and the dorsum, square to the line joining them, reaching past the sinus wall. `points` are on screen, in
+ * the order the caliper reads them; `world` the same in patient mm. */
+function caliperGuides(tag: CaliperTag, points: readonly Point2[], world: readonly Vec3[], mapping: ScreenMapping): string {
+  if (tag.kind === 'keros' && world.length === 2) {
+    const [floor, roof] = world, across = sub(roof, add(floor, scale(tag.up, dot(sub(roof, floor), tag.up))));
+    const [a, b] = points, corner = worldToScreen(mapping, add(floor, across));
+    return `M${a[0]},${a[1]}L${corner[0]},${corner[1]}L${b[0]},${b[1]}`;
+  }
+  if (points.length < 3 || tag.kind !== 'sella') return '';
+  const [a, b, c] = points, dx = b[0] - a[0], dy = b[1] - a[1], run = Math.hypot(dx, dy);
+  if (run < 1e-6) return '';
+  const depth = ((c[0] - a[0]) * -dy + (c[1] - a[1]) * dx) / run, sign = depth < 0 ? -1 : 1, reach = Math.abs(depth) + 24;
+  const nx = -dy / run * sign * reach, ny = dx / run * sign * reach;
+  return `M${a[0]},${a[1]}l${nx},${ny}M${b[0]},${b[1]}l${nx},${ny}`;
+}
+
 /** Sent to a viewport's element with an annotation id, when that measurement is chosen in the inspector's list. */
 export const PICK_MEASUREMENT = 'veacom:pick-measurement';
 const GLOW = [{ filter: 'drop-shadow(0 0 0 #fff)' }, { filter: 'drop-shadow(0 0 5px #fff)' }, { filter: 'drop-shadow(0 0 0 #fff)' }];
@@ -159,6 +181,9 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }) {
   const points = (shown ?? annotation.points).map(p => worldToScreen(mapping, p));
   if (!points.length) return null;
+  // A caliper's points in the order it reads them, whatever order they were clicked or dragged into.
+  const tag = annotation.caliper, world = tag ? caliperOrder(tag.kind, annotation.points, tag.up) : [];
+  const ordered = tag ? world.map(p => worldToScreen(mapping, p)) : points;
   // VEAcom's yellow for measurements (Next's #ffcc00); white while selected.
   const color = selected ? '#ffffff' : annotation.color ?? '#ffcc00';
   const common = { fill: 'none', stroke: color, strokeWidth: selected ? 2 : 1.5, vectorEffect: 'non-scaling-stroke' as const };
@@ -181,15 +206,20 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
     shape = <><polyline {...common} points={pointString(points.slice(0, 2))} />{points.length > 2 && <polyline {...common} points={pointString(points.slice(2))} />}</>;
   } else if (annotation.type === 'probe' || annotation.type === 'text') {
     shape = <><circle {...common} cx={points[0][0]} cy={points[0][1]} r={4} /><path {...common} d={`M${points[0][0] - 8},${points[0][1]}h16 M${points[0][0]},${points[0][1] - 8}v16`} /></>;
+  } else if (tag?.kind === 'sella' && ordered.length >= 3) {
+    // The tuberculum–dorsum line, and a cross on the sinus wall.
+    const [x, y] = ordered[2];
+    shape = <><polyline {...common} points={pointString(ordered.slice(0, 2))} /><path {...common} d={`M${x - 6},${y}h12M${x},${y - 6}v12`} /></>;
   } else {
-    shape = <polyline {...common} points={pointString(points)} />;
+    shape = <polyline {...common} points={pointString(ordered)} />;
   }
   let arrow;
   if (annotation.type === 'arrow' && points.length >= 2) {
     const [a, b] = points, angle = Math.atan2(a[1] - b[1], a[0] - b[0]);
     arrow = <polyline {...common} points={`${a[0] - 12 * Math.cos(angle - 0.45)},${a[1] - 12 * Math.sin(angle - 0.45)} ${a} ${a[0] - 12 * Math.cos(angle + 0.45)},${a[1] - 12 * Math.sin(angle + 0.45)}`} />;
   }
-  return <>{shape}{arrow}</>;
+  const guides = tag ? caliperGuides(tag, ordered, world, mapping) : '';
+  return <>{shape}{arrow}{guides && <path {...common} d={guides} strokeDasharray="5 4" />}</>;
   };
   const lines = layout?.lines ?? [], chipWidth = layout?.width ?? 0, chipHeight = layout?.height ?? 0;
   const labelX = (layout?.x ?? 0) + LABEL_PADDING, labelY = (layout?.y ?? 0) + 13;
@@ -210,10 +240,23 @@ function AnnotationDrawing({ annotation, shown, mapping, layout, selected, dashe
 }
 
 
+function paneRaster(bounds: DOMRect) {
+  const ratio = window.devicePixelRatio || 1;
+  const left = Math.round(bounds.left * ratio), top = Math.round(bounds.top * ratio);
+  return { ratio, width: Math.max(1, bounds.width), height: Math.max(1, bounds.height),
+    pixelWidth: Math.max(1, Math.round(bounds.right * ratio) - left), pixelHeight: Math.max(1, Math.round(bounds.bottom * ratio) - top),
+    x: left / ratio - bounds.left, y: top / ratio - bounds.top };
+}
+
 let firstDrawMarked = false;
-function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number) {
+function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number, raster: ReturnType<typeof paneRaster>) {
   const renderer = sliceRenderer();
-  const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion);
+  // Snap both edges of the bitmap and keep its patient-space mapping relative to the pane.
+  canvas.style.marginLeft = raster.x + 'px'; canvas.style.marginTop = raster.y + 'px';
+  canvas.style.width = raster.pixelWidth / raster.ratio + 'px'; canvas.style.height = raster.pixelHeight / raster.ratio + 'px';
+  if (canvas.width !== raster.pixelWidth) canvas.width = raster.pixelWidth;
+  if (canvas.height !== raster.pixelHeight) canvas.height = raster.pixelHeight;
+  const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion, raster);
   canvas.dataset.renderer = renderer.info.renderer;
   canvas.dataset.softwareRenderer = String(renderer.info.software);
   canvas.dataset.slice = String(displayed.slice);
@@ -250,6 +293,8 @@ export function Viewport(props: ViewportProps) {
   const draftLive = useRef<Annotation | null>(null);
   const [draft, setDraft] = useState<Annotation | null>(null);
   const [draftHint, setDraftHint] = useState<'viewport.clickEnd' | 'viewport.traceRegion' | 'viewport.clickPoints' | null>(null);
+  // How many points of a caliper are placed: its hint asks for the next one.
+  const [caliperStep, setCaliperStep] = useState(0);
   const [overlayView, setOverlayView] = useState(() => renderedView(props.volume, props.view));
   // Down the page is towards the feet on an axial stack (see paging.ts): wheel, drags and keys step this way.
   const backwards = pagesBackwards(props.volume.series, { plane: props.view.plane, mode: props.view.mode, oblique: props.view.oblique });
@@ -285,7 +330,7 @@ export function Viewport(props: ViewportProps) {
   const wheelStream = useRef<WheelStream>({ fineUntil: 0 });
   const renderNeeded = useRef(true);
   const context = useRef(interactionContext(props.volume, resolveView(props.volume, props.view)));
-  const annotationContext = useRef<InteractionContext | null>(null);
+  const annotationContext = useRef<(InteractionContext & { createdAt: number }) | null>(null);
   const promptId = useId();
 
   const gesture = useRef<GestureHandle | null>(null);
@@ -300,7 +345,8 @@ export function Viewport(props: ViewportProps) {
     editing.current = null; editLive.current = null; setEdited(null);
     construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null;
     draftLive.current = null; pendingCrosshair.current = null;
-    setDraft(null); setTextPrompt(null); setSelected(null);
+    // The hints follow at once: the paint that sets them may not come before the next caliper asks for its first point.
+    setDraft(null); setDraftHint(null); setCaliperStep(0); setTextPrompt(null); setSelected(null);
   };
   const syncInteractionContext = (volume: ViewportProps['volume'], view: ViewState) => {
     const next = interactionContext(volume, view), previous = context.current;
@@ -333,15 +379,10 @@ export function Viewport(props: ViewportProps) {
       const current = latest.current;
       syncInteractionContext(current.volume, liveView.current);
       const displayed = renderedView(current.volume, liveView.current);
-      if (renderNeeded.current && canvas.current && sized.current) {
+      if (renderNeeded.current && canvas.current && container.current && sized.current) {
         renderNeeded.current = false;
         try {
-          // Changing the bitmap size clears it. Resize and paint in the same frame.
-          const dpr = window.devicePixelRatio || 1;
-          const width = Math.max(1, Math.round(size.current[0] * dpr)), height = Math.max(1, Math.round(size.current[1] * dpr));
-          if (canvas.current.width !== width) canvas.current.width = width;
-          if (canvas.current.height !== height) canvas.current.height = height;
-          paintSlice(canvas.current, current, displayed, liveView.current.slice);
+          paintSlice(canvas.current, current, displayed, liveView.current.slice, paneRaster(container.current.getBoundingClientRect()));
           if (errorLive.current) { errorLive.current = null; setError(null); }
         } catch (e) {
           const message = e instanceof Error ? e.message : t('viewport.renderFailed');
@@ -352,6 +393,7 @@ export function Viewport(props: ViewportProps) {
       updateReadout();
       setDraft(draftLive.current);
       setDraftHint(twoClick.current ? 'viewport.clickEnd' : construction.current.length ? (constructionTool.current === 'polygon' ? 'viewport.traceRegion' : 'viewport.clickPoints') : null);
+      setCaliperStep(twoClick.current || (drag.current && annotationTools.has(drag.current.mode)) ? 1 : construction.current.length);
       setEdited(editLive.current);
       if (pendingPatch.current) { const patch = pendingPatch.current; pendingPatch.current = null; current.onViewChange(patch); }
       if (pendingCrosshair.current) { const point = pendingCrosshair.current; pendingCrosshair.current = null; current.onCrosshairChange(point); }
@@ -390,8 +432,7 @@ export function Viewport(props: ViewportProps) {
   // the layout changes, so pointer events take it too: closing 3D or the inspector widens the pane, and a click before
   // that frame must be judged (the right edge scrolls) and placed on the image by the pane it lands in.
   const measurePane = (bounds: DOMRect) => {
-    const width = Math.max(1, bounds.width), height = Math.max(1, bounds.height);
-    const dpr = window.devicePixelRatio || 1, pixelWidth = Math.max(1, Math.round(width * dpr)), pixelHeight = Math.max(1, Math.round(height * dpr));
+    const { width, height, pixelWidth, pixelHeight } = paneRaster(bounds);
     const geometryChanged = size.current[0] !== width || size.current[1] !== height;
     const bitmapChanged = canvas.current && (canvas.current.width !== pixelWidth || canvas.current.height !== pixelHeight);
     if (!geometryChanged && !bitmapChanged && sized.current) return;
@@ -410,7 +451,7 @@ export function Viewport(props: ViewportProps) {
   };
   // A PET is read inverted (imaging/quantity.ts petLook): reset brings that back, not plain grey.
   const reset = () => changeView({ zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: latest.current.volume.series.modality === 'PT', oblique: [0, 0] });
-  const discardDraft = () => { construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null; draftLive.current = null; setDraft(null); };
+  const discardDraft = () => { construction.current = []; constructionTool.current = null; freehand.current = null; annotationContext.current = null; twoClick.current = null; draftLive.current = null; setDraft(null); setDraftHint(null); setCaliperStep(0); };
   /** Points of a two-point measurement from its start to `end` (rectangles and ellipses use the box corners). */
   const twoPointShape = (mode: Tool, startWorld: Vec3, end: Point2): Vec3[] => twoPointWorld(mappingNow(), mode, startWorld, end);
   /** Zoom about the pane centre, keeping the centred point where it is. */
@@ -425,7 +466,7 @@ export function Viewport(props: ViewportProps) {
     if (type === 'sphere' && !sphereOf({ type, points })) { discardDraft(); usage.markResult('cancel'); return; }
     // A sphere lies in the volume, not on the acquired slice it was drawn on.
     const view = renderedView(current.volume, liveView.current), source = type !== 'sphere' && usesSourceFrames(current.volume.series, view);
-    const annotation: Annotation = { id: crypto.randomUUID(), type, points, mode: source ? 'source' : 'mpr', sourceFrame: source ? view.slice : undefined, sourceSopInstanceUid: source ? current.volume.series.frameMetadata?.[view.slice]?.sopInstanceUid : undefined, sourceFrameNumber: source ? current.volume.series.frameMetadata?.[view.slice]?.sourceFrameNumber : undefined, plane: view.plane, slice: view.slice, label,
+    const annotation: Annotation = { id: crypto.randomUUID(), createdAt: annotationContext.current.createdAt, type, points, mode: source ? 'source' : 'mpr', sourceFrame: source ? view.slice : undefined, sourceSopInstanceUid: source ? current.volume.series.frameMetadata?.[view.slice]?.sopInstanceUid : undefined, sourceFrameNumber: source ? current.volume.series.frameMetadata?.[view.slice]?.sourceFrameNumber : undefined, plane: view.plane, slice: view.slice, label,
       ...(!source && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number] } : {}) };
     current.onAnnotationsChange([...current.annotations, annotation]); setSelected(annotation.id); discardDraft();
     usage.markResult('ok');
@@ -467,9 +508,10 @@ export function Viewport(props: ViewportProps) {
       if (!sameView(liveView.current, next)) { liveView.current = next; queue(); }
     }
     if (previous.volume !== props.volume || previous.fusion !== props.fusion) queue();
-    // An undo, deletion or tool change invalidates a drag before its release can overwrite the change.
+    // An undo, deletion or tool change invalidates a drag before its release can overwrite the change; so does another
+    // caliper, whose points mean something else.
     const edit = editing.current;
-    if (previous.tool !== props.tool || (edit && previous.annotations !== props.annotations && !props.annotations.includes(edit.original))) cancelGesture();
+    if (previous.tool !== props.tool || previous.caliper?.key !== props.caliper?.key || (edit && previous.annotations !== props.annotations && !props.annotations.includes(edit.original))) cancelGesture();
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
   }, [props, queue, syncInteractionContext, cancelGesture]);
   const refreshReadout = useEffectEvent(updateReadout);
@@ -506,7 +548,15 @@ export function Viewport(props: ViewportProps) {
   useEffect(() => {
     const element = container.current!;
     const resizeState = { frame: null as number | null };
+    let density: MediaQueryList | null = null;
     const resize = () => {
+      if (!density?.matches) {
+        density?.removeEventListener('change', resize);
+        density = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+        density.addEventListener('change', resize);
+      }
+      // On first opening the layout already gives the pane its size. Its draw can use the next animation frame.
+      if (!sized.current && window.veacom?.web) { resizePane(element); return; }
       if (resizeState.frame !== null) return;
       resizeState.frame = requestAnimationFrame(() => { resizeState.frame = null; resizePane(element); });
     };
@@ -518,6 +568,7 @@ export function Viewport(props: ViewportProps) {
     window.addEventListener('veacom-gpu-restored', restore);
     return () => {
       observer.disconnect();
+      density?.removeEventListener('change', resize);
       element.removeEventListener(PICK_MEASUREMENT, pick);
       element.removeEventListener('wheel', wheel);
       window.removeEventListener('resize', resize);
@@ -557,7 +608,7 @@ export function Viewport(props: ViewportProps) {
       const pivot = worldToScreen(mapping, props.crosshair);
       const seenPlane = renderedView(latest.current.volume, liveView.current).plane;
       const turnable = new Set(handleTargets.map(item => item.id));
-      const planes = (props.referencePlanes ?? []).filter(item => turnable.has(item.id) && lineAngle(frame, mapping, item.series, item.view, item.view.oblique ?? [0, 0]) !== null)
+      const planes = (props.referencePlanes ?? []).filter(item => turnable.has(item.id) && lineAngle(frame, mapping, item.series, item.view, item.view.oblique ?? [0, 0], item.transform) !== null)
         .map(reference => ({ reference, component: rotationComponent(reference.view.plane, seenPlane) }));
       if (planes.some(item => item.reference.id === handle.id)) {
         event.currentTarget.setPointerCapture(event.pointerId);
@@ -593,9 +644,10 @@ export function Viewport(props: ViewportProps) {
     }
     if ((annotationTools.has(mode) || mode === 'crosshair') && latest.current.volume.sourceFrameIndex !== undefined && latest.current.volume.sourceFrameIndex !== liveView.current.slice) return;
     // A press on a measurement (a handle, its label or its line) takes hold of it whatever the tool, as in VEAcom
-    // Next; not while one is drawn point by point or waits for its second click.
+    // Next; not while one is drawn point by point or waits for its second click, nor while a caliper asks for its
+    // points (another side's label may sit on them).
     const screenCurrent = samePlacement(overlayView, renderedView(props.volume, liveView.current));
-    if (button === 'left' && screenCurrent && !construction.current.length && !twoClick.current && !latest.current.hideMeasurements
+    if (button === 'left' && screenCurrent && !construction.current.length && !twoClick.current && !latest.current.hideMeasurements && !latest.current.caliper
       && (latest.current.volume.sourceFrameIndex === undefined || latest.current.volume.sourceFrameIndex === liveView.current.slice)) {
       const hit = hitAnnotation(hitTargets, selected, start);
       if (hit) {
@@ -618,9 +670,11 @@ export function Viewport(props: ViewportProps) {
     if (event.detail > 1 && clickTools.has(mode)) return;
     // Another measurement tool replaces a pending click-click measurement; panning or zooming in between keeps it.
     if (twoClick.current && twoClick.current.mode !== mode && annotationTools.has(mode)) discardDraft();
-    if (annotationTools.has(mode) && !annotationContext.current) annotationContext.current = interactionContext(latest.current.volume, liveView.current);
+    if (clickTools.has(mode) && constructionTool.current && constructionTool.current !== mode) discardDraft();
+    if (annotationTools.has(mode) && !annotationContext.current) {
+      annotationContext.current = { ...interactionContext(latest.current.volume, liveView.current), createdAt: performance.timeOrigin + event.timeStamp };
+    }
     if (clickTools.has(mode)) {
-      if (constructionTool.current && constructionTool.current !== mode) { discardDraft(); annotationContext.current = interactionContext(latest.current.volume, liveView.current); }
       constructionTool.current = mode;
       // An outline traced by moving the pointer (no button held) closes with the next click, wherever it is.
       if (mode === 'polygon' && construction.current.length >= 3) { usage.action('point-polygon', input); finishConstruction(); return; }
@@ -682,7 +736,7 @@ export function Viewport(props: ViewportProps) {
       turn.last = angle;
       const step = event.shiftKey ? 5 : event.ctrlKey || event.metaKey ? 10 : 0;
       for (const { reference, component } of turn.planes) {
-        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, component, turn.turned, step));
+        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, component, turn.turned, step, reference.transform));
       }
       return;
     }
@@ -878,7 +932,7 @@ export function Viewport(props: ViewportProps) {
   // With a PET fused over the image, a region or a probe also gives the PET's value there.
   const labels = props.fusion ? named.map((label, index) => {
     if (movingSphere?.id === shownAnnotations[index].id) return label;
-    const pet = petLine(shownAnnotations[index], props.fusion!.volume, locale);
+    const pet = petLine(shownAnnotations[index], props.fusion!, props.volume.series, locale);
     return pet && label ? `${label}\n${pet}` : label;
   }) : named;
   // Where each measurement shows here: a sphere as the circle this plane cuts from it (dashed off its centre and on a
@@ -915,8 +969,7 @@ export function Viewport(props: ViewportProps) {
   const nm = source ? props.volume.series.frameMetadata?.[overlayView.slice]?.nm : undefined;
   const { fontFamily, topLeft, topRight, plainLeft, plainRight } = usePatientCorners(props.volume.series, props.showOverlay !== false, props.hidePatientData === true, metadataWidth, t, nm);
   // The thickness only where the acquired slices are shown: a reformatted plane is not that thick.
-  const direction = props.volume.series.direction;
-  const acquiredPlane = source || Math.abs(dot(frame.normal, [direction[2], direction[5], direction[8]])) > 0.999 * length([direction[2], direction[5], direction[8]]);
+  const acquiredPlane = source || parallelToAcquired(props.volume.series, frame.normal);
   const normalAxis = frame.normal.reduce((best, value, axis) => Math.abs(value) > Math.abs(frame.normal[best]) ? axis : best, 0);
   const location = displayedSeries.orientationKnown === true && displayedSeries.positionKnown !== false ? frame.center[normalAxis] : null;
   // A projection film names its side and what its millimetres stand for there instead (imaging/radiograph.ts).
@@ -927,7 +980,7 @@ export function Viewport(props: ViewportProps) {
     props.fusion.volume.series.modality !== 'PT' ? t('viewport.fusionOwnValues', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : petHasSuv(props.fusion.volume.series) ? t('viewport.fusionScale', { upper: general(props.fusion.upperSuv), opacity: percent(Math.round(props.fusion.opacity * 100), locale) })
       : t('viewport.fusionScaleOwn', { opacity: percent(Math.round(props.fusion.opacity * 100), locale) }),
-  ] : [])].map(text => ({ text, fitted: fitWidth(text, lowerWidth, fontFamily) }));
+  ] : []), ...(props.aligned ? [t(props.aligned === 'adjusted' ? 'viewport.alignedAdjusted' : 'viewport.alignedAutomatic')] : [])].map(text => ({ text, fitted: fitWidth(text, lowerWidth, fontFamily) }));
   // The fused series' name reads differently with patient details hidden (fusionLine): it is drawn with the patient corners,
   // and its plain form with the plain corners, so a copied picture takes the plain one.
   const fusionNameAt = props.fusion && props.showOverlay !== false ? scanner.length : -1;
@@ -979,7 +1032,7 @@ export function Viewport(props: ViewportProps) {
   const sourcePlane = source && displayedSeries.orientationKnown === true ? seriesPlane(props.volume.series) : null;
   // Written as a name, capitalised ("Koronal"), as VEAcom 1.x wrote it.
   const planeName = source ? (sourcePlane ? t(`plane.${sourcePlane}` as const) : '') : tilt ? t('viewport.obliquePlane', { plane: t(`plane.${overlayView.plane}` as const), angle: tilt }) : t(`plane.${overlayView.plane}` as const);
-  // The slice's number in the sequence the pane pages: 1 at the top of an axial stack (imaging/paging.ts).
+  // The number the slice shows wherever it is numbered: the image's own, or its place in paging order (imaging/paging.ts).
   const numbered = shownSlice(props.volume.series, overlayView, Math.round(overlayView.slice), frame.slices, props.joined);
   const sliceLine = projected ? t('projection.label', { angle: projectionAngle(overlayView.slice) }) : `${planeName ? `${planeName} · ` : ''}${!source && overlayView.slab ? `${t('slab.label', { mode: t(`slab.${overlayView.slab.mode}` as const), thickness: overlayView.slab.thickness })} · ` : ''}${numbered.number} / ${numbered.total}`;
   const bottomWidth = Math.max(40, dimensions[0] - 12 - (props.showScale ? scaleUnits * pixelsPerUnit + 14 : 0) - 16);
@@ -987,7 +1040,8 @@ export function Viewport(props: ViewportProps) {
     ? { left: orientationLabel(scale(mapping.right, -1)), right: orientationLabel(mapping.right), top: orientationLabel(scale(mapping.down, -1)), bottom: orientationLabel(mapping.down) }
     : projectionEdgeLabels(displayedSeries, mapping) ?? { left: '', right: '', top: '', bottom: '' };
   const referenceLines = (props.referencePlanes ?? []).flatMap(reference => {
-    const theirs = getPlaneFrame(reference.series, reference.view);
+    // A plane in a frame of reference of its own is drawn where the alignment puts it in this one.
+    const own = getPlaneFrame(reference.series, reference.view), theirs = reference.transform ? frameThrough(own, reference.transform) : own;
     const segment = referenceSegment(frame, theirs);
     if (!segment) return [];
     const [point, end] = segment.map(p => worldToScreen(mapping, p));
@@ -1088,7 +1142,14 @@ export function Viewport(props: ViewportProps) {
       </g>}
     </svg>
     {readoutLines > 0 && <ValueReadout ref={readout} right={dimensions[0] - 14} bottom={dimensions[1] - 40} width={lowerWidth} fontFamily={fontFamily} />}
-    {!props.hideMeasurements && draft && draftHint && <div className="viewport-hint" data-export-exclude>{t(draftHint)}</div>}
+    {/* Under the top corner lines (18 px down, 16 px apart), so patient identity and the orientation letter stay readable. */}
+    {props.caliper ? <div className="viewport-caliper" data-export-exclude style={{ top: Math.max(topLeft.length, topRight.length) ? 18 + Math.max(topLeft.length, topRight.length) * 16 + 4 : 12 }}>
+      <div className="viewport-hint" data-testid="caliper-hint">{props.caliper.prompts[Math.min(caliperStep, props.caliper.prompts.length - 1)]}</div>
+      {/* What setting the pane up for the caliper changed, with Undo, until the first point is placed. */}
+      {props.caliper.setUp && caliperStep === 0 && <div className="caliper-setup" role="status" data-testid="caliper-setup"><span>{props.caliper.setUp.text}</span>
+        <button type="button" data-action="caliper-view-undo" onClick={props.caliper.setUp.onUndo}>{t('pair.undo')}</button></div>}
+    </div>
+      : !props.hideMeasurements && draft && draftHint && <div className="viewport-hint" data-export-exclude>{t(draftHint)}</div>}
     {error && <div role="alert" className="viewport-render-error">{error}</div>}
     {textPrompt && (() => {
       // The note form opens next to the clicked point, kept inside the pane.

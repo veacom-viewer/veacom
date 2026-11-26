@@ -6,6 +6,7 @@ import type { FusionSettings, Series, Vec3, ViewState, Volume } from '../model';
 import { quantitativeScale, quantityText } from './annotations';
 import { clamp, isPaddingValue, isProjection, sampleVolume, sourceFrameSeries, worldToIndex } from './geometry';
 import { rayMaximum } from './projection';
+import { applyPoint } from './rigid';
 import { usesSourceFrames } from './viewState';
 import { t } from '../i18n';
 
@@ -53,8 +54,9 @@ export function pointerReadout(volume: Volume, view: ViewState, world: Vec3, fus
   const stored = voxelAt(volume, view, world), own = stored === null ? null : quantityAt(series, stored);
   if (own) lines.push(t('readout.value', { name, value: own }));
   if (fusion && fusion.volume.series.components !== 3) {
-    // The PET's nearest voxel at the same point in the patient, as the fused probe reads it.
-    const pet = sampleVolume(fusion.volume, world), text = pet === null || !Number.isFinite(pet) ? null : quantityAt(fusion.volume.series, pet);
+    // The PET's nearest voxel at the same point in the patient, as the fused probe reads it: in its own frame of
+    // reference, through the alignment, when it has one of its own.
+    const pet = sampleVolume(fusion.volume, fusion.transform ? applyPoint(fusion.transform, world) : world), text = pet === null || !Number.isFinite(pet) ? null : quantityAt(fusion.volume.series, pet);
     if (text) lines.push(t('readout.value', { name: seriesName(fusion.volume.series), value: text }));
   }
   return lines;

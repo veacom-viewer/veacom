@@ -13,14 +13,16 @@
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { chromium, expect } from 'playwright/test';
 import site from '../site/worker.js';
 import { zipStored } from '../../src/web/zip.ts';
+import { readStoredZip } from '../../tests/storedZip.ts';
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const publicFolder = path.join(repository, 'web/site/public');
@@ -32,9 +34,12 @@ const scratch = mkdtempSync(path.join(tmpdir(), 'veacom-browser-check-'));
 const study = path.join(scratch, 'study'), mrStudy = path.join(scratch, 'mr.zip');
 const makeStudy = path.join(repository, 'tools/fixtures/make-smoke-study.mjs');
 execFileSync(process.execPath, [makeStudy, study], { stdio: 'inherit' });
-execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR'], { stdio: 'inherit' });
+execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR', '--other-patient'], { stdio: 'inherit' });
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
+const sourcePixels = createHash('sha256');
+for (const name of studyFiles) sourcePixels.update(readFileSync(path.join(study, name)).subarray(-columns * rows * 2));
+const sourceVolumeHash = Array.from(sourcePixels.digest());
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
@@ -84,6 +89,7 @@ async function openStudy() {
     series: imported.series.length, dimensions: series.dimensions,
     frame: { index: frame.headers.get('X-Source-Frame-Index'), bytes: Number(frame.headers.get('Content-Length')) },
     volume: Number(volume.headers.get('Content-Length')),
+    volumeHash: Array.from(new Uint8Array(await window.smokeCTDigest)),
     state: await bridge.getCoreState(),
   };
 }
@@ -137,11 +143,427 @@ async function importPickedFiles(page, files, kind = 'files') {
   return frames;
 }
 
-async function checkFilePicker(page) {
-  const frames = await importPickedFiles(page, studyFiles.slice(0, 2).map(name => ({
-    name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
-  })));
-  assert.deepEqual(frames, [2], 'same-named slices must stay in the same series');
+async function dropOnPage(devtools, files, x = 100, y = 120) {
+  for (const type of ['dragEnter', 'dragOver', 'drop']) {
+    await devtools.send('Input.dispatchDragEvent', { type, x, y, data: { items: [], files, dragOperationsMask: 1 } });
+  }
+}
+
+async function checkDropDuringStartup(browser, url) {
+  const page = await browser.newPage(), release = Promise.withResolvers();
+  try {
+    const reader = /\/assets\/main-[^/]+\.js(?:\?.*)?$/;
+    await page.route(reader, async route => { await release.promise; await route.continue(); });
+    const requested = page.waitForRequest(reader);
+    await page.goto(url, { waitUntil: 'commit' });
+    await requested;
+    await page.waitForFunction(() => window.veacom?.web);
+    assert.equal(await page.getByTestId('welcome-open-folder').count(), 0);
+    await page.evaluate(() => {
+      const select = window.veacom.importSelected;
+      const first = Promise.withResolvers();
+      window.releaseFirstDrop = first.resolve;
+      window.completedDrops = [];
+      window.veacom.importSelected = async paths => {
+        if (!window.firstDropStarted) { window.firstDropStarted = true; await first.promise; }
+        const result = await select(paths);
+        window.completedDrops.push(result.series.map(s => [s.modality, s.patientId, s.dimensions[2], s.frameMetadata[0].sopInstanceUid]));
+        return result;
+      };
+    });
+    const cdp = await page.context().newCDPSession(page);
+    await dropOnPage(cdp, [path.join(study, 'S01')]);
+    await dropOnPage(cdp, [mkdtempSync(path.join(scratch, 'empty-'))]);
+    await dropOnPage(cdp, [path.join(mrStudy, studyFiles[0])]);
+    release.resolve();
+    await page.waitForFunction(() => window.firstDropStarted);
+    await dropOnPage(cdp, [path.join(mrStudy, 'S01')]);
+    await page.evaluate(() => window.releaseFirstDrop());
+    await page.waitForFunction(() => window.completedDrops.length >= 3 && window.__VEACOM_TEST__?.state().series.length === 2);
+    const root = '2.25.302617644913925066835652647005517224101';
+    assert.deepEqual(await page.evaluate(() => window.completedDrops), [
+      [['CT', 'SYNTHETIC-SMOKE', slices, root + '.3.1']],
+      [['MR', 'SYNTHETIC-OTHER', 1, root + '.10.3.1']],
+      [['MR', 'SYNTHETIC-OTHER', slices, root + '.10.3.1']],
+    ]);
+  } finally { release.resolve(); await page.close(); }
+}
+
+/** Hold the real engine requests so a file chooser can finish before startup or import does. */
+async function checkChooseDuringStartup(browser, url, fail) {
+  const page = await browser.newPage(), offline = Promise.withResolvers();
+  try {
+    if (fail) await page.route('**/*.wasm', async route => { await offline.promise; await route.abort('failed'); });
+    await page.addInitScript(() => {
+      const held = new Set(['init', 'import']), send = Worker.prototype.postMessage;
+      window.releaseOpeningRequest = {};
+      Worker.prototype.postMessage = function (request, ...args) {
+        if (!held.delete(request.op)) return send.call(this, request, ...args);
+        window.releaseOpeningRequest[request.op] = () => send.call(this, request, ...args);
+      };
+    });
+    await page.goto(url);
+    const app = page.getByTestId('veacom-app'), choose = page.getByTestId('welcome-open-files');
+    await choose.waitFor();
+    await page.waitForFunction(() => typeof window.releaseOpeningRequest.init === 'function');
+    assert.equal(await app.getAttribute('data-ready'), 'false');
+    for (const kind of ['folder', 'files', 'archive']) assert(await page.getByTestId('welcome-open-' + kind).isEnabled());
+    const picked = page.waitForEvent('filechooser');
+    await choose.click();
+    await (await picked).setFiles(path.join(study, studyFiles[0]));
+    await page.waitForFunction(() => document.querySelector('[data-testid="welcome-open-files"]').disabled);
+    offline.resolve();
+    await page.evaluate(() => window.releaseOpeningRequest.init());
+    if (fail) {
+      await page.locator('.connection-error[role="alert"]').waitFor();
+      await expect.poll(() => page.evaluate(async () => (await window.veacom.getCoreState()).status), { timeout: 30_000 }).toBe('failed');
+      assert.equal(await app.getAttribute('data-ready'), 'false');
+      assert.equal(await page.locator('canvas[data-series-id]').count(), 0);
+      return;
+    }
+    await page.waitForFunction(() => typeof window.releaseOpeningRequest.import === 'function');
+    await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+    assert(await choose.isDisabled(), 'Completing the catalog read must keep the active import busy.');
+    assert.equal(await app.getAttribute('data-ready'), 'false');
+    await page.evaluate(() => window.releaseOpeningRequest.import());
+    await page.locator('canvas[data-series-id][data-slice="0"]').first().waitFor();
+    const result = await page.evaluate(async () => {
+      const bridge = window.veacom, { series } = await bridge.listSeries(), { generation } = await bridge.getCoreState();
+      const [item] = series, pixels = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+      return [series.length, item.patientId, item.dimensions[2], pixels.headers.get('X-SOP-Instance-UID')];
+    });
+    assert.deepEqual(result, [1, 'SYNTHETIC-SMOKE', 1, '2.25.302617644913925066835652647005517224101.3.1']);
+  } finally { offline.resolve(); await page.close(); }
+}
+
+async function checkWelcomeBeforeGraphics(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(() => {
+      let frames = 0;
+      function observeWelcome() {
+        const open = document.querySelector('[data-testid="welcome-open-files"]:not(:disabled)');
+        if (open?.getClientRects().length) frames++;
+        if (window.welcomeFramesAtGraphics === undefined) requestAnimationFrame(observeWelcome);
+      }
+      requestAnimationFrame(observeWelcome);
+      const original = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (kind, ...args) {
+        if (kind !== 'webgl2') return original.call(this, kind, ...args);
+        window.welcomeFramesAtGraphics ??= frames;
+        return null;
+      };
+      window.restoreWelcomeGraphics = () => {
+        HTMLCanvasElement.prototype.getContext = original;
+        window.dispatchEvent(new Event('veacom-gpu-restored'));
+      };
+    });
+    await page.goto(url);
+    const unavailable = page.getByTestId('graphics-unavailable-notice');
+    await unavailable.waitFor();
+    assert(await page.evaluate(() => window.welcomeFramesAtGraphics >= 2), 'The opener needs a paint opportunity before the graphics check.');
+    const selected = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await selected).setFiles([]);
+    await page.evaluate(() => window.restoreWelcomeGraphics());
+    await unavailable.waitFor({ state: 'detached' });
+    assert(await page.evaluate(() => Boolean(window.__VEACOM_TEST__.state().graphics)));
+  } finally { await page.close(); }
+}
+
+/** Closing the last CT must let the browser collect the full pixel buffer while the reader stays open. */
+async function checkClosedCTBuffer(browser, url) {
+  const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
+  const cdp = await page.context().newCDPSession(page);
+  try {
+    await page.addInitScript(expectedBytes => {
+      const observe = ResizeObserver.prototype.observe;
+      ResizeObserver.prototype.observe = function (element, ...args) {
+        observe.call(this, element, ...args);
+        if (!element.matches('[data-testid="dicom-viewport"]') || window.firstPaneFrame) return;
+        // Queue after the pane installs its resize observer and requests its initial draw.
+        window.firstPaneFrame = new Promise(resolve => queueMicrotask(() => requestAnimationFrame(() => {
+          const canvas = element.querySelector('canvas');
+          resolve({ series: canvas?.dataset.seriesId, slice: canvas?.dataset.slice });
+        })));
+      };
+      window.Worker = class extends Worker {
+        constructor(...args) {
+          super(...args);
+          this.addEventListener('message', ({ data }) => {
+            const bytes = data?.value?.bytes;
+            if (bytes instanceof Uint8Array && bytes.byteLength === expectedBytes) window.lastCTBuffer = new WeakRef(bytes.buffer);
+          });
+        }
+      };
+    }, columns * rows * slices * 2);
+    await page.goto(url);
+    async function chooseCT() {
+      const selected = page.waitForEvent('filechooser');
+      await page.getByTestId('welcome-open-files').click();
+      await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
+      await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) && window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    }
+    async function checkReleased() {
+      await page.evaluate(() => new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done))));
+      await cdp.send('HeapProfiler.collectGarbage');
+      assert(await page.evaluate(() => !window.lastCTBuffer.deref()), 'The closed CT pixel buffer is still reachable.');
+    }
+    await chooseCT();
+    const first = await page.evaluate(() => window.firstPaneFrame);
+    // The smoke CT has increasing patient Z. Its superior opening slice is the last source in the stack.
+    assert.deepEqual(first, { series: await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId), slice: String(slices - 1) },
+      'The first animation frame after mounting must draw the opening CT slice.');
+    const paging = await page.evaluate(async () => {
+      const original = Array.prototype.sort;
+      const shown = [];
+      let seriesSorts = 0;
+      Array.prototype.sort = function (...args) {
+        if (this[0]?.dimensions && this[0]?.modality) seriesSorts++;
+        return original.apply(this, args);
+      };
+      try {
+        for (const slice of [50, 51, 52]) {
+          window.__VEACOM_TEST__.setView({ slice });
+          await new Promise(done => requestAnimationFrame(() => requestAnimationFrame(() => requestAnimationFrame(done))));
+          shown.push(Number(document.querySelector('canvas[data-series-id]').dataset.slice));
+        }
+      } finally { Array.prototype.sort = original; }
+      return { shown, seriesSorts };
+    });
+    assert.deepEqual(paging.shown, [50, 51, 52]);
+    assert.equal(paging.seriesSorts, 0, 'Paging must preserve the catalog ordering.');
+    const more = page.getByTestId('tool-more');
+    await more.click();
+    if (!await page.getByTestId('inspector-tab-tags').isVisible()) await page.getByTestId('tool-inspector').click();
+    await page.getByTestId('inspector-tab-tags').click();
+    const tagFilter = page.locator('[data-action="tags-search"]');
+    await tagFilter.fill('modality');
+    await page.getByTestId('series-find').click();
+    const seriesFilter = page.locator('[data-action="series-search"]');
+    await seriesFilter.fill('CT');
+    await page.locator('[data-action="series-pick"]').first().click({ button: 'right' });
+    await page.locator('[data-action="series-clear"]').click();
+    await page.getByTestId('series-remove-confirm').click();
+    await page.waitForFunction(() => Number(document.documentElement.dataset.engineReleases) > 0 && !document.querySelector('canvas[data-series-id]'));
+    assert.deepEqual(await page.evaluate(async () => (await window.veacom.listSeries()).series), []);
+    await checkReleased();
+    assert.equal(await more.getAttribute('aria-expanded'), 'true');
+    assert.equal(await seriesFilter.inputValue(), 'CT');
+    assert.equal(await tagFilter.inputValue(), 'modality');
+
+    await seriesFilter.fill('');
+    await chooseCT();
+    const ct = await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId);
+    const files = studyFiles.slice(0, 3).map(name => path.join(mrStudy, name));
+    await dropOnPage(cdp, files, 120, 125);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
+    const mr = await page.evaluate(async () => (await window.veacom.listSeries()).series.find(item => item.modality === 'MR').id);
+    await page.getByTestId('series-' + mr).click();
+    const image = page.locator('canvas[data-series-id="' + mr + '"]');
+    await image.waitFor();
+    await image.evaluate(canvas => { window.remainingMRCanvas = new WeakRef(canvas); });
+    await cdp.send('HeapProfiler.collectGarbage');
+
+    // An operation that already has the pixels can finish reading them even if the reader removes the series.
+    async function readCT(finished) {
+      const buffer = window.borrowedCT ??= window.lastCTBuffer.deref();
+      const digest = await crypto.subtle.digest('SHA-256', buffer);
+      if (finished) delete window.borrowedCT;
+      return { bytes: buffer.byteLength, sha256: Array.from(new Uint8Array(digest)) };
+    }
+    const before = await page.evaluate(readCT, false);
+    assert.equal(before.bytes, columns * rows * slices * 2);
+    await page.getByTestId('series-' + ct).click({ button: 'right' });
+    await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
+    assert.deepEqual(await page.evaluate(readCT, true), before);
+    await checkReleased();
+    assert(await image.evaluate(canvas => window.remainingMRCanvas.deref() === canvas), 'Removing the CT must keep the active MR pane.');
+    const remaining = await page.evaluate(async () => {
+      const bridge = window.veacom, { generation } = await bridge.getCoreState(), [item] = (await bridge.listSeries()).series;
+      const frame = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+      return [item.id, item.patientId, frame.headers.get('X-SOP-Instance-UID')];
+    });
+    assert.deepEqual(remaining, [mr, 'SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1']);
+  } finally { await cdp.detach(); await page.close(); }
+}
+
+async function checkRestartedCatalog(browser, url) {
+  const page = await browser.newPage({ locale: 'en-US' });
+  try {
+    await page.goto(url);
+    await page.waitForFunction(() => document.documentElement.dataset.engineThreads && document.querySelector('[data-ready="true"]'));
+    assert.deepEqual(await importPickedFiles(page, studyFiles.map(name => path.join(study, name))), [slices]);
+    const ctRequest = await page.evaluate(async () => {
+      const [ct] = (await window.veacom.listSeries()).series;
+      window.ctCatalogFrames = new WeakRef(ct.frameMetadata);
+      const generation = ct.engineGeneration;
+      window.restartedCatalog = new Promise(resolve => {
+        const unsubscribe = window.veacom.onCoreState(state => {
+          if (state.status === 'ready' && state.generation > generation) { unsubscribe(); resolve(state.generation); }
+        });
+      });
+      return { seriesId: ct.id, generation: ct.engineGeneration, revision: ct.catalogRevision, index: 0 };
+    });
+    const devtools = await page.context().newCDPSession(page);
+    await devtools.send('HeapProfiler.collectGarbage');
+    assert.equal(await page.evaluate(() => window.ctCatalogFrames.deref()?.length), slices);
+    const engine = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
+    assert(engine);
+    await engine.evaluate(() => { setTimeout(() => { throw new Error('Simulated engine failure'); }, 0); });
+    assert.equal(await page.evaluate(() => window.restartedCatalog), ctRequest.generation + 1);
+    assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 0);
+    assert.deepEqual(await importPickedFiles(page, [path.join(mrStudy, studyFiles[0])]), [1]);
+    const next = await page.evaluate(async () => {
+      const bridge = window.veacom, [mr] = (await bridge.listSeries()).series;
+      const frame = await bridge.fetchPixels({ seriesId: mr.id, generation: mr.engineGeneration, revision: mr.catalogRevision, index: 0 });
+      return [mr.patientId, frame.headers.get('X-SOP-Instance-UID'), Number(frame.headers.get('Content-Length'))];
+    });
+    assert.deepEqual(next, ['SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1', columns * rows * 2]);
+    await assert.rejects(page.evaluate(request => window.veacom.fetchPixels(request), ctRequest));
+    await assert.rejects(page.evaluate(async request => window.veacom.fetchPixels({
+      ...request, generation: (await window.veacom.getCoreState()).generation,
+    }), ctRequest));
+    await devtools.send('HeapProfiler.collectGarbage');
+    assert.equal(await page.evaluate(() => window.ctCatalogFrames.deref()?.length ?? 0), 0, 'The previous engine still holds CT frame metadata.');
+  } finally { await page.close(); }
+}
+
+function checkPatientMedia(archive, source) {
+  const directory = archive.find(file => /(?:^|\/)DICOMDIR$/.test(file.name));
+  assert(directory, 'The media export needs a DICOMDIR.');
+  const prefix = directory.name.slice(0, -'DICOMDIR'.length);
+  const files = new Map(archive.map(file => [file.name, file.bytes]));
+  assert.equal(archive.length, slices + 1);
+  const digests = [];
+  for (let i = 1; i <= slices; i++) {
+    const name = prefix + 'DICOM/IM' + String(i).padStart(6, '0');
+    const bytes = files.get(name);
+    assert(bytes, name);
+    digests.push(createHash('sha256').update(bytes).digest('hex'));
+  }
+  const originals = JSON.parse(readFileSync(path.join(source, 'manifest.json'), 'utf8')).sha256;
+  assert.deepEqual(digests.sort(), Object.values(originals).sort());
+}
+
+async function checkChosenStudy(browser, url, files, modality, frameCount) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByTestId('welcome-open-files').click();
+    await (await chooser).setFiles(files);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
+    await page.locator('canvas[data-series-id]').first().waitFor();
+    const opened = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(series => ({
+      patient: series.patientId, modality: series.modality, instances: series.frameMetadata.map(frame => frame.sopInstanceUid),
+    })));
+    const root = '2.25.302617644913925066835652647005517224101' + (modality === 'MR' ? '.10' : '');
+    assert.deepEqual(opened, [{ patient: modality === 'CT' ? 'SYNTHETIC-SMOKE' : 'SYNTHETIC-OTHER', modality,
+      instances: Array.from({ length: frameCount }, (_, i) => root + '.3.' + (i + 1)) }]);
+  } finally { await page.close(); }
+}
+
+/** The patients have identical folder and file names. Each export must contain only the active patient's sources. */
+async function checkPatientDrop(browser, url, folders) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    await page.getByTestId('welcome-open-folder').waitFor();
+    const devtools = await page.context().newCDPSession(page);
+    const files = folders ? [study, mrStudy].map(folder => path.join(folder, 'S01'))
+      : [study, mrStudy].flatMap(folder => studyFiles.slice(0, 3).map(name => path.join(folder, name)));
+    await dropOnPage(devtools, files);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
+    const results = await page.evaluate(async () => {
+      const bridge = window.veacom, { generation } = await bridge.getCoreState();
+      const values = [];
+      for (const item of (await bridge.listSeries()).series) {
+        const pixels = await bridge.fetchPixels({ seriesId: item.id, generation, revision: item.catalogRevision, index: 0 });
+        const sopInstanceUid = pixels.headers.get('X-SOP-Instance-UID');
+        const corner = await bridge.measure(item.id, generation, item.sourceRevision, { kind: 'sourceRegion', frame: { index: 0, sopInstanceUid },
+          shape: 'rectangle', points: [[1, 1, 0], [4, 4, 0]], pixelUnits: false });
+        values.push([item.modality, item.patientId, sopInstanceUid, item.dimensions[2], corner.min, corner.max]);
+      }
+      return values.sort((a, b) => a[0].localeCompare(b[0]));
+    });
+    const root = '2.25.302617644913925066835652647005517224101';
+    const count = folders ? slices : 3;
+    assert.deepEqual(results, [
+      ['CT', 'SYNTHETIC-SMOKE', root + '.3.1', count, -1000, -1000],
+      ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', count, 0, 0],
+    ]);
+    const series = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(({ id, modality }) => ({ id, modality })));
+    const exports = folders ? [['CT'], ['MR']] : [['CT', 1], ['MR', 2], ['CT', 0]];
+    for (const [modality, index] of exports) {
+      const { id } = series.find(item => item.modality === modality);
+      await page.getByTestId('series-' + id).click();
+      await page.waitForFunction(id => window.__VEACOM_TEST__.state().activeSeriesId === id, id);
+      if (index !== undefined) {
+        await page.evaluate(slice => window.__VEACOM_TEST__.setView({ slice }), index);
+        await page.locator(`canvas[data-series-id="${id}"][data-slice="${index}"]`).first().waitFor();
+      }
+      await page.getByTestId('tool-export').click();
+      if (folders) await page.locator('[data-action="export-kind"][data-kind="media"]').click();
+      await page.locator(`input[data-action="export-scope"][value="${folders ? 'series' : 'slice'}"]`).check();
+      await page.locator('input[data-action="export-anonymity"][value="none"]').check();
+      const pending = page.waitForEvent('download');
+      await page.getByTestId('export-submit').click();
+      const download = await pending;
+      const buffer = readFileSync(await download.path());
+      const archive = readStoredZip(buffer);
+      const source = modality === 'CT' ? study : mrStudy;
+      if (folders) {
+        checkPatientMedia(archive, source);
+        await checkChosenStudy(browser, url, { name: download.suggestedFilename(), mimeType: 'application/zip', buffer }, modality, slices);
+      } else {
+        assert.equal(archive.length, 1);
+        assert.match(archive[0].name, /(?:^|\/)DICOM\/IM000001$/);
+        const expected = readFileSync(path.join(source, studyFiles[index]));
+        assert(archive[0].bytes.equals(expected), `The downloaded ${modality} slice ${index} must match its original DICOM file.`);
+      }
+      await page.locator('.export-dialog').waitFor({ state: 'detached' });
+    }
+  } finally { await page.close(); }
+}
+
+/** Save on the same CT in two tabs. Reload it through the normal file-drop entry point to check the shared profile. */
+async function checkMeasurementTabs(browser, url) {
+  const context = await browser.newContext();
+  const selector = '[data-annotation-id]:not([data-annotation-id="draft"])';
+  async function open(page) {
+    await page.goto(url);
+    await page.waitForFunction(() => document.documentElement.dataset.engineThreads && window.__VEACOM_TEST__);
+    await page.evaluate(async () => {
+      const names = (await (await fetch('/__study/files.json')).json()).slice(0, 3);
+      const transfer = new DataTransfer();
+      for (const name of names) transfer.items.add(new File([await (await fetch('/__study/' + name)).arrayBuffer()], name.split('/').pop()));
+      document.body.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    });
+    await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    await page.evaluate(() => { window.__VEACOM_TEST__.setView({ slice: 1 }); window.__VEACOM_TEST__.setTool('probe'); });
+    await page.locator('[data-testid="annotation-overlay"][data-mode="source"][data-slice="1"]').waitFor();
+  }
+  async function draw(page, at) {
+    const bounds = await page.locator('[data-testid="annotation-overlay"]').boundingBox();
+    await page.mouse.click(bounds.x + at * bounds.width, bounds.y + 0.5 * bounds.height);
+    await page.locator(selector).waitFor();
+    await page.locator('[data-measurement-save="saved"]').waitFor();
+    return page.locator(selector).getAttribute('data-annotation-id');
+  }
+  try {
+    const [first, second] = await Promise.all([context.newPage(), context.newPage()]);
+    await Promise.all([open(first), open(second)]);
+    const ids = await Promise.all([draw(first, 0.42), draw(second, 0.58)]);
+    assert.equal(new Set(ids).size, 2);
+    await open(first);
+    await first.locator(`[data-annotation-id="${ids[1]}"]`).waitFor();
+    const displayed = await first.locator(selector).evaluateAll(marks => marks.map(mark => mark.dataset.annotationId));
+    assert.deepEqual(displayed.sort(), [...ids].sort());
+    await first.locator('[data-measurement-save="saved"]').waitFor();
+    console.log('Two browser tabs kept both measurements on the same source image.');
+  } finally { await context.close(); }
 }
 
 async function checkArchiveLimit(page) {
@@ -329,17 +751,20 @@ try {
   for (const isolated of [true, false]) {
     const server = await serve(isolated);
     const page = await browser.newPage();
-    await page.addInitScript(() => {
+    await page.addInitScript(volumeBytes => {
       // The bridge hands the transferred buffer to the viewer outside the Response body. Read it at the Worker boundary.
       window.Worker = class extends Worker {
         constructor(...args) {
           super(...args);
           this.addEventListener('message', ({ data }) => {
             if (data.ok && data.value?.bytes && data.value.components === 3) window.checkPictureFrame?.(data.value);
+            if (data.ok && data.value?.bytes?.byteLength === volumeBytes && data.value.index === undefined) {
+              window.smokeCTDigest = crypto.subtle.digest('SHA-256', data.value.bytes);
+            }
           });
         }
       };
-    });
+    }, columns * rows * slices * 2);
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -352,6 +777,15 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      await checkDropDuringStartup(browser, page.url());
+      await checkChooseDuringStartup(browser, page.url(), false);
+      if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
+      await checkWelcomeBeforeGraphics(browser, page.url());
+      await checkClosedCTBuffer(browser, page.url());
+      await checkRestartedCatalog(browser, page.url());
+      await checkPatientDrop(browser, page.url(), false);
+      await checkPatientDrop(browser, page.url(), true);
+      await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
       const check = (ok, what) => { if (!ok) failures.push(`${mode}: ${what}`); };
       check(started.isolated === isolated, `crossOriginIsolated is ${started.isolated}`);
@@ -362,12 +796,16 @@ try {
       check(opened.dimensions.join('x') === `${columns}x${rows}x${slices}`, `dimensions ${opened.dimensions.join('x')}`);
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
+      assert.deepEqual(opened.volumeHash, sourceVolumeHash, 'The decoded CT volume must match all 100 original pixel arrays.');
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
       const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);
       check(model.ok && model.channels === 26 && model.finite, `landmark model: ${JSON.stringify(model)}`);
       check(model.threads === model.expected && model.kept === 2, `landmark model threads and cache: ${JSON.stringify(model)}`);
-      await checkFilePicker(page);
+      const sameNamedSlices = studyFiles.slice(0, 2).map(name => ({
+        name: 'IM0001.dcm', mimeType: 'application/dicom', buffer: readFileSync(path.join(study, name)),
+      }));
+      await checkChosenStudy(browser, page.url(), sameNamedSlices, 'CT', sameNamedSlices.length);
       await page.evaluate(checkQueuedImports);
       await page.evaluate(locale => window.veacom.setLocale(locale), isolated ? 'en' : 'tr');
       await checkArchiveLimit(page);

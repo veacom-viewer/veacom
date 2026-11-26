@@ -13,6 +13,7 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 import { createLabelFolder, type FolderEntry } from './labelFolder';
+import { droppedFileGroups, importFileSources, watchFileDrops, type CapturedDrop, type FileSource, type SelectedFile } from './droppedFiles';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -26,8 +27,7 @@ interface CallOptions {
   /** Told the request's number as soon as it waits, so it can be cancelled before it starts. */
   onQueued?: (id: number) => void;
 }
-interface SelectedFile { path: string; file: File }
-interface Selection { files: SelectedFile[]; roots: string[]; zip: boolean }
+interface Selection { files: FileSource[]; roots: string[]; zip: boolean }
 type Progress = { id?: number; running: boolean; stage: string; completed: number; total: number; cancelled: boolean };
 
 const LOCALE_KEY = 'veacom.locale';
@@ -48,38 +48,6 @@ function storedLocale(): 'tr' | 'en' {
     if (saved === 'tr' || saved === 'en') return saved;
   } catch { /* No storage (private window): the browser's language decides. */ }
   return navigator.language.toLowerCase().startsWith('tr') ? 'tr' : 'en';
-}
-
-/** Files from the last drop on the page, taken before the interface's own drop handler (see `watchDrops`). */
-let dropped: { files: File[]; entries: FileSystemEntry[] } | null = null;
-
-/** The files of dropped folders can only be read through the drop's entries, and only while the drop event runs: this
- * capture-phase listener keeps them for `importFiles`, which the interface calls from its own drop handler. */
-export function watchDrops(): void {
-  document.addEventListener('drop', event => {
-    const transfer = event.dataTransfer;
-    if (!transfer?.types.includes('Files')) return;
-    dropped = {
-      files: Array.from(transfer.files),
-      entries: Array.from(transfer.items).map(item => item.webkitGetAsEntry()).filter((entry): entry is FileSystemEntry => Boolean(entry)),
-    };
-  }, true);
-}
-
-async function walk(root: FileSystemEntry): Promise<SelectedFile[]> {
-  const found: { path: string; entry: FileSystemFileEntry }[] = [];
-  const visit = async (entry: FileSystemEntry, path: string): Promise<void> => {
-    if (entry.isFile) { found.push({ path, entry: entry as FileSystemFileEntry }); return; }
-    if (!entry.isDirectory) return;
-    const reader = (entry as FileSystemDirectoryEntry).createReader();
-    for (;;) {
-      const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-      if (!batch.length) break;
-      await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
-    }
-  };
-  await visit(root, root.name);
-  return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
 }
 
 type FileHandle = { kind: 'file'; name: string; getFile(): Promise<File> };
@@ -149,6 +117,7 @@ function download(name: string, data: Blob): void {
 }
 
 export function createWebBridge(): DesktopBridge {
+  const drops = watchFileDrops(document);
   let locale = storedLocale();
   let generation = 0, restartCount = 0, crashes = 0, requestId = 0, selectionNumber = 0;
   let worker: Worker | undefined;
@@ -158,9 +127,8 @@ export function createWebBridge(): DesktopBridge {
   const pending = new Map<number, Pending>();
   const stateListeners = new Set<(state: CoreState) => void>();
   const selections = new Map<string, Selection>();
-  const known = new Map<string, number>();
-  /** Each series as the engine last listed it: its catalog revision, and what the export review names it by. */
-  const described = new Map<string, Series>();
+  /** The current engine's series, including their revisions and the details shown for export review. */
+  const openSeries = new Map<string, Series>();
   // The cancel flag the engine reads while it works: the bridge request id, or zero. Only a cross-origin
   // isolated page has shared memory. Elsewhere (a host without the site's headers) the single-thread engine runs and
   // cannot see a flag while it works, so a Cancel there replaces the engine once CANCEL_GRACE_MS have passed.
@@ -214,7 +182,7 @@ export function createWebBridge(): DesktopBridge {
   function releaseMemory(): void {
     // Files being imported fill the catalog again, and series listed since are open: nothing to give back. Asked again
     // when the requests have drained, since an import answered by then has added its series.
-    if (known.size || [...pending.values()].some(request => request.op === 'import' && !request.abandoned)) {
+    if (openSeries.size || [...pending.values()].some(request => request.op === 'import' && !request.abandoned)) {
       releaseWhenIdle = false;
       return;
     }
@@ -238,7 +206,8 @@ export function createWebBridge(): DesktopBridge {
     const first = queue.findIndex(item => item.request.op !== 'volume');
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
-    worker.postMessage({ id: next.id, ...next.request });
+    const source = next.request.op === 'import' ? next.request.files : undefined;
+    worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
   const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
@@ -250,7 +219,7 @@ export function createWebBridge(): DesktopBridge {
     for (const helper of helpers) helper.terminate();
     helpers = [];
     queue = []; inFlight = null;
-    known.clear(); clearTimeout(cancelTimer); cancelTimer = undefined; shared = null; setCancel(0);
+    openSeries.clear(); clearTimeout(cancelTimer); cancelTimer = undefined; shared = null; setCancel(0);
     progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
   }
 
@@ -405,7 +374,7 @@ export function createWebBridge(): DesktopBridge {
 
   function catalog(result: ImportResult): ImportResult {
     const series = result.series.map(item => ({ ...item, engineGeneration: generation }) as Series);
-    for (const item of series) { known.set(item.id, generation); described.set(item.id, item); }
+    for (const item of series) openSeries.set(item.id, item);
     return { ...result, series };
   }
 
@@ -420,7 +389,7 @@ export function createWebBridge(): DesktopBridge {
   function reviewPixels(ids: string[], frame?: number): boolean {
     const label = (value: unknown) => String(value ?? '').replace(/[\u0000-\u001f\u007f-\u009f\u2028-\u202e\u2066-\u2069]/gu, ' ').slice(0, 80);
     const lines = ids.map(id => {
-      const item = described.get(id);
+      const item = openSeries.get(id);
       return (item && [item.patientName, item.patientId, item.description, item.studyUid, item.uid].map(label).filter(Boolean).join(' · ')) || id;
     });
     const pages = Math.ceil(lines.length / REVIEW_PAGE);
@@ -433,19 +402,19 @@ export function createWebBridge(): DesktopBridge {
     return true;
   }
 
-  function remember(groups: SelectedFile[][]): string[] {
+  function remember(groups: FileSource[][]): string[] {
     const selected = groups.filter(group => group.length).map(files => ({ name: files[0].path.split('/')[0], files }));
     if (!selected.length) return [];
     const counts = new Map<string, number>();
     for (const { name } of selected) counts.set(name, (counts.get(name) ?? 0) + 1);
     const folder = `/in/${++selectionNumber}`;
-    const files: SelectedFile[] = [], roots: string[] = [];
+    const files: FileSource[] = [], roots: string[] = [];
     for (const root of selected) {
       // Keep unambiguous siblings together for DICOMDIR. Each colliding file or folder gets its own parent.
       const parent = counts.get(root.name) === 1 ? folder : `/in/${++selectionNumber}`;
       roots.push(`${parent}/${root.name}`);
       if (new Set(root.files.map(item => item.path)).size !== root.files.length) throw new Error(t('import.duplicatePaths'));
-      for (const { path, file } of root.files) files.push({ path: `${parent}/${path}`, file });
+      for (const source of root.files) files.push({ ...source, path: `${parent}/${source.path}` });
     }
     const token = `import:${crypto.randomUUID()}`;
     const zip = selected.some(root => root.files[0].path === root.name && root.name.toLowerCase().endsWith('.zip'));
@@ -461,6 +430,11 @@ export function createWebBridge(): DesktopBridge {
   const videos = new Map<string, { name: string; fps: number; config?: { width: number; height: number; config: Uint8Array<ArrayBuffer> };
     samples: Uint8Array<ArrayBuffer>[]; sizes: number[]; keyFrames: number[] }>();
 
+  async function droppedPaths(files: File[], capture: CapturedDrop | null) {
+    const selected = await droppedFileGroups(files, capture);
+    performance.mark('veacom:files-listed');
+    return remember(selected);
+  }
   start();
 
   return {
@@ -485,24 +459,21 @@ export function createWebBridge(): DesktopBridge {
       download: (name, text) => download(name, new Blob([text], { type: 'application/json' })),
       refused: { invalid: () => t('label.invalidPlan'), changed: () => t('label.planChanged'), notAPlan: () => t('label.notAPlan'), expired: () => t('label.expired') },
     }),
-    async importFiles(files) {
-      const drop = dropped;
-      dropped = null;
-      const same = drop && drop.files.length === files.length && drop.files.every((file, i) => file === files[i]);
-      const selected = same && drop.entries.length ? await Promise.all(drop.entries.map(walk)) : files.map(file => [{ path: file.name, file }]);
-      // Steps of opening a study, on the page's timeline for tools/browser-bench (performance marks cost next to nothing).
-      performance.mark('veacom:files-listed');
-      return remember(selected);
-    },
+    importFiles: files => droppedPaths(files, drops.takeLatest()),
+    takePendingFileDrops: () => drops.takePending().map(drop => () => droppedPaths(drop.files, drop)),
     async importSelected(capabilities) {
       const chosen = capabilities.map(token => selections.get(token));
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
       for (const token of capabilities) selections.delete(token);
-      const files = chosen.flatMap(selection => selection!.files), roots = chosen.flatMap(selection => selection!.roots);
+      const files = importFileSources(chosen.flatMap(selection => selection!.files)), roots = chosen.flatMap(selection => selection!.roots);
       performance.mark('veacom:import-start');
-      const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
-      performance.mark('veacom:import-done');
-      return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
+      try {
+        const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
+        performance.mark('veacom:import-done');
+        return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
+      } finally {
+        if (!Array.isArray(files)) files.port.close();
+      }
     },
     // The engine answers one request at a time, so it cannot publish series while an import runs: every series
     // arrives with the import's own result.
@@ -528,17 +499,17 @@ export function createWebBridge(): DesktopBridge {
     },
     async removeSeries(ids, requestGeneration) {
       requireGeneration(requestGeneration);
-      const mine = [...new Set(ids)].filter(id => known.get(id) === generation);
+      const mine = [...new Set(ids)].filter(id => openSeries.has(id));
       if (!mine.length) return { removed: 0 };
       const result = await call<{ removed: number; remaining: number }>({ op: 'remove', ids: mine });
-      for (const id of mine) { known.delete(id); described.delete(id); }
+      for (const id of mine) openSeries.delete(id);
       if (result.remaining === 0 && requestGeneration === generation) releaseMemory();
       return result;
     },
     getPixels: () => Promise.reject(new Error('The browser build hands pixels over with fetchPixels.')),
     async fetchPixels({ seriesId, generation: requestGeneration, revision, index }, signal) {
       requireGeneration(requestGeneration);
-      if (known.get(seriesId) !== generation) throw new Error(t('engine.seriesNotOpen'));
+      if (!openSeries.has(seriesId)) throw new Error(t('engine.seriesNotOpen'));
       performance.mark(index === undefined ? 'veacom:volume-start' : 'veacom:frame-start');
       const pixels = await (index === undefined
         ? call<EnginePixels>({ op: 'volume', seriesId, revision }, { busy: true, signal })
@@ -568,11 +539,11 @@ export function createWebBridge(): DesktopBridge {
     async exportDicom(seriesIds, options) {
       const ids = Array.isArray(seriesIds) ? seriesIds : [seriesIds];
       if (options.engineGeneration !== undefined) requireGeneration(options.engineGeneration);
-      if (ids.some(id => known.get(id) !== generation)) throw new Error(t('engine.seriesNotOpen'));
+      if (ids.some(id => !openSeries.has(id))) throw new Error(t('engine.seriesNotOpen'));
       // A full cleanup exports only the revisions the reader reviewed; declined, nothing is exported.
       const full = options.anonymize && Boolean(options.full);
       if (full && !reviewPixels(ids, options.frame)) return null;
-      const reviewed = full ? Object.fromEntries(ids.flatMap(id => { const revision = described.get(id)?.catalogRevision; return revision === undefined ? [] : [[id, revision]]; })) : {};
+      const reviewed = full ? Object.fromEntries(ids.flatMap(id => { const revision = openSeries.get(id)?.catalogRevision; return revision === undefined ? [] : [[id, revision]]; })) : {};
       const job = { id: 0, cancelled: false };
       exporting = job;
       try {

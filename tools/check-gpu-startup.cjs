@@ -13,7 +13,8 @@ async function main() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-gpu-startup-'));
   let desktop;
   try {
-    desktop = await electron.launch({ args: [path.resolve(__dirname, '..')],
+    const executablePath = process.env.VEACOM_SMOKE_EXECUTABLE;
+    desktop = await electron.launch({ ...(executablePath ? { executablePath } : {}), args: executablePath ? [] : [path.resolve(__dirname, '..')],
       env: { ...process.env, VEACOM_USER_DATA: profile, VEACOM_TEST_MODE: '1' }, timeout: 90_000 });
     const page = await desktop.firstWindow(), errors = [], checks = [];
     // A click or key press from the computer would change the panes this check counts.
@@ -31,7 +32,17 @@ async function main() {
       document.addEventListener('veacom:frame', event => proof.frames.push(event.detail.seriesId));
     });
     await privileged.importPaths(desktop, page, [path.resolve(process.argv[2])]);
-    await page.waitForFunction(() => window.__gpuStartup.polls > 0);
+    try {
+      await page.waitForFunction(() => window.__gpuStartup.polls > 0);
+    } catch (error) {
+      const details = await page.evaluate(() => ({
+        frames: window.__gpuStartup.frames.length,
+        series: window.__VEACOM_TEST__.state().series.length,
+        loading: window.__VEACOM_TEST__.state().pendingLoads,
+        parallel: Boolean(document.createElement('canvas').getContext('webgl2')?.getExtension('KHR_parallel_shader_compile')),
+      }));
+      throw new Error(`No shader completion check during import: ${JSON.stringify({ ...details, errors })}`, { cause: error });
+    }
     assert.equal(await page.locator('canvas[data-renderer]').count(), 0);
     checks.push('Pixel publication waits for shader readiness.');
     await page.getByTestId('tool-layout').click();

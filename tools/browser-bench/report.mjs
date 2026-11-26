@@ -2,7 +2,7 @@
 // table. Several folders, such as the parallel runs of one CI workflow on different runners, are pooled: every trial
 // counts, and a table per runner shows how far the runners agree.
 //   node tools/browser-bench/bench.mjs report [--out <folder>] [--require-every-viewer] <results folder> […]
-// --require-every-viewer exits 1, after writing the report, when any viewer has no successful trial in any study.
+// --require-every-viewer fails if a viewer has no successful trial in a study, or any counted fresh navigation failed.
 // The report goes to --out, or beside the first folder's results. Warm-up rounds and failed trials are left out
 // (failures are listed). Every number is the median over trials with a bootstrap 95% interval. When the run has the A/A pair (veacom and veacom-aa, the same build twice), each metric's
 // A/A spread is the noise floor: another viewer is called faster or slower only beyond it.
@@ -17,6 +17,8 @@ const requireFlag = args.indexOf('--require-every-viewer'), requireEvery = requi
 if (requireEvery) args.splice(requireFlag, 1);
 const folders = (args.length ? args : ['.']).map(folder => path.resolve(folder));
 const runs = folders.map(folder => JSON.parse(fs.readFileSync(path.join(folder, 'run.json'), 'utf8')));
+const fromNavigation = Boolean(runs[0].options['from-navigation']);
+if (runs.some(run => Boolean(run.options['from-navigation']) !== fromNavigation)) throw new Error('Report fresh-navigation and settled-page runs separately.');
 const lines = folders.flatMap((folder, index) => fs.readFileSync(path.join(folder, 'results.jsonl'), 'utf8').split('\n').filter(Boolean)
   .map(line => ({ ...JSON.parse(line), runner: index + 1 })));
 const run = runs[0], folder = path.resolve(out ?? folders[0]);
@@ -27,6 +29,9 @@ const counted = lines.filter(line => !line.warmup && !line.error), failed = line
 
 // Each metric: label, unit, how to read it from a trial, and whether lower is better.
 const METRICS = [
+  ['readySinceNavigationMs', 'Navigation to ready opening control', 'ms', l => l.readySinceNavigationMs, true],
+  ['handoffSinceNavigationMs', 'Navigation to file handoff', 'ms', l => l.handoffSinceNavigationMs, true],
+  ['navigationToFirstCorrectMs', 'Navigation to first correct image', 'ms', l => l.navigationToFirstCorrectMs, true],
   ['pageMs', 'Page load', 'ms', l => l.pageMs, true],
   ['firstImageMs', 'First image after drop', 'ms', l => l.firstImageMs, true],
   ['doneMs', 'Loading done (CPU quiet)', 'ms', l => l.doneMs, true],
@@ -58,8 +63,9 @@ const steps = studies.map(study => {
   return { study, rows: rows.sort((a, b) => (a.values.find(Number.isFinite) ?? Infinity) - (b.values.find(Number.isFinite) ?? Infinity)) };
 }).filter(group => group.rows.length);
 // How far the runners agree: each runner's own median of the first image, per viewer and study.
+const runnerMetric = fromNavigation ? 'Navigation to first correct image' : 'First image after handoff';
 const perRunner = runs.length > 1 ? studies.map(study => ({ study, rows: runs.map((_, i) => viewers.map(viewer =>
-  summarize(counted.filter(l => l.runner === i + 1 && l.viewer === viewer && l.study === study).map(l => l.firstImageMs).filter(Number.isFinite)).median)) })) : [];
+  summarize(counted.filter(l => l.runner === i + 1 && l.viewer === viewer && l.study === study).map(l => fromNavigation ? l.navigationToFirstCorrectMs : l.firstImageMs).filter(Number.isFinite)).median)) })) : [];
 const values = (viewer, study, read) => counted.filter(l => l.viewer === viewer && l.study === study).map(read).filter(Number.isFinite);
 const reference = viewers.includes('veacom') ? 'veacom' : viewers[0];
 
@@ -112,7 +118,7 @@ ${rows.map(row => `<tr><td>${escape(row.label)} <span class="ci">${escape(row.un
   return `<td class="${cell.viewer === row.best ? 'best' : worse ? 'worse' : ''}">${cell.n ? `${format(cell.median, row.unit)}<span class="ci">${format(cell.low, row.unit)}–${format(cell.high, row.unit)} · n=${cell.n}</span>` : '–'}</td>`;
 }).join('')}${row.noise !== null ? `<td>±${(row.noise * 100).toFixed(1)}%</td>` : rows.some(r => r.noise !== null) ? '<td></td>' : ''}</tr>`).join('\n')}
 </tbody></table></div>`).join('\n')}
-${perRunner.map(({ study, rows }) => `<h2>First image on each runner, ${escape(study)} (ms)</h2><div class="scroll"><table><thead><tr><th>Runner</th>${viewers.map(v => `<th>${escape(v)}</th>`).join('')}</tr></thead><tbody>
+${perRunner.map(({ study, rows }) => `<h2>${runnerMetric} on each runner, ${escape(study)} (ms)</h2><div class="scroll"><table><thead><tr><th>Runner</th>${viewers.map(v => `<th>${escape(v)}</th>`).join('')}</tr></thead><tbody>
 ${rows.map((row, i) => `<tr><td>${i + 1}: ${escape(runs[i].machine.cpu ?? '')}</td>${row.map(value => `<td>${format(value, 'ms')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}
 ${steps.map(({ study, rows }) => `<h2>VEAcom's opening step by step, ${escape(study)} (ms after the drop)</h2><div class="scroll"><table><thead><tr><th>Step</th>${stepViewers.map(v => `<th>${escape(v)}</th>`).join('')}</tr></thead><tbody>
 ${rows.map(row => `<tr><td>${escape(row.name)}</td>${row.values.map(value => `<td>${format(value, 'ms')}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`).join('')}
@@ -140,13 +146,14 @@ const markdown = [
     ...rows.map(row => `| ${row.label} (${row.unit}) | ${row.cells.map(c => `${c.viewer === row.best ? '**' : ''}${cell(c, row.unit)}${c.viewer === row.best ? '**' : ''}`).join(' | ')} |`)]),
   ...steps.flatMap(({ study, rows }) => ['', `#### VEAcom's opening step by step, ${study} (ms after the drop)`, '', `| Step | ${stepViewers.join(' | ')} |`, `|---|${stepViewers.map(() => '---:').join('|')}|`,
     ...rows.map(row => `| ${row.name} | ${row.values.map(value => format(value, 'ms')).join(' | ')} |`)]),
-  ...perRunner.flatMap(({ study, rows }) => ['', `#### First image on each runner, ${study} (ms)`, '', `| Runner | ${viewers.join(' | ')} |`, `|---|${viewers.map(() => '---:').join('|')}|`,
+  ...perRunner.flatMap(({ study, rows }) => ['', `#### ${runnerMetric} on each runner, ${study} (ms)`, '', `| Runner | ${viewers.join(' | ')} |`, `|---|${viewers.map(() => '---:').join('|')}|`,
     ...rows.map((row, i) => `| ${i + 1}: ${runs[i].machine.cpu ?? ''} | ${row.map(value => format(value, 'ms')).join(' | ')} |`)]),
   ...(failed.length ? ['', `Failed trials: ${failed.map(l => `${l.viewer} ${l.study} round ${l.round}: ${l.error.split('\n')[0]}`).join('; ')}`] : []),
   '',
 ].join('\n');
 fs.writeFileSync(path.join(folder, 'report.md'), markdown);
 console.log(`\n${path.join(folder, 'report.html')}`);
+if (fromNavigation && requireEvery && failed.some(line => !line.warmup)) process.exitCode = 1;
 // A viewer that never finished a trial means the run did not measure it: say so, and fail when asked to.
 const missing = studies.flatMap(study => viewers.filter(viewer => !counted.some(l => l.viewer === viewer && l.study === study)).map(viewer => `${viewer} (${study})`));
 if (missing.length) {

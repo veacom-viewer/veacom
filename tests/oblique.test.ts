@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { assertClose } from './support';
 import { foldLine, lineAngle, obliqueAngle, rotationComponent, turnedOblique } from '../src/imaging/oblique';
 import { getPlaneFrame, screenMapping } from '../src/imaging/geometry';
+import { compose, rotation, translation } from '../src/imaging/rigid';
 import type { Series, ViewState } from '../src/model';
 
 const series = {
@@ -38,6 +39,24 @@ describe('oblique MPR handles', () => {
       assert.equal(obliqueAngle(series, view(moved, oblique)), 25);
     });
   }
+  it('turns a registered reference where it is drawn, even when its own plane is parallel to the pane', () => {
+    const pane = view('axial'), reference = view('axial'), frame = getPlaneFrame(series, pane);
+    const transform = compose(translation([3, -4, 8]), rotation(0, 90, frame.center));
+    assert.equal(lineAngle(frame, screenMapping(series, pane, 400, 400), series, reference, [0, 0]), null);
+    for (const flipX of [false, true]) {
+      const mapping = screenMapping(series, { ...pane, flipX }, 400, 400);
+      const start = lineAngle(frame, mapping, series, reference, [0, 0], transform);
+      assert.ok(start !== null);
+      assertClose(deg(foldLine(start)), 0, 8);
+      for (const [turn, step, expected] of [[25, 0, 25], [113, 5, 115], [-70, 0, -70]]) {
+        const oblique = turnedOblique(frame, mapping, series, reference, 1, turn * Math.PI / 180, step, transform);
+        const line = lineAngle(frame, mapping, series, reference, oblique, transform);
+        assert.ok(line !== null);
+        assert.ok(Math.abs(deg(foldLine(line - start - expected * Math.PI / 180))) < 0.2);
+      }
+    }
+  });
+
   it('follows the pointer past 90° without a stop or a jump, and steps with Shift/Ctrl back to exactly 0', () => {
     const pane = view('axial'), frame = getPlaneFrame(series, pane), mapping = screenMapping(series, pane, 400, 400);
     const component = rotationComponent('coronal', 'axial'), start = lineAngle(frame, mapping, series, view('coronal'), [0, 0])!;

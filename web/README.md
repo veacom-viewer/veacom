@@ -126,8 +126,15 @@ where the page runs the single-thread engine. CI's `browser` job builds both eng
 with and without the headers (`tools/browser-check.mjs`). The test studies for `?test=` are read from the folder
 `VEACOM_TESTDATA` names.
 
+`node web/tools/import-memory.mjs web/site/public` opens 1,024 CT files in each engine mode, measures catalog memory
+before loading their volume and checks the decoded pixels against the original slices.
+
+To check saved measurements in the built viewer, run `node tools/check-measurement-recovery.cjs /path/to/evidence --browser-site web/site/public`.
+It reopens a real Chromium profile after a normal exit and a browser process crash. It checks the patient, source frames,
+geometry and labels of 100 drawings, including oblique reconstructions and a calibrated subset.
+
 Open http://127.0.0.1:5199/ and drop a folder or ZIP. `?test=petct|bigct|calisma|jtwok|jpegll&rounds=N`
-opens a test study. `&prefetch=1` reads up to 64 KiB per file ahead of import, up to 16 MiB in total.
+opens a test study. `&prefetch=1` reads up to 64 KiB per file in groups of up to 16 files, with a 64 MiB total limit.
 Files larger than 16 MiB are read on demand. `&checksum=1` adds a SHA-1 of every decoded series (lossless copies must match).
 `&threads=N` picks the build (1: one thread; N > 1: the engine's thread and N − 1 helpers); `&hold=N` lowers the limit for
 holding a series' files, to time the decoding of a series too large to hold.

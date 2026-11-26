@@ -8,22 +8,26 @@ import {
   Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
-import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, prioritiseImport, removeSeries, type CoreProgress, type EarlyImport } from './api';
+import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, prioritiseImport, removeSeries, type CoreProgress, type EarlyImport, registerSeries } from './api';
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, type WaitingSeries } from './components/SeriesBrowser';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, useSeriesFilters, type WaitingSeries } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { holdsFrame } from './ui/discPictures';
 import { carryAnnotations, holdingIn } from './ui/earlySeries';
+import { allowExternalDrop, externalDropEffect } from './ui/fileDrop';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
-import { advanceCine } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, projectionAngle, reconstructedWindow, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
-import { isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
+import { advanceCine, cineCycle, recordedFps } from './imaging/cine';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
+import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
+import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
+import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
+import { filmKey, isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
 import { deformity, type FilmSelection } from './ui/deformityStore';
 import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
@@ -35,7 +39,7 @@ import { useEngineRecovery } from './useEngineRecovery';
 import { captureViewportCanvas, captureViewportPng } from './export-video';
 import { copyCanvas } from './ui/clipboard';
 import type { ExportDialogProps } from './components/ExportDialog';
-import { trimInactiveVolumes } from './domain/volumeCache';
+import { trimInactiveVolumes, VolumeIndex } from './domain/volumeCache';
 import { createVolumeDecorator } from './domain/decoratedVolumes';
 import { measureWindow } from './imaging/nativeMeasurements';
 import { annotationSourceIndex, distanceMm, quantitativeScale, shownOnView, storedUnit, viewOfAnnotation } from './imaging/annotations';
@@ -44,6 +48,8 @@ import { sphereOf } from './imaging/voi';
 import { clearEditedScores } from './imaging/deauvilleReading';
 import { SphereDetails } from './components/SphereDetails';
 import { usePetRecords, usePetStudies } from './imaging/usePetStudies';
+import { useMeasurementRecovery } from './imaging/useMeasurementRecovery';
+import { calibrationEditId, measurementTools, type CalibrationEdit } from './domain/measurementRecovery';
 import { WarningBox } from './components/WarningBox';
 import { compared, comparisonFlags, comparisonKey, comparisonText, keptCompared, type PetPrior } from './imaging/petComparison';
 import { nameLesions } from './imaging/lesions';
@@ -51,7 +57,7 @@ import { LesionTable } from './components/LesionTable';
 import { PetReportCopy } from './components/PetReportCopy';
 import { priorLesions } from './imaging/priorLesions';
 import { useAnnotationSummary } from './imaging/useAnnotationSummary';
-import type { Annotation, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewState, Volume, WheelAction } from './model';
+import type { Annotation, CaliperKind, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, Volume, WheelAction } from './model';
 import { chooseLocale, errorMessage, LOCALES, t, type MessageKey, type MessageParams } from './i18n';
 import { useTranslation } from './i18n/react';
 import { warningTexts } from './i18n/core';
@@ -62,11 +68,14 @@ import { usage, type Surface, type UsageSnapshot } from './usage/tracker';
 import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
-import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
+import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane, placed } from './imaging/linking';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, overlayFor, SPECT_LOOK, studyOverlay } from './imaging/fusion';
-import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan } from './arrangements';
+import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan, alignmentPair } from './arrangements';
 import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
 import { bestCounterpart } from './arrangements/counterpart';
+import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, automatic, crosshairIn, currentAlignment, frameOf, mapPoint, movement, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment, type Alignment, type Nudge } from './imaging/registration';
+import { applyPoint, IDENTITY } from './imaging/rigid';
+import { AlignmentSection } from './components/AlignmentSection';
 import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
@@ -106,15 +115,15 @@ type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showRef
   /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
 const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
 type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | 'fusion' | null;
-type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'workspace' | 'units' | 'mouse';
-const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'workspace', 'units', 'mouse'];
+type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'alignment' | 'workspace' | 'units' | 'mouse';
+const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'alignment', 'workspace', 'units', 'mouse'];
 const SECTION_STORAGE = 'veacom:inspector-sections';
 function readOpenSections(): Set<DisplaySection> {
   try {
     const stored = JSON.parse(localStorage.getItem(SECTION_STORAGE) ?? 'null');
     if (Array.isArray(stored)) return new Set(stored.filter((id): id is DisplaySection => DISPLAY_SECTIONS.includes(id)));
   } catch { /* Storage may be disabled by the host. */ }
-  return new Set(['window', 'color', 'orientation']);
+  return new Set(['window', 'color', 'orientation', 'alignment']);
 }
 type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]>; plans: ReturnType<typeof deformity.snapshot>;
   calibration?: FilmSelection & { value: FilmCalibration | null } };
@@ -128,13 +137,14 @@ type Notice = { message: string; kind: 'error' | 'info'; key?: MessageKey; param
 type Graphics = { renderer: string; software: boolean; webgl?: string };
 
 const EMPTY_ANNOTATIONS: Annotation[] = [];
+const samePoints = (a: readonly Vec3[], b: readonly Vec3[]) => a.length === b.length && a.every((point, i) => point.every((value, axis) => value === b[i][axis]));
 const EMPTY_REFERENCES: { id: string; series: Series; view: ViewState }[] = [];
 const TOOLS: readonly Tool[] = ['scroll', 'window', 'pan', 'zoom', 'rotate', 'none', 'length', 'angle', 'cobb', 'rectangle', 'ellipse', 'polygon', 'polyline', 'probe', 'arrow', 'text', 'crosshair', 'sphere'];
 const WHEEL_ACTIONS: readonly WheelAction[] = ['scroll', 'zoom', 'rotate', 'none'];
 /** What each mouse button can be given, as in VEAcom Next: the navigation tools, rotation, the crosshair or nothing. */
 const BUTTON_ACTIONS: readonly Tool[] = ['scroll', 'window', 'pan', 'zoom', 'rotate', 'crosshair', 'none'];
 const isTool = (value: unknown): value is Tool => typeof value === 'string' && (TOOLS as readonly string[]).includes(value);
-const MEASURE_TOOLS: Tool[] = ['length', 'angle', 'cobb', 'rectangle', 'ellipse', 'polygon', 'polyline', 'sphere', 'probe', 'arrow', 'text'];
+const MEASURE_TOOLS: readonly Tool[] = measurementTools;
 // Keyboard shortcuts handled in the window keydown handler below; shown in tooltips and menus.
 const TOOL_KEYS: Partial<Record<Tool, string>> = { scroll: 'S', window: 'W', pan: 'P', zoom: 'Z', length: 'L', angle: 'A', ellipse: 'E', rectangle: 'R', crosshair: 'C', text: 'T', sphere: 'V' };
 const MEASURE_ICONS: Partial<Record<Tool, typeof Ruler>> = { length: Ruler, angle: TriangleRight, cobb: Radius, rectangle: Square, ellipse: Circle, polygon: Hexagon, polyline: Spline, sphere: Globe, probe: Pipette, arrow: MoveUpRight, text: Type };
@@ -310,19 +320,30 @@ const PALETTE_SWATCHES = { gray: 'linear-gradient(90deg, #000, #fff)', hot: 'lin
 /** A pane dragged by its grip onto another: the two swap places. */
 const PANE_DRAG = 'application/x-veacom-pane';
 
+/** A CLOSE caliper asked for from the checklist; `setUp`: the pane it turned to its plane or bone window, what that pane
+ * says about it with Undo, and every pane's view before (a linked pane can move with it). */
+type CaliperRequest = { kind: CaliperKind; item: string; side: Side; study: string;
+  setUp?: { slotId: string; text: string; views: Array<{ id: string; seriesId: string | null; view: ViewState }> } };
 /** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
  * rearranged. A sticky one stays until the reader's next action instead of a few seconds. It is about the series the
  * pane shows (`seriesId`, empty for a pane that shows none) and goes when the pane shows another. */
-type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean;
-  onUndo?: () => void; undoAction?: 'pair' | 'arrangement'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain';
+type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean; alignment?: Alignment;
+  onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'alignment' | 'checklist-show'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain';
   /** The comparison's offer to open a series' counterpart in this pane. */
   onOpen?: () => void };
 
-function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, joined, onCross,
-  onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast }: {
+/** Where a pane is set up to show a plane (calipers.planeView), and what it needs there; or why it cannot be. */
+type PanePlan = { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey };
+
+function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, joined, onCross, alignments, aligned,
+  onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
   slot: Slot; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
   annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
   interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
+  /** Frames of reference aligned (imaging/registration.ts): another pane's plane in an aligned frame is drawn here too. */
+  alignments: readonly Alignment[];
+  /** This pane shows a series, or a fused overlay, placed by an alignment: said in its corner. */
+  aligned?: 'automatic' | 'adjusted';
   /** The stack and its reference image this pane pages as one sequence, and the way to the place of it that the
    * other of the two holds. */
   joined: Joined | null; onCross: (id: string, place: number) => void;
@@ -338,6 +359,8 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
   onClose: (id: string) => void; onMaximize: (id: string) => void; onCyclePlane: (id: string) => void;
   /** Set while this pane is maximized: back to the layout it came from. */
   onRestore?: () => void;
+  /** A CLOSE caliper under way here: what to click next. */
+  caliper?: ViewportProps['caliper'];
 }) {
   const { t } = useTranslation();
   const activate = () => onActivate(slot.id);
@@ -346,7 +369,14 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
   const cyclePlane = () => onCyclePlane(slot.id);
   const cross = (place: number) => onCross(slot.id, place);
   const [dragging, setDragging] = useState(false);
-  const referencePlanes = volume && interaction.showReferences ? references.filter(item => item.id !== slot.id && sharePlaneSpace(item, { series: volume.series, view: renderedView(volume, slot.view) })) : [];
+  const referencePlanes = volume && interaction.showReferences ? references.flatMap(item => {
+    const here = { series: volume.series, view: renderedView(volume, slot.view) };
+    if (item.id === slot.id) return [];
+    if (sharePlaneSpace(item, here)) return [item];
+    // A plane in a frame of reference of its own, aligned to this one: drawn where the alignment puts it.
+    const transform = placed(item) && placed(here) ? alignedTransform(alignments, item.series, volume.series) : null;
+    return transform ? [{ ...item, transform }] : [];
+  }) : [];
   const requestedView = volume ? resolveView(volume, slot.view) : slot.view;
   const displayView = volume ? renderedView(volume, slot.view) : slot.view;
   const count = volume ? sliceCount(volume.series, requestedView) : metadata?.dimensions[2] ?? 1;
@@ -391,11 +421,13 @@ function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, 
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
         showPointerValue={interaction.showPointerValue}
         mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} touchpadSpeed={interaction.touchpadSpeed} reverseWheel={interaction.reverseWheel}
-        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} joined={joined} onCross={cross} />
+        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} joined={joined} onCross={cross} aligned={aligned} caliper={caliper} />
         : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle size={22} /> : <Layers size={24} strokeWidth={1.4} />}
           <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
       {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
         {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
+          : toast.undoAction === 'alignment' ? <button type="button" data-action="alignment-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
+          : toast.undoAction === 'checklist-show' ? <button type="button" data-action="checklist-show-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
           : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
         {toast.onKeep && (toast.keepAction === 'keep-plain' ? <button type="button" data-action="arrangement-keep-plain" onClick={toast.onKeep}>{t('arrangement.keep')}</button>
           : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}
@@ -436,6 +468,36 @@ function useViewportGrid() {
   return { gridRef, gridTall, attachGrid };
 }
 
+function indexVolumes(volumes: Map<string, Volume>) {
+  return window.veacom?.web ? new VolumeIndex(volumes) : volumes;
+}
+
+function useSeriesCatalog(series: Series[]) {
+  const seriesById = new Map(series.map(item => [item.id, item]));
+  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
+  // each such image's stack.
+  const references = referenceImages(series);
+  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  const petSeries = series.filter(fusesAsOverlay);
+  const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
+  return { seriesById, references, stackOfReference, petSeries, totalFrames };
+}
+
+function displayIndex(entries: Iterable<[string, Volume]>, decorate: (volume: Volume) => Volume) {
+  return indexVolumes(new Map(Array.from(entries, ([id, volume]) => [id, decorate(volume)])));
+}
+
+function useDisplayVolumes(volumes: Iterable<[string, Volume]>, slotFrames: Record<string, Volume>, scales: Record<string, number>,
+  films: Partial<Record<string, FilmCalibrations>>, units: Settings['measurementUnits'], suvNormalization: SuvNormalization, typedGlucose: (item: Series) => number | undefined) {
+  const [cached] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
+  const decorate = (volume: Volume) => cached(volume, {
+    scale: scales[volume.series.id], films: films[volume.series.id], units, suvNormalization, glucose: typedGlucose(volume.series),
+  });
+  const displayVolumes = displayIndex(volumes, decorate);
+  const displaySlotFrames = displayIndex(Object.entries(slotFrames), decorate);
+  return { displayVolumes, displaySlotFrames };
+}
+
 export default function App() {
   const { locale, t } = useTranslation();
   const toolLabel = (tool: Tool) => t(`tool.${tool}` as const);
@@ -443,11 +505,7 @@ export default function App() {
   const stageLabel = (stage: string) => { const key = STAGES[stage]; return key ? t(key) : stage; };
   const planeLabel = (plane: Plane) => t(`planeLower.${plane}` as const);
   const [series, setSeries] = useState<Series[]>([]);
-  const seriesById = new Map(series.map(item => [item.id, item]));
-  // A stack and its reference image are one series to the reader (ui/referenceImages.ts): each stack's image, and
-  // each such image's stack.
-  const references = referenceImages(series);
-  const stackOfReference = new Map([...references].map(([stack, reference]) => [reference.id, seriesById.get(stack)]));
+  const { seriesById, references, stackOfReference, petSeries, totalFrames } = useSeriesCatalog(series);
   /** The sequence a series is part of where it is a stack with a reference image, or such an image. */
   const joinedOf = (item: Series): Joined | null => {
     const reference = references.get(item.id), stack = stackOfReference.get(item.id);
@@ -461,11 +519,11 @@ export default function App() {
   };
   // Stable event handlers read refs so their closures do not retain old volume maps.
   const seriesRef = useRef(series);
-  const [volumes, setVolumes] = useState<Map<string, Volume>>(() => new Map());
+  const volumesRef = useRef(new Map<string, Volume>());
+  const [volumes, setVolumes] = useState<VolumeIndex | Map<string, Volume>>(() => new Map());
   const [slotFrames, setSlotFrames] = useState<Record<string, Volume>>({});
   const [frameCache] = useState(() => new SourceFrameCache());
   const frameRequests = useRef(new Map<string, { key: string; seriesId: string; controller: AbortController }>());
-  const volumesRef = useRef(volumes);
   const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
   const [slots, setSlots] = useState<Slot[]>(() => [makeSlot()]);
@@ -484,6 +542,10 @@ export default function App() {
   const [annotations, setAnnotations] = useState<Record<string, Annotation[]>>({});
   const annotationRef = useRef(annotations);
   const [settings, setSettings] = useState(readSettings);
+  const [workspaceRevision, setWorkspaceRevision] = useState(0);
+  const [toolbarExpanded, setToolbarExpanded] = useState(false);
+  const [tagQuery, setTagQuery] = useState('');
+  const seriesFilters = useSeriesFilters();
   const [openSections, setOpenSections] = useState(readOpenSections);
   const [calibrationScales, setCalibrationScales] = useState<Record<string, number>>({});
   // Ball and ruler calibrations from the deformity plan, by series and film: each stands for its own film only.
@@ -499,7 +561,40 @@ export default function App() {
   const toolRef = useRef(tool);
   // The left button's tool before a measuring tool was taken up: putting that down returns to it.
   const navigationTool = useRef<Tool>('window');
+  // The CLOSE caliper the checklist asked for: the next measurement drawn on that study measures this item and side
+  // (imaging/calipers.ts). The left button gets back the tool it had when the caliper ends.
+  const [caliper, setCaliper] = useState<CaliperRequest | null>(null);
+  const caliperRef = useRef(caliper);
+  const caliperPrevious = useRef<{ tool: Tool; left?: Tool } | null>(null);
+  const forgetCaliper = () => { caliperRef.current = null; caliperPrevious.current = null; setCaliper(null); };
+  /** Ends the caliper under way: the left button gets back the tool it had. */
+  const stopCaliper = () => {
+    const previous = caliperPrevious.current;
+    forgetCaliper();
+    if (!previous) return;
+    updateTool(previous.tool);
+    setSettings(current => {
+      const mouseBindings = { ...current.mouseBindings };
+      if (previous.left) mouseBindings.left = previous.left; else delete mouseBindings.left;
+      return { ...current, mouseBindings };
+    });
+  };
+  /** Starts a caliper for an item and side of a study's checklist: the left button places its points, and focus goes
+   * to the image. */
+  const measureWith = (request: CaliperRequest) => {
+    if (!caliperPrevious.current) caliperPrevious.current = { tool: toolRef.current, left: settingsRef.current.mouseBindings.left };
+    caliperRef.current = request; setCaliper(request);
+    updateTool(CALIPERS[request.kind].tool);
+    setSettings(current => {
+      if (!current.mouseBindings.left) return current;
+      const mouseBindings = { ...current.mouseBindings }; delete mouseBindings.left;
+      return { ...current, mouseBindings };
+    });
+    focusImage();
+  };
   const setTool = (next: Tool) => {
+    // Another tool chosen ends a caliper under way.
+    if (caliperRef.current) forgetCaliper();
     if (!MEASURE_TOOLS.includes(next)) navigationTool.current = next;
     updateTool(next);
     setSettings(current => {
@@ -587,6 +682,8 @@ export default function App() {
   // Studies whose "not DICOM" notice was closed (this session).
   const [pictureNoticeClosed, setPictureNoticeClosed] = useState<ReadonlySet<string>>(() => new Set());
   const [paneToast, setPaneToast] = useState<PaneToast | null>(null);
+  // The note on screen, for work that finishes later and says so in the same note while it is still there.
+  const paneToastRef = useRef(paneToast);
   // A pane note clears itself after a few seconds. A sticky one (an arrangement applied or undone, an offer to keep one)
   // stays until the reader's next action anywhere but on the note itself: a whole screen arranged must not vanish unseen.
   useEffect(() => {
@@ -633,6 +730,17 @@ export default function App() {
   const maskRequests = useRef(new Map<string, Promise<SegmentationOverlay>>());
   const [fusionId, setFusionId] = useState<string | null>(null);
   const fusionIdRef = useRef(fusionId);
+  // Frames of reference aligned (imaging/registration.ts), per pair: two visits, or a PET and a CT or MR acquired apart.
+  // Handlers read the ref; changeAlignments sets both, so a handler sees an alignment it has just made.
+  const [alignments, setAlignments] = useState<readonly Alignment[]>([]);
+  const alignmentsRef = useRef(alignments);
+  const volumeGenerations = useRef(new Map<string, number>());
+  const changeAlignments = (next: readonly Alignment[]) => {
+    const valid = next.filter(item => currentAlignment(item, volumeGenerations.current));
+    alignmentsRef.current = valid; setAlignments(valid);
+  };
+  // Alignments the engine is finding: the status bar says so and follows the decoding of the volumes they need.
+  const [aligning, setAligning] = useState(0);
   // The fusion asked for last: one asked for earlier, or stopped since, does not start when its PET has loaded.
   const fusionRequest = useRef(0);
   // Series whose preview could not be made: the series list shows a dash for them.
@@ -660,7 +768,6 @@ export default function App() {
   const fullyLoaded = useRef(new Set<string>());
   // Series an import still under way has published (importStudies): their frames can be shown before it ends.
   const earlySeries = useRef(new Set<string>());
-  const volumeGenerations = useRef(new Map<string, number>());
   const volumeAccess = useRef(new Map<string, number>());
   const accessClock = useRef(0);
   const requestedPins = useRef(new Set<string>());
@@ -677,9 +784,45 @@ export default function App() {
 
   // Each decorated volume keeps its identity while its volume and settings do (see decoratedVolumes.ts).
   const petRecords = usePetRecords(series, setAnnotations);
-  const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
-  const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
+   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
+   * gone. */
+  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
+    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
+  };
+  const activeSlot = slots.find(slot => slot.id === activeId) ?? slots[0];
+  const activeSeries = activeSlot.seriesId ? seriesById.get(activeSlot.seriesId) : undefined;
+  const recovery = useMeasurementRecovery(volumes, activeSeries, (item, restored, calibration, edited) => {
+    if (!edited.has(calibrationEditId(item, null))) {
+      const value = calibration.find(edit => edit.frame === null)?.value;
+      const scale = value?.method === 'scale' ? value.scale : undefined;
+      setCalibrationScales(current => {
+        if (current[item.id] === scale) return current;
+        const next = { ...current };
+        if (scale === undefined) delete next[item.id]; else next[item.id] = scale;
+        return next;
+      });
+    }
+    setFilmCalibrations(current => {
+      const films: Record<string, FilmCalibration> = {};
+      for (const [key, value] of Object.entries(current[item.id] ?? {})) if (value && edited.has('@film:' + key)) films[key] = value;
+      for (const edit of calibration) if (edit.frame !== null && edit.value) films[filmKey(item, edit.frame)] = edit.value;
+      if (Object.keys(films).length) return { ...current, [item.id]: films };
+      if (!current[item.id]) return current;
+      const next = { ...current }; delete next[item.id]; return next;
+    });
+    if (!restored.length) return;
+    // Restored drawings were already in the study before any undo step taken while the database was opening.
+    const add = (current: Record<string, Annotation[]>) => {
+      const existing = current[item.id] ?? [], present = new Set(existing.map(a => a.id));
+      const extra = restored.filter(a => !present.has(a.id));
+      return extra.length ? { ...current, [item.id]: [...existing, ...extra].sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0)) } : current;
+    };
+    setAnnotations(add);
+    followHistory(snapshot => ({ ...snapshot, annotations: add(snapshot.annotations) }));
+  });
+  const { displayVolumes, displaySlotFrames } = useDisplayVolumes(volumes, slotFrames, calibrationScales, filmCalibrations,
+    settings.measurementUnits, settings.suvNormalization, petRecords.typedGlucose);
   const resolvedSlots = slots.map(slot => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
@@ -688,8 +831,6 @@ export default function App() {
     return view === slot.view ? slot : { ...slot, view };
   });
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
-  const displaySlotFrames = new Map(Object.entries(slotFrames).map(([id, volume]) => [id, decorated(volume,
-    { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
   const volumeForSlot = (slot: Slot) => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     const frame = displaySlotFrames.get(slot.id);
@@ -700,13 +841,17 @@ export default function App() {
   const petStudies = usePetStudies(series, annotations, setAnnotations, displayVolumes, petRecords);
   // Cine: the active pane pages through its slices by itself, at the chosen speed, round and round, until paused.
   const [playing, setPlaying] = useState(false);
-  const activeSlot = slots.find(slot => slot.id === activeId) ?? slots[0];
-  const activeSeries = activeSlot.seriesId ? seriesById.get(activeSlot.seriesId) : undefined;
+  const [cineOverrides, setCineOverrides] = useState<Record<string, number>>({});
+  const cineSeek = useRef<number | null>(null);
   // Pictures (JPEG, PNG, BMP) in the active pane are not DICOM: said at the top until closed for that study.
   const pictureNote = activeSeries?.warningNotes?.find(note => note.code === 'series.ordinaryImage');
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
-  const activeVolume = volumeForSlot(activeSlot);
+  // Event handlers can survive a render. Keep the series metadata there and acquire pixels when an action reads them.
+  const readActiveVolume = () => volumeForSlot(activeSlot);
+  const activeVolume = readActiveVolume();
+  const activeImageSeries = activeVolume?.series;
+  const activeSourceFrameIndex = activeVolume?.sourceFrameIndex;
   // A series still being read from a disc says how far it is read, in the status bar: nothing else shows that it is not
   // whole. A series loading needs no words.
   const paneState = activeSeries?.reading ? t('viewport.reading', { read: activeSeries.reading.read, count: activeSeries.reading.files }) : '';
@@ -714,15 +859,31 @@ export default function App() {
     if (show3d) setShow3d(false);
     if (showFusion) setShowFusion(false);
   }
-  // At most one pass through the series a second.
-  const cineMax = activeVolume ? Math.max(1, sliceCount(activeVolume.series, activeSlot.view)) : 1;
-  const cineFps = Math.max(1, Math.min(settings.cineFps, cineMax));
+  const cineCount = activeVolume ? Math.max(1, sliceCount(activeVolume.series, activeSlot.view)) : 1;
+  const fileTiming = activeVolume && usesSourceFrames(activeVolume.series, activeSlot.view) ? activeVolume.series.cine : undefined;
+  if (playing && fileTiming?.slices.length === 1) setPlaying(false);
+  const cineOverride = fileTiming && activeSlot.seriesId ? cineOverrides[activeSlot.seriesId] : undefined;
+  // Keep the reading-stack limit for ordinary paging. A short timed clip can play several loops a second.
+  const cineMax = fileTiming ? 100_000 : cineCount;
+  const cineFps = fileTiming ? cineOverride ?? recordedFps(fileTiming) : Math.max(1, Math.min(settings.cineFps, cineMax));
+  const setCineSpeed = (fps: number) => {
+    const id = activeSlot.seriesId;
+    if (fileTiming && id) setCineOverrides(current => ({ ...current, [id]: fps }));
+    else setSettings(current => ({ ...current, cineFps: fps }));
+  };
+  const useRecordedSpeed = () => {
+    const id = activeSlot.seriesId;
+    if (id) setCineOverrides(current => { const next = { ...current }; delete next[id]; return next; });
+  };
   const activeDisplayView = activeVolume ? renderedView(activeVolume, activeSlot.view) : activeSlot.view;
   const framePending = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== activeSlot.view.slice;
   // The film the active pane shows, with its calibration (a ball or ruler holds for one film), for the inspector.
   const shownFilm = activeVolume && usesSourceFrames(activeVolume.series, activeDisplayView)
     ? sourceFrameSeries(activeVolume.series, activeDisplayView.slice) : activeVolume?.series ?? activeSeries;
   const activeAnnotations = activeSlot.seriesId ? annotations[activeSlot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS;
+  // The lines a calibration can take as its known length: Length measurements, not a caliper's drawing (a Keros depth or
+  // an artery's distance is read from its points, not known beforehand).
+  const referenceLines = activeAnnotations.filter(annotation => annotation.type === 'length' && !annotation.caliper);
   // The active PET's prior lesions by name, live or as kept, for its lesion table.
   // The right-hand column shows the inspector or the assessment; a hidden assessment stays mounted with its input.
   const inspectorShown = Boolean(settings.panel) && (!showAssessment || assessmentBehind);
@@ -742,9 +903,47 @@ export default function App() {
   // On a stack's reference image, MPR and 3D are the stack's (the image itself is one plane of nothing).
   const leadStack = activeSeries ? stackOfReference.get(activeSeries.id) : undefined, leadVolume = leadStack ? displayVolumes.get(leadStack.id) : undefined;
   const leadReconstructs = Boolean(leadStack && leadVolume?.series.canReconstruct && leadVolume.sourceFrameIndex === undefined && !leadVolume.series.sourceFramesOnly && !loadingIds.has(leadStack.id) && !loadErrors[leadStack.id]);
+  // A caliper ends with its checklist: when the checklist closes or the active pane leaves its study.
+  const caliperStudy = activeSeries ? studyKey(activeSeries) : null;
+  useEffect(() => { if (caliperRef.current && (!checklistShown || caliperRef.current.study !== caliperStudy)) stopCaliper(); }, [checklistShown, caliperStudy]);
+  /** Where a pane is set up to show `plane` in the bone window, from the active pane showing `imageSeries`
+   * (calipers.planeView): the active pane, or another pane of its series already on that plane, so the three-plane MPR
+   * keeps its planes; or why it cannot be. */
+  const panePlan = (plane: Plane, imageSeries: Series): PanePlan => {
+    // A new plane goes through the point picked in this series' frame, else through the middle of the pane's plane.
+    const origin = crosshairSeriesId ? seriesById.get(crosshairSeriesId) : undefined;
+    const at = crosshair && origin && shareFrame(imageSeries, origin) ? crosshair : getPlaneFrame(imageSeries, activeDisplayView).center;
+    const own = planeView(plane, imageSeries, activeDisplayView, at, canReconstruct);
+    if (own === null || ('patch' in own && !own.plane)) return { slotId: activeSlot.id, setUp: own };
+    for (const slot of slots) {
+      const other = slot.id !== activeSlot.id && slot.seriesId === activeSlot.seriesId ? volumeForSlot(slot) : undefined;
+      const theirs = other ? planeView(plane, other.series, renderedView(other, slot.view), at, false) : undefined;
+      if (theirs === null || (theirs && 'patch' in theirs)) return { slotId: slot.id, setUp: theirs };
+    }
+    return 'blocked' in own ? own : { slotId: activeSlot.id, setUp: own };
+  };
+  /** Where a caliper measures and what that pane needs first (panePlan on the caliper's plane), or why it cannot measure. */
+  const caliperPlan = (kind: CaliperKind): PanePlan => {
+    if (!activeImageSeries) return { blocked: 'caliper.needsImage' };
+    const refused = caliperRefusal(activeImageSeries);
+    if (refused) return { blocked: refused };
+    if (caliperMmScale(activeImageSeries) === null) return { blocked: 'caliper.needsSpacing' };
+    if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'caliper.loading' };
+    return panePlan(CALIPERS[kind].plane, activeImageSeries);
+  };
+  /** Why a caliper cannot measure from the active pane now (the checklist disables its button and says why), or null. */
+  const caliperBlocked = (kind: CaliperKind): MessageKey | null => { const plan = caliperPlan(kind); return 'blocked' in plan ? plan.blocked : null; };
+  /** Where the checklist's Show turns a pane to `plane` (panePlan), or why it cannot. */
+  const showPlan = (plane: Plane): PanePlan => {
+    if (!activeImageSeries) return { blocked: 'checklist.showNeedsImage' };
+    if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'checklist.showLoading' };
+    return panePlan(plane, activeImageSeries);
+  };
+  const showBlocked = (plane: Plane): MessageKey | null => { const plan = showPlan(plane); return 'blocked' in plan ? plan.blocked : null; };
+  // The plane the active pane shows, for the checklist's Show (calipers.showsPlane).
+  const paneShows = activeImageSeries ? (['axial', 'coronal', 'sagittal'] as const).find(plane => showsPlane(plane, activeImageSeries, activeDisplayView)) ?? null : null;
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
-  const petSeries = series.filter(fusesAsOverlay);
   // The PET chosen for fusion: one without SUV is drawn on its own values, and its scale is not called SUV.
   const fusionPet = fusionId ? seriesById.get(fusionId) : undefined;
   const acquisitionPet = panelPet(activeSeries, fusionPet);
@@ -769,12 +968,12 @@ export default function App() {
   });
   const mrFusable = activeSeries?.modality === 'MR' && series.some(item => item.modality === 'MR' && item.id !== activeSeries.id && item.studyUid === activeSeries.studyUid && !item.segmentation && shareFrame(activeSeries, item));
   // The strip for an MR fusion: no PET series to choose, no blending or scanner look.
-  const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive;
+  // PETs and SPECTs the active series can be fused with: acquired with it, or the same patient's acquired apart (aligned first).
+  const overlayChoices = petSeries.filter(item => !activeSeries || item.id === fusionId || shareFrame(item, activeSeries) || (samePatient(item, activeSeries) && Boolean(frameOf(item) && frameOf(activeSeries))));
+  const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
-  const shownSegmentationIds = new Set(shownSegmentations);
-  const totalFrames = series.reduce((sum, item) => sum + item.dimensions[2], 0);
-  const assessmentVolumes = [...displayVolumes.values()].filter(volume => volume.sourceFrameIndex === undefined);
+  const assessmentVolumes = showAssessment ? Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined) : [];
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
   const activeReferences = !settings.showReferences || slots.length < 2 ? EMPTY_REFERENCES : (isMpr ? slots : [activeSlot]).flatMap(slot => {
@@ -785,19 +984,40 @@ export default function App() {
     return isProjection(volume.series, view) ? [] : [{ id: slot.id, series: volume.series, view }];
   });
   const activateSlot = (id: string) => { activeIdRef.current = id; setActiveId(id); };
+  // The crosshair in the active series' own coordinates (3D draws it there), through an alignment where it was set in
+  // another frame of reference.
+  const crosshairOrigin = crosshairSeriesId ? volumes.get(crosshairSeriesId) : undefined;
+  const activeCrosshair = crosshairIn(alignments, crosshair, crosshairOrigin?.series, activeVolume?.series);
+  // The alignment that places the active pane's series or its fused overlay: the display panel's alignment section.
+  const displayedOverlay = activeVolume && fusion && !activeSlot.unfused && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && fusesOver(activeVolume.series, fusion.volume.series, alignments) ? fusion.volume.series : undefined;
+  const activeAlignment = activeSeries ? alignmentOf(alignments, activeSeries, displayedOverlay) : null;
+  const nudgeAlignment = (alignment: Alignment, nudge: Nudge) => {
+    // Turned about the middle of what the active pane shows, so what the reader is looking at stays put.
+    const slot = slotsRef.current.find(item => item.id === activeIdRef.current), shown = slot?.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
+    const frame = shown ? frameOf(shown) : null, centre = slot && shown ? getPlaneFrame(shown, slot.view).center : null;
+    const pivot = centre && frame === alignment.fixed ? centre : centre && frame === alignment.moving ? applyPoint(alignment.matrix, centre) : applyPoint(alignment.matrix, alignment.centre);
+    changeAlignments(withAlignment(alignmentsRef.current, nudged(alignment, nudgeStep(nudge, pivot))));
+  };
+  const removeAlignment = (alignment: Alignment) => {
+    changeAlignments(withoutAlignment(alignmentsRef.current, alignment));
+    const slot = slotsRef.current.find(item => item.id === activeIdRef.current);
+    if (slot?.seriesId) setPaneToast({ slotId: slot.id, seriesId: slot.seriesId, text: t('alignment.removed'), alignment, sticky: true, undoAction: 'alignment',
+      onUndo: () => { setPaneToast(null); changeAlignments(withAlignment(alignmentsRef.current, alignment)); } });
+  };
 
   useEffect(() => {
     const visible = slots.flatMap(slot => {
       const volume = volumeForSlot(slot);
       if (!volume) return [];
-      const fused = fusion && !slot.unfused && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series) ? fusion : null;
+      const fused = fusion && !slot.unfused && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series, alignments)
+        ? alignedFusion(fusion, transformBetween(alignments, volume.series, fusion.volume.series) ?? IDENTITY) : null;
       return [{ volume, view: renderedView(volume, slot.view), fusion: fused }];
     });
     try {
       if (visible.length) sliceRenderer().setVisibleViews(visible);
       else clearSliceTextureCache();
     } catch { /* Each viewport reports GPU errors. */ }
-  }, [slots, volumeForSlot, fusion]);
+  }, [slots, volumeForSlot, fusion, alignments]);
 
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; frameCache.dispose(); for (const request of frameRequests.current.values()) request.controller.abort(); }; }, [frameCache]);
   // Find out how images will be drawn before a study opens. Without a usable graphics driver Chromium draws
@@ -813,7 +1033,8 @@ export default function App() {
       setGraphicsError(null);
       setGraphics({ renderer: info.renderer, software: info.software || isSoftwareWebglStatus(status?.webgl), webgl: status?.webgl });
     };
-    const timer = window.setTimeout(() => void inspect());
+    // Creating a WebGL context can block the first browser click. A study can still acquire the shared renderer immediately.
+    const timer = window.setTimeout(() => void inspect(), window.veacom?.web ? 250 : 0);
     const restored = () => void inspect();
     window.addEventListener('veacom-gpu-restored', restored);
     return () => { disposed = true; window.clearTimeout(timer); window.removeEventListener('veacom-gpu-restored', restored); };
@@ -839,7 +1060,7 @@ export default function App() {
   // The stage is the status text then (Taranıyor), and its bar says how far it is: the times beside it are enough.
   const progressStage = progress && progress.stage !== 'decode' ? stageLabel(progress.stage) : '';
   const progressText = progressStage ? progressTimes : '';
-  const hasWork = Boolean(busy || loadingIds.size || importing);
+  const hasWork = Boolean(busy || loadingIds.size || importing || aligning);
   useEffect(() => {
     if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
     const pollState = { disposed: false, polling: false };
@@ -888,7 +1109,56 @@ export default function App() {
     if (closed) requestAnimationFrame(() => (document.querySelector<HTMLElement>(`[data-testid="${closed}"]`) ?? document.querySelector<HTMLElement>('[data-testid="tool-more"]'))?.focus());
   }, [show3d, showAssessment, checklistOpen]);
 
+  /** A checklist note for the slice of `view`, as the slice counter numbers it, with its tilt. */
+  const noteAt = (seriesId: string, series: Series, view: Pick<ViewState, 'plane' | 'slice' | 'mode' | 'oblique' | 'projection'>, joined?: Joined | null): SliceNote => {
+    const count = sliceCount(series, view), slice = Math.round(view.slice);
+    const numbered = shownSlice(series, view, slice, count, joined);
+    // A tilted plane is named with its tilt, and "go to" tilts the pane back to it.
+    const tilted = (view.mode ?? 'source') === 'mpr' && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number], tilt: obliqueAngle(series, view) } : {};
+    return { seriesId, slice, shown: `${numbered.number}/${numbered.total}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
+  };
+  /** A measurement just drawn while a caliper is under way on its study: its points moved onto bone and the drawing
+   * tagged as that caliper, which then ends. */
+  const caliperDrawn = (seriesId: string, next: Annotation[]): { list: Annotation[]; drawn?: string } => {
+    const request = caliperRef.current, volume = displayVolumesRef.current.get(seriesId);
+    // What is drawn on another series of the study that a caliper refuses (an MR, a CT scout) stays a plain measurement,
+    // and the caliper waits.
+    if (!request || !volume || studyKey(volume.series) !== request.study || caliperRefusal(volume.series)) return { list: next };
+    const before = annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS;
+    const added = next.filter(annotation => !before.some(old => old.id === annotation.id));
+    if (added.length !== 1 || added[0].type !== CALIPERS[request.kind].tool || added[0].caliper) return { list: next };
+    const fresh = added[0], axes = planeAxes(volume.series, { plane: fresh.plane, mode: fresh.mode, oblique: fresh.oblique });
+    // The plane's own up (its v points down the image) and normal, whatever the image's turn on screen.
+    const up = scale(axes.v, -1), normal = axes.normal;
+    const tagged: Annotation = { ...fresh, points: snapCaliper(request.kind, volume, fresh.points, up, normal),
+      caliper: { kind: request.kind, item: request.item, side: request.side, up, normal } };
+    stopCaliper();
+    return { list: next.map(annotation => annotation === fresh ? tagged : annotation), drawn: tagged.id };
+  };
+  /** Records in its study's checklist each caliper drawing of the series that is new (`drawn`) or whose points changed
+   * since its record, or every recorded one when the series' scale changed (`rescaled`: the series at its new scale),
+   * records whose drawings were deleted too. A drawing whose record was replaced or cleared stays out. */
+  const recordCalipers = (seriesId: string, list: Annotation[], drawn?: string, rescaled?: Series) => {
+    // The shown series, with any calibration: a series with measurements keeps its volume (publishVolumes).
+    const series = rescaled ?? displayVolumesRef.current.get(seriesId)?.series;
+    if (!series) return;
+    const study = studyKey(series);
+    for (const annotation of list) {
+      const tag = annotation.caliper;
+      if (!tag) continue;
+      const recorded = caliperRecorded(study, tag.item, annotation.id)?.caliper;
+      if (annotation.id !== drawn && (!recorded || (!rescaled && samePoints(recorded.points, annotation.points)))) continue;
+      const result = caliperResult(tag, annotation.points, caliperMmScale(series));
+      const view = viewOfAnnotation(annotation, annotationSourceIndex(annotation, series));
+      keepCaliper(study, series, tag.item, result.side, { ...noteAt(seriesId, series, view, usesSourceFrames(series, view) ? joinedOf(series) : null), caliper: caliperNote(annotation.id, tag, annotation.points, result) });
+    }
+    const kept = rescaled && keptChecklist(study);
+    if (kept) keepChecklist(study, remeasureRecords(kept, seriesId, new Set(list.map(annotation => annotation.id)), caliperMmScale(series)));
+  };
   const setFilmCalibration = (seriesId: string, key: string, value: FilmCalibration | null) => {
+    const item = seriesRef.current.find(s => s.id === seriesId);
+    const frame = item?.frameMetadata?.findIndex((_, i) => filmKey(item, i) === key) ?? -1;
+    if (item && frame >= 0) recovery.calibrate(item, [{ frame, value }]);
     setFilmCalibrations(current => {
       const films = { ...current[seriesId] }, next = { ...current };
       if (value) films[key] = value; else delete films[key];
@@ -915,7 +1185,14 @@ export default function App() {
       const saved = snapshot.slots.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
       return saved ? { ...slot, view: saved.view } : slot;
     }));
+    for (const id of new Set([...Object.keys(annotationRef.current), ...Object.keys(snapshot.annotations)])) {
+      const item = displayVolumesRef.current.get(id)?.series;
+      const previous = annotationRef.current[id] ?? EMPTY_ANNOTATIONS, next = snapshot.annotations[id] ?? EMPTY_ANNOTATIONS;
+      if (item && previous !== next) recovery.save(item, previous, next);
+    }
     setAnnotations(snapshot.annotations); deformity.restore(snapshot.plans); setHistoryCount([history.current.past.length, history.current.future.length]);
+    // A caliper's edit undone measures again; one whose drawing is undone keeps its record in the checklist.
+    for (const [seriesId, list] of Object.entries(snapshot.annotations)) recordCalipers(seriesId, list);
   };
   // A deformity plan's steps are Undo steps too (src/ui/deformityStore.ts). `remember` reads only refs, so the first one
   // serves for the window's life.
@@ -931,7 +1208,7 @@ export default function App() {
     for (const id of result.evicted) { fullyLoaded.current.delete(id); volumeAccess.current.delete(id); }
     if (result.volumes !== volumesRef.current) {
       volumesRef.current = result.volumes;
-      setVolumes(result.volumes);
+      setVolumes(indexVolumes(result.volumes));
     }
   };
 
@@ -948,18 +1225,15 @@ export default function App() {
       next.delete(id); fullyLoaded.current.delete(id); pending.current.delete(id);
       volumeAccess.current.delete(id); requestedPins.current.delete(id);
     }
+    const aligned = alignmentsRef.current;
+    if (aligned.some(item => changed.has(item.fixedSeriesId) || changed.has(item.movingSeriesId))) changeAlignments(aligned);
+    setPaneToast(current => current?.alignment && !currentAlignment(current.alignment, volumeGenerations.current) ? null : current);
     publishVolumes(next);
     setFailedPreviews(current => ids.some(id => current.has(id)) ? new Set([...current].filter(id => !changed.has(id))) : current);
     setLoadingIds(current => { const updated = new Set(current); for (const id of ids) updated.delete(id); return updated; });
     setLoadErrors(current => { const updated = { ...current }; for (const id of ids) delete updated[id]; return updated; });
   };
 
-  /** What a change of the series' images does to the panes and measurements, done to Undo's and Redo's steps as well:
-   * a step back or forward then brings back no measurement or view of an image that has moved, or of a series that is
-   * gone. */
-  const followHistory = (change: (snapshot: Snapshot) => Snapshot) => {
-    history.current = { past: history.current.past.map(change), future: history.current.future.map(change) };
-  };
   /** Measurements drawn on source images keep their image when a series' images move: an import that read it again, or
    * a series being read that grew. So do those Undo and Redo bring back. */
   const followAnnotations = (moved: readonly Series[]) => {
@@ -1066,11 +1340,16 @@ export default function App() {
     pending.current.set(item.id, full);
     // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
     const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
-    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
-      if (!previewWanted()) return;
-      await prepareSourceProgram(volume);
-      if (previewWanted()) storeVolume(volume);
-    }).catch(() => { /* The full decoder supplies the actionable error. */ });
+    if (!cached && item.dimensions[2] > 1) {
+      const preview = frameCache.get(item, openingSlice(item));
+      // Link for the catalog's pixel type while the frame is read. The decoded array still selects the actual program.
+      void prepareSourceProgram(item);
+      void preview.then(async volume => {
+        if (!previewWanted()) return;
+        await prepareSourceProgram(volume);
+        if (previewWanted()) storeVolume(volume);
+      }).catch(() => { /* The full decoder supplies the actionable error. */ });
+    }
     return full;
   };
 
@@ -1506,34 +1785,38 @@ export default function App() {
   });
   useEffect(() => window.veacom?.onOpened?.(() => { void openLaunched(); }), []);
   const connect = async () => {
-    setBusy('status.connecting'); setConnectionError(null);
+    setBusy(current => current ?? 'status.connecting'); setConnectionError(null);
     try { await restoreCatalog(); } catch (error) { if (mounted.current) setConnectionError(errorText(error)); }
-    if (mounted.current) setBusy(null);
+    if (mounted.current) setBusy(current => current === 'status.connecting' ? null : current);
   };
   const connectOnMount = useEffectEvent(connect);
-  useEffect(() => { void connectOnMount(); }, []);
+  useLayoutEffect(() => { void connectOnMount(); }, []);
   const onImport = useEffectEvent(importStudies);
   useEffect(() => {
     const handler = (event: Event) => { const paths = (event as CustomEvent<unknown>).detail; if (Array.isArray(paths) && paths.every(path => typeof path === 'string')) void onImport(paths); };
     window.addEventListener('veacom:import', handler); return () => window.removeEventListener('veacom:import', handler);
   }, []);
-  useEffect(() => {
-    const externalFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files')
-      && !event.dataTransfer.types.includes('application/x-veacom-series');
-    // A link dragged in from elsewhere would make the browser leave the page, and the open studies with it: refused.
-    const link = (event: DragEvent) => Boolean(event.dataTransfer?.types.includes('text/uri-list')) && !externalFiles(event);
-    const dragOver = (event: DragEvent) => {
-      if (link(event)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
-      if (!externalFiles(event)) return;
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+  useLayoutEffect(() => {
+    let lastBrowserDrop: Promise<void> = Promise.resolve();
+    const openSelection = async (select: () => Promise<string[]>, previous?: Promise<void>) => {
+      try {
+        const [paths] = await Promise.all([select(), previous]);
+        if (!paths.length) { say('notice.dropNoPaths', 'info'); return; }
+        await onImport(paths, 'drop');
+      } catch (error) {
+        await previous;
+        setNotice({ message: errorText(error), kind: 'error' });
+      }
     };
-    // Up to its first await (the checks and preventDefault) this runs while the drop is dispatched; a failed import is
-    // reported in the notice.
-    const dropFiles = async (event: DragEvent) => {
-      if (link(event)) { event.preventDefault(); return; }
-      if (!externalFiles(event)) return;
+    const accept = (select: () => Promise<string[]>) => {
+      if (window.veacom?.web) lastBrowserDrop = openSelection(select, lastBrowserDrop);
+      else void openSelection(select);
+    };
+    const drop = (event: DragEvent) => {
+      const effect = externalDropEffect(event.dataTransfer);
+      if (!effect) return;
       event.preventDefault();
+      if (effect === 'none') return;
       const files = Array.from(event.dataTransfer?.files ?? []);
       if (!files.length) return;
       if (capturingRef.current) { say('notice.waitForCapture', 'info'); return; }
@@ -1542,18 +1825,21 @@ export default function App() {
         say('notice.dropNeedsDesktop', 'info');
         return;
       }
-      try {
-        const paths = await bridge.importFiles(files);
-        if (!paths.length) { say('notice.dropNoPaths', 'info'); return; }
-        void onImport(paths, 'drop');
-      } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+      accept(() => bridge.importFiles(files));
     };
-    const drop = (event: DragEvent) => { void dropFiles(event); };
-    document.addEventListener('dragover', dragOver); document.addEventListener('drop', drop);
-    return () => { document.removeEventListener('dragover', dragOver); document.removeEventListener('drop', drop); };
+    document.addEventListener('dragenter', allowExternalDrop);
+    document.addEventListener('dragover', allowExternalDrop);
+    document.addEventListener('drop', drop);
+    for (const selection of window.veacom?.takePendingFileDrops?.() ?? []) accept(selection);
+    return () => {
+      document.removeEventListener('dragenter', allowExternalDrop);
+      document.removeEventListener('dragover', allowExternalDrop);
+      document.removeEventListener('drop', drop);
+    };
   }, []);
 
-  const updateView = (slotId: string, patch: Partial<ViewState>) => {
+  const updateView = (slotId: string, patch: Partial<ViewState>, fromCine = false) => {
+    if (playing && fileTiming && !fromCine && slotId === activeIdRef.current && patch.slice !== undefined) cineSeek.current = patch.slice;
     const before = slotsRef.current.find(slot => slot.id === slotId)?.view;
     if (before && arranged.current?.slotIds.includes(slotId) && (['plane', 'mode', 'projection', 'inverted', 'palette'] as const).some(key => key in patch && patch[key] !== before[key])) {
       offerKeep.current(slotId);
@@ -1610,30 +1896,49 @@ export default function App() {
         }
         if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
         const target: Pane = { series: other.series, view: slot.view };
-        const anchor = anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
-        const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined);
+        // Aligned frames of reference page by position through the alignment; links by hand are for the others.
+        const toTarget = alignedTransform(alignmentsRef.current, volume.series, other.series) ?? undefined;
+        const anchor = toTarget ? null : anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
+        const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
         return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
       });
     });
   };
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
     const advance = advanceCine(last, now, cineFps);
-    if (advance.steps && activeVolume && cineMax > 1) {
-      const next = Math.round(activeSlot.view.slice) + advance.steps * pageStep(activeVolume.series, activeSlot.view, 1);
-      updateView(activeSlot.id, { slice: ((next % cineMax) + cineMax) % cineMax });
+    if (advance.steps && activeImageSeries && cineCount > 1) {
+      const next = Math.round(activeSlot.view.slice) + advance.steps * pageStep(activeImageSeries, activeSlot.view, 1);
+      updateView(activeSlot.id, { slice: ((next % cineCount) + cineCount) % cineCount }, true);
     }
     return advance.last;
   });
+  const currentCineSlice = useEffectEvent(() => Math.round(activeSlot.view.slice));
+  const showCineSlice = useEffectEvent((slice: number) => {
+    if (slice !== activeSlot.view.slice) updateView(activeSlot.id, { slice }, true);
+  });
   useEffect(() => {
     if (!playing) return;
-    let last = performance.now();
+    const cycle = fileTiming && cineCycle(fileTiming, cineOverride);
+    let last: number | undefined, phase = cycle?.startAt(currentCineSlice()) ?? 0;
+    cineSeek.current = null;
     const tick = (now: number) => {
-      last = advancePlayingSlice(last, now);
+      const previous = last ?? now;
+      if (cycle) {
+        if (cineSeek.current !== null) {
+          phase = cycle.startAt(cineSeek.current);
+          cineSeek.current = null;
+        } else if (now - previous < 1000) {
+          // A suspended or hidden viewer resumes at the frame it was showing.
+          phase += Math.max(0, now - previous);
+        }
+        last = now;
+        showCineSlice(cycle.sliceAt(phase));
+      } else last = advancePlayingSlice(previous, now);
       frame = requestAnimationFrame(tick);
     };
     let frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing]);
+  }, [playing, fileTiming, cineOverride, activeSlot.id, activeSlot.seriesId]);
   /** A click on a pane's plane name: the next plane in place, axial, coronal, sagittal (VEAcom 1.x); the plane the
    * series was acquired in shows its own images, unless a thick slab is on: only a reconstruction draws one. Only for a
    * whole volume that can be reconstructed. */
@@ -1654,7 +1959,7 @@ export default function App() {
       return volume && slot.seriesId ? [{ id: slot.id, seriesId: slot.seriesId, pane: { series: volume.series, view: slot.view } }] : [];
     });
     return shown.flatMap((one, n) => shown.slice(n + 1).filter(other => facesSame(one.pane, other.pane)
-      && !(sharePlaneSpace(one.pane, other.pane) || inStep(one.pane, other.pane))).map(other => [one, other] as const));
+      && !(sharePlaneSpace(one.pane, other.pane) || inStep(one.pane, other.pane) || alignedTransform(alignmentsRef.current, one.pane.series, other.pane.series))).map(other => [one, other] as const));
   };
   /** Links unrelated panes at the slices they show (all of them, or those not linked yet); how many pairs. */
   const linkHere = (renew: boolean) => {
@@ -1882,10 +2187,12 @@ export default function App() {
       // With the list emptied, the workspace starts afresh as at launch: one pane, nothing hidden, maximized, in MPR,
       // in 3D, fused or playing, so the next study opens as the first one did.
       const fresh = makeSlot();
+      // The old browser DOM can retain handlers and their captured CT volume after its last pane closes.
+      if (window.veacom?.web) setWorkspaceRevision(value => value + 1);
       hiddenSlots.current = []; beforeMpr.current = null;
       setSlots([fresh]); setLayout([1, 1]); activateSlot(fresh.id);
       setMaximized(null); setIsMpr(false); setShow3d(false); setShowFusion(false); setFusionId(null);
-      setCrosshair(null); setPlaying(false); setChecklistOpen(false);
+      setCrosshair(null); setPlaying(false); setChecklistOpen(false); changeAlignments([]);
     } else {
       setSlots(current => current.map(empty));
       if (beforeMpr.current) beforeMpr.current = { ...beforeMpr.current, slots: beforeMpr.current.slots.map(empty) };
@@ -1904,8 +2211,92 @@ export default function App() {
     for (const [generation, group] of byEngine) void removeSeries(group, generation).catch(() => {});
   };
   const changeAnnotations = (seriesId: string, next: Annotation[]) => {
-    const named = seriesRef.current.find(item => item.id === seriesId)?.modality === 'PT' ? nameLesions(next) : next;
-    remember(); setAnnotations(current => ({ ...current, [seriesId]: clearEditedScores(current[seriesId] ?? [], named) }));
+    const { list, drawn } = caliperDrawn(seriesId, next);
+    const named = seriesRef.current.find(item => item.id === seriesId)?.modality === 'PT' ? nameLesions(list) : list;
+    const before = annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, changed = clearEditedScores(before, named);
+    const item = displayVolumesRef.current.get(seriesId)?.series;
+    if (item) recovery.save(item, before, changed);
+    remember(); setAnnotations(current => ({ ...current, [seriesId]: changed }));
+    recordCalipers(seriesId, named, drawn);
+  };
+  /** Starts the caliper for an item and side from the checklist, or stops it when it is the one under way. Its pane is
+   * set up first: turned to the caliper's plane and the bone window where it is not, which the pane says with Undo. */
+  const startCaliper = (request: CaliperRequest) => {
+    const current = caliperRef.current;
+    if (current?.item === request.item && current.side === request.side && current.study === request.study) { stopCaliper(); return; }
+    const plan = caliperPlan(request.kind), slot = 'blocked' in plan ? undefined : slotsRef.current.find(item => item.id === plan.slotId);
+    if ('blocked' in plan || !slot) return;
+    if (slot.id !== activeIdRef.current) activateSlot(slot.id);
+    const setUp = plan.setUp;
+    if (!setUp) { measureWith(request); return; }
+    const views = slotsRef.current.map(({ id, seriesId, view }) => ({ id, seriesId, view }));
+    updateView(slot.id, setUp.patch);
+    const coronal = CALIPERS[request.kind].plane === 'coronal';
+    const key = !setUp.plane ? 'caliper.setUpBone' : coronal ? (setUp.window ? 'caliper.setUpCoronalBone' : 'caliper.setUpCoronal') : setUp.window ? 'caliper.setUpSagittalBone' : 'caliper.setUpSagittal';
+    measureWith({ ...request, setUp: { slotId: slot.id, views, text: t(key, { name: caliperName(request.kind, locale) }) } });
+  };
+  /** The set-up note's Undo: the caliper ended and the panes' views exactly as they were, as undo puts them back (a merge
+   * would keep what the set-up added, such as reconstructed planes over acquired slices, or a manual window). */
+  const undoCaliperSetUp = () => {
+    const setUp = caliperRef.current?.setUp;
+    stopCaliper();
+    if (setUp) setSlots(current => current.map(slot => {
+      const saved = setUp.views.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
+      return saved ? { ...slot, view: saved.view } : slot;
+    }));
+    focusImage();
+  };
+  /** The checklist's Show: a pane set up to show the item called `name` on `plane`, in the bone window (showPlan). A pane
+   * goes to the first slice noted for the item on that plane in its series, else to where the item was last looked at
+   * there; with neither, a pane turned to the plane goes through the picked point or the plane's middle, and a pane
+   * already on it keeps its slice. In the three-plane MPR the pane on that plane becomes the active one. The pane says
+   * what changed, with Undo, which puts every pane's view back as it was. A caliper under way ends. */
+  const showChecklistItem = (name: string, plane: Plane, places: { noted: SliceNote[]; last?: SliceNote }) => {
+    const plan = showPlan(plane), slot = 'blocked' in plan ? undefined : slotsRef.current.find(item => item.id === plan.slotId);
+    if ('blocked' in plan || !slot) return;
+    if (caliperRef.current) stopCaliper();
+    if (slot.id !== activeIdRef.current) activateSlot(slot.id);
+    const setUp = plan.setUp, volume = volumeForSlot(slot), paneSeries = slot.seriesId;
+    if (!volume || !paneSeries) return;
+    const onIt = (place: SliceNote | undefined): place is SliceNote => place !== undefined && place.seriesId === paneSeries
+      && showsPlane(plane, volume.series, { plane: place.plane as Plane, mode: place.mode as ViewState['mode'], oblique: place.oblique });
+    const noted = places.noted.find(onIt), last = !noted && onIt(places.last) ? places.last : undefined;
+    const place = noted ?? last, shown = slot.view;
+    // A place the pane shows already is no move.
+    const moves = place && !(place.plane === shown.plane && place.mode === (shown.mode ?? 'source') && place.slice === Math.round(shown.slice) && shown.projection === undefined
+      && (place.mode !== 'mpr' || ((place.oblique?.[0] ?? 0) === (shown.oblique?.[0] ?? 0) && (place.oblique?.[1] ?? 0) === (shown.oblique?.[1] ?? 0))));
+    const patch: Partial<ViewState> = { ...setUp?.patch,
+      ...(moves ? { plane: place.plane as Plane, mode: place.mode as ViewState['mode'], slice: place.slice, oblique: place.mode === 'mpr' ? place.oblique ?? [0, 0] : undefined, projection: undefined } : {}) };
+    if (!Object.keys(patch).length) return;
+    const views = slotsRef.current.map(({ id, seriesId, view }) => ({ id, seriesId, view }));
+    updateView(slot.id, patch);
+    const where = { name, plane: t(`planeLower.${plane}`) }, bone = Boolean(setUp?.window);
+    const text = moves && noted ? t(bone ? 'checklist.shownNotedBone' : 'checklist.shownNoted', where)
+      : moves ? t(bone ? 'checklist.shownLastBone' : 'checklist.shownLast', where)
+      : setUp?.plane ? t(bone ? 'checklist.shownBone' : 'checklist.shown', where)
+      : t('checklist.shownWindow', { name });
+    setPaneToast({ slotId: slot.id, seriesId: paneSeries, text, undoAction: 'checklist-show', onUndo: () => {
+      setPaneToast(null);
+      setSlots(current => current.map(item => {
+        const saved = views.find(view => view.id === item.id && view.seriesId === item.seriesId);
+        return saved ? { ...item, view: saved.view } : item;
+      }));
+    } });
+  };
+  /** What a caliper under way asks for in a pane: its points in turn, or the plane it needs; and, until its first point,
+   * what its set-up changed there, with Undo. */
+  const caliperPane = (volume: Volume, view: ViewState, slotId: string): ViewportProps['caliper'] => {
+    if (!caliper || studyKey(volume.series) !== caliper.study) return undefined;
+    const spec = CALIPERS[caliper.kind], shown = renderedView(volume, view), axes = planeAxes(volume.series, shown);
+    const key = `${caliper.kind}:${caliper.item}:${caliper.side}`;
+    const setUp = caliper.setUp?.slotId === slotId ? { text: caliper.setUp.text, onUndo: undoCaliperSetUp } : undefined;
+    const refused = caliperRefusal(volume.series);
+    if (refused) return { key, setUp, prompts: [t(refused)] };
+    if (isProjection(volume.series, shown) || !onCaliperPlane(caliper.kind, scale(axes.v, -1), axes.normal)) return { key, setUp, prompts: [t(spec.plane === 'coronal' ? 'caliper.needsCoronal' : 'caliper.needsSagittal')] };
+    const name = caliperName(caliper.kind, locale), side = caliper.side === 'both' ? '' : t(caliper.side === 'right' ? 'caliper.right' : 'caliper.left');
+    // Without HU the points are not moved onto bone; the hint says so.
+    const noSnap = volume.series.valueUnit === 'HU' ? '' : ` · ${t('caliper.noSnap')}`;
+    return { key, setUp, prompts: spec.prompts.map((prompt, index) => `${t(side ? 'caliper.hint' : 'caliper.hintMidline', { name, side, prompt: t(prompt), step: index + 1, count: spec.prompts.length })}${noSnap}`) };
   };
   const matchPriorLesion = (seriesId: string, id: string, priorLesionId: string | undefined) => {
     const items = annotationRef.current[seriesId] ?? [];
@@ -1921,9 +2312,11 @@ export default function App() {
       const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
       // A whole-volume MIP holds the point at every turn: it keeps its turn.
       if (!other || isProjection(other.series, slot.view)) return slot;
-      const target = { series: other.series, view: slot.view };
-      if (!sharePlaneSpace({ series: volume.series, view: source.view }, target)) return slot;
-      const slice = coveredSlice(target, point);
+      const target = { series: other.series, view: slot.view }, here = { series: volume.series, view: source.view };
+      // In a frame of reference of its own, aligned: the same place in the patient, through the alignment.
+      const toTarget = sharePlaneSpace(here, target) ? null : placed(here) && placed(target) ? alignedTransform(alignmentsRef.current, volume.series, other.series) : null;
+      if (!toTarget && !sharePlaneSpace(here, target)) return slot;
+      const slice = coveredSlice(target, toTarget ? applyPoint(toTarget, point) : point);
       return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
     }));
   };
@@ -1935,12 +2328,67 @@ export default function App() {
   };
   /** Fuses `pet` over `ct`, shown in the pane `slotId`. A PET without SUV is fused on its own values. `quiet`: an arrangement's
    * own notice says it (that the PET has no SUV is still said). */
-  const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false) => {
-    if (!shareFrame(ct, pet)) { say('notice.fusionNoFrame', 'error'); return; }
+  /** Lays `moving` over `fixed` in the engine (native/src/registration.rs): the alignment of their frames of reference.
+   * Written with promise handlers: the React compiler leaves a component with a `finally` block uncompiled. */
+  const align = (fixed: Series, moving: Series): Promise<Alignment> => {
+    if (capturingRef.current) return Promise.reject(new Error(t('notice.waitForCapture')));
+    const fixedGeneration = volumeGenerations.current.get(fixed.id) ?? 0, movingGeneration = volumeGenerations.current.get(moving.id) ?? 0;
+    setAligning(count => count + 1);
+    const finished = () => { if (mounted.current) setAligning(count => Math.max(0, count - 1)); };
+    return registerSeries(fixed, moving).then(result => {
+      finished();
+      const found = alignmentFrom(result, fixed, moving, fixedGeneration, movingGeneration);
+      if (!found) throw new Error(t('notice.fusionNoFrame'));
+      if (!currentAlignment(found, volumeGenerations.current)) throw new Error(t('engine.sourceChanged'));
+      return found;
+    }, error => { finished(); throw error; });
+  };
+  /** What a notice calls a series: its modality, as readers name it. */
+  const modalityName = (item: Series) => item.modality === 'CT' ? t('alignment.ct') : item.modality === 'PT' ? 'PET' : item.modality === 'NM' ? 'SPECT' : item.modality;
+  const moved = (alignment: Alignment) => { const { shift, angle } = movement(alignment); return { shift: shift.toFixed(1), angle: angle.toFixed(1) }; };
+  /** A PET or SPECT over a CT or MR acquired apart: aligned first, by the overlay's own CT where it has one, then fused;
+   * the pane says so, with Undo. */
+  const alignForFusion = (pet: Series, base: Series, slotId: string) => {
+    const moving = findRole(FUSION.roles.ct, seriesRef.current, pet) ?? pet;
+    const request = ++fusionRequest.current, names = { overlay: modalityName(pet), base: modalityName(base) };
     setFusionId(null);
-    const request = ++fusionRequest.current;
+    const running: PaneToast = { slotId, seriesId: base.id, text: t('alignment.fusionRunning', names), sticky: true };
+    setPaneToast(running);
+    void align(base, moving).then(found => {
+      if (!mounted.current || request !== fusionRequest.current) return;
+      changeAlignments(withAlignment(alignmentsRef.current, found));
+      if (!slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === base.id)) {
+        setPaneToast(current => current === running ? null : current);
+        return;
+      }
+      fusePet(pet, base, slotId, true, request);
+      setPaneToast({ slotId, seriesId: base.id, text: t('alignment.fusionDone', { ...names, by: modalityName(moving), ...moved(found) }), alignment: found, sticky: true, undoAction: 'alignment',
+        onUndo: () => {
+          setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found));
+          if (fusionRequest.current === request) { fusionRequest.current++; setFusionId(null); }
+        } });
+    }).catch(error => {
+      if (!mounted.current || request !== fusionRequest.current) return;
+      setPaneToast(current => current === running ? null : current);
+      if (!slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === base.id)) return;
+      setNotice({ message: t('alignment.fusionFailed', { ...names, reason: errorText(error) }), kind: 'error' });
+    });
+  };
+  const fusePet = (pet: Series, ct: Series, slotId: string, quiet = false, alignedRequest?: number): void => {
+    if (!shareFrame(ct, pet) && !alignedTransform(alignmentsRef.current, ct, pet)) {
+      // Acquired apart: the same patient's are aligned first; another patient's never.
+      if (!samePatient(ct, pet)) { say('notice.fusionOtherPatient', 'error'); return; }
+      if (!frameOf(ct) || !frameOf(pet)) { say('notice.fusionNoFrame', 'error'); return; }
+      alignForFusion(pet, ct, slotId);
+      return;
+    }
+    setFusionId(null);
+    let request = alignedRequest;
+    if (request === undefined) request = ++fusionRequest.current;
+    const stillWanted = () => mounted.current && request === fusionRequest.current
+      && (alignedRequest === undefined || (slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === ct.id) && Boolean(alignedTransform(alignmentsRef.current, ct, pet))));
     void acquireVolume(pet).then(volume => {
-      if (request !== fusionRequest.current || !mounted.current) return;
+      if (!stillWanted()) return;
       if (sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
       setFusionId(pet.id);
       if (fusionDeviceModeRef.current && pet.modality === 'PT') applyDeviceLook(pet, slotId);
@@ -1949,7 +2397,7 @@ export default function App() {
       }
       const own = pet.modality !== 'PT' || petHasSuv(pet);
       if (!quiet || !own) say(own ? 'notice.fusionStarted' : 'notice.fusionNoSuv', 'info', { pet: seriesName(pet), ct: seriesName(ct) }, true);
-    }).catch(error => setNotice({ message: errorText(error), kind: 'error' }));
+    }).catch(error => { if (stillWanted()) setNotice({ message: errorText(error), kind: 'error' }); });
   };
   /** Fuses `pet` in the active pane: over the CT shown there, or, when the pane shows a PET (or `onItsCt`), over the CT
    * acquired with it. */
@@ -1976,7 +2424,12 @@ export default function App() {
       // The colour shows in the pane after contrast, where enhancing tissue, bright there, shines through.
       const beside = slotsRef.current.flatMap(other => other.id !== slot?.id && other.seriesId ? seriesRef.current.filter(item => item.id === other.seriesId) : []);
       const partner = mrPartner(shown, beside, item => shareFrame(shown, item));
-      if (!partner) { say('notice.fusionNoMr', 'info', undefined, true); return; }
+      if (!partner) {
+        // No MR beside it: a PET or SPECT of the same patient acquired apart is aligned to it and fused.
+        const apart = overlayApart(shown);
+        if (apart) fuseInActive(apart); else say('notice.fusionNoMr', 'info', undefined, true);
+        return;
+      }
       const [after, before] = contrastPair(shown, partner);
       const target = slotsRef.current.find(other => other.seriesId === after.id);
       if (!target) return;
@@ -1989,9 +2442,24 @@ export default function App() {
     // A PET shown is fused itself, or the corrected one of its frame for a NAC one; a series shown with none drawn over it
     // (a CT scout, which is no volume) gives way to the study's own PET, over the CT acquired with it.
     const own = fusesAsOverlay(shown) ? overlayFor(shown, seriesRef.current) : findRole(FUSION.roles.overlay, seriesRef.current, shown);
-    const pet = own ?? studyOverlay(shown, seriesRef.current);
+    const studyPet = own ? null : studyOverlay(shown, seriesRef.current);
+    const pet = own ?? studyPet ?? overlayApart(shown);
     if (!pet) { say('notice.fusionNoPet', 'info', undefined, true); return; }
-    fuseInActive(pet, !own);
+    fuseInActive(pet, Boolean(studyPet));
+  };
+  /** For a CT or MR with no PET or SPECT acquired with it: one of the same patient acquired apart, which is aligned to it
+   * first. One aligned already, else the study nearest in time; attenuation-corrected and with more slices first. */
+  const overlayApart = (base: Series): Series | null => {
+    const days = (item: Series) => Math.abs(Date.parse(item.studyDate.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')) - Date.parse(base.studyDate.replace(/^(\d{4})(\d{2})(\d{2})$/, '$1-$2-$3')));
+    const found = seriesRef.current.filter(item => fusesAsOverlay(item) && !shareFrame(item, base) && samePatient(item, base) && frameOf(item) && frameOf(base));
+    const rank = (item: Series) => [Number(Boolean(alignedTransform(alignmentsRef.current, base, item))), -(Number.isFinite(days(item)) ? days(item) : Infinity),
+      Number(!/\bNAC\b|NO-?AC/i.test(item.description)), item.dimensions[2]];
+    return found.reduce<Series | null>((best, item) => {
+      if (!best) return item;
+      const a = rank(item), b = rank(best);
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return a[i] > b[i] ? item : best;
+      return best;
+    }, null);
   };
   const stopFusion = () => { fusionRequest.current++; setShowFusion(false); setFusionId(null); };
 
@@ -2001,7 +2469,7 @@ export default function App() {
   const shownPanes = () => slotsRef.current.map(slot => {
     const item = slot.seriesId ? seriesRef.current.find(value => value.id === slot.seriesId) : undefined;
     const pet = fusionIdRef.current ? seriesRef.current.find(value => value.id === fusionIdRef.current) : undefined;
-    const fused = Boolean(item && pet && !slot.unfused && fusesOver(item, pet));
+    const fused = Boolean(item && pet && !slot.unfused && fusesOver(item, pet, alignmentsRef.current));
     return { seriesId: slot.seriesId, view: slot.view, fusedWith: fused && pet ? pet.id : null };
   });
   /** The arranged screen is still the one on screen: the same panes, in any order. */
@@ -2027,9 +2495,9 @@ export default function App() {
   /** Lays a study out as `plan` says: its panes, links and fusion, with a note in the first pane naming it and Undo. Undo
    * puts back what was on screen. For a study that opened so, it puts `first` in the active pane (what VEAcom shows
    * without arrangements) and offers to keep that instead; a screen the reader asked for is simply taken back. */
-  const applyArrangement = (plan: Plan, first?: Series) => {
+  const applyArrangement = (plan: Plan, first?: Series, session?: readonly Series[]) => {
     const before = { slots: slotsRef.current, layout: layoutRef.current, activeId: activeIdRef.current, hidden: hiddenSlots.current, maximized: maximizedRef.current,
-      mpr: beforeMpr.current, isMpr, arranged: arranged.current,
+      alignments: alignmentsRef.current, mpr: beforeMpr.current, isMpr, arranged: arranged.current,
       linked: settingsRef.current.linked, fusionId: fusionIdRef.current, fusion: fusionState.current, crosshair: crosshairRef.current, crosshairSeriesId: crosshairSeriesIdRef.current };
     beforeMpr.current = null; setIsMpr(false); setMaximized(null); setMenu(null);
     const [rows, columns] = plan.grid ?? layoutRef.current, current = slotsRef.current;
@@ -2087,7 +2555,7 @@ export default function App() {
       setSettings(state => state.linked === before.linked ? state : { ...state, linked: before.linked });
       setFusionId(before.fusionId); setShowFusion(before.fusion.show); setFusionOpacity(before.fusion.opacity); setFusionUpper(before.fusion.upper);
       setFusionPalette(before.fusion.palette); setFusionBlend(before.fusion.blend); setFusionDeviceMode(before.fusion.deviceMode);
-      setCrosshair(before.crosshair); setCrosshairSeriesId(before.crosshairSeriesId);
+      setCrosshair(before.crosshair); setCrosshairSeriesId(before.crosshairSeriesId); changeAlignments(before.alignments);
       for (const id of new Set(before.slots.map(slot => slot.seriesId))) {
         const item = seriesRef.current.find(value => value.id === id); loadPaneImage(item);
       }
@@ -2105,10 +2573,54 @@ export default function App() {
     // The note is in the first pane that shows a series. A notice about another study can give its date ({date}).
     const noted = panes.find(slot => slot.seriesId) ?? panes[0];
     const elsewhere = ['prior', 'later', 'other'].flatMap(role => Object.hasOwn(plan.roles, role) ? [plan.roles[role]] : []).at(0);
-    setPaneToast({ slotId: noted.id, seriesId: noted.seriesId ?? '', text: separateScales ? t('arrangement.petFollowUp.separate')
+    const text = separateScales ? t('arrangement.petFollowUp.separate')
       : plan.arrangement.kept ? t('arrangement.yours', { name })
-        : notice ? t(notice.key, { ...notice.params, ...(elsewhere ? { date: dicomDate(elsewhere.studyDate) } : {}) }) : name,
-      sticky: true, undoAction: 'arrangement', onUndo: undo });
+        : notice ? t(notice.key, { ...notice.params, ...(elsewhere ? { date: dicomDate(elsewhere.studyDate) } : {}) }) : name;
+    // An arrangement that aligns two frames of reference (the PET follow-up: the prior's to this study's, by their CTs)
+    // says so in its note: under way, then what was done. Panes in the aligned frame go to where the first pane is.
+    // Every series loaded, the study just read among them (the list itself is not yet up to date when a study opens).
+    const available = session ?? seriesRef.current;
+    const pair = alignmentPair(plan, available), done = pair ? alignedTransform(alignmentsRef.current, pair.fixed, pair.moving) : null;
+    const toast: PaneToast = { slotId: noted.id, seriesId: noted.seriesId ?? '', text: pair && !done ? `${text} ${t('alignment.priorRunning')}` : text,
+      sticky: true, undoAction: 'arrangement', onUndo: undo };
+    setPaneToast(toast);
+    if (pair && done) pageAligned(noted.id, alignmentsRef.current, panes, available);
+    else if (pair) alignArranged(plan, pair, toast, text, noted.id);
+  };
+  /** Panes whose series lie in a frame of reference aligned to the pane `leadId`'s go to where it is in the patient, as
+   * linked panes do; a whole-volume MIP keeps its turn. */
+  const pageAligned = (leadId: string, aligned: readonly Alignment[], panes: readonly Slot[], available: readonly Series[]) => {
+    const lead = panes.find(slot => slot.id === leadId), leadSeries = lead?.seriesId ? available.find(item => item.id === lead.seriesId) : undefined;
+    if (!lead || !leadSeries || isProjection(leadSeries, lead.view)) return;
+    const at = getPlaneFrame(leadSeries, lead.view).center;
+    setSlots(current => current.map(slot => {
+      const other = slot.seriesId ? available.find(item => item.id === slot.seriesId) : undefined;
+      const toOther = other && slot.id !== leadId && !isProjection(other, slot.view) ? alignedTransform(aligned, leadSeries, other) : null;
+      if (!other || !toOther) return slot;
+      const slice = coveredSlice({ series: other, view: slot.view }, applyPoint(toOther, at));
+      return slice === null || slice === slot.view.slice ? slot : { ...slot, view: { ...slot.view, slice } };
+    }));
+  };
+  /** The alignment an arrangement asks for, found by the engine while its screen is shown. Its note says what was done
+   * while it is still there; otherwise a note in the aligned pane says it, with Undo. A failure leaves the two to be
+   * linked by hand, as before alignment. */
+  const alignArranged = (plan: Plan, pair: { fixed: Series; moving: Series }, toast: PaneToast, text: string, leadId: string) => {
+    void align(pair.fixed, pair.moving).then(found => {
+      if (!mounted.current || arranged.current?.plan !== plan) return;
+      const next = withAlignment(alignmentsRef.current, found);
+      changeAlignments(next);
+      pageAligned(leadId, next, slotsRef.current, seriesRef.current);
+      const said = t('alignment.priorDone', { by: modalityName(pair.moving), ...moved(found) });
+      if (paneToastRef.current === toast) { setPaneToast({ ...toast, alignment: found, text: `${text} ${said}` }); return; }
+      const role = plan.arrangement.align?.role, shown = role ? slotsRef.current.find(slot => slot.seriesId === plan.roles[role]?.id) : undefined;
+      if (shown?.seriesId) setPaneToast({ slotId: shown.id, seriesId: shown.seriesId, text: said, alignment: found, sticky: true, undoAction: 'alignment',
+        onUndo: () => { setPaneToast(null); changeAlignments(withoutAlignment(alignmentsRef.current, found)); } });
+    }).catch(error => {
+      if (!mounted.current || arranged.current?.plan !== plan) return;
+      const said = t('alignment.priorFailed', { reason: errorText(error) });
+      if (paneToastRef.current === toast) setPaneToast({ ...toast, text: `${text} ${said}` });
+      else setNotice({ message: said, kind: 'info' });
+    });
   };
   const openImportedStudy = (first: Series, study: Series[], keepShown = false, session: Series[] = study, slotId?: string) => {
     arranged.current = null;
@@ -2117,7 +2629,7 @@ export default function App() {
     // Without an arrangement, a series already shown (opened while the study was still read) stays as it is. The
     // series goes into `slotId`, the active pane unless another is named; the pane the reader is in stays the active one.
     const pane = slotId ?? activeIdRef.current;
-    if (plan) applyArrangement(plan, first); else if (!keepShown) assignSeries(pane, first, pane === activeIdRef.current);
+    if (plan) applyArrangement(plan, first, session); else if (!keepShown) assignSeries(pane, first, pane === activeIdRef.current);
   };
   /** Back to VEAcom's own arrangements: what the reader kept is forgotten. */
   const forgetKept = () => { saveKept({}); say('arrangement.forgotten', 'info', undefined, true); };
@@ -2132,7 +2644,10 @@ export default function App() {
   const rotatePlane = (slotId: string, oblique: [number, number]) => {
     const slot = slotsRef.current.find(item => item.id === slotId), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
     if (!slot || !volume) return;
-    const pivot = crosshairRef.current ?? getPlaneFrame(volume.series, slot.view).center, next = { ...slot.view, mode: 'mpr' as const, oblique };
+    const id = crosshairSeriesIdRef.current, origin = id ? volumesRef.current.get(id) : undefined;
+    const toPane = origin ? transformBetween(alignmentsRef.current, origin.series, volume.series) : null;
+    const pivot = crosshairRef.current && toPane ? mapPoint(toPane, crosshairRef.current) : getPlaneFrame(volume.series, slot.view).center;
+    const next = { ...slot.view, mode: 'mpr' as const, oblique };
     updateView(slotId, { mode: 'mpr', oblique, slice: sliceAtWorld(volume.series, next, pivot) });
   };
   const resetView = () => {
@@ -2225,6 +2740,7 @@ export default function App() {
   };
   const maximizePane = (id: string) => { maximizeSlot(id); focusImage(); };
   const mpr = () => {
+    const activeVolume = readActiveVolume();
     if (beforeMpr.current) { restoreBeforeMpr(); return; }
     // From a stack's reference image the three planes are the stack's, in the window the pane had on the stack (the
     // image's own window is the image's); leaving MPR brings the image back.
@@ -2233,7 +2749,9 @@ export default function App() {
     const windowed = volume === activeVolume ? activeSlot.view : activeSlot.stack?.id === volume.series.id ? activeSlot.stack.view : defaultView(volume.series);
     beforeMpr.current = { slots: slotsRef.current, layout, activeId: activeIdRef.current, crosshair, crosshairSeriesId }; setIsMpr(true);
     const origin = crosshairSeriesId ? volumesRef.current.get(crosshairSeriesId) : undefined;
-    const center = crosshair && origin && shareFrame(volume.series, origin.series) ? crosshair : indexToWorld(volume.series, volume.series.dimensions.map(n => (n - 1) / 2) as Vec3);
+    // The crosshair, in this series' own coordinates when it was set in a frame of reference aligned to it.
+    const toActive = crosshair && origin ? transformBetween(alignmentsRef.current, origin.series, volume.series) : null;
+    const center = crosshair && toActive ? applyPoint(toActive, crosshair) : indexToWorld(volume.series, volume.series.dimensions.map(n => (n - 1) / 2) as Vec3);
     const panes = (['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => ({ id: crypto.randomUUID(), seriesId: volume.series.id,
       view: { ...defaultView(volume.series), windowMode: windowed.windowMode, windowCenter: windowed.windowCenter, windowWidth: windowed.windowWidth, mode: 'mpr' as const, plane, slice: sliceAtWorld(volume.series, plane, center), pan: [0, 0] as [number, number] } }));
     setSlots(panes); setActiveId(panes[0].id); setLayout([1, 3]); setCrosshair(center); setCrosshairSeriesId(volume.series.id); setSettings(current => ({ ...current, linked: true }));
@@ -2270,23 +2788,24 @@ export default function App() {
     setMenu(null);
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
-    if ((mode === 'video' || mode === 'images') && activeVolume?.sourceFrameIndex !== undefined) { say('notice.videoAfterLoad', 'info'); return; }
+    if ((mode === 'video' || mode === 'images') && aligning) { say('export.waitAlignment', 'info'); return; }
+    if ((mode === 'video' || mode === 'images') && activeSourceFrameIndex !== undefined) { say('notice.videoAfterLoad', 'info'); return; }
     // A film of a folder being labelled is replacing the one shown: pictures wait until it is there.
     if ((mode === 'video' || mode === 'images') && labelQueue.get().busy) { setNotice({ message: t('label.waitForFilm'), kind: 'info' }); return; }
-    if ((mode === 'video' || mode === 'images') && activeVolume) {
+    if ((mode === 'video' || mode === 'images') && activeImageSeries) {
       const viewport = gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
       if (!viewport) return;
       const id = activeSlot.id;
       // 1:1 is the series' own pixel grid: the acquired images, or a plain (not oblique) plane of an axial stack.
-      const plain = usesSourceFrames(activeVolume.series, activeSlot.view) || (activeSlot.view.plane === 'axial' && !activeSlot.view.oblique?.some(Boolean));
+      const plain = usesSourceFrames(activeImageSeries, activeSlot.view) || (activeSlot.view.plane === 'axial' && !activeSlot.view.oblique?.some(Boolean));
       // Cine stops: the export pages the pane itself.
       setPlaying(false);
       // The numbers the pane shows for its slices (paging.ts): a stack paged with its reference image counts that image.
-      const frames = sliceCount(activeVolume.series, activeSlot.view), joined = joinedFor(activeSlot);
-      const firstNumber = shownSlice(activeVolume.series, activeSlot.view, 0, frames, joined);
-      const lastNumber = shownSlice(activeVolume.series, activeSlot.view, frames - 1, frames, joined);
-      setExportVideoTarget({ viewport, seriesId: activeVolume.series.id, originalSlice: activeSlot.view.slice, frameCount: frames,
-        nativeSize: plain ? { width: activeVolume.series.dimensions[0], height: activeVolume.series.dimensions[1] } : undefined, backwards: pagesBackwards(activeVolume.series, activeSlot.view),
+      const frames = sliceCount(activeImageSeries, activeSlot.view), joined = joinedFor(activeSlot);
+      const firstNumber = shownSlice(activeImageSeries, activeSlot.view, 0, frames, joined);
+      const lastNumber = shownSlice(activeImageSeries, activeSlot.view, frames - 1, frames, joined);
+      setExportVideoTarget({ viewport, seriesId: activeImageSeries.id, originalSlice: activeSlot.view.slice, frameCount: frames,
+        nativeSize: plain ? { width: activeImageSeries.dimensions[0], height: activeImageSeries.dimensions[1] } : undefined, backwards: pagesBackwards(activeImageSeries, activeSlot.view),
         numbersBackwards: firstNumber.number > lastNumber.number, numberOffset: Math.min(firstNumber.number, lastNumber.number) - 1, numberTotal: firstNumber.total,
         setSlice: slice => setSlots(current => current.map(slot => slot.id === id ? { ...slot, view: { ...slot.view, slice } } : slot)) });
     } else setExportVideoTarget(undefined);
@@ -2338,13 +2857,30 @@ export default function App() {
     if (bounds) setVolumeViewportSize([bounds.width, bounds.height]);
     setShow3d(true);
   };
+  /** Sets or removes a series' calibration. Its caliper records measure again at the new scale, as its drawings' labels
+   * do: the checklist, its answers, the report and the theatre card follow the scale on screen. Removing it takes down
+   * the notice that says the series is calibrated. */
+  const setCalibration = (seriesId: string, factor: number | undefined, clearFilms = false) => {
+    const item = seriesRef.current.find(s => s.id === seriesId);
+    if (item) {
+      const changes: CalibrationEdit[] = [{ frame: null, value: factor === undefined ? null : { method: 'scale', scale: factor } }];
+      if (clearFilms) item.frameMetadata?.forEach((metadata, frame) => {
+        if (metadata.sopInstanceUid) changes.push({ frame, value: null });
+      });
+      recovery.calibrate(item, changes);
+    }
+    setCalibrationScales(current => { const next = { ...current }; if (factor === undefined) delete next[seriesId]; else next[seriesId] = factor; return next; });
+    if (factor === undefined) setNotice(current => current?.key === 'notice.calibrated' ? null : current);
+    const series = displayVolumesRef.current.get(seriesId)?.series;
+    if (series) recordCalipers(seriesId, annotationRef.current[seriesId] ?? EMPTY_ANNOTATIONS, undefined, { ...series, measurementScale: factor });
+  };
   const applyCalibration = () => {
     if (!activeSeries) return;
-    const line = activeAnnotations.find(annotation => annotation.id === calibrationLine) ?? activeAnnotations.find(annotation => annotation.type === 'length');
+    const line = referenceLines.find(annotation => annotation.id === calibrationLine) ?? referenceLines.at(0);
     const length = line?.points.length === 2 ? distanceMm(line.points[0], line.points[1]) : null;
     const known = Number(calibrationLength);
     if (!length || !Number.isFinite(known) || known <= 0) { say('notice.calibrationInvalid', 'error'); return; }
-    setCalibrationScales(current => ({ ...current, [activeSeries.id]: known / length }));
+    setCalibration(activeSeries.id, known / length, true);
     // A known length sets the whole series' scale: the films' own ball or ruler calibrations give way to it.
     setFilmCalibrations(current => { if (!current[activeSeries.id]) return current; const next = { ...current }; delete next[activeSeries.id]; return next; });
     setSettings(current => ({ ...current, measurementUnits: 'auto' }));
@@ -2356,6 +2892,7 @@ export default function App() {
   function showPanel(panel: Panel) { if (showAssessment) setAssessmentBehind(true); setPanel(panel); }
   const windowRequest = useRef(0);
   const applyMeasuredWindow = async (automatic: boolean) => {
+    const activeVolume = readActiveVolume();
     if (!activeVolume || framePending || activeVolume.series.components === 3) return;
     const request = ++windowRequest.current, { view, id } = activeSlot;
     const current = () => mounted.current && request === windowRequest.current && slotsRef.current.find(slot => slot.id === id)?.view === view
@@ -2372,7 +2909,7 @@ export default function App() {
   };
   const applyAutoWindow = () => { void applyMeasuredWindow(true); };
   const applyFullRange = () => { void applyMeasuredWindow(false); };
-  const applyDicomWindow = () => { if (activeSeries) updateView(activeSlot.id, { windowMode: 'dicom', ...(!activeVolume || !usesSourceFrames(activeVolume.series, activeSlot.view) ? { windowCenter: activeSeries.windowCenter, windowWidth: activeSeries.windowWidth } : {}) }); };
+  const applyDicomWindow = () => { if (activeSeries) updateView(activeSlot.id, { windowMode: 'dicom', ...(!activeImageSeries || !usesSourceFrames(activeImageSeries, activeSlot.view) ? { windowCenter: activeSeries.windowCenter, windowWidth: activeSeries.windowWidth } : {}) }); };
 
   const keydown = useEffectEvent((event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
@@ -2384,6 +2921,8 @@ export default function App() {
     // The assessment holds typed input, so Esc closes it only from inside the panel; the checklist too, as it sits
     // in the same place (its answers stay). Both can be open, so each answers only Esc from inside itself.
     if (event.key === 'Escape') {
+      // A caliper under way is the innermost layer: Esc ends it (a drawing half done is cancelled by the image first).
+      if (caliperRef.current && !show3d && !field) { stopCaliper(); return; }
       // 3D closes from its sliders, lists and buttons; in a number or text field Esc stays with the field.
       if (show3d) { if (!target.matches('textarea, [contenteditable="true"], input:not([type="range"], [type="checkbox"], [type="radio"], [type="button"])')) setShow3d(false); }
       else if (field) return;
@@ -2426,7 +2965,7 @@ export default function App() {
     // Letters, 0, m, ? and + / − only without ⌘, Ctrl or Alt (Alt + letter types characters and opens menus).
     if (event.key === 'F1') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
     // Space opens the quick menu over the images; on a button, a link or a menu it presses that, as it should.
-    if (plainKey && event.key === ' ' && activeVolume && !target.closest('button, a, summary, [role="button"], [role^="menuitem"], [role="tab"], [role="option"]')) {
+    if (plainKey && event.key === ' ' && activeImageSeries && !target.closest('button, a, summary, [role="button"], [role^="menuitem"], [role="tab"], [role="option"]')) {
       event.preventDefault(); key('quick-menu');
       // At the pointer wherever it is (over the series list too, not far from it), and with the pointer over the
       // toolbar just below it, so the toolbar stays in sight; in the middle of the active pane only when the pointer
@@ -2439,7 +2978,7 @@ export default function App() {
     if (plainKey) {
       // VEAcom 1.x's window keys: 0 the series' own window, 1 the slice's full range, 2-9 the CT presets,
       // Shift+A the automatic window, I invert.
-      if (activeVolume && activeVolume.series.components !== 3) {
+      if (activeImageSeries && activeImageSeries.components !== 3) {
         if (event.shiftKey && event.key.toLowerCase() === 'a') { event.preventDefault(); key('preset-auto'); applyAutoWindow(); return; }
         if (!event.shiftKey && /^[0-9]$/.test(event.key)) {
           event.preventDefault();
@@ -2460,23 +2999,23 @@ export default function App() {
       }
       if (event.key === 'm') { key('tool-mpr'); mpr(); return; }
       if (event.key === '?') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
-      if (activeVolume && ['+', '=', '-', '_'].includes(event.key)) {
+      if (activeImageSeries && ['+', '=', '-', '_'].includes(event.key)) {
         const view = activeSlot.view, zoom = Math.max(0.1, Math.min(30, view.zoom * (event.key === '-' || event.key === '_' ? 1 / 1.25 : 1.25))), scale = zoom / view.zoom;
         key('key-zoom', true); updateView(activeSlot.id, { zoom, pan: [view.pan[0] * scale, view.pan[1] * scale] }); return;
       }
     }
     // Slice keys belong to the image: panels, lists and the toolbar keep their own arrow keys and scrolling.
     if (target.closest('.inspector, .series-browser, .assessment-overlay, [role="toolbar"], [role="tablist"], [role="dialog"], .popover-menu')) return;
-    if (activeVolume && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
+    if (activeImageSeries && ['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(event.key)) {
       key('key-slice', true);
       event.preventDefault();
       // Steps down the page. A stack and its reference image are paged as one sequence (joinedFor).
       const steps = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (event.key.startsWith('Page') ? 10 : 1), joined = joinedFor(activeSlot);
-      if (!joined) { updateView(activeSlot.id, { slice: stepSlice(activeVolume.series, activeSlot.view, pageStep(activeVolume.series, activeSlot.view, steps)) }); return; }
-      const count = sliceCount(activeVolume.series, activeSlot.view), at = placeInSequence(activeVolume.series, activeSlot.view, Math.round(activeSlot.view.slice), count, joined);
+      if (!joined) { updateView(activeSlot.id, { slice: stepSlice(activeImageSeries, activeSlot.view, pageStep(activeImageSeries, activeSlot.view, steps)) }); return; }
+      const count = sliceCount(activeImageSeries, activeSlot.view), at = placeInSequence(activeImageSeries, activeSlot.view, Math.round(activeSlot.view.slice), count, joined);
       const place = Math.max(0, Math.min(at.total - 1, at.place + steps));
       if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) crossJoined(activeSlot.id, place);
-      else if (!joined.lead) updateView(activeSlot.id, { slice: stackSliceAt(activeVolume.series, activeSlot.view, place, count, joined) });
+      else if (!joined.lead) updateView(activeSlot.id, { slice: stackSliceAt(activeImageSeries, activeSlot.view, place, count, joined) });
     }
   });
   useEffect(() => {
@@ -2484,22 +3023,28 @@ export default function App() {
     return () => window.removeEventListener('keydown', keydown);
   }, []);
 
-  const testState = useEffectEvent(() => ({
-    activeSeriesId: activeSlot.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
-    fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
-    sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
-    sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
-    series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, studyDate: item.studyDate, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
-      ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
-      // For the gated SPECT check: each gate's phase and where its slices lie.
-      ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
-    shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot.view,
-    // For the arrangement checks: the panes on screen and what each one shows.
-    layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
-      projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
-      windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan })),
-    graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
-  }));
+  const testState = useEffectEvent(() => {
+    const activeVolume = readActiveVolume();
+    return {
+      activeSeriesId: activeSlot.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
+      fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
+      sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
+      sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
+      series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, studyDate: item.studyDate, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
+        ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
+        // For the gated SPECT check: each gate's phase and where its slices lie.
+        ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
+      shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot.view,
+      // For the arrangement checks: the panes on screen and what each one shows.
+      // For the registration checks: the frames aligned, and whether the engine is still finding one.
+      aligning, alignments: alignments.map(item => ({ fixedSeriesId: item.fixedSeriesId, movingSeriesId: item.movingSeriesId, matrix: [...item.matrix], adjusted: adjusted(item),
+        similarity: item.similarity, similarityBefore: item.similarityBefore, overlap: item.overlap })),
+      layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
+        projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
+        windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan })),
+      graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
+    };
+  });
   const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(activeSlot.id, patch));
   useEffect(() => {
     const harness = {
@@ -2518,7 +3063,7 @@ export default function App() {
   // Usage timings: the coarse state each action leaves behind (src/usage/tracker.ts). Facet values are only
   // compared in this window to name what an action changed; of the state, only the classes below are sent.
   const usageSnapshot = useEffectEvent((): UsageSnapshot => {
-    const surface: Surface = show3d && activeVolume ? '3d' : showAssessment ? 'assessment' : series.length ? 'viewer' : 'welcome';
+    const surface: Surface = show3d && activeImageSeries ? '3d' : showAssessment ? 'assessment' : series.length ? 'viewer' : 'welcome';
     const panes = slots.map(slot => {
       const volume = volumeForSlot(slot), shown = volume ? renderedView(volume, slot.view) : slot.view;
       const plane = !volume ? 'none' : usesSourceFrames(volume.series, shown) ? 'source' : shown.oblique?.some(Boolean) ? 'oblique' : shown.plane;
@@ -2600,6 +3145,8 @@ export default function App() {
     keptRef.current = kept;
     shownSegmentationsRef.current = shownSegmentations;
     fusionIdRef.current = fusionId;
+    alignmentsRef.current = alignments;
+    paneToastRef.current = paneToast;
     fusionDeviceModeRef.current = fusionDeviceMode;
     displayVolumesRef.current = displayVolumes;
     fusionState.current = { show: showFusion, opacity: fusionOpacity, upper: fusionUpper, palette: fusionPalette, blend: fusionBlend, deviceMode: fusionDeviceMode };
@@ -2614,8 +3161,8 @@ export default function App() {
   /** MPR > Thick slab, as in VEAcom Next: on acquired slices it goes to the same place in the reconstructed volume;
    * turned off in the plane the series was acquired in, it goes back to its own slices there. */
   const chooseSlab = (mode: SlabMode | null, thickness?: number) => {
-    if (!activeVolume || !activeVolume.series.canReconstruct || activeVolume.series.sourceFramesOnly || activeVolume.series.components === 3 || activeProjection) return;
-    const series = activeVolume.series, view = activeSlot.view, center = getPlaneFrame(series, view).center;
+    if (!activeImageSeries || !activeImageSeries.canReconstruct || activeImageSeries.sourceFramesOnly || activeImageSeries.components === 3 || activeProjection) return;
+    const series = activeImageSeries, view = activeSlot.view, center = getPlaneFrame(series, view).center;
     if (thickness !== undefined) setSlabThickness(thickness);
     if (mode === null) {
       if (!view.slab) return;
@@ -2635,7 +3182,7 @@ export default function App() {
   // the panes stay near square; the chosen layout stays as it is and comes back when the area widens.
   const gridShape: [number, number] = show3d && layout[0] === 1 && layout[1] === 3 && slots.length === 3 ? [2, 2]
     : gridTall && layout[1] > layout[0] ? [layout[1], layout[0]] : layout;
-  const canPlay = Boolean(!capturing && activeVolume && sliceCount(activeVolume.series, activeSlot.view) > 1);
+  const canPlay = Boolean(!capturing && activeVolume && (fileTiming ? fileTiming.slices.length : cineCount) > 1);
   // A whole-volume MIP in the active pane: its slab is the whole volume already.
   const activeProjection = Boolean(activeVolume && isProjection(activeVolume.series, activeDisplayView));
   const mprWhy = canReconstruct || leadReconstructs || isMpr || !activeSeries ? undefined : loadingIds.has(activeSeries.id) || activeVolume?.sourceFrameIndex !== undefined ? t('mpr.whyLoading')
@@ -2668,6 +3215,8 @@ export default function App() {
   const mod = modifierKey(navigator.platform);
   const singleKey = (key?: string) => settings.singleKeys ? key : undefined;
   const combo = (...keys: string[]) => mod === '⌘' ? keys.join('') : keys.map(key => key === '⇧' ? 'Shift' : key).join('+');
+  const captureUnavailable = aligning ? t('export.waitAlignment')
+    : loadingIds.size || !activeVolume || activeVolume.sourceFrameIndex !== undefined ? t('export.waitLoading') : null;
   const noStudy = series.length === 0, noImage = !activeVolume, rgb = activeVolume?.series.components === 3;
   // What each mouse button really does; Viewport falls back to pan / zoom for middle / right.
   const effectiveBinding = (button: MouseButton): Tool => settings.mouseBindings[button] ?? (button === 'middle' ? 'pan' : button === 'right' ? 'zoom' : tool);
@@ -2676,22 +3225,24 @@ export default function App() {
   const suvActive = Boolean(activeVolume && !rgb && quantityScale(activeVolume.series, 'SUV'));
   const currentSuvPreset = activeVolume && suvActive ? suvPresetFor(activeVolume.series, activeDisplayView) : undefined;
   const applySuvPreset = (to: number) => {
-    const window = activeVolume ? windowFor(activeVolume.series, { unit: 'SUV', from: 0, to }) : null;
+    const window = activeImageSeries ? windowFor(activeImageSeries, { unit: 'SUV', from: 0, to }) : null;
     if (window) { updateView(activeSlot.id, { ...window, windowMode: 'manual' }); offerKeep.current(activeSlot.id); }
   };
   const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : suvWindowText(activeVolume.series, activeDisplayView) || t('toolbar.customWindow'))
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
-  const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
+  const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeImageSeries || !shownOnView(annotation, activeImageSeries, activeDisplayView)));
   /** In the MPR menu the plane the active series was acquired in shows the series' own images, as a click on the pane's
    * plane name does (cyclePlane); the other planes are reconstructed, and so is that one while a thick slab is on. The
    * series' own images draw no slab, so the slab stays on and drawn; turning it off brings them back (chooseSlab). */
   const activeAcquiredPlane = activeVolume ? acquiredPlane(activeVolume.series) : null;
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
-  const showPlane =(plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
-  const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
-  const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length : !petSeries.length);
-  const fusionWhy = mrActive ? (mrBeside.length ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
+  const showPlane =(plane: Plane) => { if (activeImageSeries) { const center = getPlaneFrame(activeImageSeries, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeImageSeries, plane, center), oblique: [0, 0], projection: undefined }); } };
+  const showAcquired = () => { if (activeImageSeries) { const center = getPlaneFrame(activeImageSeries, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeImageSeries, next, center) }); } };
+  // An MR fuses with another MR beside it, or with a PET or SPECT of the same patient acquired apart, aligned first.
+  const mrApart = mrActive && overlayChoices.some(item => !shareFrame(item, activeSeries));
+  const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length && !mrApart : !petSeries.length);
+  const fusionWhy = mrActive ? (mrBeside.length || mrApart ? undefined : t('fusion.whyMrPane')) : petSeries.length ? undefined : t('fusion.whyNoVolume');
   // The nuclear medicine screen of the active pane's study (PET follow-up, PET/CT, whole body or SPECT/CT, as kept),
   // offered beside the fusion button. Only the prior role can use another study in the session.
   const activeStudy = activeSeries ? activeStudyContext(activeSeries, series) : null;
@@ -2755,7 +3306,7 @@ export default function App() {
     }),
     { id: 'series', group: 'series', priority: 1, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<List size={18} />} label={t('toolbar.chooseSeries')} testId="tool-series" popup="menu" indicator expanded={menu === 'series'} disabled={!series.length} onClick={() => toggleMenu('series')} />
-      {menu === 'series' && <Menu label={t('toolbar.series')} onClose={closeMenu} className="series-menu"><SeriesMenuItems series={series} activeId={activeSeries?.id} shown={shownSegmentationIds} onSelect={selectFromMenu} /></Menu>}</div> },
+      {menu === 'series' && <Menu label={t('toolbar.series')} onClose={closeMenu} className="series-menu"><SeriesMenuItems series={series} activeId={activeSeries?.id} shown={new Set(shownSegmentations)} onSelect={selectFromMenu} /></Menu>}</div> },
     { id: 'layout', group: 'layout', priority: 11, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
@@ -2809,8 +3360,8 @@ export default function App() {
         <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !leadReconstructs && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
         <MenuDivider />
         {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action={`plane-${plane}`} key={plane} kind="radio"
-          checked={Boolean(activeVolume && !activeDisplayView.oblique?.some(Boolean) && (usesSourceFrames(activeVolume.series, activeDisplayView) ? plane === activeAcquiredPlane : activeDisplayView.plane === plane))}
-          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane && !activeDisplayView.slab ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
+          checked={Boolean(activeImageSeries && !activeDisplayView.oblique?.some(Boolean) && (usesSourceFrames(activeImageSeries, activeDisplayView) ? plane === activeAcquiredPlane : activeDisplayView.plane === plane))}
+          disabled={plane === activeAcquiredPlane ? !activeImageSeries : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane && !activeDisplayView.slab ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
         <MenuDivider />
         <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
       </Menu>}</div> },
@@ -2873,9 +3424,11 @@ export default function App() {
       </div>
     </Menu>
   </div>;
+  // The browser can choose files and enumerate a folder while the engine loads. Its requests are queued.
+  const fileChoiceDisabled = Boolean(busy && !(busy === 'status.connecting' && window.veacom?.web));
   const noticeBar = notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : undefined} data-testid="notice" data-kind={notice.kind} data-code={notice.code ?? notice.key}><span>{notice.key ? t(notice.key, notice.params) : notice.warnings ? warningTexts(notice.warnings, locale).join(' · ') : notice.message}</span>{notice.action && <button type="button" className="notice-action" data-testid="notice-action" onClick={() => { notice.action?.run(); setNotice(null); focusSoon('[data-annotation-row] .annotation-main', '[data-testid="findings-add"]'); }}>{t(notice.action.label)}</button>}<button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="notice-dismiss" onClick={() => { setNotice(null); focusImage(); }}><X size={14} /></button></div>;
 
-  return <div className="app-shell" data-testid="veacom-app" data-ready={!busy && !connectionError} data-locale={locale}
+  return <div key={workspaceRevision} className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
     onPointerMoveCapture={event => { pointerAt.current = { x: event.clientX, y: event.clientY }; }}
     onPointerDownCapture={event => {
       if (quick && !quickRef.current?.contains(event.target as Node)) setQuick(null);
@@ -2883,13 +3436,13 @@ export default function App() {
     }}>
     {quickMenu}
     <div className={`toolbar-region${show3d ? ' beside-3d' : ''}`} inert={show3d || capturing || undefined} onPointerEnter={() => usage.toolbarHover(true)} onPointerLeave={() => usage.toolbarHover(false)}>
-      <Toolbar label={t('toolbar.label')} start={toolbarStart} end={toolbarEnd} moreLabel={t('toolbar.more')} />
+      <Toolbar secondRow={toolbarExpanded} onSecondRow={setToolbarExpanded} label={t('toolbar.label')} start={toolbarStart} end={toolbarEnd} moreLabel={t('toolbar.more')} />
     </div>
     <TooltipLayer />
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
+      <SeriesBrowser filters={seriesFilters} series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
@@ -2903,7 +3456,7 @@ export default function App() {
         {/* Info notices go into a live region that is always present, so screen readers announce them reliably. */}
         <div className="notice-region" role="status">{notice && notice.kind !== 'error' && noticeBar}</div>
         {notice?.kind === 'error' && noticeBar}
-        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = petSeries.find(value => value.id === event.target.value); if (!item) { setFusionId(null); return; } if (activeVolume?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{petSeries.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
+        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = overlayChoices.find(value => value.id === event.target.value); if (!item) { fusionRequest.current++; setFusionId(null); return; } if (activeImageSeries?.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{overlayChoices.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
         {pictureNotice && <div className="picture-notice-anchor"><div className="picture-notice" role="status" data-testid="picture-notice"><span>{pictureFormat ? t('pictures.limited', { format: pictureFormat }) : t('pictures.limitedPlain')}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-tooltip={t('notice.dismiss')} data-action="picture-notice-close" onClick={() => setPictureNoticeClosed(current => new Set(current).add(pictureNotice))}><X size={14} /></button></div></div>}
         {series.length === 0 ? <div className="welcome-space" data-testid="welcome">
           <div className="welcome-card">
@@ -2911,9 +3464,9 @@ export default function App() {
             <h1>{t('welcome.title')}</h1>
             <p>{t(bridgeCan('rarImport') ? 'welcome.hintRar' : 'welcome.hint')}</p>
             <div className="welcome-actions">
-              <button type="button" className="primary-button" data-testid="welcome-open-folder" disabled={Boolean(busy)} onClick={() => void open('folder')}><FolderOpen size={16} /> {t('toolbar.openFolder')}<kbd className="button-kbd">{combo(mod, 'O')}</kbd></button>
-              <button type="button" className="secondary-button" data-testid="welcome-open-files" disabled={Boolean(busy)} onClick={() => void open('files')}><Files size={16} /> {t('toolbar.openFiles')}</button>
-              <button type="button" className="secondary-button" data-testid="welcome-open-archive" disabled={Boolean(busy)} onClick={() => void open('archive')}><FileArchive size={16} /> {t('toolbar.openArchive')}</button>
+              <button type="button" className="primary-button" data-testid="welcome-open-folder" disabled={fileChoiceDisabled} onClick={() => void open('folder')}><FolderOpen size={16} /> {t('toolbar.openFolder')}<kbd className="button-kbd">{combo(mod, 'O')}</kbd></button>
+              <button type="button" className="secondary-button" data-testid="welcome-open-files" disabled={fileChoiceDisabled} onClick={() => void open('files')}><Files size={16} /> {t('toolbar.openFiles')}</button>
+              <button type="button" className="secondary-button" data-testid="welcome-open-archive" disabled={fileChoiceDisabled} onClick={() => void open('archive')}><FileArchive size={16} /> {t('toolbar.openArchive')}</button>
             </div>
             {busy && <div className="connection-status" role="status"><LoaderCircle size={14} />{t(busy)}</div>}
             {connectionError && <div className="connection-error" role="alert"><strong>{t('welcome.serviceUnavailable')}</strong><span>{connectionError}</span><button data-action="reconnect" type="button" className="secondary-button compact" onClick={() => void connect()}>{t('welcome.reconnect')}</button></div>}
@@ -2922,35 +3475,45 @@ export default function App() {
           {slots.map((slot, index) => {
             const volume = volumeForSlot(slot), metadata = slot.seriesId ? seriesById.get(slot.seriesId) : undefined;
             const origin = crosshairSeriesId ? volumes.get(crosshairSeriesId) : undefined;
-            const linkedCrosshair = settings.showCrosshair && volume && origin && shareFrame(volume.series, origin.series) ? crosshair : null;
-            const fused = fusion && !slot.unfused && volume && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series) ? fusion : null;
+            // The crosshair in this pane's own coordinates: as set in one frame of reference, through the alignment in another.
+            const linkedCrosshair = settings.showCrosshair ? crosshairIn(alignments, crosshair, origin?.series, volume?.series) : null;
+            const fused = fusion && !slot.unfused && volume && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series, alignments)
+              ? alignedFusion(fusion, transformBetween(alignments, volume.series, fusion.volume.series) ?? IDENTITY) : null;
+            // Placed by an alignment: a series in a frame aligned to another, or an overlay drawn through one.
             return <ViewportCell key={slot.id} slot={slot} index={index} paneCount={slots.length} volume={volume} metadata={metadata} active={slot.id === activeId} tool={tool}
               annotations={slot.seriesId ? annotations[slot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS} crosshair={linkedCrosshair} fusion={fused} segmentations={segmentationOverlays}
               loading={Boolean(slot.seriesId && loadingIds.has(slot.seriesId))} loadError={slot.seriesId ? loadErrors[slot.seriesId] : undefined} linked={settings.linked} interaction={settings} references={!isMpr && slot.id === activeId ? EMPTY_REFERENCES : activeReferences}
+              alignments={alignments} aligned={volume ? placementOf(alignments, volume.series, fused?.volume.series) : undefined}
               onActivate={activateSlot} onViewChange={updateView} onAnnotationsChange={changeAnnotations} onCrosshairChange={changeCrosshair}
               joined={joinedFor(slot)} onCross={crossJoined} onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
               onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlane : undefined} clickPicksPoint={show3d}
-              toast={paneToast?.slotId === slot.id && paneToast.seriesId === (slot.seriesId ?? '') ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes} />;
+              toast={paneToast?.slotId === slot.id && paneToast.seriesId === (slot.seriesId ?? '') ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes}
+              caliper={slot.id === activeId && volume ? caliperPane(volume, slot.view, slot.id) : undefined} />;
           })}
         </div>}
       </main>
 
       {/* Docked beside the image (not over it), so the panels it replaces cannot hold hidden keyboard focus. */}
-      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries}
+      {checklistShown && <div className="assessment-overlay"><Suspense fallback={null}><PreopChecklist key={studyKey(activeSeries)} series={activeSeries} hidePatient={settings.hidePatientData}
+        /* Undo brought caliper records back: each series of the study measures them again at its scale now (a calibration
+           may have changed since), from their drawings, which may have moved, or from their own points where the drawing is
+           gone. Drawings keep their series loaded (publishVolumes), so a series whose volume left the cache has records
+           only, and its metadata and calibration are all they need. */
+        onRestored={() => { for (const item of seriesRef.current) if (studyKey(item) === studyKey(activeSeries)) recordCalipers(item.id, annotationRef.current[item.id] ?? EMPTY_ANNOTATIONS, undefined,
+          displayVolumesRef.current.get(item.id)?.series ?? { ...item, measurementScale: calibrationScales[item.id] }); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
-        onNote={() => {
-          if (!activeVolume || !activeSlot.seriesId) return null;
-          const view = activeSlot.view, count = sliceCount(activeVolume.series, view), slice = Math.round(view.slice);
-          const numbered = shownSlice(activeVolume.series, view, slice, count, joinedFor(activeSlot));
-          // A tilted plane is named with its tilt, and "go to" tilts the pane back to it.
-          const tilted = (view.mode ?? 'source') === 'mpr' && view.oblique?.some(Boolean) ? { oblique: [view.oblique[0], view.oblique[1]] as [number, number], tilt: obliqueAngle(activeVolume.series, view) } : {};
-          return { seriesId: activeSlot.seriesId, slice, shown: `${numbered.number}/${numbered.total}`, plane: view.plane, mode: view.mode ?? 'source', ...tilted };
-        }}
+        onNote={() => activeImageSeries && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeImageSeries, activeSlot.view, joinedFor(activeSlot)) : null}
+        onMeasure={(item, side, kind) => startCaliper({ kind, item, side, study: studyKey(activeSeries) })}
+        measuring={caliper && caliper.study === studyKey(activeSeries) ? caliper : null} measureBlocked={caliperBlocked}
+        paneShows={paneShows} onShow={showChecklistItem} showBlocked={showBlocked}
         onGoTo={note => { const item = seriesRef.current.find(value => value.id === note.seriesId); if (!item) return;
           if (activeSlot.seriesId !== note.seriesId) assignSeries(activeSlot.id, item);
-          updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage(); }} /></Suspense></div>}
+          updateView(activeSlot.id, { slice: note.slice, plane: note.plane as Plane, mode: note.mode as ViewState['mode'], oblique: note.mode === 'mpr' ? note.oblique ?? [0, 0] : undefined }); focusImage();
+          // A measured side picks its caliper drawing too, once it is on screen.
+          if (note.caliper) document.querySelector('.viewport-cell.is-active [data-testid="dicom-viewport"]')?.dispatchEvent(new CustomEvent(PICK_MEASUREMENT, { detail: note.caliper.annotationId })); }} /></Suspense></div>}
       {(() => {
+        const activeVolume = readActiveVolume();
         const plan = deformityShown && activeVolume ? <Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
           onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
           viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
@@ -2962,7 +3525,7 @@ export default function App() {
         return plan && <div className="assessment-overlay">{plan}</div>;
       })()}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} joinedOf={joinedOf} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
-      <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
+      <Inspector query={tagQuery} onQuery={setTagQuery} open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
         {inspectorShown && <>
         <div className="inspector-tabs"><div className="inspector-tablist" role="tablist" aria-label={t('inspector.label')} onKeyDown={event => {
           const order: Exclude<Panel, null>[] = ['measurements', 'display', 'tags'];
@@ -2979,7 +3542,7 @@ export default function App() {
           </div>
           <button type="button" className="icon-button inspector-close" aria-label={t('inspector.close')} data-tooltip={t('inspector.close')} onClick={() => { setPanel(null); focusSoon('[data-testid="tool-inspector"]', '[data-testid="tool-more"]'); }}><X size={16} /></button>
         </div>
-        {settings.panel === 'measurements' && <div className="inspector-panel" role="tabpanel" id="inspector-panel-measurements" aria-labelledby="inspector-tab-measurements" tabIndex={0}>
+        {settings.panel === 'measurements' && <div className="inspector-panel" role="tabpanel" id="inspector-panel-measurements" aria-labelledby="inspector-tab-measurements" tabIndex={0} aria-busy={recovery.status === 'restoring'}>
           <div className="panel-heading"><h2>{t('inspector.measurements')}</h2><span className="count-badge">{activeAnnotations.length}</span>{activeAnnotations.length > 0 && <button data-action="measurements-delete-all" type="button" className="icon-button danger-hover" aria-label={t('inspector.deleteAll')} data-tooltip={t('inspector.deleteAll')} data-testid="findings-delete-all" onClick={() => {
             if (!activeSeries) return;
             // Undo puts back exactly these measurements, even after other edits; the restore is itself undoable.
@@ -2999,6 +3562,7 @@ export default function App() {
             loading={loadingIds.has(activeSeries.id) || (!loadErrors[activeSeries.id] && (!activeVolume || activeVolume.sourceFrameIndex !== undefined))}
             typedGlucose={typedGlucose} lesionPrior={lesionPrior} comparison={petPrior && { current: currentPet, prior: petPrior, limited: limitedView }} />}
           {activeAnnotations.length ? <ol className="annotation-list">{activeAnnotations.map((annotation, index) => {
+            const activeVolume = readActiveVolume();
             const sourceIndex = annotation.mode === 'source' && activeVolume ? annotationSourceIndex(annotation, activeVolume.series) : null;
             const unavailable = annotation.mode === 'source' && sourceIndex === null;
             const Icon = MEASURE_ICONS[annotation.type] ?? Ruler;
@@ -3009,7 +3573,7 @@ export default function App() {
             return <li className={`annotation-row${annotation.type === 'sphere' ? ' has-details' : ''}`} key={annotation.id} data-annotation-row={annotation.id}><button data-action="measurement-go" type="button" className="annotation-main" disabled={unavailable} onClick={event => {
               // A sphere: every linked pane goes to its centre, each in its own plane.
               if (sphere) {
-                if (activeVolume && !isProjection(activeVolume.series, activeSlot.view)) updateView(activeSlot.id, { slice: sliceAtWorld(activeVolume.series, activeSlot.view, sphere.center) });
+                if (activeImageSeries && !isProjection(activeImageSeries, activeSlot.view)) updateView(activeSlot.id, { slice: sliceAtWorld(activeImageSeries, activeSlot.view, sphere.center) });
                 changeCrosshair(sphere.center);
               } else updateView(activeSlot.id, viewOfAnnotation(annotation, sourceIndex));
               document.querySelector('.viewport-cell.is-active [data-testid="dicom-viewport"]')?.dispatchEvent(new CustomEvent(PICK_MEASUREMENT, { detail: annotation.id }));
@@ -3018,7 +3582,7 @@ export default function App() {
               usage.touch('marks');
             }}>
               <span className="annotation-number"><Icon size={14} aria-hidden="true" />{index + 1}</span>
-              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: numbered }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: numbered })}</small></span></button>
+              <span className="annotation-text"><span className="annotation-values">{unavailable ? <span className="stat-primary">{t('inspector.sourceUnavailable')}</span> : <AnnotationSummary annotation={annotation} volume={activeVolume} />}</span><small>{annotation.caliper ? caliperName(annotation.caliper.kind, locale) : toolLabel(annotation.type)} · {sphere ? t('sphere.diameter', { value: (sphere.radius * 2).toFixed(1) }) : annotation.mode === 'source' ? sourceIndex === null ? t('inspector.notInImport') : t('inspector.sourceFrameNumber', { number: numbered }) : t('inspector.planeSlice', { plane: annotation.oblique?.some(Boolean) && activeVolume ? t('viewport.obliquePlane', { plane: planeLabel(annotation.plane), angle: obliqueAngle(activeVolume.series, { plane: annotation.plane, mode: 'mpr', oblique: annotation.oblique }) }) : planeLabel(annotation.plane), number: numbered })}</small></span></button>
               <button data-action="measurement-delete" type="button" className="icon-button danger-hover" aria-label={t('inspector.deleteMeasurement', { number: index + 1 })} data-tooltip={t('inspector.deleteMeasurement', { number: index + 1 })} onClick={() => { if (!activeSeries) return; changeAnnotations(activeSeries.id, activeAnnotations.filter(item => item.id !== annotation.id)); focusSoon(neighbour ? `[data-annotation-row="${neighbour}"] .annotation-main` : '[data-testid="findings-add"]'); }}><X size={15} /></button>
               {sphere && activeSeries && <SphereDetails annotation={annotation} annotations={activeAnnotations} volume={activeVolume} onChange={next => changeAnnotations(activeSeries.id, next)} />}</li>;
           })}</ol>
@@ -3034,7 +3598,7 @@ export default function App() {
         {settings.panel === 'display' && <div className="inspector-panel display-panel" role="tabpanel" id="inspector-panel-display" aria-labelledby="inspector-tab-display" tabIndex={0}>
           <PanelSection id="window" title={t('inspector.windowSection')} open={openSections.has('window')} onToggle={toggleSection}>
             <div className="field-pair"><label>{t('inspector.windowWidth')}<input data-action="window-width-input" aria-label={t('inspector.windowWidth')} type="number" min={1} value={Math.round(activeDisplayView.windowWidth)} disabled={!activeVolume || rgb} onChange={event => updateView(activeSlot.id, { windowWidth: Math.max(1, Number(event.target.value)) })} /></label><label>{t('inspector.windowLevel')}<input data-action="window-level-input" aria-label={t('inspector.windowLevel')} type="number" value={Math.round(activeDisplayView.windowCenter)} disabled={!activeVolume || rgb} onChange={event => updateView(activeSlot.id, { windowCenter: Number(event.target.value) })} /></label></div>
-            <div className="preset-buttons" role="group" aria-label={t('toolbar.windowPresets')}>{PRESETS.map(preset => <button data-action={`preset-${kebab(preset.key)}`} key={preset.key} type="button" aria-pressed={currentPreset?.key === preset.key} className={currentPreset?.key === preset.key ? 'is-active' : ''} disabled={!activeVolume || rgb} onClick={() => updateView(activeSlot.id, { windowWidth: preset.width, windowCenter: preset.center })}><span>{presetName(preset)}</span><small>{preset.width} / {preset.center}</small></button>)}</div>
+            <div className="preset-buttons" role="group" aria-label={t('toolbar.windowPresets')}>{PRESETS.map(preset => <button data-action={`preset-${kebab(preset.key)}`} key={preset.key} type="button" aria-pressed={currentPreset?.key === preset.key} className={currentPreset?.key === preset.key ? 'is-active' : ''} disabled={!activeImageSeries || rgb} onClick={() => updateView(activeSlot.id, { windowWidth: preset.width, windowCenter: preset.center })}><span>{presetName(preset)}</span><small>{preset.width} / {preset.center}</small></button>)}</div>
             <div className="inline-actions"><button data-action="preset-auto" type="button" className="text-button" disabled={!activeVolume || rgb || framePending} onClick={applyAutoWindow}>{t('inspector.autoWindowRange')}</button><button type="button" className="text-button" disabled={!activeVolume || rgb} onClick={applyDicomWindow}>{t('toolbar.dicomWindow')}</button></div>
           </PanelSection>
           <PanelSection id="color" title={t('inspector.colorSection')} open={openSections.has('color')} onToggle={toggleSection}>
@@ -3051,9 +3615,14 @@ export default function App() {
             </div>
           </PanelSection>
           <PanelSection id="oblique" title={t('inspector.oblique')} open={openSections.has('oblique')} onToggle={toggleSection}>
-            <p className="field-help">{t('inspector.obliqueHelp')}</p>{[0, 1].map(axis => <label className="slider-field" key={axis}><span>{axis === 0 ? t('inspector.pitch') : t('inspector.yaw')}<output>{activeSlot.view.oblique?.[axis] ?? 0}°</output></span><input data-action={axis === 0 ? 'oblique-pitch' : 'oblique-yaw'} type="range" disabled={!canReconstruct} min={-90} max={90} step={1} value={activeSlot.view.oblique?.[axis] ?? 0} onChange={event => { const angles: [number, number] = [...(activeSlot.view.oblique ?? [0, 0])]; angles[axis] = Number(event.target.value); if (activeVolume) { const next = { ...activeSlot.view, mode: 'mpr' as const, oblique: angles }; updateView(activeSlot.id, { mode: 'mpr', oblique: angles, slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }} /></label>)}
-            <button data-action="oblique-reset" type="button" className="text-button" disabled={!canReconstruct || !activeSlot.view.oblique?.some(Boolean)} onClick={() => { if (activeVolume) { const next = { ...activeSlot.view, oblique: [0, 0] as [number, number] }; updateView(activeSlot.id, { oblique: [0, 0], slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }}>{t('inspector.resetPlane')}</button>
+            <p className="field-help">{t('inspector.obliqueHelp')}</p>{[0, 1].map(axis => <label className="slider-field" key={axis}><span>{axis === 0 ? t('inspector.pitch') : t('inspector.yaw')}<output>{activeSlot.view.oblique?.[axis] ?? 0}°</output></span><input data-action={axis === 0 ? 'oblique-pitch' : 'oblique-yaw'} type="range" disabled={!canReconstruct} min={-90} max={90} step={1} value={activeSlot.view.oblique?.[axis] ?? 0} onChange={event => { const angles: [number, number] = [...(activeSlot.view.oblique ?? [0, 0])]; angles[axis] = Number(event.target.value); if (activeImageSeries) { const next = { ...activeSlot.view, mode: 'mpr' as const, oblique: angles }; updateView(activeSlot.id, { mode: 'mpr', oblique: angles, slice: sliceAtWorld(activeImageSeries, next, getPlaneFrame(activeImageSeries, activeSlot.view).center) }); } }} /></label>)}
+            <button data-action="oblique-reset" type="button" className="text-button" disabled={!canReconstruct || !activeSlot.view.oblique?.some(Boolean)} onClick={() => { if (activeImageSeries) { const next = { ...activeSlot.view, oblique: [0, 0] as [number, number] }; updateView(activeSlot.id, { oblique: [0, 0], slice: sliceAtWorld(activeImageSeries, next, getPlaneFrame(activeImageSeries, activeSlot.view).center) }); } }}>{t('inspector.resetPlane')}</button>
           </PanelSection>
+          {activeAlignment && <PanelSection id="alignment" title={t('inspector.alignment')} open={openSections.has('alignment')} onToggle={toggleSection}>
+            <AlignmentSection alignment={activeAlignment} fixed={seriesById.get(activeAlignment.fixedSeriesId)} moving={seriesById.get(activeAlignment.movingSeriesId)}
+              onNudge={nudge => nudgeAlignment(activeAlignment, nudge)} onAutomatic={() => changeAlignments(withAlignment(alignmentsRef.current, automatic(activeAlignment)))}
+              onRemove={() => removeAlignment(activeAlignment)} />
+          </PanelSection>}
           <PanelSection id="workspace" title={t('inspector.workspace')} open={openSections.has('workspace')} onToggle={toggleSection}>
             <label className="check-field"><input data-action="link-frames" type="checkbox" checked={settings.linked} onChange={event => { if (event.target.checked) pressLink(); else setSettings(current => ({ ...current, linked: false })); }} /> {t('inspector.linkFrames')}</label>
             <label className="check-field"><input data-action="show-crosshair" type="checkbox" checked={settings.showCrosshair} onChange={event => setSettings(current => ({ ...current, showCrosshair: event.target.checked }))} /> {t('inspector.showCrosshair')}</label>
@@ -3065,9 +3634,9 @@ export default function App() {
           <PanelSection id="units" title={t('inspector.units')} open={openSections.has('units')} onToggle={toggleSection}>
             <label className="stacked-field">{t('inspector.displayUnits')}<select data-action="units" value={settings.measurementUnits} onChange={event => setSettings(current => ({ ...current, measurementUnits: event.target.value as 'auto' | 'px' }))}><option value="auto">{t('inspector.unitsMillimetres')}</option><option value="px">{t('inspector.unitsPixels')}</option></select></label>
             <p className="field-help">{t('inspector.calibrationHelp')}</p>
-            <label className="stacked-field">{t('inspector.referenceLine')}<select data-action="calibration-line" aria-label={t('inspector.calibrationLine')} value={activeAnnotations.some(annotation => annotation.id === calibrationLine) ? calibrationLine : activeAnnotations.find(annotation => annotation.type === 'length')?.id ?? ''} onChange={event => setCalibrationLine(event.target.value)}><option value="">{t('inspector.chooseLength')}</option>{activeAnnotations.filter(annotation => annotation.type === 'length').map((annotation, index) => <option key={annotation.id} value={annotation.id}>{t('inspector.lengthNumber', { number: index + 1 })}</option>)}</select></label>
+            <label className="stacked-field">{t('inspector.referenceLine')}<select data-action="calibration-line" aria-label={t('inspector.calibrationLine')} value={referenceLines.some(annotation => annotation.id === calibrationLine) ? calibrationLine : referenceLines.at(0)?.id ?? ''} onChange={event => setCalibrationLine(event.target.value)}><option value="">{t('inspector.chooseLength')}</option>{referenceLines.map((annotation, index) => <option key={annotation.id} value={annotation.id}>{t('inspector.lengthNumber', { number: index + 1 })}</option>)}</select></label>
             <label className="stacked-field">{t('inspector.knownLength')}<input data-action="calibration-length" type="number" min={0.001} step="any" value={calibrationLength} onChange={event => setCalibrationLength(event.target.value)} /></label>
-            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !activeAnnotations.some(annotation => annotation.type === 'length')} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibrationScales(current => { const next = { ...current }; delete next[activeSeries.id]; return next; })}>{t('inspector.removeCalibration')}</button>}</div>
+            <div className="calibration-actions"><button data-action="calibrate" type="button" className="secondary-button compact" disabled={!activeVolume || !referenceLines.length} onClick={applyCalibration}>{t('inspector.calibrate')}</button>{activeSeries && calibrationScales[activeSeries.id] && <button data-action="calibration-remove" type="button" className="text-button" onClick={() => setCalibration(activeSeries.id, undefined)}>{t('inspector.removeCalibration')}</button>}</div>
             {activeSeries && calibrationScales[activeSeries.id] && <p className="calibration-status" role="status">{t('inspector.manualScale', { scale: calibrationScales[activeSeries.id].toPrecision(4) })}</p>}
             <label className="stacked-field">{t('inspector.petValues')}<select data-action="pet-values" value={settings.suvNormalization} onChange={event => setSettings(current => ({ ...current, suvNormalization: event.target.value as SuvNormalization }))}><option value="bw">{t('inspector.suvBw')}</option><option value="lbm">{t('inspector.suvLbm')}</option><option value="bsa">{t('inspector.suvBsa')}</option></select></label>
             <p className="field-help">{t('inspector.petValuesHelp')}</p>
@@ -3091,11 +3660,15 @@ export default function App() {
       </Inspector>
     </div>
     <footer className="app-status">
-      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" /><span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" />{recovery.status !== 'saved' && <span className="status-export" role={recovery.status === 'failed' ? 'alert' : 'status'}>
+        {t(recovery.status === 'restoring' ? 'measurement.restoring' : recovery.status === 'saving' ? 'measurement.saving' : 'measurement.storageFailed')}
+        {recovery.status === 'failed' && <button type="button" className="text-button" data-action="retry-measurements" onClick={recovery.retry}>{t('measurement.retry')}</button>}
+      </span>}<span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>
-        {playing && <CineSpeed fps={cineFps} max={cineMax} onChange={fps => setSettings(current => ({ ...current, cineFps: fps }))} />}
+        {playing && <CineSpeed fps={cineFps} max={cineMax} onChange={setCineSpeed}
+          source={fileTiming && { active: cineOverride === undefined, variable: fileTiming.intervalsMs.length > 1, restore: useRecordedSpeed }} />}
       </div>
       {/* Feedback to the team: always at hand, never over the images (where the bridge can send it). */}
       {bridgeCan('feedback') && <button type="button" className="status-button status-feedback" data-testid="feedback-open" data-usage-ignore aria-label={t('feedback.open')} data-tooltip={t('feedback.open')} onClick={() => setShowFeedback(true)}><MessageSquare size={13} aria-hidden="true" /><span>{t('feedback.open')}</span></button>}
@@ -3108,7 +3681,7 @@ export default function App() {
     </footer>
 
     {exportMode && exportFor && <Suspense fallback={<div className="modal-backdrop"><div className="centered-loading"><LoaderCircle /> {t('loading.export')}</div></div>}><ExportDialog key={`${exportMode}:${exportFor}`} mode={exportMode} series={series} activeSeriesId={exportFor} patientShown={settings.showOverlay && !settings.hidePatientData} onModeChange={openExport} onPicture={(format, layout) => void exportImage(format, layout)}
-      unavailable={Boolean(loadingIds.size) || activeVolume?.sourceFrameIndex !== undefined || !activeVolume ? { images: t('export.waitLoading'), video: t('export.waitLoading') } : undefined} background={exportBackground} busy={exportBusy} onBusyChange={changeExportBusy} onBackground={() => { setExportBackground(true); focusImage(); }} video={exportVideoTarget}
+      unavailable={captureUnavailable ? { images: captureUnavailable, video: captureUnavailable } : undefined} background={exportBackground} busy={exportBusy} onBusyChange={changeExportBusy} onBackground={() => { setExportBackground(true); focusImage(); }} video={exportVideoTarget}
       currentFrame={activeSeries?.id === exportFor ? displayedDicomFrame : undefined} onProgress={(done, total) => setExportProgress([done, total])} cancelRef={exportCancel}
       onClose={() => { setExportMode(null); setExportBackground(false); }}
       onFailed={message => setNotice({ message, kind: 'error', code: 'export-failed' })}
@@ -3117,7 +3690,7 @@ export default function App() {
     {showUpdates && <Suspense fallback={null}><UpdateDialog onClose={() => setShowUpdates(false)} /></Suspense>}
     {showFeedback && <Suspense fallback={null}><FeedbackDialog onClose={() => setShowFeedback(false)} onSent={() => say('feedback.sent', 'info', undefined, true)} /></Suspense>}
     {showHelp && <Suspense fallback={null}><HelpDialog onClose={() => setShowHelp(false)} onCheckUpdates={bridgeCan('updates') ? () => { setShowHelp(false); setShowUpdates(true); } : undefined} /></Suspense>}
-    {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={crosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
+    {show3d && activeVolume && activeVolume.sourceFrameIndex === undefined && !activeVolume.series.sourceFramesOnly && <div className="volume-overlay"><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.volume3d')}</div>}><VolumeView volume={activeVolume} annotations={activeAnnotations} initialView={activeSlot.view} viewportSize={volumeViewportSize} segmentations={segmentationOverlays} crosshair={activeCrosshair} onCrosshairChange={point => { pointFrom3d.current = point; changeCrosshair(point); }} onClose={() => {
       setShow3d(false);
       if (pointFrom3d.current && crosshairRef.current === pointFrom3d.current) setCrosshair(null);
       pointFrom3d.current = null;

@@ -10,6 +10,11 @@ export type Tool = 'scroll' | 'window' | 'pan' | 'zoom' | 'rotate' | 'none' | 'l
 export type ReferenceRole = 'liver' | 'bloodPool';
 /** A Deauville score the reader confirmed: 1–5, or X (new uptake unlikely to be lymphoma). */
 export type DeauvilleScore = 1 | 2 | 3 | 4 | 5 | 'X';
+/** What a CLOSE caliper measures (src/imaging/calipers.ts): olfactory fossa depth, the anterior ethmoidal artery's
+ * distance below the skull base, sphenoid pneumatisation against the sella lines, septal deviation. */
+export type CaliperKind = 'keros' | 'aea' | 'sella' | 'septum';
+/** A measurement drawn for a checklist item and side: its kind, and the plane's up and normal when it was drawn. */
+export interface CaliperTag { kind: CaliperKind; item: string; side: 'right' | 'left' | 'both'; up: Vec3; normal: Vec3 }
 export interface FrameMetadata {
   origin: Vec3; direction: number[]; spacing: Vec3;
   windowCenter?: number; windowWidth?: number;
@@ -74,10 +79,18 @@ export interface VoiLut { first: number; bits: number; data: number[]; explanati
 export interface Segment { number: number; label: string; color?: [number, number, number] }
 /** A DICOM Segmentation: masks drawn over the image series it references, never shown as images. */
 export interface Segmentation { kind: string; referencedSeriesUid?: string; referencedSeries?: [studyUid: string, seriesUid: string][]; referencedInstances?: [sopUid: string, frame: number | null][]; segments: Segment[] }
+/** A complete DICOM cine instance. The engine maps its source frame numbers to catalog slices. */
+export interface CineTiming {
+  slices: number[];
+  intervalsMs: number[];
+  sweeping: boolean;
+}
+
 export interface Series {
   engineGeneration?: number;
   patientKey?: string;
   previousPetId?: string;
+  legacyGridIds?: string[];
   /** Where `patientKey` joins an ID without an issuer across studies: the key earlier builds made, scoped to the
    * study, and a PET reconstruction's ID made with it. The PET measurements those builds kept are found by them. */
   studyScopedPatientKey?: string;
@@ -110,6 +123,7 @@ export interface Series {
   orientationKnown?: boolean;
   positionKnown?: boolean;
   frameMetadata?: FrameMetadata[];
+  cine?: CineTiming;
   /** Inclusive padding range in decoded modality values, shared by all frames. */
   paddingRange?: [number, number];
   paddingIsNaN?: boolean;
@@ -191,6 +205,8 @@ export interface Volume {
   sourceFrameIndex?: number;
 }
 export interface Annotation {
+  /** Creation time keeps finding numbers in reading order after recovery. */
+  createdAt?: number;
   id: string; type: Tool; points: Vec3[]; plane: Plane; slice: number;
   label?: string; color?: string;
   mode?: ViewMode; sourceFrame?: number;
@@ -211,6 +227,8 @@ export interface Annotation {
   threshold?: 'max41' | 'suv2.5';
   priorLesionId?: string;
   regionSeeds?: number[];
+  /** A length or angle drawn as a CLOSE caliper: what it measures for the pre-operative checklist. */
+  caliper?: CaliperTag;
 }
 export type WheelAction = 'scroll' | 'zoom' | 'rotate' | 'none';
 export interface ViewState {
@@ -234,7 +252,10 @@ export interface ViewState {
 }
 export interface FusionSettings { volume: Volume; opacity: number; upperSuv: number; palette: 'hot' | 'ge' | 'rainbow' | 'hot_metal' | 'red_yellow';
   /** uptake: low uptake fades out (as before); classic: the same share everywhere in the PET, as scanners draw it. */
-  blend: 'uptake' | 'classic'; }
+  blend: 'uptake' | 'classic';
+  /** For an overlay in a frame of reference of its own, aligned to the pane's (imaging/registration.ts): the row-major
+   * 4 × 4 rigid transform from the pane's patient coordinates to the overlay's. */
+  transform?: readonly number[]; }
 /** A stack paged together with its reference image as one sequence (ui/referenceImages.ts), as a pane sees it. */
 export interface Joined {
   /** How many images the sequence has: the stack's slices and the reference image. */
@@ -253,7 +274,9 @@ export interface ViewportProps {
    * other of the two holds (the pane then takes that series). */
   joined?: Joined | null;
   onCross?: (place: number) => void;
-  referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string }>;
+  /** Other panes' planes, drawn where they cut this one; `transform` takes a plane in a frame of reference of its own,
+   * aligned to this pane's (imaging/registration.ts), into this pane's patient coordinates. */
+  referencePlanes?: Array<{ id: string; series: Series; view: ViewState; color?: string; transform?: readonly number[] }>;
   /** A still left click sets the linked point (while 3D is open beside the panes). */
   clickPicksPoint?: boolean;
   mouseBindings?: Partial<Record<'left' | 'middle' | 'right', Tool>>;
@@ -283,6 +306,11 @@ export interface ViewportProps {
   onRotateReference?: (id: string, oblique: [number, number]) => void;
   /** Shown in the accessible name when several panes are open, so they can be told apart. */
   paneNumber?: number;
+  /** The pane's series, or its fused overlay, is placed by an alignment (imaging/registration.ts): its corner says so. */
+  aligned?: 'automatic' | 'adjusted';
+  /** A CLOSE caliper under way in this pane: what to click, point by point (`key` names the caliper), and what setting
+   * the pane up for it changed, with its Undo. */
+  caliper?: { key: string; prompts: readonly string[]; setUp?: { text: string; onUndo: () => void } };
 }
 export interface VolumeViewProps {
   volume: Volume; crosshair: Vec3 | null;
@@ -293,6 +321,14 @@ export interface VolumeViewProps {
   segmentations?: SegmentationOverlay[];
   onCrosshairChange: (point: Vec3) => void;
   onClose: () => void;
+}
+/** Where the engine lays a moving series over a fixed one: `matrix` (row-major 4 × 4) takes the moving series' patient
+ * coordinates to the fixed series'. `similarity` is normalised mutual information as the entropy correlation
+ * coefficient (0 unrelated, 1 identical), at the result and with the two coordinates taken as one; `overlap` the share of
+ * the fixed volume's points inside the moving one. */
+export interface EngineRegistration {
+  matrix: number[]; rotation: Vec3; shift: Vec3; centre: Vec3; angle: number;
+  similarity: number; similarityBefore: number; overlap: number; evaluations: number; levels: number;
 }
 export interface CoreState {
   status: 'starting' | 'ready' | 'restarting' | 'failed' | 'stopping' | 'stopped';
@@ -390,6 +426,8 @@ export interface DesktopBridge {
   cancelExport?: () => Promise<void>;
   /** The tags of the file holding frame `frame` (the slice shown), or of the series' first frame. */
   measure(id: string, generation: number, revision: number, operation: import('./imaging/nativeMeasurements').SamplingOperation): Promise<unknown>;
+  /** The rigid transform laying one series over another acquired apart (native/src/registration.rs). */
+  register?(request: { fixedId: string; movingId: string; generation: number; fixedRevision: number; movingRevision: number }): Promise<EngineRegistration>;
   getTags(seriesId: string, generation: number, frame?: number, revision?: number): Promise<Record<string, unknown>[]>;
   removeSeries(ids: string[], generation: number): Promise<{ removed: number; remaining?: number }>;
   getPixels(request: { seriesId: string; generation: number; index?: number; revision?: number }): Promise<{ url: string; generation: number }>;
@@ -400,6 +438,8 @@ export interface DesktopBridge {
   /** The import window's clicks, for usage timings. */
   onImportAction?: (listener: (id: string, input: 'mouse' | 'key' | 'touch') => void) => () => void;
   importFiles: (files: File[]) => Promise<string[]>;
+  /** Browser file selections made before the reader mounted, in drop order. Taken once. */
+  takePendingFileDrops?: () => Array<() => Promise<string[]>>;
   openExternal: (url: string) => Promise<void>;
   saveFile: (suggestedName: string, data: ArrayBuffer | string) => Promise<string | null>;
   /** One of the landmark model's graphs for the deformity kit's suggestions (docs/landmark-model.md), fetched the first
@@ -418,6 +458,8 @@ export interface DesktopBridge {
   exportFolder?: () => Promise<string>;
   /** Text onto the system clipboard. */
   copyText?: (text: string) => Promise<void>;
+  /** The system print dialog for the page; false when the reader cancels it. */
+  printPage?: () => Promise<boolean>;
   /** A picture onto the system clipboard: its opaque RGBA pixels, rows from the top. */
   copyImage?: (picture: { width: number; height: number; pixels: ArrayBuffer }) => Promise<void>;
   chooseExportFolder?: () => Promise<string | null>;

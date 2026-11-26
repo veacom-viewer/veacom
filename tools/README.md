@@ -30,6 +30,8 @@ The runner uses installed Google Chrome. Set `VEACOM_BROWSER_CHANNEL=msedge` to 
 
 `renderer-check.html` checks exact GPU pixels for compact scalar formats, trilinear sampling, PET fusion, source RGB, inversion and palettes. Its machine-readable result is `window.rendererCheckResult`. Unsupported color MPR and uncalibrated SUV fusion must fail explicitly.
 
+The renderer suite also measures folded contrast and thin-line visibility while panning a reduced synthetic frame, in both acquired and reconstructed views. The viewport check reads the final Chromium surface at 125% and 150% display scaling. To compare frame times with another checkout, run `node tools/profile-display-sampling.mjs <reference-checkout> <output.json>`. The manual Windows workflow's **compare_display** input runs it against main on two WARP cores. It records the first draw, a fresh texture after shader compilation, and repeated pan and window redraws for the same images.
+
 Float64 source values remain exact for measurements; GPU display uses a cached Float32 copy. NaN/Inf padding stays unchanged in the source and displays as background. Stacks deeper than the GPU3D texture limit still page through source frames using one frame upload at a time; MPR and fusion remain unavailable for those stacks.
 
 `viewport-check.html` mounts the actual React viewport against a known mathematical scalar field. The runner checks scrolling, window/level, zoom/pan, every annotation tool, MPR, oblique and reference planes, mouse settings, touch gestures and 25 simultaneous panes. These fixtures are test inputs, not example patient images.
@@ -103,7 +105,8 @@ node tools/check-click-budget.cjs ~/veacom-bench/studies/ct-small
 `desktop-smoke.cjs` budgets its own steps and checks the usage-timings consent (asked once on a fresh
 profile, saved, and switched off in the display panel). On a CT the assessment button opens the pre-op
 checklist, which the smoke test budgets. `check-click-budget.cjs` runs the canonical tasks on the
-synthetic CT, including a scripted "wanted view" (lung window at mid-chest), and opens a generated
+synthetic CT, including a scripted "wanted view" (lung window at mid-chest) and answering the whole sinus
+checklist by mouse (a click per side) and by keys (Alt+Shift and a digit per row), and opens a generated
 synthetic MR (`make-smoke-study.mjs --modality MR`) through the real menu. On an MR the button opens
 the lesion pre-diagnosis, which is switched off while its knowledge base is out of the repository: the
 check makes sure the disabled button says why and skips opening and closing it, which have no budget.
@@ -186,6 +189,30 @@ node tools/fixtures/make-petct-study.mjs /tmp/petct-study
 node tools/check-arrangements.cjs /tmp/petct-study test-results/arrangements
 ```
 
+## CLOSE calipers
+
+`check-close-calipers.cjs` opens the synthetic sinus CT from `fixtures/make-sinus-study.mjs`: 0.5 mm voxels with
+olfactory fossae, ethmoid artery canals, a bowed septum and a sellar sphenoid at known places, listed in its
+`manifest.json`. From the pre-operative checklist it measures each [CLOSE caliper](../docs/close-calipers.md) by clicking
+those landmarks and checks:
+
+- each value, answer and side in the checklist, and the near-limit word for a Keros depth near a type limit;
+- a roof point clicked in the air moves onto the bone;
+- moving a point measures again, and undo takes it back with its answer; a calibration changes the values and answers,
+  also of a record whose drawing was deleted or that Undo brings back after a Clear, and removing it changes them back;
+- started off its plane, a caliper turns its pane to that plane and the bone window, says so with Undo, and Undo puts
+  the pane back; Esc ends one;
+- "Copy for the report" in English and Turkish, with screenshots in both, and the count beside it of the rows it leaves
+  out, which goes to the first of them;
+- the theatre card on one A4 page, as a PDF of the page made in place of the print dialog, and a full card (every
+  side answered and noted, the measurements kept) on one page too, in both languages.
+
+CI's desktop job (screens shard) and `tools/verify.sh` run it.
+
+```sh
+node tools/fixtures/make-sinus-study.mjs /tmp/sinus-study
+node tools/check-close-calipers.cjs /tmp/sinus-study test-results/close-calipers
+
 ## Comparison with an earlier study
 
 `check-comparison.cjs` covers [the comparison screen](../docs/arrangements.md#the-comparison-screen). It opens the
@@ -264,8 +291,12 @@ The check covers [PET quantification](../docs/pet-quantification.md):
 - At 41% of its SUVmax the lesion gives MTV and TLG, drawn on its slices and listed in the lesion table.
 - The references are kept by digest, with no UID, and the actions are recorded by id.
 - In a new session on the same computer the references and the lesion table come back.
-- After opening the current study, selecting PET follow-up in Layout and linking the two studies, the two
-  studies page together, and the lesion table gives each value's change against the prior lesion selected by the reader.
+- Choosing the PET follow-up layout after opening both studies shows them together and aligns the prior by the two CTs, within
+  1 mm and 0.5°. The note says so, the two studies page together through the alignment, and a nudge in the display
+  panel moves the prior 1 mm and back. The lesion table gives each value's change against the prior lesion selected by
+  the reader.
+- With the alignment removed, the prior's PET fused over this study's CT is aligned first, by the prior's own CT, and
+  the pointer over this study's lesion reads the prior's PET there.
 - With the current study alone, that change comes from what was kept for the prior.
 
 CI's desktop job, the Windows job and `tools/verify.sh` run it.
@@ -273,6 +304,24 @@ CI's desktop job, the Windows job and `tools/verify.sh` run it.
 ```sh
 node tools/fixtures/make-pet-followup.mjs /tmp/pet-followup
 node tools/check-pet-voi.cjs /tmp/pet-followup test-results/pet-voi
+```
+
+## Registration
+
+`check-registration.cjs` imports both studies of the synthetic follow-up into the engine, through its pipes and without
+Electron, and asks it to register them (`native/src/registration.rs`). The prior was scanned at another table position
+in its own frame of reference: the same anatomy lies 24 mm further along in its coordinates, with no rotation.
+
+- The prior's CT laid over this study's CT maps each corner of the prior's volume to where it should be within 1 mm and
+  0.5°.
+- Asked again, the registration gives the same bits.
+- The prior's PET laid over this study's CT, as a PET over a CT acquired apart, lands within 1 mm and 0.5° too.
+- A series replaced since, or one the engine does not hold, is refused.
+
+CI's desktop job, the Windows job and `tools/verify.sh` run it before `check-pet-voi.cjs`.
+
+```sh
+node tools/check-registration.cjs /tmp/pet-followup test-results/registration.json
 ```
 
 ## Gamma camera studies

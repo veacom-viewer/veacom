@@ -2,10 +2,12 @@ import type { Annotation, Series, Vec3, ViewState, Volume } from '../model';
 import { getPlaneFrame, indexToWorld, isPaddingValue, isProjection, sampleVolume, sourceFrameSeries, worldToIndex, type PlaneFrame } from './geometry';
 import { usesSourceFrames } from './viewState';
 import { formatSphereStatistics, formatSphereValue, isSuv, peakName, measurableVolume, sphereOf, sphereSection, sphereSulGlu, sphereStatisticsFor, thresholdVolumeFor } from './voi';
-import { t } from '../i18n';
+import { getLocale, t } from '../i18n';
+import { caliperLabel, caliperMmScale, caliperResult } from './calipers';
 import { isEmission, overlayKind, petHasSuv } from './emission';
 import { sulGluGlucose } from './glucose';
 import { calibrationTag } from './radiograph';
+import { applyPoint, type Matrix } from './rigid';
 
 export interface RoiStatistics {
   mean: number;
@@ -470,6 +472,8 @@ export function sphereSummary(annotation: Annotation, volume: Volume): string {
 
 export function annotationSummary(annotation: Annotation, volume: Volume): string {
   if (annotation.type === 'sphere') return sphereSummary(annotation, volume);
+  // A CLOSE caliper says what it measured for the checklist (imaging/calipers.ts).
+  if (annotation.caliper) return caliperLabel(annotation.caliper, caliperResult(annotation.caliper, annotation.points, caliperMmScale(volume.series)), getLocale());
   const points = annotation.points;
   const needsPixels = ['probe', 'rectangle', 'ellipse', 'polygon'].includes(annotation.type);
   const source = annotation.mode === 'source' ? annotationSourceFrame(annotation, volume, needsPixels) : null;
@@ -526,7 +530,23 @@ export function annotationSummary(annotation: Annotation, volume: Volume): strin
 /** What a PET (or SPECT) fused over the image gives at a probe or inside a region drawn on it, where the drawing lies in
  * the patient: the value of the PET voxel at the probe, or the maximum and mean of the PET voxels the region covers on
  * the drawing's plane (its hottest voxel, as SUVmax is read). Empty for other drawings. */
-export function fusedPetSummary(annotation: Annotation, pet: Volume): string {
+/** A drawing on a pane's image taken into an overlay's own frame of reference through `transform` (pane coordinates to
+ * the overlay's, imaging/registration.ts): its points, and a rectangle or ellipse by its four corners, so a turn keeps
+ * its shape. The overlay is then read in its own voxels, as a drawing on it would be. */
+export function annotationThrough(annotation: Annotation, base: Series, transform: Matrix): Annotation {
+  let points = annotation.points;
+  if ((annotation.type === 'rectangle' || annotation.type === 'ellipse') && points.length === 2) {
+    const frame = roiPlane(annotation, base);
+    const corner = (u: number, v: number): Vec3 => frame ? [0, 1, 2].map(axis => frame.origin[axis] + u * frame.u[axis] + v * frame.v[axis]) as Vec3 : points[0];
+    if (frame) points = [frame.origin, corner(frame.width, 0), corner(frame.width, frame.height), corner(0, frame.height)];
+  }
+  return { ...annotation, points: points.map(point => applyPoint(transform, point)) };
+}
+
+/** The fused PET's values under a drawing: read in the PET's own voxels, through `through` when the PET lies in a frame
+ * of reference of its own aligned to the pane's. */
+export function fusedPetSummary(original: Annotation, pet: Volume, through?: { base: Series; transform: Matrix }): string {
+  const annotation = through ? annotationThrough(original, through.base, through.transform) : original;
   if (pet.series.components === 3 || !annotation.points.length) return '';
   const quantity = quantitativeScale(pet.series), digits = quantityDigits(quantity.unit);
   const modality = overlayKind(pet.series);
@@ -563,7 +583,7 @@ export function remapAnnotationCoordinates(annotation: Annotation, previousSerie
 /** True when `view` (as drawn: renderedView) shows the measurement: its own acquired frame, or a reconstructed plane
  * holding all its points (within half a slice); a whole-volume MIP shows none. The viewport draws exactly these and
  * "Delete on slice" removes exactly these, whatever plane, tilt or slice number the measurement was recorded with. */
-export function shownOnView(annotation: Annotation, series: Series, view: ViewState, frame: PlaneFrame = getPlaneFrame(series, view)): boolean {
+export function shownOnView(annotation: Annotation, series: Series, view: Pick<ViewState, 'plane' | 'slice' | 'mode' | 'projection' | 'oblique'>, frame: PlaneFrame = getPlaneFrame(series, view)): boolean {
   if (!annotation.points.length || isProjection(series, view)) return false;
   if (annotation.type === 'sphere') {
     const sphere = sphereOf(annotation);

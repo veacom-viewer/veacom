@@ -19,13 +19,15 @@ PlexusMD has no source or build to pin. It is timed over the internet, it loads 
 
 ## What it measures
 
-Every number comes from what the screen showed. Each slice of a bench study carries its own index in a band of black and white cells (`lib/marker.mjs`), and the harness reads Chromium's trace screenshots, one for every frame that changed, so it knows which slice was on screen and when. This works the same for every viewer, with no hooks inside any of them.
+Each slice carries its index in a band of black and white cells (`lib/marker.mjs`). The harness reads that index in Chromium's trace screenshots for every viewer. Opening time runs from the file handoff to the first screenshot callback with a readable main-pane slice. The raw result also records Chromium's estimated display time when supplied on the same clock. After two quiet seconds a worker checks a separate full-size screenshot for the completion test. Reading that screenshot on Electron's main thread can delay the trace callbacks by hundreds of milliseconds.
 
 | Scenario | Metrics |
 |---|---|
 | Open | page load; first image after the drop and which slice it was; loading done (the window's processes quiet for 2 s); CPU seconds; peak and settled memory of all the window's processes, GPU included; every request sent after the drop |
 | Paging | slices per notch and direction (from single notches); then 30, 60 and 120 notches a second for one second each: distinct slices drawn per second, notches kept, longest stall, and how long the picture kept moving after the last notch |
 | Window/level | a 1.5 s drag with the viewer's window/level button: redraws per second, and how long the picture kept changing after the drag stopped |
+
+With `--from-navigation --viewers veacom,bluelight`, the trace starts before navigation. After page load, the harness drops the folder on the first animation frame that shows an enabled opening control. On BlueLight it also waits for the folder drop handler. It measures navigation to that observation, to handoff and to the first captured main-pane image for each trial. Both viewers must open on slice zero. A different opening slice fails the trial. The GPU query runs after the image. The browser process and profile are fresh each time. The local server and operating system file cache can be warm. The default open test waits for the page to settle before handoff.
 
 MPR and 3D are planned next.
 
@@ -44,7 +46,7 @@ MPR and 3D are planned next.
 On GitHub Actions, not on a developer's computer: `.github/workflows/browser-bench.yml` runs on a hosted Linux runner.
 
 - **Nightly on main:** every pinned viewer, `ct-300`, 5 rounds after a warm-up, with the VEAcom A/A pair.
-- **By hand:** *Actions → Browser benchmark → Run workflow* chooses the viewers (add `plexusmd` for the live site), studies, rounds and scenarios. A `base` ref adds that ref's browser build as `veacom-base`, for an A/B of two VEAcom versions in the same run.
+- **By hand:** *Actions → Browser benchmark → Run workflow* chooses the viewers (add `plexusmd` for the live site), studies, rounds and scenarios. Select `from_navigation` with VEAcom, BlueLight or both to time a fresh navigation. A `base` ref adds that ref's browser build as `veacom-base`, for an A/B of two VEAcom versions in the same run.
 - **On pull requests that change `tools/browser-bench/`:** a one-round smoke check of VEAcom and OHIF.
 
 Every run times everything three times at once, on three runners, and pools the trials, so one slow or busy machine cannot decide the result. The pooled tables go on the run's summary page with a table of each runner's own first-image times, and each runner's results, report and screenshots, and the pooled report, are kept as artifacts for 90 days. The runner has no GPU, so every viewer draws with Mesa's software rasterizer (llvmpipe), recorded in the report. Its timings say how the viewers compare on one machine without a GPU, not how fast any of them is on a workstation. Runners also differ from run to run, so compare viewers within a workflow run, never across runs.

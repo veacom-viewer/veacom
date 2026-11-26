@@ -16,6 +16,7 @@ use veacom_core::{
 mod drives;
 mod memory;
 mod pipe;
+mod registration;
 mod resources;
 
 /// Volumes and other large buffers are mapped directly, so freeing them returns the memory.
@@ -367,6 +368,9 @@ fn handle(core: &App, request: &pipe::Request) -> Reply {
             }
             "measure" => {
                 measure_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
+            }
+            "register" => {
+                register_series(core, cancelled, body(call.body)?).and_then(|result| ok(&result))
             }
             "export" => {
                 export_series(core, request, body(call.body)?).and_then(|result| ok(&result))
@@ -1039,6 +1043,59 @@ fn measure_series(core: &App, cancelled: &AtomicBool, request: MeasureRequest) -
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RegisterRequest {
+    fixed_id: String,
+    moving_id: String,
+    fixed_revision: u64,
+    moving_revision: u64,
+}
+/// Lays the moving series over the fixed one (registration.rs): both volumes are decoded as `volume` decodes them, and
+/// neither is changed. A series an import replaced meanwhile is refused, as `sample` refuses it.
+fn register_series(
+    core: &App,
+    cancelled: &AtomicBool,
+    request: RegisterRequest,
+) -> ApiResult<registration::Registration> {
+    let changed = || ApiError(409, "Source series changed".into());
+    let current = |id: &str, revision: u64| -> ApiResult<Arc<SourceSeries>> {
+        let series = source(core, id)?;
+        if series.info.source_revision != revision {
+            return Err(changed());
+        }
+        Ok(series)
+    };
+    let fixed_source = current(&request.fixed_id, request.fixed_revision)?;
+    let moving_source = current(&request.moving_id, request.moving_revision)?;
+    registration::check_pair(&fixed_source, &moving_source)?;
+    let (fixed, fixed_series) = load_volume(core, &request.fixed_id, false, cancelled)?;
+    let (moving, moving_series) = load_volume(core, &request.moving_id, false, cancelled)?;
+    if fixed_series.info.source_revision != request.fixed_revision
+        || moving_series.info.source_revision != request.moving_revision
+    {
+        return Err(changed());
+    }
+    let result = registration::register(
+        (&*fixed_series, &*fixed),
+        (&*moving_series, &*moving),
+        cancelled,
+    );
+    if cancelled.load(Ordering::Acquire) {
+        return Err(abandoned());
+    }
+    let result = result?;
+    let sources = core.sources.read().unwrap();
+    for (id, revision) in [
+        (&request.fixed_id, request.fixed_revision),
+        (&request.moving_id, request.moving_revision),
+    ] {
+        if sources.get(id).map(|series| series.info.source_revision) != Some(revision) {
+            return Err(changed());
+        }
+    }
+    Ok(result)
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ExportRequest {
     #[serde(default)]
     reviewed_revisions: BTreeMap<String, u64>,
@@ -1165,9 +1222,44 @@ fn new_core(cache_limit: usize) -> App {
         early: Mutex::new(EarlyImport::default()),
     })
 }
+/// Runs the engine below the priority of the app that started it. Decoding a study takes every core at once; at the
+/// app's own priority it holds back the study's first picture, which the page, the GPU process and main need the
+/// processor for at that moment (native/README.md has the measurement). The system gives a lower-priority process
+/// the time the others leave: a study opened and left alone showed no measurable change in its loading time.
+///
+/// Called before any thread is started: on Linux a thread keeps the priority of the thread that started it, and a
+/// later change reaches only the one thread it names. A failure is not reported: it leaves the engine at the app's
+/// priority, where it still works, and tools/check-engine-pipe.cjs fails when the priority is not lowered.
+fn run_below_the_app() {
+    // 10 is what the `nice` command adds when it is given no number.
+    #[cfg(unix)]
+    // SAFETY: nice only changes this process's scheduling priority.
+    unsafe {
+        libc::nice(10);
+    }
+    #[cfg(windows)]
+    // SAFETY: the pseudo-handle of this process is always valid, and the calls only read and change its scheduling
+    // priority.
+    unsafe {
+        use windows_sys::Win32::System::Threading::{
+            BELOW_NORMAL_PRIORITY_CLASS, GetCurrentProcess, GetPriorityClass, IDLE_PRIORITY_CLASS,
+            NORMAL_PRIORITY_CLASS, SetPriorityClass,
+        };
+        // One class below the one the engine was started in. That is the app's class at normal and below; under an
+        // app above normal Windows starts the engine at normal, which is below the app already.
+        let lower = match GetPriorityClass(GetCurrentProcess()) {
+            NORMAL_PRIORITY_CLASS => BELOW_NORMAL_PRIORITY_CLASS,
+            BELOW_NORMAL_PRIORITY_CLASS => IDLE_PRIORITY_CLASS,
+            _ => return,
+        };
+        SetPriorityClass(GetCurrentProcess(), lower);
+    }
+}
+
 fn main() -> anyhow::Result<()> {
     // First: the pipes are the protocol from here on, and a print to fd 1 must not reach main.
     let (input, output) = pipe::stdio()?;
+    run_below_the_app();
     if let Err(error) = archive_temp::cleanup_stale() {
         eprintln!("Archive cleanup could not complete: {error}");
     }
@@ -2202,6 +2294,15 @@ mod protocol_tests {
         }
         let (status, length) = engine.json(json!({"op": "measure", "body": {"seriesId": id, "points": [[0, 0, 0], [1, 0, 0]], "kind": "length"}}));
         assert_eq!((status, length["value"].clone()), (200, json!(1.0)));
+        let revision = imported["series"][0]["sourceRevision"].clone();
+        let (status, refused) = engine.json(json!({"op": "register", "body": {"fixedId": id, "movingId": id, "fixedRevision": revision, "movingRevision": revision}}));
+        assert_eq!(
+            (status, refused["note"]["code"].clone()),
+            (422, json!("registration.needsVolumes")),
+            "one slice is no volume to align"
+        );
+        let (status, _) = engine.json(json!({"op": "register", "body": {"fixedId": id, "movingId": id, "fixedRevision": 0, "movingRevision": revision}}));
+        assert_eq!(status, 409, "a series an import replaced is refused");
         assert_eq!(
             engine
                 .json(json!({"op": "exportCancel", "body": {"operation": "none"}}))

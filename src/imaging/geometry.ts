@@ -11,7 +11,7 @@ export const length = (a: Vec3): number => Math.hypot(...a);
 export function normalize(a: Vec3): Vec3 { const n = length(a); if (n < 1e-12) throw new Error('Degenerate coordinate direction'); return scale(a, 1 / n); }
 export const clamp = (n: number, a: number, b: number): number => Math.min(b, Math.max(a, n));
 
-function multiply(m: number[], p: Vec3): Vec3 {
+export function multiply(m: number[], p: Vec3): Vec3 {
   return [m[0] * p[0] + m[1] * p[1] + m[2] * p[2], m[3] * p[0] + m[4] * p[1] + m[5] * p[2], m[6] * p[0] + m[7] * p[1] + m[8] * p[2]];
 }
 
@@ -197,7 +197,7 @@ export function sliceAtWorld(series: Series, selection: PlaneSelection, point: V
   return Math.round(clamp((dot(point, normal) - e.minNormal) / e.step, 0, e.slices - 1));
 }
 
-function rotateAround(vector: Vec3, axis: Vec3, degrees: number): Vec3 {
+export function rotateAround(vector: Vec3, axis: Vec3, degrees: number): Vec3 {
   const radians = degrees * Math.PI / 180, c = Math.cos(radians), s = Math.sin(radians);
   return add(add(scale(vector, c), scale(cross(axis, vector), s)), scale(axis, dot(axis, vector) * (1 - c)));
 }
@@ -250,9 +250,16 @@ export function sameFacing(first: Vec3, second: Vec3): boolean {
   return first.every(Number.isFinite) && second.every(Number.isFinite) && axis(first) === axis(second);
 }
 
+/** The way the acquired slices follow one another: the volume's third axis, from each image towards the next. */
+export const sliceDirection = (series: Series): Vec3 => [series.direction[2], series.direction[5], series.direction[8]];
+/** Whether a plane with this unit normal lies parallel to the acquired slices, within about 2.6°. */
+export function parallelToAcquired(series: Series, normal: Vec3): boolean {
+  return Math.abs(dot(normal, sliceDirection(series))) > 0.999 * length(sliceDirection(series));
+}
+
 /** The plane a series was acquired in, from its slice normal: the patient axis it lies closest to. */
 export function acquiredPlane(series: Series): Plane | null {
-  const normal = [series.direction[2], series.direction[5], series.direction[8]].map(Math.abs);
+  const normal = sliceDirection(series).map(Math.abs);
   if (!normal.every(Number.isFinite) || Math.max(...normal) === 0) return null;
   return (['sagittal', 'coronal', 'axial'] as const)[normal.indexOf(Math.max(...normal))];
 }

@@ -36,6 +36,7 @@ run open-work node tools/check-open-speed.cjs --output="$out/open-work"
 run unit pnpm test
 run web-build pnpm run build:web
 run desktop-smoke node tools/desktop-smoke.cjs "$series" "$out/desktop-smoke"
+run cine-timing node tools/check-cine-timing.mjs "$out/cine-timing"
 run video-encoder node tools/check-video-encoder.cjs "$out/video-encoder"
 run video-encoder-no-gpu node tools/check-video-encoder.cjs "$out/video-encoder" --no-gpu
 run click-budget node tools/check-click-budget.cjs "$study" "$out/click-budget"
@@ -50,10 +51,12 @@ run file-drop node tools/check-file-drop.cjs --study "$series" --output "$out/fi
 run engine-pipe node tools/check-engine-pipe.cjs
 run crash-reports node tools/check-crash-reporting.cjs "$out/crash-reports.json"
 run engine-recovery node tools/check-engine-recovery.cjs "$series" "$out/engine-recovery"
+run measurement-recovery node tools/check-measurement-recovery.cjs "$out/measurement-recovery"
 run security-boundary node tools/check-security-boundary.cjs "$series" "$out/security-boundary"
 run pictures node tools/check-pictures.cjs "$series" "$out/pictures"
 run interface node tools/check-interface.cjs "$series" "$out/interface"
 run pet-followup-fixture node tools/fixtures/make-pet-followup.mjs "$out/pet-followup"
+run registration node tools/check-registration.cjs "$out/pet-followup" "$out/registration.json"
 run pet-voi node tools/check-pet-voi.cjs "$out/pet-followup" "$out/pet-voi"
 run pet-validation-inputs node tools/fixtures/make-pet-validation-inputs.mjs "$out/pet-followup"
 run pet-validation node tools/pet-validation.cjs "$out/pet-followup" "$out/pet-followup/pet-validation-spheres.json" "$out/pet-validation" --vendor "$out/pet-followup/pet-validation-expected.json"
@@ -65,6 +68,8 @@ run comparison node tools/check-comparison.cjs "$out/comparison-studies" "$out/p
 run pet-reading node tools/check-pet-reading.cjs "$out/petct-study" "$out/pet-reading"
 run nm-fixture node tools/fixtures/make-nm-study.mjs "$out/nm-study"
 run gamma-camera node tools/check-gamma-camera.cjs "$out/nm-study" "$out/gamma-camera"
+run sinus-fixture node tools/fixtures/make-sinus-study.mjs "$out/sinus-study"
+run close-calipers node tools/check-close-calipers.cjs "$out/sinus-study" "$out/close-calipers"
 run browser-gpu node tools/check-browser-gpu.mjs "$out/browser-gpu"
 run gpu-startup node tools/check-gpu-startup.cjs "$series" "$out/gpu-startup.json"
 run hardware-rendering node tools/check-software-rendering.cjs "$series" "$out/hardware-rendering" --expect hardware

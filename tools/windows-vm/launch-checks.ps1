@@ -33,6 +33,7 @@ function Add-Check([string]$StepName, [string[]]$Arguments, [string[]]$Needs, [i
 Add-Check 'video-encoder' @('tools\check-video-encoder.cjs', (Join-Path $Output 'video-encoder')) @('pnpm-install') 5
 Add-Check 'desktop-smoke' @('tools\desktop-smoke.cjs', $Series, (Join-Path $Output 'desktop-smoke')) $OnPackage 8 $true
 Add-Check 'click-budget' @('tools\check-click-budget.cjs', $Study, (Join-Path $Output 'click-budget')) $OnPackage 12 $true
+Add-Check 'deformity-budgets' @('tools\check-deformity-plan.cjs', '--click-budgets', (Join-Path $Output 'deformity-plan')) $OnSource 5
 Add-Check 'budget-coverage' @('tools\check-budget-coverage.cjs', $Output) $OnPackage 2
 Add-Check 'hardware-rendering' @('tools\check-software-rendering.cjs', $Series, (Join-Path $Output 'hardware-rendering'), '--expect', 'hardware') $OnPackage 6 $true
 Add-Check 'padding-t4' @('tools\check-padding-gpu.mjs', (Join-Path $Output 'padding'), 't4') $OnPackage 8 $true

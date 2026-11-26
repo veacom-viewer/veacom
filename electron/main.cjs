@@ -203,7 +203,7 @@ app.whenReady().then(async () => {
   window.setMenuBarVisibility(false);
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   window.webContents.on('will-navigate', event => event.preventDefault());
-  // The page holds the window open while an export runs (App.tsx): ask before closing it half done.
+  // An unfinished export or measurement save can hold the window open.
   window.webContents.on('will-prevent-unload', event => {
     const choice = dialog.showMessageBoxSync(window, { type: 'warning', title: t('export.quitTitle'), message: t('export.quitMessage'), detail: t('export.quitDetail'),
       buttons: [t('export.quitAnyway'), t('export.quitStay')], defaultId: 1, cancelId: 1, noLink: true });
@@ -229,6 +229,7 @@ app.whenReady().then(async () => {
   handle('imaging:prioritise', (capabilities, planned) => imaging.prioritiseImport(capabilities, planned));
   handle('imaging:cancel', id => imaging.cancelOperation(id));
   handle('imaging:measure', (...args) => imaging.measure(...args));
+  handle('imaging:register', request => imaging.register(request));
   handle('imaging:tags', (id, generation, frame, revision) => imaging.getTags(id, generation, frame, revision));
   handle('imaging:remove', (ids, generation) => imaging.removeSeries(ids, generation));
   handle('imaging:pixels', request => imaging.getPixels(request));
@@ -298,6 +299,14 @@ app.whenReady().then(async () => {
   handle('export:folder', () => exportFolder.folder());
   // Text for a report (the checklist's summary): the system clipboard, which the page itself may not reach.
   handle('clipboard:write', text => { if (typeof text !== 'string' || text.length > 100000) throw new Error('Invalid text.'); clipboard.writeText(text); });
+  // The checklist's theatre card: the system print dialog for this window, whose page then shows only the card
+  // (src/components/TheatreCard.css). The reader picks a printer or a PDF there; VEAcom itself writes nothing. Without
+  // backgrounds, as browsers print: the window's dark background would otherwise fill the page.
+  handle('print:page', () => new Promise((resolve, reject) => {
+    // Electron gives no fixed reason for a dialog the reader closed ("cancelled", "Print preview cancelled" and others):
+    // any cancel is the reader's choice, not a failure.
+    window.webContents.print({ printBackground: false }, (printed, reason) => printed || /cancel/i.test(reason) ? resolve(printed) : reject(new Error(reason)));
+  }));
   // The picture on screen (Ctrl+C), as the pixels the page drew (clipboard-image.cjs).
   handle('clipboard:write-image', picture => require('./clipboard-image.cjs').writeClipboardImage(picture, { clipboard, nativeImage }));
   handle('export:chooseFolder', () => exportFolder.choose());

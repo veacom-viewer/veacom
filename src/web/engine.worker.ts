@@ -9,7 +9,7 @@
 // shared memory, including when there are no helpers. Without isolation or if startup fails, the single-thread build
 // runs and refuses pictures.
 
-import { readHeads } from '../../web/file-heads.js';
+import { readImportFiles, type ImportFiles } from './droppedFiles';
 import type { HelperFiles } from './engine.helper';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
@@ -150,7 +150,7 @@ async function prepareVolume(threaded: ThreadedEngine, seriesId: string, request
 export type EngineRequest =
   // `cancel`: the page's cancel flag, where the page is cross-origin isolated and so has shared memory.
   | { id: number; op: 'init'; cancel?: SharedArrayBuffer }
-  | { id: number; op: 'import'; files: { path: string; file: File }[]; roots: string[] }
+  | { id: number; op: 'import'; files: ImportFiles; roots: string[] }
   | { id: number; op: 'list' }
   | { id: number; op: 'remove'; ids: string[] }
   // `revision`: the catalog revision the request was made for; the engine refuses it for a series imported again since.
@@ -202,17 +202,17 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
-        const first = await readHeads(data.files);
+        const count = Array.isArray(data.files) ? data.files.length : data.files.count;
         const ids: number[] = [];
         try {
-          for (const [i, { path, file }] of data.files.entries()) {
-            const id = engine.addFile(path, file, first[i]);
+          await readImportFiles(data.files, ({ path, file }, head) => {
+            const id = engine.addFile(path, file, head);
             ids.push(id);
             pageFiles.set(id, file);
-          }
+          });
           value = JSON.parse(engine.importPaths(data.roots));
         } finally {
-          if (ids.length < data.files.length) engine.pruneFiles();
+          if (ids.length < count) engine.pruneFiles();
           forgetUnlisted();
         }
         // The helpers take the files the import kept while the page asks for its first images; decoding a series waits

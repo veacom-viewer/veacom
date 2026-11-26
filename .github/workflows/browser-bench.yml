@@ -25,6 +25,14 @@ on:
         description: What to time (open, paging, wl)
         default: open,paging,wl
         type: string
+      from_navigation:
+        description: Drop after page load as soon as the opening control is ready (select veacom or bluelight, or both)
+        type: boolean
+        default: false
+      trace_open:
+        description: Keep compositor, GPU and renderer timings through the first readable frame
+        type: boolean
+        default: false
       base:
         description: A branch, tag or commit whose browser build runs as veacom-base, for an A/B of two VEAcom versions
         default: ''
@@ -64,6 +72,8 @@ jobs:
       SCENARIOS: ${{ inputs.scenarios || 'open,paging,wl' }}
       AA: ${{ github.event_name != 'pull_request' }}
       BASE: ${{ inputs.base }}
+      FROM_NAVIGATION: ${{ inputs.from_navigation && 'true' || 'false' }}
+      BENCH_OPEN_TRACE: ${{ inputs.trace_open && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -131,6 +141,7 @@ jobs:
       - name: Time the viewers
         run: |
           args=(--viewers "$VIEWERS" --studies "$STUDIES" --rounds "$ROUNDS" --warmup "$WARMUP" --scenarios "$SCENARIOS" --out "$RESULTS")
+          if [ "$FROM_NAVIGATION" = true ]; then args+=(--from-navigation); fi
           if [ "$AA" = true ]; then args+=(--aa); fi
           if [ -n "${BASE_DIST:-}" ]; then args+=(--base "$BASE_DIST"); fi
           node tools/browser-bench/bench.mjs run "${args[@]}"

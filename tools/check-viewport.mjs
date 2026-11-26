@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { launchHarness } from './harness-browser.mjs';
+import { decodePng } from './lib/png.cjs';
 
 // VEACOM_BROWSER_ARGS adds browser switches, e.g. --disable-gpu to run the pixel checks on software WebGL.
 const {page,close}=await launchHarness();
@@ -153,6 +154,36 @@ try {
   check('5×5 grid renders all25 viewports',await page.locator('canvas[data-renderer]').count()===25);
   for(const width of [780,900,640]){await page.setViewportSize({width,height:640});await settle();}
   check('Layout resize has no observer loop errors',(await page.evaluate(()=>window.viewportWindowErrors)).length===0);
+  await page.addStyleTag({content:'.sr-only{position:absolute;clip-path:inset(50%)}'});
+  await page.evaluate(()=>{
+    const root=document.getElementById('root');
+    Object.assign(root.style,{position:'absolute',left:'3px',top:'5px',width:'333px',height:'267px'});
+    const series={...window.viewportTest.referencePlanes[0].series,id:'display-bars',dimensions:[64,64,1],canReconstruct:false};
+    const volume={series,data:Uint8Array.from({length:64*64},(_,i)=>i%2?224:32)};
+    window.viewportTest.clear();window.viewportTest.setGrid(1);
+    window.viewportTest.setOptions({volume,showOverlay:false,hideMeasurements:true,crosshair:null});
+    window.viewportTest.setView({mode:'source',plane:'axial',slice:0,zoom:1,pan:[0,0]});
+  });
+  for(const scale of [1.25,1.5]){
+    await cdp.send('Emulation.setDeviceMetricsOverride',{width:scale===1.25?640:641,height:480,deviceScaleFactor:scale,mobile:false});
+    await page.waitForFunction(scale=>{
+      const c=document.querySelector('canvas[data-series-id="display-bars"]');
+      return c && c.width===Math.round(c.getBoundingClientRect().width*scale);
+    },scale);
+    await settle();
+    const bounds=await page.locator('canvas').boundingBox();
+    const surface=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true});
+    const shot=decodePng(Buffer.from(surface.data,'base64'));
+    const y=Math.round((bounds.y+bounds.height*.31)*scale),start=Math.ceil((bounds.x+bounds.width*.35)*scale);
+    const count=Math.floor(bounds.width*.3*scale);
+    const expected=await page.locator('canvas').evaluate((canvas,{x,y,count})=>{
+      const rgba=canvas.getContext('2d').getImageData(x,y,count,1).data;
+      return Array.from({length:count},(_,i)=>rgba[4*i]);
+    },{x:start-Math.round(bounds.x*scale),y:y-Math.round(bounds.y*scale),count});
+    const levels=new Set(expected);
+    check('Desktop surface preserves each bar pixel at '+scale+'x',levels.size===2&&levels.has(32)&&levels.has(224)
+      &&expected.every((value,i)=>shot.data[(y*shot.width+start+i)*4]===value));
+  }
   check('No runtime or GPU errors',errors.length===0&&await page.locator('[role="alert"]').count()===0);
   console.log(JSON.stringify({passed:true,checks:results.length,renderer:await page.locator('canvas').first().getAttribute('data-renderer'),results},null,2));
 }finally{await close();}
