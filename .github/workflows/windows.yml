@@ -310,7 +310,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
-  early-drops:
+  file-picker:
     if: github.event_name == 'workflow_dispatch' && inputs.site_run != ''
     permissions:
       contents: read
@@ -318,8 +318,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2022, macos-15-intel, ubuntu-24.04]
-    runs-on: ${{ matrix.os }}
+        browser: [chromium, firefox, webkit]
+    runs-on: ubuntu-24.04
     timeout-minutes: 18
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
@@ -340,10 +340,10 @@ jobs:
       - name: Install the browser used for the checks
         env:
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: '120000'
-        run: pnpm exec playwright install --only-shell chromium
-      - run: node tools/browser-bench/early-file-drops.mjs web/site/public early-drop-evidence
+        run: pnpm exec playwright install --with-deps ${{ matrix.browser }}
+      - run: node tools/browser-bench/picker-engine-check.mjs ${{ matrix.browser }} web/site/public picker-evidence
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
-          name: early-drops-${{ matrix.os }}-${{ github.run_id }}
-          path: early-drop-evidence
+          name: file-picker-${{ matrix.browser }}-${{ github.run_id }}
+          path: picker-evidence
