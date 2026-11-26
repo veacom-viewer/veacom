@@ -71,12 +71,28 @@ async function check(browser, study, isolated) {
       throw Error('Cannot find the engine module loaded by the viewer.');
     }, isolated);
     const before = await engine.evaluate(state => state.memory.buffer.byteLength);
+    await worker.evaluate(() => {
+      const original = Blob.prototype.arrayBuffer;
+      self.filePrefixGroups = [];
+      Blob.prototype.arrayBuffer = async function (...args) {
+        const result = await original.apply(this, args);
+        if (this.size === 16 * 64 * 1024) self.filePrefixGroups.push(new WeakRef(result));
+        return result;
+      };
+    });
     const choose = page.waitForEvent('filechooser').then(picker => picker.setFiles(study.files));
     const [series] = await Promise.all([page.evaluate(async () => {
       const bridge = window.veacom;
       return (await bridge.importSelected(await bridge.openPaths('files'))).series;
     }), choose]);
     const after = await engine.evaluate(state => ({ memory: state.memory.buffer.byteLength, listed: state.listed().length }));
+    await worker.evaluate(() => self.gc());
+    const groups = await worker.evaluate(() => ({
+      total: self.filePrefixGroups.length,
+      reachable: self.filePrefixGroups.filter(ref => ref.deref() !== undefined).length,
+    }));
+    assert.equal(groups.total, 64, 'The check must see all 64 MiB supplied to the Worker.');
+    assert.equal(groups.reachable, 0, 'The input buffers must be collectable when cataloging has finished.');
     assert.equal(after.listed, study.files.length);
     assert.equal(series.length, 1);
     const [ct] = series;
@@ -92,7 +108,7 @@ async function check(browser, study, isolated) {
       return Array.from(new Uint8Array(await window.importVolumeDigest), byte => byte.toString(16).padStart(2, '0')).join('');
     }, { id: ct.id, catalogRevision: ct.catalogRevision });
     assert.equal(digest, study.digest);
-    return { isolated, sources: after.listed, before, after: after.memory, growth: after.memory - before, pixelSha256: digest };
+    return { isolated, sources: after.listed, before, after: after.memory, growth: after.memory - before, groups, pixelSha256: digest };
   } finally {
     await page.close();
     await site.close();
@@ -102,7 +118,7 @@ async function check(browser, study, isolated) {
 let browser;
 try {
   const study = makeStudy();
-  browser = await chromium.launch();
+  browser = await chromium.launch({ args: ['--js-flags=--expose-gc'] });
   const results = [];
   for (const isolated of [true, false]) results.push(await check(browser, study, isolated));
   const report = JSON.stringify(results, null, 2);
