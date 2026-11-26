@@ -374,6 +374,46 @@ async function checkRestartedCatalog(browser, url) {
 }
 
 /** The actual browser file list contains the same basename twice, once for each patient. */
+async function observeDropDirectory(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    await page.getByTestId('welcome-open-folder').waitFor();
+    await page.evaluate(() => {
+      document.addEventListener('drop', event => {
+        const [item] = event.dataTransfer.items;
+        const entry = item.webkitGetAsEntry();
+        const handle = item.getAsFileSystemHandle?.();
+        const limited = async operation => Promise.race([
+          operation.catch(error => ({ error: String(error) })),
+          new Promise(resolve => setTimeout(() => resolve({ timeout: true }), 5000)),
+        ]);
+        window.folderProbe = Promise.all([
+          limited((async () => {
+            const reader = entry.createReader();
+            const batch = await new Promise((resolve,reject) => reader.readEntries(resolve,reject));
+            return { kind: entry.isDirectory ? 'directory' : 'file', name: entry.name, children: batch.map(child => child.name).sort() };
+          })()),
+          limited((async () => {
+            const first = await handle;
+            if (!first) return { available: Boolean(item.getAsFileSystemHandle), handle: null };
+            const names = [];
+            for await (const child of first.values()) names.push(child.name);
+            return { kind: first.kind, name: first.name, children: names.sort() };
+          })()),
+        ]);
+      }, { once: true, capture: true });
+    });
+    const session = await page.context().newCDPSession(page);
+    for (const type of ['dragEnter','dragOver','drop']) {
+      await session.send('Input.dispatchDragEvent', {type,x:100,y:120,data:{items:[],files:[study],dragOperationsMask:1}});
+    }
+    const result = await page.evaluate(() => window.folderProbe);
+    console.log('Directory APIs for this file drop', JSON.stringify(result));
+    assert(result[0].children.includes('S01'));
+  } finally { await page.close(); }
+}
+
 async function checkLooseFileDrop(browser, url) {
   const page = await browser.newPage();
   try {
@@ -656,6 +696,7 @@ try {
       await checkWelcomeBeforeGraphics(browser, page.url());
       await checkClosedCTBuffer(browser, page.url());
       await checkRestartedCatalog(browser, page.url());
+      await observeDropDirectory(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
