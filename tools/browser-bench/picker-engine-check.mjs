@@ -18,16 +18,29 @@ const expected = await Promise.all(files.map(async (file, i) => ({
   uid: root + '.3.' + (sourceNumbers[i]+1),
   hash: createHash('sha256').update((await readFile(file)).subarray(-512*512*2)).digest('hex'),
 })));
-const browser = await ({ chromium, firefox, webkit }[engine]).launch();
+const browser = await ({ chromium, firefox, webkit }[engine]).launch(engine === 'firefox'
+  ? {headless:false,firefoxUserPrefs:{'webgl.force-enabled':true,'gfx.webrender.software':true}} : {});
 const rows = [];
 try {
   for (const isolated of [true, false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation:isolated });
     const page = await browser.newPage({ viewport:{ width:1280,height:800 } });
     const row = { engine, version:browser.version(), isolated, errors:[], failedRequests:[] };
-    page.on('pageerror', error => row.errors.push(error.message));
+    page.on('pageerror', error => row.errors.push([error.message,error.stack]));
     page.on('requestfailed', r => row.failedRequests.push([new URL(r.url()).pathname,r.failure()?.errorText]));
     try {
+      await page.addInitScript(() => {
+        window.decodedFrames = new Map();
+        window.Worker = class extends Worker {
+          constructor(...args) {
+            super(...args);
+            this.addEventListener('message', ({data}) => {
+              const frame = data?.value;
+              if (frame?.sopInstanceUid && frame.bytes) window.decodedFrames.set(frame.sopInstanceUid,crypto.subtle.digest('SHA-256',frame.bytes));
+            });
+          }
+        };
+      });
       await page.goto(site.url);
       const picker = page.waitForEvent('filechooser', { timeout:20000 });
       await page.getByTestId('welcome-open-files').click();
@@ -38,8 +51,10 @@ try {
         const frames = [];
         for(let i=0;i<s.dimensions[2];i++) {
           const response = await window.veacom.fetchPixels({ seriesId:s.id, generation, revision:s.catalogRevision, index:i });
-          const digest = await crypto.subtle.digest('SHA-256',await response.arrayBuffer());
-          frames.push({uid:response.headers.get('X-SOP-Instance-UID'),hash:Array.from(new Uint8Array(digest), b=>b.toString(16).padStart(2,'0')).join('')});
+          const uid=response.headers.get('X-SOP-Instance-UID');
+          if (!window.decodedFrames.has(uid)) throw Error('Missing worker frame '+uid);
+          const digest = await window.decodedFrames.get(uid);
+          frames.push({uid,hash:Array.from(new Uint8Array(digest), b=>b.toString(16).padStart(2,'0')).join('')});
         }
         return { isolation:self.crossOriginIsolated, threads:Number(document.documentElement.dataset.engineThreads), frames, patient:s.patientId, dimensions:s.dimensions };
       });
