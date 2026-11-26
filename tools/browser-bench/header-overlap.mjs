@@ -48,9 +48,10 @@ function prepare(mode) {
   };
   worker.onerror = e => { ready.reject(new Error(e.message)); complete.reject(new Error(e.message)); };
   worker.postMessage({start:true});
-  document.addEventListener('dragover', e=>e.preventDefault(), { once:true });
+  window.probeStage = 'waiting for a native drop';
   window.result = new Promise((resolve, reject) => document.addEventListener('drop', event => {
     event.preventDefault();
+    window.probeStage = 'reading the directory entries';
     const root = event.dataTransfer.items[0].webkitGetAsEntry();
     const start = performance.now();
     (async () => {
@@ -65,6 +66,7 @@ function prepare(mode) {
         }
       }
       await visit(root, '');
+      window.probeStage = 'acquiring ' + entries.length + ' files';
       const listed = performance.now(), counts = [], acquired = [], times = [];
       let firstGroup, firstSent;
       const size = 16;
@@ -87,8 +89,10 @@ function prepare(mode) {
       const all = performance.now();
       if(mode==='single') send(acquired);
       if(mode==='grouped') for(let i=0;i<acquired.length;i+=size) send(acquired.slice(i,i+size));
+      window.probeStage = 'waiting for header reads';
       worker.postMessage({finish:true});
       const end = await complete.promise;
+      window.probeStage = 'checking prefix hashes';
       worker.postMessage({verify:true});
       const hashes = await verified.promise;
       resolve({ files:acquired.length, listedMs:listed-start, firstFileMs:times[0]-listed,
@@ -120,15 +124,33 @@ try {
   const page=await browser.newPage();
   await page.goto('http://127.0.0.1:'+server.address().port);
   const cdp=await page.context().newCDPSession(page);
+  await page.evaluate(() => {
+    for(const type of ['dragenter','dragover']) document.addEventListener(type,e=>{
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+  });
+  async function timed(label, work) {
+    let timer;
+    const deadline = new Promise((_,reject) => {
+      timer=setTimeout(()=>reject(new Error('Timed out during '+label)),20_000);
+    });
+    try { return await Promise.race([work,deadline]); }
+    catch (error) {
+      console.error(label,await page.evaluate(()=>window.probeStage));
+      throw error;
+    } finally { clearTimeout(timer); }
+  }
   const orders=[['single','grouped','overlap'],['grouped','overlap','single'],['overlap','single','grouped'],
     ['overlap','grouped','single'],['grouped','single','overlap'],['single','overlap','grouped']];
   const trials=[];
   for(let round=-1;round<12;round++) {
     const order=orders[(round+orders.length)%orders.length];
     for(const mode of order) {
-      await page.evaluate(prepare,mode);
+      await timed('worker startup',page.evaluate(prepare,mode));
       for(const type of ['dragEnter','dragOver','drop']) await cdp.send('Input.dispatchDragEvent',{type,x:100,y:80,data:{items:[],files:[folder],dragOperationsMask:1}});
-      const {hashes,...timing}=await page.evaluate(() => window.result);
+      const {hashes,...timing}=await timed(mode+' drop '+round,page.evaluate(() => window.result));
+      console.log(round,mode,'files',timing.files,'ms',Math.round(timing.totalMs));
       assert.deepEqual(hashes,expected);
       if(round>=0)trials.push({round,mode,slot:order.indexOf(mode)+1,...timing});
     }
