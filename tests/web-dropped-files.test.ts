@@ -105,6 +105,28 @@ it('rejects the entire import when a file in a later directory batch becomes unr
   await assert.rejects(readImportFiles(importFileSources(sources)), /Selection lost/);
 });
 
+it('registers completed headers in selection order while later reads are running', { timeout: 5000 }, async t => {
+  const sources = Array.from({ length: 33 }, (_, i) => ({ path: String(i), file: new File([Uint8Array.of(i)], 'slice') }));
+  let release!: () => void, observed!: () => void, reads = 0;
+  const delayed = new Promise<void>(resolve => { release = resolve; });
+  const firstGroup = new Promise<void>(resolve => { observed = resolve; });
+  t.mock.method(Blob.prototype, 'arrayBuffer', async function (this: Blob) {
+    if (++reads === 2) await delayed;
+    return new Response(this.stream()).arrayBuffer();
+  });
+  const registered: [string, number | undefined][] = [];
+  const imported = readImportFiles(sources, (source, head) => {
+    registered.push([source.path, head?.[0]]);
+    if (registered.length === 16) observed();
+  });
+  try {
+    await firstGroup;
+    assert.deepEqual(registered, sources.slice(0, 16).map((source, i) => [source.path, i]));
+  } finally { release(); }
+  await imported;
+  assert.deepEqual(registered, sources.map((source, i) => [source.path, i]));
+});
+
 it('propagates a directory reading error without returning a partial selection', async () => {
   const files = [new File([], 'study')];
   const denied = { name: 'study', isDirectory: true, createReader: () => ({

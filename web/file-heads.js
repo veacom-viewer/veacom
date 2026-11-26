@@ -26,16 +26,17 @@ async function readGroup(group, result) {
   }));
 }
 
-/** @param {ReadonlyArray<{file: Blob}>} files @param {(offset: number) => Promise<void>} [waitForFiles] */
-export async function readHeads(files, waitForFiles) {
+/** @param {ReadonlyArray<{file: Blob}>} files @param {(offset: number) => Promise<void>} [waitForFiles]
+ * @param {(index: number, head: Uint8Array | undefined) => void} [onHead] */
+export async function readHeads(files, waitForFiles, onHead) {
   /** @type {(Uint8Array | undefined)[]} */
   const result = Array(files.length).fill(undefined);
   let remaining = MAX_PREFETCH_BYTES;
-  for (let start = 0; start < files.length && (remaining > 0 || waitForFiles); start += 256) {
+  for (let start = 0; start < files.length; start += 256) {
     const reads = [];
     const end = Math.min(start + 256, files.length);
     try {
-      for (let from = start; from < end && (remaining > 0 || waitForFiles); from += HEAD_GROUP_SIZE) {
+      for (let from = start; from < end; from += HEAD_GROUP_SIZE) {
         if (waitForFiles) await waitForFiles(from);
         const group = [];
         for (let index = from; remaining > 0 && index < Math.min(from + HEAD_GROUP_SIZE, end); index++) {
@@ -46,7 +47,14 @@ export async function readHeads(files, waitForFiles) {
           try { group.push({ index, part: file.slice(0, length) }); }
           catch { /* The engine can still read the file on demand. */ }
         }
-        if (group.length) reads.push(readGroup(group, result));
+        reads.push(group.length ? readGroup(group, result) : Promise.resolve());
+      }
+      if (onHead) {
+        for (const [i, pending] of reads.entries()) {
+          await pending;
+          const from = start + i * HEAD_GROUP_SIZE;
+          for (let index = from; index < Math.min(end, from + HEAD_GROUP_SIZE); index++) onHead(index, result[index]);
+        }
       }
     } finally { await Promise.all(reads); }
   }

@@ -202,17 +202,17 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
-        const { files, heads } = await readImportFiles(data.files);
+        const count = Array.isArray(data.files) ? data.files.length : data.files.count;
         const ids: number[] = [];
         try {
-          for (const [i, { path, file }] of files.entries()) {
-            const id = engine.addFile(path, file, heads[i]);
+          await readImportFiles(data.files, ({ path, file }, head) => {
+            const id = engine.addFile(path, file, head);
             ids.push(id);
             pageFiles.set(id, file);
-          }
+          });
           value = JSON.parse(engine.importPaths(data.roots));
         } finally {
-          if (ids.length < files.length) engine.pruneFiles();
+          if (ids.length < count) engine.pruneFiles();
           forgetUnlisted();
         }
         // The helpers take the files the import kept while the page asks for its first images; decoding a series waits
