@@ -827,7 +827,8 @@ export default function App() {
   const pictureNote = activeSeries?.warningNotes?.find(note => note.code === 'series.ordinaryImage');
   const pictureFormat = typeof pictureNote?.params?.format === 'string' ? pictureNote.params.format : '';
   const pictureNotice = pictureNote && activeSeries && !pictureNoticeClosed.has(activeSeries.studyUid) ? activeSeries.studyUid : null;
-  const activeVolume = volumeForSlot(activeSlot);
+  const readActiveVolume = () => volumeForSlot(activeSlot);
+  const activeVolume = readActiveVolume();
   // A series still being read from a disc says how far it is read, in the status bar: nothing else shows that it is not
   // whole. A series loading needs no words.
   const paneState = activeSeries?.reading ? t('viewport.reading', { read: activeSeries.reading.read, count: activeSeries.reading.files }) : '';
@@ -900,6 +901,7 @@ export default function App() {
   };
   /** Where a caliper measures and what that pane needs first (panePlan on the caliper's plane), or why it cannot measure. */
   const caliperPlan = (kind: CaliperKind): PanePlan => {
+    const activeVolume = readActiveVolume();
     if (!activeVolume) return { blocked: 'caliper.needsImage' };
     const refused = caliperRefusal(activeVolume.series);
     if (refused) return { blocked: refused };
@@ -911,13 +913,15 @@ export default function App() {
   const caliperBlocked = (kind: CaliperKind): MessageKey | null => { const plan = caliperPlan(kind); return 'blocked' in plan ? plan.blocked : null; };
   /** Where the checklist's Show turns a pane to `plane` (panePlan), or why it cannot. */
   const showPlan = (plane: Plane): PanePlan => {
+    const activeVolume = readActiveVolume();
     if (!activeVolume) return { blocked: 'checklist.showNeedsImage' };
     if (activeSeries && loadingIds.has(activeSeries.id)) return { blocked: 'checklist.showLoading' };
     return panePlan(plane, activeVolume);
   };
   const showBlocked = (plane: Plane): MessageKey | null => { const plan = showPlan(plane); return 'blocked' in plan ? plan.blocked : null; };
   // The plane the active pane shows, for the checklist's Show (calipers.showsPlane).
-  const paneShows = activeVolume ? (['axial', 'coronal', 'sagittal'] as const).find(plane => showsPlane(plane, activeVolume.series, activeDisplayView)) ?? null : null;
+  const paneSeries = activeVolume?.series;
+  const paneShows = paneSeries ? (['axial', 'coronal', 'sagittal'] as const).find(plane => showsPlane(plane, paneSeries, activeDisplayView)) ?? null : null;
   const fusionVolume = fusionId ? displayVolumes.get(fusionId) : undefined;
   const fusion = fusionVolume && fusionVolume.sourceFrameIndex === undefined && !fusionVolume.series.sourceFramesOnly ? { volume: fusionVolume, opacity: fusionOpacity, upperSuv: fusionUpper, palette: fusionPalette, blend: fusionBlend } : null;
   const petSeries = series.filter(fusesAsOverlay);
@@ -1871,6 +1875,7 @@ export default function App() {
     });
   };
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
+    const activeVolume = readActiveVolume();
     const advance = advanceCine(last, now, cineFps);
     if (advance.steps && activeVolume && cineCount > 1) {
       const next = Math.round(activeSlot.view.slice) + advance.steps * pageStep(activeVolume.series, activeSlot.view, 1);
@@ -2706,6 +2711,7 @@ export default function App() {
   };
   const maximizePane = (id: string) => { maximizeSlot(id); focusImage(); };
   const mpr = () => {
+    const activeVolume = readActiveVolume();
     if (beforeMpr.current) { restoreBeforeMpr(); return; }
     // From a stack's reference image the three planes are the stack's, in the window the pane had on the stack (the
     // image's own window is the image's); leaving MPR brings the image back.
@@ -2750,6 +2756,7 @@ export default function App() {
     say(all ? 'notice.layoutCopied' : 'notice.imageCopied', 'info', undefined, true);
   };
   const openExport = (mode: ExportDialogProps['mode']) => {
+    const activeVolume = readActiveVolume();
     setMenu(null);
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
@@ -2857,6 +2864,7 @@ export default function App() {
   function showPanel(panel: Panel) { if (showAssessment) setAssessmentBehind(true); setPanel(panel); }
   const windowRequest = useRef(0);
   const applyMeasuredWindow = async (automatic: boolean) => {
+    const activeVolume = readActiveVolume();
     if (!activeVolume || framePending || activeVolume.series.components === 3) return;
     const request = ++windowRequest.current, { view, id } = activeSlot;
     const current = () => mounted.current && request === windowRequest.current && slotsRef.current.find(slot => slot.id === id)?.view === view
@@ -2873,9 +2881,11 @@ export default function App() {
   };
   const applyAutoWindow = () => { void applyMeasuredWindow(true); };
   const applyFullRange = () => { void applyMeasuredWindow(false); };
-  const applyDicomWindow = () => { if (activeSeries) updateView(activeSlot.id, { windowMode: 'dicom', ...(!activeVolume || !usesSourceFrames(activeVolume.series, activeSlot.view) ? { windowCenter: activeSeries.windowCenter, windowWidth: activeSeries.windowWidth } : {}) }); };
+  const applyDicomWindow = () => {
+    const activeVolume = readActiveVolume(); if (activeSeries) updateView(activeSlot.id, { windowMode: 'dicom', ...(!activeVolume || !usesSourceFrames(activeVolume.series, activeSlot.view) ? { windowCenter: activeSeries.windowCenter, windowWidth: activeSeries.windowWidth } : {}) }); };
 
   const keydown = useEffectEvent((event: KeyboardEvent) => {
+    const activeVolume = readActiveVolume();
     const target = event.target as HTMLElement;
     const field = target.matches('input, textarea, select, [contenteditable="true"]');
     if ((exportMode && !exportBackground) || capturingRef.current) return;
@@ -2987,7 +2997,9 @@ export default function App() {
     return () => window.removeEventListener('keydown', keydown);
   }, []);
 
-  const testState = useEffectEvent(() => ({
+  const testState = useEffectEvent(() => {
+    const activeVolume = readActiveVolume();
+    return ({
     activeSeriesId: activeSlot.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
     fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
     sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
@@ -3005,7 +3017,8 @@ export default function App() {
       projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
       windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan })),
     graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
-  }));
+  });
+  });
   const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(activeSlot.id, patch));
   useEffect(() => {
     const harness = {
@@ -3024,7 +3037,7 @@ export default function App() {
   // Usage timings: the coarse state each action leaves behind (src/usage/tracker.ts). Facet values are only
   // compared in this window to name what an action changed; of the state, only the classes below are sent.
   const usageSnapshot = useEffectEvent((): UsageSnapshot => {
-    const surface: Surface = show3d && activeVolume ? '3d' : showAssessment ? 'assessment' : series.length ? 'viewer' : 'welcome';
+    const surface: Surface = show3d && readActiveVolume() ? '3d' : showAssessment ? 'assessment' : series.length ? 'viewer' : 'welcome';
     const panes = slots.map(slot => {
       const volume = volumeForSlot(slot), shown = volume ? renderedView(volume, slot.view) : slot.view;
       const plane = !volume ? 'none' : usesSourceFrames(volume.series, shown) ? 'source' : shown.oblique?.some(Boolean) ? 'oblique' : shown.plane;
@@ -3122,6 +3135,7 @@ export default function App() {
   /** MPR > Thick slab, as in VEAcom Next: on acquired slices it goes to the same place in the reconstructed volume;
    * turned off in the plane the series was acquired in, it goes back to its own slices there. */
   const chooseSlab = (mode: SlabMode | null, thickness?: number) => {
+    const activeVolume = readActiveVolume();
     if (!activeVolume || !activeVolume.series.canReconstruct || activeVolume.series.sourceFramesOnly || activeVolume.series.components === 3 || activeProjection) return;
     const series = activeVolume.series, view = activeSlot.view, center = getPlaneFrame(series, view).center;
     if (thickness !== undefined) setSlabThickness(thickness);
@@ -3186,20 +3200,26 @@ export default function App() {
   const suvActive = Boolean(activeVolume && !rgb && quantityScale(activeVolume.series, 'SUV'));
   const currentSuvPreset = activeVolume && suvActive ? suvPresetFor(activeVolume.series, activeDisplayView) : undefined;
   const applySuvPreset = (to: number) => {
+    const activeVolume = readActiveVolume();
     const window = activeVolume ? windowFor(activeVolume.series, { unit: 'SUV', from: 0, to }) : null;
     if (window) { updateView(activeSlot.id, { ...window, windowMode: 'manual' }); offerKeep.current(activeSlot.id); }
   };
   const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : suvWindowText(activeVolume.series, activeDisplayView) || t('toolbar.customWindow'))
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
-  const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView)));
+  const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => {
+    const activeVolume = readActiveVolume();
+    return !activeVolume || !shownOnView(annotation, activeVolume.series, activeDisplayView);
+  }));
   /** In the MPR menu the plane the active series was acquired in shows the series' own images, as a click on the pane's
    * plane name does (cyclePlane); the other planes are reconstructed, and so is that one while a thick slab is on. The
    * series' own images draw no slab, so the slab stays on and drawn; turning it off brings them back (chooseSlab). */
   const activeAcquiredPlane = activeVolume ? acquiredPlane(activeVolume.series) : null;
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
-  const showPlane =(plane: Plane) => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
-  const showAcquired = () => { if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
+  const showPlane =(plane: Plane) => {
+    const activeVolume = readActiveVolume(); if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeVolume.series, plane, center), oblique: [0, 0], projection: undefined }); } };
+  const showAcquired = () => {
+    const activeVolume = readActiveVolume(); if (activeVolume) { const center = getPlaneFrame(activeVolume.series, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeVolume.series, next, center) }); } };
   // An MR fuses with another MR beside it, or with a PET or SPECT of the same patient acquired apart, aligned first.
   const mrApart = mrActive && overlayChoices.some(item => !shareFrame(item, activeSeries));
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length && !mrApart : !petSeries.length);
@@ -3320,9 +3340,12 @@ export default function App() {
       {menu === 'mpr' && <Menu label={t('toolbar.mprPlanes')} onClose={closeMenu}>
         <MenuItem action="toolbar-restore-previous" icon={<Columns3 size={16} />} shortcut={singleKey('M')} disabled={!canReconstruct && !leadReconstructs && !isMpr} onClick={() => act(mpr)}>{isMpr ? t('toolbar.restorePrevious') : t('toolbar.threePlanes')}</MenuItem>
         <MenuDivider />
-        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => <MenuItem action={`plane-${plane}`} key={plane} kind="radio"
+        {(['axial', 'coronal', 'sagittal'] as Plane[]).map(plane => {
+          const activeVolume = readActiveVolume();
+          return <MenuItem action={`plane-${plane}`} key={plane} kind="radio"
           checked={Boolean(activeVolume && !activeDisplayView.oblique?.some(Boolean) && (usesSourceFrames(activeVolume.series, activeDisplayView) ? plane === activeAcquiredPlane : activeDisplayView.plane === plane))}
-          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane && !activeDisplayView.slab ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>)}
+          disabled={plane === activeAcquiredPlane ? !activeVolume : !canReconstruct} onClick={() => act(plane === activeAcquiredPlane && !activeDisplayView.slab ? showAcquired : () => showPlane(plane))}>{t(`plane.${plane}` as const)}</MenuItem>;
+        })}
         <MenuDivider />
         <MenuItem testId="tool-oblique" disabled={!canReconstruct} onClick={() => act(() => openPanelSection('oblique'))}>{t('toolbar.obliqueSettings')}</MenuItem>
       </Menu>}</div> },
@@ -3417,7 +3440,7 @@ export default function App() {
         {/* Info notices go into a live region that is always present, so screen readers announce them reliably. */}
         <div className="notice-region" role="status">{notice && notice.kind !== 'error' && noticeBar}</div>
         {notice?.kind === 'error' && noticeBar}
-        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = overlayChoices.find(value => value.id === event.target.value); if (!item) { fusionRequest.current++; setFusionId(null); return; } if (activeVolume?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{overlayChoices.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
+        {showFusion && <div className="fusion-strip" data-testid="fusion-strip"><span className="strip-label"><Layers size={14} /> {t(plainFusion ? 'fusion.labelPlain' : 'fusion.label')}</span>{!mrFusion && <select aria-label={t('fusion.series')} data-testid="fusion-series" value={fusionId ?? ''} onChange={event => { const item = overlayChoices.find(value => value.id === event.target.value); if (!item) { fusionRequest.current++; setFusionId(null); return; } if (readActiveVolume()?.series.sourceFramesOnly) { say('notice.fusionSourceOnly', 'info'); return; } fuseInActive(item); }}><option value="">{t('fusion.choose')}</option>{overlayChoices.map(item => <option key={item.id} value={item.id}>{seriesName(item)}</option>)}</select>}<label>{t(plainFusion ? 'fusion.opacityPlain' : 'fusion.opacity')}<input data-action="fusion-opacity" type="range" min={0} max={1} step={0.05} value={fusionOpacity} onChange={event => { setFusionOpacity(Number(event.target.value)); setFusionDeviceMode(false); }} /></label><label>{t(fusionScaleMaxKey(fusionPet))}<input data-action="fusion-suv-max" className="small-number" type="number" min={0.1} max={100} step={0.5} value={fusionUpper} onChange={event => { setFusionUpper(Math.max(0.1, Number(event.target.value))); setFusionDeviceMode(false); }} /></label><select data-action="fusion-palette" aria-label={t('fusion.palette')} value={fusionPalette} onChange={event => { setFusionPalette(event.target.value as FusionSettings['palette']); setFusionDeviceMode(false); }}><option value="hot_metal">{t('palette.hotMetal')}</option><option value="ge">{t('palette.ge')}</option><option value="red_yellow">{t('palette.redYellow')}</option><option value="hot">{t('palette.hot')}</option><option value="rainbow">{t('palette.rainbow')}</option></select>{!mrFusion && <select data-action="fusion-blend" aria-label={t('fusion.blend')} value={fusionBlend} onChange={event => { setFusionBlend(event.target.value as FusionSettings['blend']); setFusionDeviceMode(false); }}><option value="classic">{t('fusion.blendClassic')}</option><option value="uptake">{t('fusion.blendUptake')}</option></select>}{!plainFusion && <button type="button" className="secondary-button compact" data-action="fusion-device-look" aria-pressed={fusionDeviceMode} onClick={() => { const pet = fusion?.volume.series; if (pet) applyDeviceLook(pet, activeIdRef.current); else setFusionDeviceMode(true); }}>{t('fusion.deviceLook')}</button>}<button className="icon-button" aria-label={t('fusion.disable')} data-testid="fusion-disable" onClick={stopFusion}><X size={14} /></button></div>}
         {pictureNotice && <div className="picture-notice-anchor"><div className="picture-notice" role="status" data-testid="picture-notice"><span>{pictureFormat ? t('pictures.limited', { format: pictureFormat }) : t('pictures.limitedPlain')}</span><button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-tooltip={t('notice.dismiss')} data-action="picture-notice-close" onClick={() => setPictureNoticeClosed(current => new Set(current).add(pictureNotice))}><X size={14} /></button></div></div>}
         {series.length === 0 ? <div className="welcome-space" data-testid="welcome">
           <div className="welcome-card">
@@ -3464,7 +3487,10 @@ export default function App() {
           displayVolumesRef.current.get(item.id)?.series ?? { ...item, measurementScale: calibrationScales[item.id] }); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
-        onNote={() => activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view, joinedFor(activeSlot)) : null}
+        onNote={() => {
+          const activeVolume = readActiveVolume();
+          return activeVolume && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeVolume.series, activeSlot.view, joinedFor(activeSlot)) : null;
+        }}
         onMeasure={(item, side, kind) => startCaliper({ kind, item, side, study: studyKey(activeSeries) })}
         measuring={caliper && caliper.study === studyKey(activeSeries) ? caliper : null} measureBlocked={caliperBlocked}
         paneShows={paneShows} onShow={showChecklistItem} showBlocked={showBlocked}
@@ -3474,6 +3500,7 @@ export default function App() {
           // A measured side picks its caliper drawing too, once it is on screen.
           if (note.caliper) document.querySelector('.viewport-cell.is-active [data-testid="dicom-viewport"]')?.dispatchEvent(new CustomEvent(PICK_MEASUREMENT, { detail: note.caliper.annotationId })); }} /></Suspense></div>}
       {(() => {
+        const activeVolume = readActiveVolume();
         const plan = deformityShown && activeVolume ? <Suspense fallback={null}><DeformityPanel volume={activeVolume} slice={activeDisplayView.slice} view={activeDisplayView}
           onClose={() => setChecklistOpen(false)} headingRef={focusChecklistHeading} history={historyCount} onUndo={redo => undo(redo)} hidePatientData={settings.hidePatientData}
           viewport={() => document.querySelector<HTMLElement>('.viewport-cell.is-active [data-testid="dicom-viewport"]')}
@@ -3522,6 +3549,7 @@ export default function App() {
             loading={loadingIds.has(activeSeries.id) || (!loadErrors[activeSeries.id] && (!activeVolume || activeVolume.sourceFrameIndex !== undefined))}
             typedGlucose={typedGlucose} lesionPrior={lesionPrior} comparison={petPrior && { current: currentPet, prior: petPrior, limited: limitedView }} />}
           {activeAnnotations.length ? <ol className="annotation-list">{activeAnnotations.map((annotation, index) => {
+            const activeVolume = readActiveVolume();
             const sourceIndex = annotation.mode === 'source' && activeVolume ? annotationSourceIndex(annotation, activeVolume.series) : null;
             const unavailable = annotation.mode === 'source' && sourceIndex === null;
             const Icon = MEASURE_ICONS[annotation.type] ?? Ruler;
@@ -3530,6 +3558,7 @@ export default function App() {
             // The number the pane's counter shows on the measurement's slice (imaging/paging.ts).
             const numbered = activeVolume ? measuredSlice(activeVolume.series, annotation, sourceIndex ?? undefined, joinedOf(activeVolume.series)) : annotation.slice + 1;
             return <li className={`annotation-row${annotation.type === 'sphere' ? ' has-details' : ''}`} key={annotation.id} data-annotation-row={annotation.id}><button data-action="measurement-go" type="button" className="annotation-main" disabled={unavailable} onClick={event => {
+              const activeVolume = readActiveVolume();
               // A sphere: every linked pane goes to its centre, each in its own plane.
               if (sphere) {
                 if (activeVolume && !isProjection(activeVolume.series, activeSlot.view)) updateView(activeSlot.id, { slice: sliceAtWorld(activeVolume.series, activeSlot.view, sphere.center) });
@@ -3557,7 +3586,7 @@ export default function App() {
         {settings.panel === 'display' && <div className="inspector-panel display-panel" role="tabpanel" id="inspector-panel-display" aria-labelledby="inspector-tab-display" tabIndex={0}>
           <PanelSection id="window" title={t('inspector.windowSection')} open={openSections.has('window')} onToggle={toggleSection}>
             <div className="field-pair"><label>{t('inspector.windowWidth')}<input data-action="window-width-input" aria-label={t('inspector.windowWidth')} type="number" min={1} value={Math.round(activeDisplayView.windowWidth)} disabled={!activeVolume || rgb} onChange={event => updateView(activeSlot.id, { windowWidth: Math.max(1, Number(event.target.value)) })} /></label><label>{t('inspector.windowLevel')}<input data-action="window-level-input" aria-label={t('inspector.windowLevel')} type="number" value={Math.round(activeDisplayView.windowCenter)} disabled={!activeVolume || rgb} onChange={event => updateView(activeSlot.id, { windowCenter: Number(event.target.value) })} /></label></div>
-            <div className="preset-buttons" role="group" aria-label={t('toolbar.windowPresets')}>{PRESETS.map(preset => <button data-action={`preset-${kebab(preset.key)}`} key={preset.key} type="button" aria-pressed={currentPreset?.key === preset.key} className={currentPreset?.key === preset.key ? 'is-active' : ''} disabled={!activeVolume || rgb} onClick={() => updateView(activeSlot.id, { windowWidth: preset.width, windowCenter: preset.center })}><span>{presetName(preset)}</span><small>{preset.width} / {preset.center}</small></button>)}</div>
+            <div className="preset-buttons" role="group" aria-label={t('toolbar.windowPresets')}>{PRESETS.map(preset => <button data-action={`preset-${kebab(preset.key)}`} key={preset.key} type="button" aria-pressed={currentPreset?.key === preset.key} className={currentPreset?.key === preset.key ? 'is-active' : ''} disabled={!readActiveVolume() || rgb} onClick={() => updateView(activeSlot.id, { windowWidth: preset.width, windowCenter: preset.center })}><span>{presetName(preset)}</span><small>{preset.width} / {preset.center}</small></button>)}</div>
             <div className="inline-actions"><button data-action="preset-auto" type="button" className="text-button" disabled={!activeVolume || rgb || framePending} onClick={applyAutoWindow}>{t('inspector.autoWindowRange')}</button><button type="button" className="text-button" disabled={!activeVolume || rgb} onClick={applyDicomWindow}>{t('toolbar.dicomWindow')}</button></div>
           </PanelSection>
           <PanelSection id="color" title={t('inspector.colorSection')} open={openSections.has('color')} onToggle={toggleSection}>
@@ -3574,8 +3603,10 @@ export default function App() {
             </div>
           </PanelSection>
           <PanelSection id="oblique" title={t('inspector.oblique')} open={openSections.has('oblique')} onToggle={toggleSection}>
-            <p className="field-help">{t('inspector.obliqueHelp')}</p>{[0, 1].map(axis => <label className="slider-field" key={axis}><span>{axis === 0 ? t('inspector.pitch') : t('inspector.yaw')}<output>{activeSlot.view.oblique?.[axis] ?? 0}°</output></span><input data-action={axis === 0 ? 'oblique-pitch' : 'oblique-yaw'} type="range" disabled={!canReconstruct} min={-90} max={90} step={1} value={activeSlot.view.oblique?.[axis] ?? 0} onChange={event => { const angles: [number, number] = [...(activeSlot.view.oblique ?? [0, 0])]; angles[axis] = Number(event.target.value); if (activeVolume) { const next = { ...activeSlot.view, mode: 'mpr' as const, oblique: angles }; updateView(activeSlot.id, { mode: 'mpr', oblique: angles, slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }} /></label>)}
-            <button data-action="oblique-reset" type="button" className="text-button" disabled={!canReconstruct || !activeSlot.view.oblique?.some(Boolean)} onClick={() => { if (activeVolume) { const next = { ...activeSlot.view, oblique: [0, 0] as [number, number] }; updateView(activeSlot.id, { oblique: [0, 0], slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }}>{t('inspector.resetPlane')}</button>
+            <p className="field-help">{t('inspector.obliqueHelp')}</p>{[0, 1].map(axis => <label className="slider-field" key={axis}><span>{axis === 0 ? t('inspector.pitch') : t('inspector.yaw')}<output>{activeSlot.view.oblique?.[axis] ?? 0}°</output></span><input data-action={axis === 0 ? 'oblique-pitch' : 'oblique-yaw'} type="range" disabled={!canReconstruct} min={-90} max={90} step={1} value={activeSlot.view.oblique?.[axis] ?? 0} onChange={event => {
+              const activeVolume = readActiveVolume(); const angles: [number, number] = [...(activeSlot.view.oblique ?? [0, 0])]; angles[axis] = Number(event.target.value); if (activeVolume) { const next = { ...activeSlot.view, mode: 'mpr' as const, oblique: angles }; updateView(activeSlot.id, { mode: 'mpr', oblique: angles, slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }} /></label>)}
+            <button data-action="oblique-reset" type="button" className="text-button" disabled={!canReconstruct || !activeSlot.view.oblique?.some(Boolean)} onClick={() => {
+              const activeVolume = readActiveVolume(); if (activeVolume) { const next = { ...activeSlot.view, oblique: [0, 0] as [number, number] }; updateView(activeSlot.id, { oblique: [0, 0], slice: sliceAtWorld(activeVolume.series, next, getPlaneFrame(activeVolume.series, activeSlot.view).center) }); } }}>{t('inspector.resetPlane')}</button>
           </PanelSection>
           {activeAlignment && <PanelSection id="alignment" title={t('inspector.alignment')} open={openSections.has('alignment')} onToggle={toggleSection}>
             <AlignmentSection alignment={activeAlignment} fixed={seriesById.get(activeAlignment.fixedSeriesId)} moving={seriesById.get(activeAlignment.movingSeriesId)}
