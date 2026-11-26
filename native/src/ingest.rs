@@ -898,6 +898,16 @@ impl GroupKey {
     }
 }
 
+/// The geometry's notes that say only that a series cannot be reconstructed into a volume.
+const RECONSTRUCTION_NOTES: [&str; 6] = [
+    "geometry.singleImage",
+    "geometry.mixedOrientation",
+    "geometry.mixedSpacing",
+    "geometry.irregular",
+    "geometry.noDisplacement",
+    "geometry.duplicatePlanes",
+];
+
 /// A series split by orientation only when each orientation is a stack of its own (VEAcom 1.x, series.py).
 const MIN_STACK_IMAGES: usize = 5;
 const MAX_STACKS: usize = 8;
@@ -3662,8 +3672,17 @@ fn catalogue(
             });
         }
         let segmentation = info.segmentation.is_some();
-        // Masks are drawn over the image series they reference, never reconstructed.
-        info.can_reconstruct = geom.can_reconstruct && info.components == 1 && !segmentation;
+        // CT localizers are projections even when several have parallel planes (PS3.3 C.8.2.1.1.1).
+        let ct_localizer = info.modality == "CT"
+            && info
+                .acquisition
+                .image_type
+                .split('\\')
+                .nth(2)
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("LOCALIZER"));
+        // Masks are drawn over the image series they reference.
+        info.can_reconstruct =
+            geom.can_reconstruct && info.components == 1 && !segmentation && !ct_localizer;
         if !info.can_reconstruct {
             info.legacy_grid_ids.clear();
         }
@@ -3673,7 +3692,11 @@ fn catalogue(
         let planar =
             info.modality == "NM" && crate::gamma_camera::planar(&info.acquisition.image_type);
         if !segmentation && !pictures && !planar {
-            info.warnings.extend(geom.warnings.clone());
+            info.warnings.extend(
+                (geom.warnings.iter())
+                    .filter(|note| !(ct_localizer && RECONSTRUCTION_NOTES.contains(&note.code)))
+                    .cloned(),
+            );
         }
         let reference_spacing = frames.first().and_then(|f| f.geometry.pixel_spacing);
         info.spacing_known = reference_spacing.is_some_and(|reference| {
@@ -9784,6 +9807,71 @@ mod tests {
     const AXIAL: &str = r"1\0\0\0\1\0";
     const CORONAL: &str = r"1\0\0\0\0\-1";
     const SAGITTAL: &str = r"0\1\0\0\0\-1";
+
+    #[test]
+    fn a_localizer_is_not_said_to_lack_a_stack_to_reconstruct_and_other_images_still_are() {
+        // Synthetic CT images of one series each, with this Image Type: the codes of their series' notes.
+        let notes = |slices: Vec<InMemDicomObject>, image_type: &str| {
+            let slices = slices
+                .into_iter()
+                .map(|mut slice| {
+                    slice.put_str(Tag(0x0008, 0x0060), VR::CS, "CT");
+                    slice.put_str(Tag(0x0008, 0x0008), VR::CS, image_type);
+                    slice
+                })
+                .collect();
+            let imported = import_dir(&write_slices(slices));
+            assert_eq!(imported.sources.len(), 1);
+            (imported.sources[0].info.warnings.iter())
+                .map(|note| note.code)
+                .collect::<Vec<_>>()
+        };
+        const LOCALIZER: &str = r"ORIGINAL\PRIMARY\LOCALIZER";
+        const AXIAL_TYPE: &str = r"ORIGINAL\PRIMARY\AXIAL";
+        // One localizer, and a localizer facing three ways: nothing said of a volume it was never to make.
+        assert!(!notes(vec![facing(1, CORONAL, 0.)], LOCALIZER).contains(&"geometry.singleImage"));
+        let three = vec![
+            facing(1, SAGITTAL, 0.),
+            facing(2, CORONAL, 0.),
+            facing(3, AXIAL, 0.),
+        ];
+        assert!(!notes(three, LOCALIZER).contains(&"geometry.mixedOrientation"));
+        // An image of another kind is still told.
+        assert!(notes(vec![facing(1, AXIAL, 0.)], AXIAL_TYPE).contains(&"geometry.singleImage"));
+        let three = vec![
+            facing(1, SAGITTAL, 0.),
+            facing(2, CORONAL, 0.),
+            facing(3, AXIAL, 0.),
+        ];
+        assert!(notes(three, AXIAL_TYPE).contains(&"geometry.mixedOrientation"));
+        // A localizer with no position is still said to have none.
+        let mut placeless = facing(1, CORONAL, 0.);
+        placeless.remove_element(Tag(0x0020, 0x0032));
+        assert!(notes(vec![placeless], LOCALIZER).contains(&"geometry.missingPosition"));
+    }
+
+    #[test]
+    fn parallel_ct_localizer_projections_do_not_make_a_reconstructable_stack() {
+        let scan = |kind: &str| {
+            let slices = (1..=3)
+                .map(|index| {
+                    let mut image = facing(index, AXIAL, index as f64 * 2.0);
+                    image.put_str(Tag(0x0008, 0x0016), VR::UI, "1.2.840.10008.5.1.4.1.1.2");
+                    image.put_str(Tag(0x0008, 0x0060), VR::CS, "CT");
+                    image.put_str(Tag(0x0008, 0x0008), VR::CS, kind);
+                    image
+                })
+                .collect();
+            let imported = import_dir(&write_slices(slices));
+            assert_eq!(imported.sources.len(), 1);
+            imported.sources[0].info.clone()
+        };
+        let scout = scan(r"ORIGINAL\PRIMARY\LOCALIZER");
+        assert_eq!(scout.dimensions[2], 3);
+        assert!(scout.spacing_known && scout.orientation_known);
+        assert!(!scout.can_reconstruct);
+        assert!(scan(r"ORIGINAL\PRIMARY\AXIAL").can_reconstruct);
+    }
 
     #[test]
     fn a_localizer_facing_three_ways_stays_one_series_in_the_scanners_order() {
