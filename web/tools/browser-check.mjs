@@ -466,32 +466,39 @@ async function checkChosenStudy(browser, url, files, modality, frameCount) {
 }
 
 // Read the actual bitmap when the other patient's label commits, before a later animation frame can replace it.
-async function checkCachedPatientSwitches(page, series) {
+async function checkCachedPatientSwitches(page, series, sourceFrame) {
   const references = new Map();
   for (const { id } of series) {
     await page.getByTestId('series-' + id).click();
-    await page.waitForFunction(id => {
+    const reference = await page.waitForFunction(({ id, sourceFrame }) => {
       const state = window.__VEACOM_TEST__.state();
-      return state.activeSeriesId === id && state.fullVolumeLoaded && document.querySelector('[data-testid="dicom-canvas"]')?.dataset.seriesId === id;
-    }, id);
-    references.set(id, await page.getByTestId('dicom-canvas').evaluate(canvas => canvas.toDataURL()));
+      const canvas = document.querySelector('[data-testid="dicom-canvas"]');
+      // The complete volume can arrive while its middle preview slice is still on the canvas.
+      return state.activeSeriesId === id && state.fullVolumeLoaded && state.displayedView?.slice === sourceFrame
+        && canvas?.dataset.seriesId === id && canvas.dataset.sourceFrame === String(sourceFrame) && canvas.toDataURL();
+    }, { id, sourceFrame });
+    references.set(id, await reference.jsonValue());
+    await reference.dispose();
   }
   assert.equal(new Set(references.values()).size, 2, 'The two source images must differ.');
   for (const { id, modality } of series) {
-    const pixels = await page.getByTestId('series-' + id).evaluate((card, modality) => new Promise((resolve, reject) => {
+    const first = await page.getByTestId('series-' + id).evaluate((card, modality) => new Promise((resolve, reject) => {
       const pane = document.querySelector('[data-testid="dicom-viewport"]');
       const observer = new MutationObserver(() => {
         const labels = pane.querySelectorAll('[data-testid="patient-overlay"] text');
         if (![...labels].some(label => label.lastChild?.textContent === modality)) return;
         observer.disconnect();
         clearTimeout(timeout);
-        resolve(pane.querySelector('canvas').toDataURL());
+        const canvas = pane.querySelector('canvas');
+        resolve({ pixels: canvas.toDataURL(), series: canvas.dataset.seriesId, frame: canvas.dataset.sourceFrame });
       });
       const timeout = setTimeout(() => { observer.disconnect(); reject(new Error('The new patient overlay did not appear.')); }, 5000);
       observer.observe(pane, { childList: true, characterData: true, subtree: true });
       card.click();
     }), modality);
-    assert(pixels === references.get(id), 'The first bitmap under the ' + modality + ' label must match that patient.');
+    assert.equal(first.series, id, 'The first canvas under the new label must show the selected series.');
+    assert.equal(first.frame, String(sourceFrame), 'The first canvas under the new label must show the selected source frame.');
+    assert(first.pixels === references.get(id), 'The first bitmap under the ' + modality + ' label must match that patient and source frame.');
   }
 }
 
@@ -525,7 +532,7 @@ async function checkPatientDrop(browser, url, folders) {
       ['MR', 'SYNTHETIC-OTHER', root + '.10.3.1', count, 0, 0],
     ]);
     const series = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(({ id, modality }) => ({ id, modality })));
-    if (!folders) await checkCachedPatientSwitches(page, series);
+    if (!folders) await checkCachedPatientSwitches(page, series, count - 1);
     const exports = folders ? [['CT'], ['MR']] : [['CT', 1], ['MR', 2], ['CT', 0]];
     for (const [modality, index] of exports) {
       const { id } = series.find(item => item.modality === modality);
