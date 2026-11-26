@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { droppedFileGroups } from '../src/web/droppedFiles';
+import { droppedFileGroups, importFileSources, readImportFiles } from '../src/web/droppedFiles';
 
 function fileEntry(file: File, read = () => file): FileSystemFileEntry {
   return { name: file.name, isFile: true, isDirectory: false, file: (send: FileCallback) => send(read()) } as FileSystemFileEntry;
@@ -18,8 +18,8 @@ it('uses the two original dropped files even when both names are the same', asyn
   const entries = files.map(file => fileEntry(file, () => { throw new Error('File requested again'); }));
   const groups = await droppedFileGroups(files, { files: [...files], entries });
   assert.deepEqual(groups.map(group => group.map(item => item.path)), [['slice.dcm'], ['slice.dcm']]);
-  assert.equal(groups[0][0].file, files[0]);
-  assert.equal(groups[1][0].file, files[1]);
+  assert('file' in groups[0][0] && groups[0][0].file === files[0]);
+  assert('file' in groups[1][0] && groups[1][0].file === files[1]);
 });
 
 it('reads a dropped folder through every directory page and keeps its path beside a loose file', async () => {
@@ -27,16 +27,58 @@ it('reads a dropped folder through every directory page and keeps its path besid
   const folder = directory('study', [[fileEntry(one)], [directory('series', [[fileEntry(two)]])]]);
   const files = [new File([], 'study'), loose];
   const groups = await droppedFileGroups(files, { files, entries: [folder, fileEntry(loose)] });
-  assert.deepEqual(groups, [[{ path: 'study/one', file: one }, { path: 'study/series/two', file: two }], [{ path: 'three', file: loose }]]);
+  assert.deepEqual(groups.map(group => group.map(item => item.path)), [['study/one', 'study/series/two'], ['three']]);
+  const selected = await readImportFiles(importFileSources(groups.flat()));
+  assert.deepEqual(await Promise.all(selected.files.map(item => item.file.text())), ['1', '2', '3']);
+  assert.deepEqual(selected.heads.map(head => new TextDecoder().decode(head)), ['1', '2', '3']);
 });
 
 it('uses entries for a partial or differently named listing and ignores entries from a previous drop', async () => {
   const old = new File(['old'], 'image'), current = new File(['new'], 'image'), sibling = new File(['2'], 'sibling');
   const expected = [[{ path: 'image', file: old }]];
-  assert.equal((await droppedFileGroups([current], { files: [old], entries: [fileEntry(old)] }))[0][0].file, current);
+  const [[stale]] = await droppedFileGroups([current], { files: [old], entries: [fileEntry(old)] });
+  assert('file' in stale && stale.file === current);
   assert.deepEqual(await droppedFileGroups([sibling], { files: [sibling], entries: [fileEntry(old)] }), expected);
   assert.deepEqual(await droppedFileGroups([old, sibling], { files: [old, sibling], entries: [fileEntry(old)] }), expected);
   assert.deepEqual(await droppedFileGroups([current], null), [[{ path: 'image', file: current }]]);
+});
+
+it('joins out-of-order directory batches to their original paths and bytes', async () => {
+  const calls: FileCallback[] = [];
+  const original = Array.from({ length: 35 }, (_, i) => new File([Uint8Array.of(i)], 'same.dcm'));
+  const sources = original.map((_, i) => ({ path: `study/${i}/same.dcm`, entry: {
+    file: (send: FileCallback) => { calls[i] = send; },
+  } as FileSystemFileEntry }));
+  const selected = readImportFiles(importFileSources(sources));
+  for (const i of original.keys()) { const reversed = 34 - i; calls[reversed](original[reversed]); }
+  const { files, heads } = await selected;
+  assert.deepEqual(files.map(item => item.path), sources.map(item => item.path));
+  assert.deepEqual(heads.map(head => head?.[0]), Array.from(original.keys()));
+});
+
+it('reads the first directory batch while the final file is still being acquired', { timeout: 5000 }, async t => {
+  const file = new File(['a'], 'slice');
+  const sources = Array.from({ length: 17 }, (_, i) => ({ path: String(i), entry: fileEntry(file) }));
+  let release!: FileCallback;
+  sources[16].entry = { file: (send: FileCallback) => { release = send; } } as FileSystemFileEntry;
+  let didRead!: () => void;
+  const firstRead = new Promise<void>(resolve => { didRead = resolve; });
+  t.mock.method(Blob.prototype, 'arrayBuffer', function (this: Blob) {
+    if (this.size === 16) didRead();
+    return new Response(this.stream()).arrayBuffer();
+  });
+  const imported = readImportFiles(importFileSources(sources));
+  await firstRead;
+  release(new File(['z'], 'last'));
+  const { heads } = await imported;
+  assert.equal(new TextDecoder().decode(heads[16]), 'z');
+});
+
+it('rejects the entire import when a file in a later directory batch becomes unreadable', async () => {
+  const file = new File(['synthetic'], 'slice');
+  const sources = Array.from({ length: 17 }, (_, i) => ({ path: String(i), entry: fileEntry(file) }));
+  sources[16].entry = { file: (_send: FileCallback, fail: ErrorCallback) => fail(new DOMException('Selection lost', 'NotReadableError')) } as FileSystemFileEntry;
+  await assert.rejects(readImportFiles(importFileSources(sources)), /Selection lost/);
 });
 
 it('propagates a directory reading error without returning a partial selection', async () => {
