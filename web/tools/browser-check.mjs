@@ -19,7 +19,7 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { chromium } from 'playwright';
+import { chromium, expect } from 'playwright/test';
 import site from '../site/worker.js';
 import { zipStored } from '../../src/web/zip.ts';
 import { readStoredZip } from '../../tests/storedZip.ts';
@@ -177,7 +177,7 @@ async function checkChooseDuringStartup(browser, url, fail) {
     await page.evaluate(() => window.releaseOpeningRequest.init());
     if (fail) {
       await page.locator('.connection-error[role="alert"]').waitFor();
-      assert.equal(await page.evaluate(async () => (await window.veacom.getCoreState()).status), 'failed');
+      await expect.poll(() => page.evaluate(async () => (await window.veacom.getCoreState()).status), { timeout: 30_000 }).toBe('failed');
       assert.equal(await app.getAttribute('data-ready'), 'false');
       assert.equal(await page.locator('canvas[data-series-id]').count(), 0);
       return;
