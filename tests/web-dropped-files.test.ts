@@ -46,3 +46,17 @@ it('propagates a directory reading error without returning a partial selection',
   }) } as FileSystemDirectoryEntry;
   await assert.rejects(droppedFileGroups(files, { files, entries: [denied] }), { name: 'NotReadableError' });
 });
+
+it('starts acquiring files on the first directory page before the next page arrives', async () => {
+  const slice = new File(['source'], 'slice.dcm');
+  let read = false, page = 0;
+  const entry = fileEntry(slice, () => { read = true; return slice; });
+  const root = { name: 'study', isDirectory: true, createReader: () => ({
+    readEntries: (send: FileSystemEntriesCallback) => {
+      if (page++ === 0) send([entry]);
+      else { assert(read); send([]); }
+    },
+  }) } as FileSystemDirectoryEntry;
+  const files = [new File([], 'study')];
+  assert.deepEqual(await droppedFileGroups(files, { files, entries: [root] }), [[{ path: 'study/slice.dcm', file: slice }]]);
+});

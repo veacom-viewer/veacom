@@ -2,19 +2,27 @@ export interface SelectedFile { path: string; file: File }
 export interface CapturedDrop { files: File[]; entries: FileSystemEntry[] }
 
 async function walk(root: FileSystemEntry): Promise<SelectedFile[]> {
-  const found: { path: string; entry: FileSystemFileEntry }[] = [];
+  const found: SelectedFile[] = [];
+  let nextFile = 0, stopped = false;
   const visit = async (entry: FileSystemEntry, path: string): Promise<void> => {
-    if (entry.isFile) { found.push({ path, entry: entry as FileSystemFileEntry }); return; }
+    if (entry.isFile) {
+      const index = nextFile++;
+      const file = await new Promise<File>((resolve, reject) => (entry as FileSystemFileEntry).file(resolve, reject));
+      found[index] = { path, file };
+      return;
+    }
     if (!entry.isDirectory) return;
     const reader = (entry as FileSystemDirectoryEntry).createReader();
-    for (;;) {
+    const nextPage = async (): Promise<void> => {
       const batch = await new Promise<FileSystemEntry[]>((resolve, reject) => reader.readEntries(resolve, reject));
-      if (!batch.length) break;
-      await Promise.all(batch.map(child => visit(child, `${path}/${child.name}`)));
-    }
+      if (!batch.length || stopped) return;
+      const children = batch.map(child => visit(child, `${path}/${child.name}`));
+      await Promise.all([nextPage(), ...children]);
+    };
+    await nextPage();
   };
-  await visit(root, root.name);
-  return Promise.all(found.map(({ path, entry }) => new Promise<{ path: string; file: File }>((resolve, reject) => entry.file(file => resolve({ path, file }), reject))));
+  try { await visit(root, root.name); return found; }
+  finally { stopped = true; }
 }
 
 export async function droppedFileGroups(files: File[], drop: CapturedDrop | null): Promise<SelectedFile[][]> {
