@@ -2220,7 +2220,7 @@ fn read_frames_budget(
         let window_width = frame_value(&obj, index, Tag(0x0028, 0x9132), |v| {
             first_number(v, Tag(0x0028, 0x1051))
         })
-        .filter(|n| *n >= 1. && !rescale_unread);
+        .filter(|n| *n > 0. && !rescale_unread);
         // A stored window's own curve; LINEAR, absent or unknown values keep the linear window.
         let voi_function = window_width
             .and_then(|_| {
@@ -2233,6 +2233,8 @@ fn read_frames_budget(
                 "LINEAR_EXACT" => Some("LINEAR_EXACT"),
                 _ => None,
             });
+        // PS3.3 C.11.2.1.2-3 allows widths below one for SIGMOID and LINEAR_EXACT.
+        let window_width = window_width.filter(|width| *width >= 1. || voi_function.is_some());
         let padding_is_nan = activity.is_some()
             || lut.is_some()
                 && padding_range(
@@ -9720,6 +9722,27 @@ mod tests {
             crate::modality_lut::voi_window(&ramp(vec![0, 0, 4095, 4095])),
             (1002.5, 1.)
         );
+    }
+
+    #[test]
+    fn fractional_window_widths_follow_the_stored_curve() {
+        for (curve, width, expected) in [
+            ("LINEAR_EXACT", "0.125", Some(0.125)),
+            ("SIGMOID", "0.005", Some(0.005)),
+            ("LINEAR", "0.125", None),
+            ("UNKNOWN", "0.125", None),
+            ("SIGMOID", "0", None),
+            ("LINEAR_EXACT", "-0.25", None),
+        ] {
+            let mut obj = scalar_image("MG", 100, 10, mammogram_pixels());
+            obj.put(ds(Tag(0x0028, 0x1050), "0.5"));
+            obj.put(ds(Tag(0x0028, 0x1051), width));
+            obj.put_str(Tag(0x0028, 0x1056), VR::CS, curve);
+            let (source, _dir) = import_object(obj);
+            let frame = &source.info.frame_metadata[0];
+            assert_eq!(frame.window_width, expected);
+            assert_eq!(frame.voi_function, expected.map(|_| curve));
+        }
     }
 
     #[test]

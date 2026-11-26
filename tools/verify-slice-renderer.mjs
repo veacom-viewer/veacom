@@ -192,6 +192,15 @@ export function verifySliceRenderer() {
     check('Inverted VOI LUT pixel', [245, 245, 245, 255], 0, 0);
     renderer.render(canvas, voiVolume, { ...view, mode: 'source', slice: 0, windowCenter: 2, windowWidth: 8 });
     check('Window without a VOI LUT', [0, 0, 0, 255], 0, 0);
+    renderer.render(canvas, voiVolume, { ...view, mode: 'source', slice: 0, windowCenter: 0.5, windowWidth: 1 });
+    check('Threshold equality is black', [0, 0, 0, 255], 1, 0);
+    check('Value above the threshold is white', [255, 255, 255, 255], 0, 1);
+    const narrow = volume('fractional-window', new Float32Array([0.4375, 0.46875, 0.5, 0.5625]), { pixelType: 'float32', dimensions: [2, 2, 1] });
+    expectedFrameViews.push({ source: narrow.data, offset: 0, length: 4, format: gl.R32F });
+    for (const [curve, levels] of [['LINEAR_EXACT', [0, 64, 128, 255]], ['SIGMOID', [30, 69, 128, 225]]]) {
+      renderer.render(canvas, narrow, { ...view, mode: 'source', slice: 0, windowCenter: 0.5, windowWidth: 0.125, voiFunction: curve });
+      levels.forEach((gray, i) => check(`Fractional ${curve} pixel ${i}`, [gray, gray, gray, 255], i % 2, Math.floor(i / 2)));
+    }
     const shifted = volume('voi-lut-rows', new Int16Array([4500, 4501, 0, 4999]), { pixelType: 'int16', dimensions: [2, 2, 1], voiLuts: voiVolume.series.voiLuts }, gl.R16I);
     expectedFrameViews.push({ source: shifted.data, offset: 0, length: 4, format: gl.R16I });
     renderer.render(canvas, shifted, { ...view, mode: 'source', slice: 0, voiLut: 2 });

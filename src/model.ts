@@ -243,7 +243,7 @@ export interface ViewState {
   palette?: 'gray' | 'hot' | 'ge' | 'rainbow';
   mode?: ViewMode;
   windowMode?: 'dicom' | 'manual';
-  /** Paired planar views use the same linear window even when the frames specify different VOI curves. */
+  /** A calibrated range or paired planar view uses a linear window even when a frame specifies another curve. */
   sharedWindow?: boolean;
   /** Set by `resolveView` while a displayed source frame is shown with its VOI LUT: an index into `Series.voiLuts`. */
   voiLut?: number;

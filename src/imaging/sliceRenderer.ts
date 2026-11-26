@@ -1,7 +1,7 @@
 import { petScale } from './fusion';
 import { applyPoint, applyVector } from './rigid';
 import { MAX_PROJECTION_HALF, MAX_SLAB_HALF, slabSampling } from './slab';
-import { usesSourceFrames } from './viewState';
+import { displayWindowWidth, usesSourceFrames } from './viewState';
 import type { FusionSettings, PixelArray, Series, Vec3, ViewState, VoiLut, Volume } from '../model';
 import { isProjection, multiply, screenMapping, screenToWorld, sourceFrameSeries, sub, worldToIndex, worldToIndexMatrix } from './geometry';
 import { reduceFrame, reducedTile } from './frameReduction';
@@ -183,7 +183,7 @@ function fragment(main: TextureKind, dimension: TextureDimension, pet: TextureKi
   sampling: Sampling, floatLinear: boolean): string {
   const retained = sampling === 'window-samples', plain = sampling === 'reduced-grey' || retained;
   const filtered = sampling !== 'native', reducedOnly = sampling === 'reduced' || plain;
-  const linearWindow = 'uWindow.y<=1.0 ? step(uWindow.x-0.5,value) : clamp((value-(uWindow.x-0.5))/(uWindow.y-1.0)+0.5,0.0,1.0)';
+  const linearWindow = 'uWindow.y<=1.0 ? (value>uWindow.x-0.5 ? 1.0 : 0.0) : clamp((value-(uWindow.x-0.5))/(uWindow.y-1.0)+0.5,0.0,1.0)';
   const cachedFrame = reducedOnly || sampling === 'reduced-with-mask';
   const color = main === 'rgb8';
   return `#version 300 es
@@ -847,7 +847,7 @@ class SharedSliceRenderer {
       gl.uniform1i(this.uniform('uSlabMode'), slab.mode); gl.uniform1i(this.uniform('uSlabHalf'), slab.half); gl.uniform3fv(this.uniform('uSlabStep'), slab.step);
     }
     if (mainKind !== 'rgb8') {
-      gl.uniform2f(this.uniform('uWindow'), view.windowCenter, Math.max(1, view.windowWidth));
+      gl.uniform2f(this.uniform('uWindow'), view.windowCenter, displayWindowWidth(view.windowWidth, sourceFrame === undefined ? undefined : view.voiFunction));
       const monochrome1 = volume.series.photometricInterpretation.toUpperCase() === 'MONOCHROME1';
       gl.uniform1i(this.uniform('uInvert'), Number(view.inverted !== monochrome1));
       gl.uniform1i(this.uniform('uBasePalette'), ['hot', 'ge', 'rainbow'].indexOf(view.palette ?? 'gray'));

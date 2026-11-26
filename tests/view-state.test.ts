@@ -97,6 +97,25 @@ describe('window curves (VOI LUT Function)', () => {
     assertClose(windowGrey(-1e6, 100, 400, 'SIGMOID'), 0, 12);
   });
 
+  it('retains subunit widths for stored and manual exact and sigmoid windows', () => {
+    for (const curve of ['LINEAR_EXACT', 'SIGMOID'] as const) {
+      const narrow = { ...volume, series: { ...series, frameMetadata: series.frameMetadata!.map(frame => ({
+        ...frame, windowCenter: 0.5, windowWidth: 0.125, voiFunction: curve,
+      })) } };
+      const stored = resolveView(narrow, initial);
+      assertFields(stored, { windowWidth: 0.125, windowCenter: 0.5, voiFunction: curve });
+      const calibrated = patchView(narrow, stored, { windowMode: 'manual', sharedWindow: true, windowCenter: 3, windowWidth: 6 });
+      assert.equal(calibrated.voiFunction, undefined);
+      const restored = patchView(narrow, calibrated, { windowMode: 'dicom' });
+      assert.equal(restored.voiFunction, curve);
+      assert.equal(patchView(narrow, restored, { windowWidth: 0.25 }).voiFunction, curve);
+      assertFields(patchView(narrow, stored, { windowWidth: 0.005 }), { windowWidth: 0.005, windowMode: 'manual', voiFunction: curve });
+    }
+    assert.equal(windowGrey(0.46875, 0.5, 0.125, 'LINEAR_EXACT'), 0.25);
+    assertClose(windowGrey(0.46875, 0.5, 0.125, 'SIGMOID'), 1 / (1 + Math.E), 12);
+    assert.equal(windowGrey(0, 0.5, 1), 0);
+  });
+
   const curved: Series = { ...series, frameMetadata: series.frameMetadata!.map((frame, index) => index === 2 ? frame : { ...frame, voiFunction: 'SIGMOID' as const }) };
   const curvedVolume: Volume = { series: curved, data: new Int16Array(12) };
   it('shape the displayed frame\'s window, manual changes included, and never reconstructed planes', () => {
