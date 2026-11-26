@@ -210,7 +210,7 @@ async function answer(data: EngineRequest): Promise<void> {
             ids.push(id);
             pageFiles.set(id, file);
           }
-          value = JSON.parse(engine.importPaths(data.roots));
+          value = engine.importPaths(data.roots);
         } finally {
           if (ids.length < files.length) engine.pruneFiles();
           forgetUnlisted();
@@ -223,7 +223,7 @@ async function answer(data: EngineRequest): Promise<void> {
         }
         break;
       }
-      case 'list': value = JSON.parse(engine.listSeries()); break;
+      case 'list': value = engine.listSeries(); break;
       case 'remove': value = JSON.parse(engine.removeSeries(data.ids)); forgetUnlisted(); break;
       case 'tags': value = JSON.parse(engine.tags(data.seriesId, data.frame, data.revision)); break;
       case 'sample': value = JSON.parse(engine.sample(data.seriesId, data.revision, data.operation)); break;

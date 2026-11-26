@@ -372,7 +372,10 @@ export function createWebBridge(): DesktopBridge {
     if (value !== generation) throw new Error(t('engine.restartedReopen'));
   }
 
-  function catalog(result: ImportResult): ImportResult {
+  function catalog(json: string): ImportResult {
+    let result: ImportResult;
+    try { result = JSON.parse(json); }
+    catch (error) { crashed(); throw error; }
     const series = result.series.map(item => ({ ...item, engineGeneration: generation }) as Series);
     for (const item of series) openSeries.set(item.id, item);
     return { ...result, series };
@@ -468,7 +471,7 @@ export function createWebBridge(): DesktopBridge {
       const files = importFileSources(chosen.flatMap(selection => selection!.files)), roots = chosen.flatMap(selection => selection!.roots);
       performance.mark('veacom:import-start');
       try {
-        const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
+        const result = catalog(await call<string>({ op: 'import', files, roots }, { busy: true }));
         performance.mark('veacom:import-done');
         return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
       } finally {
@@ -478,7 +481,7 @@ export function createWebBridge(): DesktopBridge {
     // The engine answers one request at a time, so it cannot publish series while an import runs: every series
     // arrives with the import's own result.
     async importEarly() { return { import: 0, series: [] }; },
-    async listSeries() { return catalog(await call<ImportResult>({ op: 'list' })); },
+    async listSeries() { return catalog(await call<string>({ op: 'list' })); },
     async getProgress() { return currentProgress(); },
     async cancelOperation(id) {
       const shown = currentProgress();
