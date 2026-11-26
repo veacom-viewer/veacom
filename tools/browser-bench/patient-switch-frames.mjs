@@ -152,7 +152,7 @@ async function observe(browser, sources, isolated) {
 }
 
 mkdirSync(out,{recursive:true});
-const browser=await chromium.launch(hardware ? {channel:'msedge',headless:false,args:['--enable-gpu','--use-angle=d3d11']} : {});
+const browser=await chromium.launch(hardware ? {channel:'msedge',headless:false,args:['--enable-gpu',hardware==='warp'?'--use-angle=d3d11-warp':'--use-angle=d3d11']} : {});
 try{
   const sources=makeSources();
   writeFileSync(path.join(out,'sources.json'),JSON.stringify(sources.map(({file,...s})=>({...s,file:path.basename(file)})),null,2)+'\n');
