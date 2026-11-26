@@ -472,7 +472,6 @@ function indexVolumes(volumes: Map<string, Volume>) {
 }
 
 export default function App() {
-  'use no web memo';
   const { locale, t } = useTranslation();
   const toolLabel = (tool: Tool) => t(`tool.${tool}` as const);
   const presetName = (preset: typeof PRESETS[number]) => t(`preset.${preset.key}` as const);
