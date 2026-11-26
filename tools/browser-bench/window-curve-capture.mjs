@@ -42,7 +42,7 @@ function makeFile([name, curve, center, width, slope, intercept], index) {
 
 async function observe(browser, fixtures, isolated) {
   const site = await serveVeacom(path.resolve(siteFolder),{isolation:isolated});
-  const page = await browser.newPage({viewport:{width:1250,height:800},deviceScaleFactor:1});
+  const page = await browser.newPage({viewport:{width:1250,height:800},deviceScaleFactor:1, permissions:['clipboard-read','clipboard-write']});
   const dir = path.join(output,isolated?'threaded':'single'); mkdirSync(dir,{recursive:true});
   const report = { isolated, cases:[] };
   try {
@@ -50,6 +50,13 @@ async function observe(browser, fixtures, isolated) {
     const open = page.waitForEvent('filechooser'); await page.getByTestId('welcome-open-files').click();
     await (await open).setFiles(fixtures.map(s=>s.file));
     await page.waitForFunction(n=>window.__VEACOM_TEST__?.state().series.length===n, fixtures.length);
+    const language=isolated?'en':'tr';
+    for(const choice of [isolated?'tr':'en',language]) {
+      await page.getByTestId('tool-language').click();
+      await page.getByTestId('language-'+choice).click();
+    }
+    assert.equal(await page.locator('html').getAttribute('lang'),language);
+    report.language=language;
     const catalog = await page.evaluate(async()=>(await window.veacom.listSeries()).series.map(s=>({id:s.id,uid:s.uid,name:s.description})));
     for(const entry of fixtures) {
       const selected=catalog.find(s=>s.uid===entry.series); assert.equal(selected?.name,entry.name);
@@ -86,6 +93,50 @@ async function observe(browser, fixtures, isolated) {
       await page.getByTestId('dicom-canvas').screenshot({path:path.join(dir,entry.name+'-pane.png')});
       await card.locator('canvas').first().screenshot({path:path.join(dir,entry.name+'-thumbnail.png')});
       report.cases.push({...row,name:entry.name});console.log(entry.name,row.frameWidth,row.frameCurve,row.rawPane,row.rawThumbnail);
+    }
+    if(!hardware) {
+      const sel=catalog.find(s=>s.name==='exact-narrow');
+      await page.getByTestId('series-'+sel.id).click();
+      await page.waitForFunction(id=>document.querySelector('[data-testid="dicom-canvas"]')?.dataset.seriesId===id,sel.id);
+      if(!await page.locator('.inspector').isVisible())await page.getByTestId('tool-inspector').click();
+      await page.getByTestId('inspector-tab-display').click();
+      const width=page.locator('[data-action="window-width-input"]'),level=page.locator('[data-action="window-level-input"]');
+      const pane=page.getByTestId('dicom-viewport').first();
+      const inspect=async key=>{
+        await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+        const state=await page.evaluate(()=>{
+          const canvas=document.querySelector('[data-testid="dicom-canvas"]'), overlay=document.querySelector('[data-testid="image-overlay"]');
+          const c=canvas.getBoundingClientRect(), v=canvas.closest('.viewport-cell').getBoundingClientRect();
+          return {view:window.__VEACOM_TEST__.state().displayedView,overlay:overlay.textContent,
+            paneInCopy:[c.x-v.x,c.y-v.y,c.width,c.height]};
+        });
+        await page.screenshot({path:path.join(dir,'manual-'+key+'.png')});
+        return {...state,widthInput:await width.inputValue(),levelInput:await level.inputValue()};
+      };
+      report.manual={before:await inspect('before')};
+      await width.fill(''); await width.pressSequentially('0.0625'); await width.press('Tab');
+      await level.fill('0.484375'); await level.press('Tab');
+      report.manual.typed=await inspect('typed');
+      await pane.focus();await page.evaluate(()=>navigator.clipboard.writeText('Synthetic grayscale test'));await page.keyboard.press('Control+c');
+      const copied=await page.evaluate(async()=>{
+        const expires=performance.now()+6000;
+        while(performance.now()<expires){
+          const item=(await navigator.clipboard.read()).find(x=>x.types.includes('image/png'));
+          if(item){
+            const blob=await item.getType('image/png');
+            return await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=()=>reject(r.error);r.readAsDataURL(blob);});
+          }
+          await new Promise(r=>setTimeout(r,50));
+        }
+        throw new Error('Copy did not write a PNG');
+      });
+      writeFileSync(path.join(dir,'manual-copy.png'),Buffer.from(copied,'base64'));
+      await pane.focus();await page.keyboard.press('w');
+      const box=await pane.boundingBox(),x=box.x+box.width*.55,y=box.y+box.height*.61;
+      await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+30,y,{steps:4});await page.mouse.up();
+      report.manual.dragged=await inspect('dragged');
+      await page.getByTestId('tool-window-presets').click();await page.getByTestId('preset-dicom').click();
+      report.manual.restored=await inspect('restored');
     }
   } catch(error) {
     report.error=String(error?.stack??error);await page.screenshot({path:path.join(dir,'error.png')}).catch(()=>{});throw error;
