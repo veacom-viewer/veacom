@@ -13,7 +13,7 @@ import { checkDecoderConfig, checkSample, mp4Header } from './mp4';
 import { zipStored, type ZipEntry } from './zip';
 import { cancelLandmarkModel, landmarkModel } from './landmarkModel';
 import { createLabelFolder, type FolderEntry } from './labelFolder';
-import { droppedFileGroups, type CapturedDrop, type SelectedFile } from './droppedFiles';
+import { captureDrop, droppedFileGroups, readFolder, type CapturedDrop, type FolderHandle, type SelectedFile } from './droppedFiles';
 
 type Request = EngineRequest extends infer R ? R extends { id: number } ? Omit<R, 'id'> : never : never;
 /** A request sent or waiting. `abandoned`: its caller gave up, so its answer is dropped. `cancelled`: Cancel set the
@@ -59,31 +59,11 @@ export function watchDrops(): void {
   document.addEventListener('drop', event => {
     const transfer = event.dataTransfer;
     if (!transfer?.types.includes('Files')) return;
-    dropped = {
-      files: Array.from(transfer.files),
-      entries: Array.from(transfer.items).map(item => item.webkitGetAsEntry()).filter((entry): entry is FileSystemEntry => Boolean(entry)),
-    };
+    dropped = captureDrop(transfer);
   }, true);
 }
 
-type FileHandle = { kind: 'file'; name: string; getFile(): Promise<File> };
-type FolderHandle = { kind: 'directory'; name: string; values(): AsyncIterable<FileHandle | FolderHandle> };
 type FolderPicker = (options: { mode: 'read'; id?: string }) => Promise<FolderHandle>;
-
-/** Every file in a folder chosen with the File System Access API, by its path from the folder. */
-async function readFolder(folder: FolderHandle): Promise<SelectedFile[]> {
-  const found: { path: string; handle: FileHandle }[] = [];
-  const visit = async (handle: FolderHandle, path: string): Promise<void> => {
-    const folders: Promise<void>[] = [];
-    for await (const entry of handle.values()) {
-      if (entry.kind === 'file') found.push({ path: `${path}/${entry.name}`, handle: entry });
-      else folders.push(visit(entry, `${path}/${entry.name}`));
-    }
-    await Promise.all(folders);
-  };
-  await visit(folder, folder.name);
-  return Promise.all(found.map(async ({ path, handle }) => ({ path, file: await handle.getFile() })));
-}
 
 /** Asks the browser for files: several, a folder (with everything inside it, a disc's too) or a ZIP. */
 function chooseFiles(kind: 'files' | 'folder' | 'archive'): Promise<SelectedFile[][]> {

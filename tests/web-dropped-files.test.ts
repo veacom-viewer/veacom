@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { droppedFileGroups } from '../src/web/droppedFiles';
+import { captureDrop, droppedFileGroups } from '../src/web/droppedFiles';
 
 function fileEntry(file: File, read = () => file): FileSystemFileEntry {
   return { name: file.name, isFile: true, isDirectory: false, file: (send: FileCallback) => send(read()) } as FileSystemFileEntry;
@@ -45,4 +45,17 @@ it('propagates a directory reading error without returning a partial selection',
     readEntries: (_send: FileSystemEntriesCallback, fail: ErrorCallback) => fail(new DOMException('Permission lost', 'NotReadableError')),
   }) } as FileSystemDirectoryEntry;
   await assert.rejects(droppedFileGroups(files, { files, entries: [denied] }), { name: 'NotReadableError' });
+});
+
+it('uses the directory handle captured during the drop and keeps the original nested paths', async () => {
+  const placeholder = new File([], 'study'), file = new File(['CT'], 'one');
+  const entry = directory('study', []);
+  const handle = { kind: 'directory', name: 'study', async *values() {
+    yield { kind: 'directory', name: 'nested', async *values() { yield { kind: 'file', name: file.name, getFile: async () => file }; } };
+  } };
+  let capturing = true;
+  const item = { webkitGetAsEntry: () => entry, getAsFileSystemHandle: async () => { assert(capturing); return handle; } };
+  const drop = captureDrop({ files: [placeholder], items: [item] } as unknown as DataTransfer);
+  capturing = false;
+  assert.deepEqual(await droppedFileGroups([placeholder], drop), [[{ path: 'study/nested/one', file }]]);
 });
