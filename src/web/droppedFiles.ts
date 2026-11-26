@@ -4,6 +4,7 @@ import { allowExternalDrop, externalDropEffect } from '../ui/fileDrop';
 export interface SelectedFile { path: string; file: File }
 export type FileSource = SelectedFile | { path: string; entry: FileSystemFileEntry };
 export type ImportFiles = SelectedFile[] | { port: MessagePort; count: number };
+type RegisterFile = (file: SelectedFile, head: Uint8Array | undefined) => void;
 export interface CapturedDrop { files: File[]; entries: FileSystemEntry[] }
 
 /** Directory entries must be taken during the drop. Keep each early selection until the reader installs its handler. */
@@ -85,7 +86,7 @@ export function importFileSources(sources: FileSource[]): ImportFiles {
 }
 
 /** The engine registers the files in selection order, including those beyond the header read budget. */
-export async function readImportFiles(source: ImportFiles, onFile?: (file: SelectedFile, head: Uint8Array | undefined) => void) {
+export async function readImportFiles(source: ImportFiles, onFile?: RegisterFile) {
   const files = Array.isArray(source) ? source : new Array<SelectedFile>(source.count);
   const register = onFile && ((index: number, head: Uint8Array | undefined) => onFile(files[index], head));
   if (Array.isArray(source)) return { files, heads: await readHeads(files, undefined, register) };
@@ -111,4 +112,19 @@ export async function readImportFiles(source: ImportFiles, onFile?: (file: Selec
     }, register);
     return { files, heads };
   } finally { port.close(); }
+}
+
+/** Start the normal header reads while the engine starts. Only the queued import may register files in its catalog. */
+export function prepareImportFiles(source: ImportFiles) {
+  const waiting: { file: SelectedFile; head: Uint8Array | undefined }[] = [];
+  let register: RegisterFile = (file, head) => { waiting.push({ file, head }); };
+  const read = readImportFiles(source, (file, head) => register(file, head))
+    .then(() => undefined, (error: unknown) => ({ error }));
+  return async (onFile: RegisterFile) => {
+    for (const { file, head } of waiting) onFile(file, head);
+    waiting.length = 0;
+    register = onFile;
+    const failed = await read;
+    if (failed) throw failed.error;
+  };
 }

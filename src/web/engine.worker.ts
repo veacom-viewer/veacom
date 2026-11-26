@@ -9,7 +9,7 @@
 // shared memory, including when there are no helpers. Without isolation or if startup fails, the single-thread build
 // runs and refuses pictures.
 
-import { readImportFiles, type ImportFiles } from './droppedFiles';
+import { prepareImportFiles, readImportFiles, type ImportFiles, type SelectedFile } from './droppedFiles';
 import type { HelperFiles } from './engine.helper';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
@@ -150,7 +150,7 @@ async function prepareVolume(threaded: ThreadedEngine, seriesId: string, request
 export type EngineRequest =
   // `cancel`: the page's cancel flag, where the page is cross-origin isolated and so has shared memory.
   | { id: number; op: 'init'; cancel?: SharedArrayBuffer }
-  | { id: number; op: 'import'; files: ImportFiles; roots: string[] }
+  | { id: number; op: 'import'; files: ImportFiles | 'prepared'; roots: string[] }
   | { id: number; op: 'list' }
   | { id: number; op: 'remove'; ids: string[] }
   // `revision`: the catalog revision the request was made for; the engine refuses it for a series imported again since.
@@ -167,8 +167,11 @@ export interface EngineInfo { threads: number; shared?: { buffer: SharedArrayBuf
 export interface EngineExport { result: { directory: string; files: number; warnings: string[] }; files: { name: string; bytes: Uint8Array }[] }
 export interface EnginePixels { bytes: Uint8Array; pixelType: string; components: number; index?: number; sopInstanceUid?: string; sourceFrameNumber?: number }
 
+type HeaderRequest = { prepareImport: number; files: ImportFiles } | { discardImport: number };
+let prepared: { id: number; register: ReturnType<typeof prepareImportFiles> } | undefined;
+
 const ready = load().then(loaded => { engine = loaded.engine; return loaded; });
-const scope = self as unknown as { postMessage(message: unknown, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<EngineRequest | { cancelVolume: number }>) => void) | null };
+const scope = self as unknown as { postMessage(message: unknown, transfer?: Transferable[]): void; onmessage: ((event: MessageEvent<EngineRequest | HeaderRequest | { cancelVolume: number }>) => void) | null };
 
 // A panic's message is written to console.error just before the engine stops; it goes with the crash report.
 let lastError = '';
@@ -202,17 +205,24 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'import': {
-        const count = Array.isArray(data.files) ? data.files.length : data.files.count;
         const ids: number[] = [];
+        const register = ({ path, file }: SelectedFile, head: Uint8Array | undefined) => {
+          const id = engine.addFile(path, file, head);
+          ids.push(id);
+          pageFiles.set(id, file);
+        };
+        let registered = false;
         try {
-          await readImportFiles(data.files, ({ path, file }, head) => {
-            const id = engine.addFile(path, file, head);
-            ids.push(id);
-            pageFiles.set(id, file);
-          });
+          if (data.files === 'prepared') {
+            if (prepared?.id !== data.id) throw new Error('The selected files are no longer available.');
+            const takeFiles = prepared.register;
+            prepared = undefined;
+            await takeFiles(register);
+          } else await readImportFiles(data.files, register);
+          registered = true;
           value = JSON.parse(engine.importPaths(data.roots));
         } finally {
-          if (ids.length < count) engine.pruneFiles();
+          if (!registered) engine.pruneFiles();
           forgetUnlisted();
         }
         // The helpers take the files the import kept while the page asks for its first images; decoding a series waits
@@ -253,7 +263,11 @@ async function answer(data: EngineRequest): Promise<void> {
 }
 
 scope.onmessage = ({ data }) => {
-  if ('cancelVolume' in data) {
+  if ('prepareImport' in data) {
+    prepared = { id: data.prepareImport, register: prepareImportFiles(data.files) };
+  } else if ('discardImport' in data) {
+    if (prepared?.id === data.discardImport) prepared = undefined;
+  } else if ('cancelVolume' in data) {
     if (preparingVolume?.id === data.cancelVolume) preparingVolume.stop();
   } else { void answer(data); }
 };

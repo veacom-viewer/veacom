@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { droppedFileGroups, importFileSources, readImportFiles, watchFileDrops } from '../src/web/droppedFiles';
+import { droppedFileGroups, importFileSources, prepareImportFiles, readImportFiles, watchFileDrops } from '../src/web/droppedFiles';
 
 function fileEntry(file: File, read = () => file): FileSystemFileEntry {
   return { name: file.name, isFile: true, isDirectory: false, file: (send: FileCallback) => send(read()) } as FileSystemFileEntry;
@@ -136,4 +136,40 @@ it('propagates a directory reading error without returning a partial selection',
     readEntries: (_send: FileSystemEntriesCallback, fail: ErrorCallback) => fail(new DOMException('Permission lost', 'NotReadableError')),
   }) } as FileSystemDirectoryEntry;
   await assert.rejects(droppedFileGroups(files, { files, entries: [denied] }), { name: 'NotReadableError' });
+});
+
+it('reads during engine startup and hands the buffered and remaining headers to one import in selection order', { timeout: 5000 }, async t => {
+  const files = Array.from({ length: 768 }, (_, i) => ({ path: String(i), file: new File([Uint8Array.of(i % 256)], 'slice') }));
+  let firstRead!: () => void, release!: () => void;
+  const first = new Promise<void>(resolve => { firstRead = resolve; });
+  const second = new Promise<void>(resolve => { release = resolve; });
+  let reads = 0;
+  t.mock.method(Blob.prototype, 'arrayBuffer', async function (this: Blob) {
+    const group = ++reads;
+    if (group === 2) await second;
+    const bytes = await new Response(this.stream()).arrayBuffer();
+    if (group === 1) firstRead();
+    return bytes;
+  });
+  const take = prepareImportFiles(files);
+  await first;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  const registered: [string, number | undefined][] = [];
+  const completed = take((source, head) => { registered.push([source.path, head?.[0]]); });
+  try { assert.equal(registered.length, 16); }
+  finally { release(); }
+  await completed;
+  assert.deepEqual(registered, files.map(({ path }, i) => [path, i % 256]));
+});
+
+it('returns an early directory read error to the import that takes the selection', async () => {
+  let reportFailure!: () => void;
+  const failed = new Promise<void>(resolve => { reportFailure = resolve; });
+  const entry = { file: (_send: FileCallback, reject: ErrorCallback) => {
+    reject(new DOMException('Selection lost', 'NotReadableError')); reportFailure();
+  } } as FileSystemFileEntry;
+  const take = prepareImportFiles(importFileSources([{ path: 'folder/image.dcm', entry }]));
+  await failed;
+  await new Promise<void>(resolve => setImmediate(resolve));
+  await assert.rejects(take(() => assert.fail('An unreadable selection registered a file')), /Selection lost/);
 });

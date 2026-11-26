@@ -121,6 +121,7 @@ export function createWebBridge(): DesktopBridge {
   let locale = storedLocale();
   let generation = 0, restartCount = 0, crashes = 0, requestId = 0, selectionNumber = 0;
   let worker: Worker | undefined;
+  let startupReader: Worker | undefined;
   let state: CoreState = { status: 'starting', generation: 0, restartCount: 0 };
   let progress: Progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
   let cancelTimer: ReturnType<typeof setTimeout> | undefined, restartTimer: ReturnType<typeof setTimeout> | undefined;
@@ -207,7 +208,7 @@ export function createWebBridge(): DesktopBridge {
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
     const source = next.request.op === 'import' ? next.request.files : undefined;
-    worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
+    worker.postMessage({ id: next.id, ...next.request }, source && source !== 'prepared' && !Array.isArray(source) ? [source.port] : []);
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
   const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
@@ -216,6 +217,7 @@ export function createWebBridge(): DesktopBridge {
   function stop(): void {
     worker?.terminate();
     worker = undefined;
+    startupReader = undefined;
     for (const helper of helpers) helper.terminate();
     helpers = [];
     queue = []; inFlight = null;
@@ -227,6 +229,7 @@ export function createWebBridge(): DesktopBridge {
   function spawn(): void {
     stop();
     const own = worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
+    startupReader = own;
     own.onmessage = ({ data }) => {
       if (own !== worker) return;
       if (data.type === 'progress') {
@@ -256,6 +259,7 @@ export function createWebBridge(): DesktopBridge {
     own.onerror = () => { if (own === worker) crashed(); };
     void call<EngineInfo>({ op: 'init', ...(cancel ? { cancel: cancel.buffer as SharedArrayBuffer } : {}) }).then(info => {
       if (own !== worker) return;
+      startupReader = undefined;
       if (info.shared) shared = { cancel: new Int32Array(info.shared.buffer, info.shared.cancel, 1), progress: new Uint32Array(info.shared.buffer, info.shared.progress, 4) };
       // For the measurement tools (web/tools): how many threads decode.
       document.documentElement.dataset.engineThreads = String(info.threads);
@@ -318,7 +322,8 @@ export function createWebBridge(): DesktopBridge {
   function unqueue(id: number): boolean {
     const at = queue.findIndex(item => item.id === id);
     if (at < 0) return false;
-    queue.splice(at, 1);
+    const [{ request }] = queue.splice(at, 1);
+    if (request.op === 'import' && request.files === 'prepared') worker?.postMessage({ discardImport: id });
     pending.delete(id);
     releaseWhenDrained();
     return true;
@@ -468,7 +473,11 @@ export function createWebBridge(): DesktopBridge {
       const files = importFileSources(chosen.flatMap(selection => selection!.files)), roots = chosen.flatMap(selection => selection!.roots);
       performance.mark('veacom:import-start');
       try {
-        const result = catalog(await call<ImportResult>({ op: 'import', files, roots }, { busy: true }));
+        // Only the first selection may read ahead. Cancelling it cannot start another batch alongside its pending reads.
+        const reader = startupReader;
+        startupReader = undefined;
+        const onQueued = reader ? (id: number) => reader.postMessage({ prepareImport: id, files }, Array.isArray(files) ? [] : [files.port]) : undefined;
+        const result = catalog(await call<ImportResult>({ op: 'import', files: reader ? 'prepared' : files, roots }, { busy: true, onQueued }));
         performance.mark('veacom:import-done');
         return { ...result, source: chosen.some(selection => selection!.zip) ? 'zip' : 'disk' };
       } finally {

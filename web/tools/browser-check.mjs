@@ -190,14 +190,17 @@ async function checkDropDuringStartup(browser, url) {
 }
 
 /** Hold the real engine requests so a file chooser can finish before startup or import does. */
-async function checkChooseDuringStartup(browser, url, fail) {
+async function checkChooseDuringStartup(browser, url, mode) {
+  const fail = mode === 'failed';
   const page = await browser.newPage(), offline = Promise.withResolvers();
   try {
     if (fail) await page.route('**/*.wasm', async route => { await offline.promise; await route.abort('failed'); });
     await page.addInitScript(() => {
       const held = new Set(['init', 'import']), send = Worker.prototype.postMessage;
       window.releaseOpeningRequest = {};
+      window.startupHeaderReads = [];
       Worker.prototype.postMessage = function (request, ...args) {
+        if ('prepareImport' in request) window.startupHeaderReads.push(request.prepareImport);
         if (!held.delete(request.op)) return send.call(this, request, ...args);
         window.releaseOpeningRequest[request.op] = () => send.call(this, request, ...args);
       };
@@ -208,10 +211,21 @@ async function checkChooseDuringStartup(browser, url, fail) {
     await page.waitForFunction(() => typeof window.releaseOpeningRequest.init === 'function');
     assert.equal(await app.getAttribute('data-ready'), 'false');
     for (const kind of ['folder', 'files', 'archive']) assert(await page.getByTestId('welcome-open-' + kind).isEnabled());
+    if (mode === 'cancelled') {
+      const rejected = importPickedFiles(page, [path.join(mrStudy, studyFiles[0])]).then(() => false, () => true);
+      await page.waitForFunction(() => window.startupHeaderReads.length === 1);
+      const cancelled = await page.evaluate(async () => {
+        const { id } = await window.veacom.getProgress();
+        if (id !== window.startupHeaderReads[0]) throw new Error('The prepared selection does not own the queued import.');
+        return window.veacom.cancelOperation(id);
+      });
+      assert(cancelled.requested && await rejected, 'Cancel must discard the prepared MR selection.');
+    }
     const picked = page.waitForEvent('filechooser');
     await choose.click();
     await (await picked).setFiles(path.join(study, studyFiles[0]));
     await page.waitForFunction(() => document.querySelector('[data-testid="welcome-open-files"]').disabled);
+    await page.waitForFunction(() => window.startupHeaderReads.length === 1);
     offline.resolve();
     await page.evaluate(() => window.releaseOpeningRequest.init());
     if (fail) {
@@ -778,8 +792,9 @@ try {
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
       await checkDropDuringStartup(browser, page.url());
-      await checkChooseDuringStartup(browser, page.url(), false);
-      if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
+      await checkChooseDuringStartup(browser, page.url(), 'ready');
+      await checkChooseDuringStartup(browser, page.url(), 'cancelled');
+      if (isolated) await checkChooseDuringStartup(browser, page.url(), 'failed');
       await checkWelcomeBeforeGraphics(browser, page.url());
       await checkClosedCTBuffer(browser, page.url());
       await checkRestartedCatalog(browser, page.url());
