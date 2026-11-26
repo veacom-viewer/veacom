@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import { createServer } from 'node:http';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { cpus, tmpdir } from 'node:os';
 import path from 'node:path';
@@ -21,6 +22,12 @@ onmessage=({data})=>{
   const encoded=performance.timeOrigin+performance.now();
   postMessage({start,encoded,value});
 };`;
+const neutral=createServer((request,response)=>{
+  const script=request.url==='/__catalog.js';
+  response.writeHead(200,{'Content-Type':script?'text/javascript':'text/html','Cross-Origin-Opener-Policy':'same-origin','Cross-Origin-Embedder-Policy':'require-corp'});
+  response.end(script?workerText:'<!doctype html><title>Catalog transport</title>');
+});
+await new Promise(resolve=>neutral.listen(0,'127.0.0.1',resolve));
 try{
   for(const study of ['ct-300','ct-1000']){
     const depth=Number(study.slice(3)),folder=path.join(dir,study);
@@ -50,9 +57,7 @@ try{
     for(let i=0;i<depth;i++)assert.ok(uids.has(root+'.3.'+(i+1)));
     const page=await browser.newPage();
     try {
-      await page.route('**/__catalog.html',route=>route.fulfill({contentType:'text/html',headers:{'Cross-Origin-Opener-Policy':'same-origin','Cross-Origin-Embedder-Policy':'require-corp'},body:'<!doctype html><title>Catalog transport</title>'}));
-      await page.route('**/__catalog.js',route=>route.fulfill({contentType:'text/javascript',body:workerText}));
-      await page.goto(site.url+'__catalog.html');
+      await page.goto('http://127.0.0.1:'+neutral.address().port+'/');
       const timing=await page.evaluate(async json=>{
         const worker=new Worker('/__catalog.js');
         const ask=data=>new Promise((resolve,reject)=>{
@@ -82,4 +87,4 @@ try{
     }finally{await page.close();}
   }
   await writeFile(path.join(output,'wire.json'),JSON.stringify(report,null,2));
-}finally{await browser.close();await site.close();await rm(dir,{recursive:true,force:true});}
+}finally{await browser.close();neutral.close();await site.close();await rm(dir,{recursive:true,force:true});}
