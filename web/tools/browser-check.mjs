@@ -648,7 +648,7 @@ if (hardware) {
   assert(['t4', 'warp'].includes(hardware) && output);
   mkdirSync(output, { recursive: true });
 }
-const browser = await chromium.launch(hardware ? { channel: 'msedge', headless: false, args: ['--enable-gpu', '--use-angle=d3d11'] } : {});
+const browser = await chromium.launch(hardware ? { channel: 'msedge', headless: false, args: ['--enable-gpu', hardware === 'warp' ? '--use-angle=d3d11-warp' : '--use-angle=d3d11'] } : {});
 const failures = [];
 try {
   for (const isolated of [true, false]) {
