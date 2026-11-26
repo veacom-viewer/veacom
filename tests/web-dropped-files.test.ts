@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { it } from 'node:test';
-import { droppedFileGroups, importFileSources, readImportFiles } from '../src/web/droppedFiles';
+import { droppedFileGroups, importFileSources, readImportFiles, watchFileDrops } from '../src/web/droppedFiles';
 
 function fileEntry(file: File, read = () => file): FileSystemFileEntry {
   return { name: file.name, isFile: true, isDirectory: false, file: (send: FileCallback) => send(read()) } as FileSystemFileEntry;
@@ -12,6 +12,28 @@ function directory(name: string, pages: FileSystemEntry[][]): FileSystemDirector
     return { readEntries: (send: FileSystemEntriesCallback) => send(pages[index++] ?? []) };
   } } as FileSystemDirectoryEntry;
 }
+
+it('hands each early drop to the mounted reader once and preserves the live drop after the handoff', () => {
+  const target = new EventTarget(), drops = watchFileDrops(target as Document);
+  const files = ['first', 'second'].map(data => new File([data], 'same.dcm'));
+  const send = (type: string, types: string[], source: File[]) => {
+    const transfer = { files: source, types, items: source.map(file => ({ webkitGetAsEntry: () => fileEntry(file) })), dropEffect: '' };
+    const event = Object.assign(new Event(type, { cancelable: true }), { dataTransfer: transfer });
+    target.dispatchEvent(event);
+    return [event.defaultPrevented, transfer.dropEffect];
+  };
+  assert.deepEqual(send('dragover', ['Files'], []), [true, 'copy']);
+  assert.deepEqual(send('dragover', ['text/uri-list'], []), [true, 'none']);
+  assert.deepEqual(send('drop', ['Files', 'application/x-veacom-series'], [files[0]]), [false, '']);
+  for (const file of files) assert.deepEqual(send('drop', ['Files'], [file]), [true, '']);
+  assert.deepEqual(drops.takePending().map(drop => drop.files[0]), files);
+  assert.deepEqual(drops.takePending(), []);
+  assert.equal(drops.takeLatest(), null);
+  assert.deepEqual(send('dragover', ['Files'], []), [false, '']);
+  assert.deepEqual(send('drop', ['Files'], [files[1]]), [false, '']);
+  assert.equal(drops.takeLatest()?.files[0], files[1]);
+  assert.equal(drops.takeLatest(), null);
+});
 
 it('uses the two original dropped files even when both names are the same', async () => {
   const files = [new File(['first source'], 'slice.dcm'), new File(['second source'], 'slice.dcm')];

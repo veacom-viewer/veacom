@@ -19,6 +19,7 @@ import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { holdsFrame } from './ui/discPictures';
 import { carryAnnotations, holdingIn } from './ui/earlySeries';
+import { allowExternalDrop, externalDropEffect } from './ui/fileDrop';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine, cineCycle, recordedFps } from './imaging/cine';
@@ -1791,22 +1792,26 @@ export default function App() {
     window.addEventListener('veacom:import', handler); return () => window.removeEventListener('veacom:import', handler);
   }, []);
   useLayoutEffect(() => {
-    const externalFiles = (event: DragEvent) => event.dataTransfer?.types.includes('Files')
-      && !event.dataTransfer.types.includes('application/x-veacom-series');
-    // A link dragged in from elsewhere would make the browser leave the page, and the open studies with it: refused.
-    const link = (event: DragEvent) => Boolean(event.dataTransfer?.types.includes('text/uri-list')) && !externalFiles(event);
-    const dragOver = (event: DragEvent) => {
-      if (link(event)) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'none'; return; }
-      if (!externalFiles(event)) return;
-      event.preventDefault();
-      if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy';
+    let lastBrowserDrop: Promise<void> = Promise.resolve();
+    const openSelection = async (select: () => Promise<string[]>, previous?: Promise<void>) => {
+      try {
+        const [paths] = await Promise.all([select(), previous]);
+        if (!paths.length) { say('notice.dropNoPaths', 'info'); return; }
+        await onImport(paths, 'drop');
+      } catch (error) {
+        await previous;
+        setNotice({ message: errorText(error), kind: 'error' });
+      }
     };
-    // Up to its first await (the checks and preventDefault) this runs while the drop is dispatched; a failed import is
-    // reported in the notice.
-    const dropFiles = async (event: DragEvent) => {
-      if (link(event)) { event.preventDefault(); return; }
-      if (!externalFiles(event)) return;
+    const accept = (select: () => Promise<string[]>) => {
+      if (window.veacom?.web) lastBrowserDrop = openSelection(select, lastBrowserDrop);
+      else void openSelection(select);
+    };
+    const drop = (event: DragEvent) => {
+      const effect = externalDropEffect(event.dataTransfer);
+      if (!effect) return;
       event.preventDefault();
+      if (effect === 'none') return;
       const files = Array.from(event.dataTransfer?.files ?? []);
       if (!files.length) return;
       if (capturingRef.current) { say('notice.waitForCapture', 'info'); return; }
@@ -1815,15 +1820,11 @@ export default function App() {
         say('notice.dropNeedsDesktop', 'info');
         return;
       }
-      try {
-        const paths = await bridge.importFiles(files);
-        if (!paths.length) { say('notice.dropNoPaths', 'info'); return; }
-        void onImport(paths, 'drop');
-      } catch (error) { setNotice({ message: errorText(error), kind: 'error' }); }
+      accept(() => bridge.importFiles(files));
     };
-    const drop = (event: DragEvent) => { void dropFiles(event); };
-    document.addEventListener('dragover', dragOver); document.addEventListener('drop', drop);
-    return () => { document.removeEventListener('dragover', dragOver); document.removeEventListener('drop', drop); };
+    document.addEventListener('dragover', allowExternalDrop); document.addEventListener('drop', drop);
+    for (const selection of window.veacom?.takePendingFileDrops?.() ?? []) accept(selection);
+    return () => { document.removeEventListener('dragover', allowExternalDrop); document.removeEventListener('drop', drop); };
   }, []);
 
   const updateView = (slotId: string, patch: Partial<ViewState>, fromCine = false) => {
