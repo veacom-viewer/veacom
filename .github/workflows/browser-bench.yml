@@ -9,6 +9,17 @@ name: Browser benchmark
 on:
   workflow_dispatch:
     inputs:
+      site_run:
+        description: Successful main Verify run for the long reading session
+        type: string
+      retained_control:
+        description: Repeat on the same machine using the original canvas handle
+        type: boolean
+        default: false
+      cycles:
+        description: Number of reading and closing cycles in one tab
+        default: '100'
+        type: string
       viewers:
         description: Viewers to time beside VEAcom, comma-separated (tools/browser-bench/viewers.json; plexusmd is the live site)
         default: veacom,ohif,volview,dwv,niivue,bluelight
@@ -49,11 +60,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: browser-bench-${{ github.ref }}
+  group: browser-bench-${{ github.ref }}-${{ inputs.site_run || 'timing' }}
   cancel-in-progress: true
 
 jobs:
   bench:
+    if: ${{ !inputs.site_run }}
     name: bench (runner ${{ matrix.runner }})
     runs-on: ubuntu-24.04
     timeout-minutes: 240
@@ -164,7 +176,7 @@ jobs:
   # The three runners' trials pooled into one report, posted on the run's summary page.
   report:
     needs: bench
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && !inputs.site_run }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -195,4 +207,59 @@ jobs:
         with:
           name: browser-bench-${{ github.run_id }}-pooled
           path: ${{ runner.temp }}/combined
+          retention-days: 90
+
+  reading-session:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.site_run != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    permissions:
+      actions: read
+      contents: read
+    env:
+      SOURCE_RUN: ${{ inputs.site_run }}
+      CYCLES: ${{ inputs.cycles }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Verify the exact candidate site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$SOURCE_RUN" =~ ^[0-9]+$ && "$CYCLES" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" | jq -e 'select(.id == 45756547421 and .head_sha == "7cc5648ce935e14735fc2cc37a362488feff6025" and .name == "Verify") | {id,head_sha,html_url}' > "$RUNNER_TEMP/site-source.json"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/jobs?per_page=100" | jq -e '.jobs[] | select(.name == "browser" and .conclusion == "success") | .id'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: viewer-site-${{ inputs.site_run }}
+          path: ${{ runner.temp }}/published-site
+          run-id: ${{ inputs.site_run }}
+          github-token: ${{ github.token }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Read and close synthetic studies in one tab
+        run: node tools/browser-bench/long-session.mjs "$RUNNER_TEMP/published-site" "$RUNNER_TEMP/reading-session" "$CYCLES" "$RUNNER_TEMP/site-source.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() }}
+        with:
+          name: reading-session-${{ github.run_id }}
+          path: ${{ runner.temp }}/reading-session
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: Repeat with the original canvas handle on this host
+        if: inputs.retained_control
+        run: node tools/browser-bench/long-session.mjs "$RUNNER_TEMP/published-site" "$RUNNER_TEMP/retained-control" "$CYCLES" "$RUNNER_TEMP/site-source.json" --original-handle
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: ${{ !cancelled() && inputs.retained_control }}
+        with:
+          name: reading-session-control-${{ github.run_id }}
+          path: ${{ runner.temp }}/retained-control
+          if-no-files-found: warn
           retention-days: 90
