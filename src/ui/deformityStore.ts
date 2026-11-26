@@ -19,12 +19,15 @@ export interface ModelRef { model: string; sha256: { stageA: string; stageB: str
 /** Where a landmark's points came from, beyond each point's provenance (LegPlan.origin). */
 interface LandmarkOrigin { shown?: true; model?: ModelRef; unchecked?: true; construction?: 'hipCentreRing' }
 
-/** One plan of one leg: its landmarks with how each point came to be, and a planned osteotomy. */
+/** One plan of one leg: its landmarks with how each point came to be, and planned osteotomies (single or multi-level). */
 export interface LegPlan {
   id: string; name: string; side: Side;
   points: Landmarks;
   provenance: Partial<Record<LandmarkName, Provenance[]>>;
-  osteotomy: Osteotomy | null;
+  /** Planned osteotomies on this leg (single-level, double-level DFO + HTO, or bifocal). */
+  osteotomies: Osteotomy[];
+  /** Index of the selected osteotomy in `osteotomies` when editing controls. */
+  activeCut?: number;
   /** The model's suggestions the reader has not accepted or moved yet: drawn apart from the landmarks and never measured.
    * `unchecked`: the suggested landmarks whose model channels have no check on real films (suggest.ts UNCHECKED). */
   suggested?: { model: ModelRef; points: Landmarks; unchecked?: LandmarkName[] };
@@ -50,9 +53,15 @@ export interface FilmPlans {
   marker: Marker | null;
 }
 
-/** What a click on the film places next, on which film (`filmKey`). A cut takes two clicks: the cortex that opens or
- * closes, then the hinge's. */
-export type Placing = { film: string } & ({ kind: 'landmark'; name: LandmarkName } | { kind: 'ball' } | { kind: 'ruler' } | { kind: 'cut'; bone: 'femur' | 'tibia'; first?: Point });
+/** What a click or drag on the film places next, on which film (`filmKey`). A cut takes two clicks: the cortex that
+ * opens or closes, then the hinge's. A lasso traces a bone-hugging fragment polygon for one cut. */
+export type Placing = { film: string } & (
+  | { kind: 'landmark'; name: LandmarkName }
+  | { kind: 'ball' }
+  | { kind: 'ruler' }
+  | { kind: 'cut'; bone: 'femur' | 'tibia'; first?: Point }
+  | { kind: 'lasso'; cutIndex: number }
+);
 
 export interface DeformityState {
   open: boolean;
@@ -60,12 +69,16 @@ export interface DeformityState {
   placing: Placing | null;
   /** The simulated fragments are shown moved (otherwise the plan shows the film as it is). */
   simulate: boolean;
+  /** Whether the active cut's polygon vertices and edges are shown for live editing even while simulating. */
+  editCutout: boolean;
+  /** Whether calibrated planning guides (wedge mm scale & shaft axes) are drawn over the radiograph. */
+  showGuides: boolean;
 }
 
 export { filmKey };
 export interface FilmSelection { seriesId: string; key: string }
 
-let state: DeformityState = { open: false, films: {}, placing: null, simulate: true };
+let state: DeformityState = { open: false, films: {}, placing: null, simulate: true, editCutout: false, showGuides: false };
 const listeners = new Set<() => void>();
 let rememberHook: ((calibration?: FilmSelection) => void) | null = null;
 let counter = 0;
@@ -77,9 +90,13 @@ export const deformity = {
   subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
   /** App's Undo: called before each change the reader makes. */
   connectUndo(remember: typeof rememberHook) { rememberHook = remember; },
-  setOpen(open: boolean) { if (state.open !== open) set({ ...state, open, placing: open ? state.placing : null }); },
+  setOpen(open: boolean) {
+    if (state.open !== open) set({ ...state, open, placing: open ? state.placing : null, editCutout: open ? state.editCutout : false });
+  },
   setPlacing(placing: Placing | null) { set({ ...state, placing }); },
   setSimulate(simulate: boolean) { set({ ...state, simulate }); },
+  setEditCutout(editCutout: boolean) { set({ ...state, editCutout }); },
+  setShowGuides(showGuides: boolean) { set({ ...state, showGuides }); },
   /** The film's plans, made with one plan per side the film shows when it has none yet (not an undo step). */
   ensure(series: Pick<Series, 'id' | 'uid' | 'frameMetadata'>, frame: number, sides: Side[]): FilmPlans {
     const key = filmKey(series, frame), existing = state.films[key];
@@ -121,14 +138,27 @@ function keepShown(films: DeformityState['films'], now: DeformityState['films'])
   return entries.some(([key, film]) => film !== films[key]) ? Object.fromEntries(entries) : films;
 }
 
+/** A unique id for a newly added osteotomy cut. */
+export function newCutId(): string {
+  counter++;
+  return `cut-${Date.now().toString(36)}-${counter}`;
+}
+
 /** An empty plan. Its name is empty until the reader adds a second plan of the same side (the panel numbers them). */
 export function newPlan(side: Side, name = ''): LegPlan {
   counter++;
-  return { id: `plan-${Date.now().toString(36)}-${counter}`, name, side, points: {}, provenance: {}, osteotomy: null };
+  return { id: `plan-${Date.now().toString(36)}-${counter}`, name, side, points: {}, provenance: {}, osteotomies: [] };
 }
 
 /** The active plan of a film. */
 export const activePlan = (film: FilmPlans) => film.plans.find(plan => plan.id === film.active) ?? film.plans[0];
+
+/** Index of the active cut in `plan.osteotomies`, or -1 when there are no cuts. */
+export function activeCutIndex(plan: LegPlan): number {
+  if (!plan.osteotomies.length) return -1;
+  const chosen = plan.activeCut ?? 0;
+  return chosen >= 0 && chosen < plan.osteotomies.length ? chosen : 0;
+}
 
 /** The plan with one plan replaced. */
 export const withPlan = (film: FilmPlans, plan: LegPlan): FilmPlans => ({ ...film, plans: film.plans.map(item => item.id === plan.id ? plan : item) });

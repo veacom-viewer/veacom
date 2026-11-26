@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from 'react';
 import type { LabelFilm, LabelFolder } from '../model';
 import type { Side } from '../imaging/deformity/measure';
-import { PLAN_SCHEMA, PLAN_VERSION } from './deformityFile';
+import { isPlanVersion, PLAN_SCHEMA } from './deformityFile';
 
 /** A film's plan file: none, saved, saved with a suggestion of some landmark shown (suggestionShown), saved with no
  * landmark, or one that cannot be read as a plan of this version. */
@@ -16,7 +16,7 @@ export function planState(film: LabelFilm): PlanState {
   if (film.plan === null) return 'none';
   let value: unknown;
   try { value = JSON.parse(film.plan); } catch { return 'unreadable'; }
-  if (!isObject(value) || value.schema !== PLAN_SCHEMA || value.version !== PLAN_VERSION || !Array.isArray(value.plans)) return 'unreadable';
+  if (!isObject(value) || value.schema !== PLAN_SCHEMA || !isPlanVersion(value.version) || !Array.isArray(value.plans)) return 'unreadable';
   const labels = (value.plans as unknown[]).flatMap(plan => isObject(plan) && Array.isArray(plan.landmarks) ? plan.landmarks as unknown[] : []);
   if (!labels.length) return 'empty';
   return labels.some(label => isObject(label) && label.suggestionShown === true) ? 'shown' : 'saved';

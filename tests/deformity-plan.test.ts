@@ -4,14 +4,20 @@ import { assertClose } from './support';
 import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, withPlan, type FilmPlans } from '../src/ui/deformityStore';
-import { acceptSuggestions, clearSuggestions, dragContinues, fromUnchecked, imageSideOnScreen, LEG_AXIS, MEASURED_FROM, movedView, moveHandle, nextLandmark, pixelToWorld, place, planView, putBackSuggestion, settleMoved, withSuggestions, worldToPixel } from '../src/ui/deformityPlan';
+import {
+  acceptSuggestions, addCoraCut, addFragmentVertex, clearSuggestions, deleteFragmentVertex, dragContinues,
+  fragmentViews, fromUnchecked, imageSideOnScreen, LEG_AXIS, MEASURED_FROM, movedView, moveHandle, nextLandmark,
+  pixelToWorld, place, planView, putBackSuggestion, removeOsteotomy, resetCutFragment, resetCutShifts,
+  rotatedOsteotomy, selectOsteotomy, settleMoved, translatedOsteotomy, updateOsteotomy, withSuggestions, worldToPixel,
+} from '../src/ui/deformityPlan';
 import { MODEL, suggestionsFrom, suggestionTarget, UNSURE_PEAK } from '../src/ui/landmarkSuggestions';
 import { lateralOnImage, type Landmarks } from '../src/imaging/deformity/measure';
 import { LANDMARKS } from '../src/imaging/deformity/landmarks';
 import { UNCHECKED } from '../src/imaging/deformity/suggest';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
-import { reportHeader } from '../src/ui/deformityReport';
-import type { Point } from '../src/imaging/deformity/plane';
+import { reportHeader, reportTableScale, type ReportSection } from '../src/ui/deformityReport';
+import { composeRigid, type Point } from '../src/imaging/deformity/plane';
+import { fragmentFor, moved, type Osteotomy } from '../src/imaging/deformity/osteotomy';
 
 const deg = Math.PI / 180;
 /** A DX film of 400 × 1000 pixels of 0.33 mm, at the detector, with Patient Orientation L\F. */
@@ -189,7 +195,7 @@ describe('the plan file', () => {
     assert.deepEqual(await parsePlanFile('{', current, frame), { error: 'json' });
     assert.deepEqual(await parsePlanFile('{"schema":"other"}', current, frame), { error: 'schema' });
     const value = JSON.parse(text);
-    assert.deepEqual(await parsePlanFile(JSON.stringify({ ...value, version: 2 }), current, frame), { error: 'version' });
+    assert.deepEqual(await parsePlanFile(JSON.stringify({ ...value, version: 3 }), current, frame), { error: 'version' });
     const far = structuredClone(value); far.plans[0].landmarks[0].points = [[1e9, 0]];
     assert.deepEqual(await parsePlanFile(JSON.stringify(far), current, frame), { error: 'content' });
     const many = structuredClone(value); many.plans[0].landmarks[0].points = Array.from({ length: 13 }, () => [10, 10]);
@@ -491,6 +497,20 @@ describe('landmark suggestions', () => {
 /** A label's confidence when it names a model. */
 const isModel = (value: unknown): value is { unchecked?: boolean } => typeof value === 'object' && value !== null;
 
+describe('the A4 report table', () => {
+  it('fits six cuts with a caution under every affected value', () => {
+    const rows = (count: number, caution?: string): ReportSection['rows'] =>
+      Array.from({ length: count }, () => ['Label', 'Value', '', caution]);
+    const sections = [
+      { title: 'Values', rows: rows(13, 'Unchecked') }, { title: 'Malalignment', rows: rows(5, 'Unchecked') },
+      { title: 'CORA', rows: rows(2, 'Unchecked') }, { title: 'Osteotomy', rows: [...rows(13), ...rows(8, 'Unchecked')] },
+    ];
+    // At full size the last caution is 3,164 px below the header. The footer leaves 2,934 px for the table.
+    assert.ok(3164 * reportTableScale(sections, 2934) < 2934);
+    assert.equal(reportTableScale(sections.slice(0, 2), 2934), 1);
+  });
+});
+
 describe('the report header', () => {
   const named: Series = { ...series, patientName: 'DOE^JANE', patientId: 'ID-77', studyDate: '20000101', studyTime: '120000', description: 'Long leg standing',
     studyDescription: 'Lower limbs', institutionName: 'Synthetic Hospital', accessionNumber: 'ACC-1', patientAgeText: '045Y', patientSex: 'F' };
@@ -503,5 +523,156 @@ describe('the report header', () => {
     const lines = reportHeader(named, sourceFrameSeries(named, 0), true).join('\n');
     for (const hidden of ['DOE', 'JANE', 'ID-77', '2000', 'Long leg standing', 'Lower limbs', 'Synthetic Hospital', 'ACC-1']) assert.doesNotMatch(lines, new RegExp(hidden), hidden);
     assert.match(lines, /DX/); assert.match(lines, /Both sides · Detector plane, not corrected/);
+  });
+});
+
+describe('multi-level osteotomies, backward-compatible files and direct canvas gestures', () => {
+  const fullLandmarks = (): Landmarks => ({
+    femoralHeadContour: [[120, 120], [150, 90], [180, 120], [150, 150]],
+    greaterTrochanterTip: [[85, 130]],
+    femoralShaftProximal: [[135, 250]], femoralShaftDistal: [[155, 420]],
+    kneeCentre: [[160, 500]],
+    femoralCondyleMedial: [[190, 510]], femoralCondyleLateral: [[130, 514]],
+    tibialPlateauMedial: [[190, 520]], tibialPlateauLateral: [[130, 520]],
+    tibialShaftProximal: [[165, 620]], tibialShaftDistal: [[175, 780]],
+    plafondMedial: [[210, 908]], plafondLateral: [[170, 898]],
+    ankleCentre: [[190, 895]],
+  });
+
+  const plannedLeg = () => {
+    const base = film();
+    return withPlan(base, { ...base.plans[0], points: fullLandmarks() });
+  };
+
+  it('deserialises legacy single-osteotomy JSON and round-trips multi-level osteotomy files', async () => {
+    const base = plannedLeg(), leg = planView(base, frame).leg;
+    const dfoCut: [Point, Point] = [[180, 380], [130, 380]];
+    const htoCut: [Point, Point] = [[185, 590], [135, 590]];
+    const dfo: Osteotomy = {
+      bone: 'femur', cut: dfoCut, hinge: dfoCut[1], wedge: 'opening', degrees: 5.5, direction: 'varus',
+      shiftLateral: 2, shiftDistal: -1, lengthen: 0, fragment: fragmentFor(dfoCut, 'femur', leg, [0.33, 0.33])!,
+    };
+    const hto: Osteotomy = {
+      bone: 'tibia', cut: htoCut, hinge: htoCut[1], wedge: 'opening', degrees: 8.2, direction: 'valgus',
+      shiftLateral: 0, shiftDistal: 1.5, lengthen: 3, fragment: fragmentFor(htoCut, 'tibia', leg, [0.33, 0.33])!,
+    };
+
+    // Single-cut plan writes legacy `osteotomy` with no extra `osteotomies` array.
+    const single = withPlan(base, { ...base.plans[0], osteotomies: [hto] });
+    const singleFile = await planFile(single, frame);
+    assert.equal(singleFile.version, 1);
+    assert.equal(singleFile.plans[0].osteotomies, undefined);
+    assert.equal(singleFile.plans[0].osteotomy?.degrees, 8.2);
+    const openedLegacy = await parsePlanFile(JSON.stringify(singleFile), single, frame);
+    assert.ok(!('error' in openedLegacy));
+    assert.equal(openedLegacy.plans[0].osteotomies.length, 1);
+    assert.equal(openedLegacy.plans[0].osteotomies[0].degrees, 8.2);
+
+    // A single-cut reader refuses version 2 before it can show a partial plan.
+    const double = withPlan(base, { ...base.plans[0], osteotomies: [dfo, hto] });
+    const doubleFile = await planFile(double, frame);
+    assert.equal(doubleFile.version, 2);
+    assert.equal(doubleFile.plans[0].osteotomy, undefined);
+    assert.equal(doubleFile.plans[0].osteotomies?.length, 2);
+    const openedDouble = await parsePlanFile(JSON.stringify(doubleFile), double, frame);
+    assert.ok(!('error' in openedDouble));
+    assert.equal(openedDouble.plans[0].osteotomies.length, 2);
+    assert.deepEqual(openedDouble.plans[0].osteotomies.map(c => [c.bone, c.degrees, c.direction]), [['femur', 5.5, 'varus'], ['tibia', 8.2, 'valgus']]);
+
+    const mixed = { ...double, plans: [...single.plans, ...double.plans] };
+    const mixedFile = await planFile(mixed, frame);
+    assert.equal(mixedFile.version, 2);
+    assert.deepEqual(mixedFile.plans.map(plan => plan.osteotomies?.length), [1, 2]);
+    const missingList = { ...doubleFile, plans: [{ ...singleFile.plans[0] }] };
+    assert.deepEqual(await parsePlanFile(JSON.stringify(missingList), double, frame), { error: 'content' });
+
+    // Invalid multi-level payloads are refused cleanly.
+    const tooMany = structuredClone(doubleFile);
+    tooMany.plans[0].osteotomies = Array.from({ length: 7 }, () => hto);
+    assert.deepEqual(await parsePlanFile(JSON.stringify(tooMany), double, frame), { error: 'content' });
+    const badList = { ...doubleFile, plans: [{ ...doubleFile.plans[0], osteotomies: 'not-an-array' }] };
+    assert.deepEqual(await parsePlanFile(JSON.stringify(badList), double, frame), { error: 'content' });
+  });
+
+  it('lands every pixel of a composed 2nd-level fragment via movedView on rotated and flipped panes', () => {
+    const base = plannedLeg(), leg = planView(base, frame).leg;
+    const dfoCut: [Point, Point] = [[180, 380], [130, 380]];
+    const htoCut: [Point, Point] = [[185, 590], [135, 590]];
+    const current = withPlan(base, {
+      ...base.plans[0],
+      osteotomies: [
+        { bone: 'femur', cut: dfoCut, hinge: dfoCut[1], wedge: 'opening', degrees: 6, direction: 'valgus', shiftLateral: 4, shiftDistal: -2, lengthen: 0, fragment: fragmentFor(dfoCut, 'femur', leg, [0.33, 0.33])! },
+        { bone: 'tibia', cut: htoCut, hinge: htoCut[1], wedge: 'opening', degrees: 9, direction: 'varus', shiftLateral: -3, shiftDistal: 5, lengthen: 2, fragment: fragmentFor(htoCut, 'tibia', leg, [0.33, 0.33])! },
+      ],
+    });
+    const pv = planView(current, frame);
+    const layers = fragmentViews(pv);
+    assert.equal(layers.length, 2);
+    const distal = layers[1];
+    const composed = composeRigid(layers[0].cut.localMotion, layers[1].cut.localMotion);
+    assertClose(distal.cut.totalMotion.degrees, composed.degrees, 9);
+    for (const patch of [{}, { rotation: 25, flipX: true }, { flipY: true, rotation: 180 }]) {
+      const baseView = view(patch), size: [number, number] = [640, 900];
+      const fragView = movedView(frame, baseView, size, distal.hinge, distal.hingeMoved, distal.degrees);
+      const before = screenMapping(frame, baseView, ...size), after = screenMapping(frame, fragView, ...size);
+      for (const p of [[185, 590], [190, 895], [135, 760]] as Point[]) {
+        const want = worldToScreen(before, pixelToWorld(frame, moved(distal.cut.totalMotion, p, pv.mm)));
+        const got = worldToScreen(after, pixelToWorld(frame, p));
+        assertClose(got[0], want[0], 8); assertClose(got[1], want[1], 8);
+      }
+    }
+  });
+
+  it('supports direct rotation, bone-axis translation, CORA preset, and editable polygon cutouts', () => {
+    // Rotation helper: smooth, Shift-snapped, direction flip across 0°, and 45° clamping.
+    assert.deepEqual(rotatedOsteotomy(5, 3.4, 1, 0, 'valgus'), { degrees: 8.4, direction: 'valgus' });
+    assert.deepEqual(rotatedOsteotomy(5, 3.4, 1, 1, 'valgus'), { degrees: 8, direction: 'valgus' });
+    assert.deepEqual(rotatedOsteotomy(4, -7.2, 1, 0, 'valgus'), { degrees: 3.2, direction: 'varus' });
+    assert.deepEqual(rotatedOsteotomy(40, 15, 1, 0, 'valgus'), { degrees: 45, direction: 'valgus' });
+
+    // Translation helper: projects along rotated bone axes, snaps with Shift, and clamps to 200.
+    const movedShift = translatedOsteotomy(2, -1, [10, 0], [0, 1], [-1, 0], 0);
+    assert.deepEqual(movedShift, { shiftLateral: -8, shiftDistal: -1 });
+    assert.deepEqual(translatedOsteotomy(0, 0, [-3.6, 5.4], [0, 1], [-1, 0], 1), { shiftLateral: 4, shiftDistal: 5 });
+    assert.deepEqual(translatedOsteotomy(190, 0, [-50, 0], [0, 1], [-1, 0], 0), { shiftLateral: 200, shiftDistal: 0 });
+
+    // Plan actions: CORA preset, multi-cut select/remove, shift reset, vertex insert/delete/reset.
+    let current = plannedLeg();
+    const coraBefore = planView(current, frame).cora.tibia;
+    assert.ok(coraBefore && coraBefore.magnitude >= 1.5);
+    current = addCoraCut(current, 'tibia', frame);
+    assert.equal(current.plans[0].osteotomies.length, 1);
+    assert.equal(current.plans[0].osteotomies[0].bone, 'tibia');
+    const rule = planView(current, frame).rule!;
+    assert.equal(rule.rule, 1);
+
+    // Add a second cut on femur via 2-click placement.
+    const key = filmKey(series, 0);
+    let step = place(current, { film: key, kind: 'cut', bone: 'femur' }, [180, 380], frame);
+    step = place(step.film, step.placing!, [130, 380], frame);
+    current = step.film;
+    assert.equal(current.plans[0].osteotomies.length, 2);
+    assert.equal(current.plans[0].activeCut, 1);
+
+    // Edit polygon vertices & reset.
+    const origCount = current.plans[0].osteotomies[1].fragment.length;
+    current = addFragmentVertex(current, 1, 0, [155, 378]);
+    assert.equal(current.plans[0].osteotomies[1].fragment.length, origCount + 1);
+    current = moveHandle(current, { kind: 'fragment', cutIndex: 1, index: 1 }, [155, 372]);
+    assert.deepEqual(current.plans[0].osteotomies[1].fragment[1], [155, 372]);
+    current = deleteFragmentVertex(current, 1, 1);
+    assert.equal(current.plans[0].osteotomies[1].fragment.length, origCount);
+    current = resetCutFragment(current, 1, frame);
+    assert.equal(current.plans[0].osteotomies[1].fragment.length, 4);
+
+    // Shifts & reset shifts, select, and remove.
+    current = updateOsteotomy(current, 1, { shiftLateral: 5, shiftDistal: -3, lengthen: 2 });
+    current = resetCutShifts(current, 1);
+    assert.deepEqual([current.plans[0].osteotomies[1].shiftLateral, current.plans[0].osteotomies[1].shiftDistal, current.plans[0].osteotomies[1].lengthen], [0, 0, 0]);
+    current = selectOsteotomy(current, 0);
+    assert.equal(current.plans[0].activeCut, 0);
+    current = removeOsteotomy(current, 0);
+    assert.equal(current.plans[0].osteotomies.length, 1);
+    assert.equal(current.plans[0].osteotomies[0].bone, 'femur');
   });
 });

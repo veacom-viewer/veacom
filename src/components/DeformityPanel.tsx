@@ -1,8 +1,8 @@
 // The lower-limb deformity plan of a standing long-leg film (docs/deformity-planning.md), opened by the assessment
 // button on a DX or CR long-leg film as the pre-op checklist is on a CT. It guides the landmarks of each leg, lists
 // every value against its normal range with what its millimetres stand for, runs Paley's malalignment test, finds the
-// CORA, and simulates an osteotomy that the pane measures again as it moves. Plans live in memory (deformityStore.ts);
-// the reader saves one as a file, or a report as a picture.
+// CORA, and simulates single- or multi-level osteotomies that the pane measures again live as fragments move. Plans
+// live in memory (deformityStore.ts); the reader saves one as a file, or a report as a picture.
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { ViewState, Volume } from '../model';
@@ -12,11 +12,15 @@ import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARK_TEXT, LANDMARKS, 
 import type { Missing, Side, Value } from '../imaging/deformity/measure';
 import { NORMALS, type ValueKey } from '../imaging/deformity/normals';
 import { fitCircle, distance } from '../imaging/deformity/plane';
-import { solveAngle, type Osteotomy } from '../imaging/deformity/osteotomy';
+import { MAX_OSTEOTOMIES, solveAngleMany, type Osteotomy, type Target } from '../imaging/deformity/osteotomy';
 import { coraNeeds } from '../imaging/deformity/analysis';
 import { UNCHECKED } from '../imaging/deformity/suggest';
-import { activePlan, deformity, filmKey, newPlan, useDeformity, withPlan, type FilmPlans, type Marker } from '../ui/deformityStore';
-import { acceptSuggestions, clearSuggestions, fromUnchecked, imageSideOnScreen, nextLandmark, planView, uncheckedAsSuggested, withSuggestions, type PlanView } from '../ui/deformityPlan';
+import { activeCutIndex, activePlan, deformity, filmKey, newPlan, useDeformity, type FilmPlans, type Marker } from '../ui/deformityStore';
+import {
+  acceptSuggestions, addCoraCut, clearSuggestions, fromUnchecked, imageSideOnScreen, nextLandmark, planView,
+  removeOsteotomy, resetCutFragment, resetCutShifts, selectOsteotomy, uncheckedAsSuggested, updateOsteotomy,
+  withSuggestions, type PlanView,
+} from '../ui/deformityPlan';
 import { cancelModelDownload, framePixels, loadModel, MODEL, MODEL_BYTES, runModel, suggestionsFrom, suggestionTarget } from '../ui/landmarkSuggestions';
 import { MAX_PLANS, parsePlanFile, planFile } from '../ui/deformityFile';
 import { filmSides, labelQueue, sidesFor } from '../ui/labelQueue';
@@ -34,7 +38,6 @@ const BALLS = [25, 25.4, 30];
 const CORA_KEY = { femur: 'coraFemur', tibia: 'coraTibia' } as const;
 /** The value each step of the malalignment test reads (analysis.ts malalignmentTest). */
 const STEP_KEY = { mad: 'MAD', femur: 'mLDFA', tibia: 'MPTA', joint: 'JLCA', subluxation: 'subluxation' } as const;
-
 
 /** A plan's name: the reader's, else its leg, numbered when the film has more than one plan of that leg. */
 export function planName(film: FilmPlans, id: string, t: Translator): string {
@@ -130,7 +133,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     deformity.ensure(series, frameIndex, labelling ? sidesFor(labelling.sides, projection?.laterality) : filmSides(projection?.laterality));
     // Undo past the film's first step removes it from the store: it is made again, empty.
   }, [series.id, series.uid, series.frameMetadata, frameIndex, projection?.laterality, Boolean(film)]);
-  // Esc stops placing points wherever focus is (the pane included); the next Esc in the panel closes it.
+  // Esc stops placing points or lassoing wherever focus is (the pane included); the next Esc in the panel closes it.
   const placing = state.placing?.film === key ? state.placing : null;
   useEffect(() => {
     if (!placing) return;
@@ -141,9 +144,32 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   useLayoutEffect(() => { shownFilm.current = { key, frame }; });
   if (!film) return <section className="deformity-panel" data-testid="deformity-panel" aria-label={t('deformity.title')} />;
   const view = planView(film, frame), plan = view.plan, leg = view.leg, tag = calibrationTag(frame, 'auto');
+  const cuts = plan.osteotomies;
+  const selectedCut = activeCutIndex(plan);
+  const osteotomy = selectedCut >= 0 ? cuts[selectedCut] : null;
+  const simOrder = view.simulation?.cuts ?? [];
+  const selectedSim = simOrder.find(item => item.index === selectedCut) ?? null;
+  const selectedRule = selectedCut >= 0 ? view.rules[selectedCut] ?? null : null;
   const change = (update: (current: FilmPlans) => FilmPlans) => deformity.change(key, update);
-  const changePlan = (update: (current: PlanView['plan']) => PlanView['plan']) => change(current => withPlan(current, update(activePlan(current))));
-  const changeOsteotomy = (patch: Partial<Osteotomy>) => changePlan(current => current.osteotomy ? { ...current, osteotomy: { ...current.osteotomy, ...patch } } : current);
+  const changeOsteotomy = (patch: Partial<Osteotomy>) => {
+    if (selectedCut < 0) return;
+    change(current => updateOsteotomy(current, selectedCut, patch));
+  };
+  const solveFor = (target: Target) => {
+    if (selectedCut < 0) return;
+    const solved = solveAngleMany(view.input, leg, cuts, selectedCut, target);
+    if (solved) changeOsteotomy(solved); else setStatus(t('deformity.solveFailed'));
+  };
+  const canPlaceCut = (targetBone: Osteotomy['bone']) => cuts.length < MAX_OSTEOTOMIES && Boolean(leg.ankle && (targetBone === 'tibia' ? leg.knee : leg.hip));
+  const canPlaceAtCora = (targetBone: Osteotomy['bone']) => {
+    const cora = view.cora[targetBone];
+    return Boolean(cora && cora.magnitude >= 1.5 && canPlaceCut(targetBone));
+  };
+  const placeAtCora = (targetBone: Osteotomy['bone']) => {
+    deformity.setPlacing(null);
+    deformity.setEditCutout(false);
+    change(current => addCoraCut(current, targetBone, frame));
+  };
   const startPlacing = (name?: LandmarkName) => {
     const next = name ?? nextLandmark(plan);
     deformity.setPlacing(next ? { film: key, kind: 'landmark', name: next } : null);
@@ -195,7 +221,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const target = suggestionTarget(view, frame);
   const suggest = async () => {
     if (!('leg' in target) || !view.mm) return;
-    const controller = new AbortController(), planId = plan.id, leg = target.leg, mm = view.mm;
+    const controller = new AbortController(), planId = plan.id, targetLeg = target.leg, mm = view.mm;
     suggestRun.current = controller;
     // "Downloading" shows only while bytes arrive: a kept model loads without it.
     setStatus(null); setSuggesting({ received: null });
@@ -204,16 +230,16 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (controller.signal.aborted) throw controller.signal.reason;
       setSuggesting({ received: null });
       const reply = await runModel({ pixels: framePixels(volume, frameIndex), columns: frame.dimensions[0], rows: frame.dimensions[1], mm: [mm[0], mm[1]],
-        invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, leg, graphs, controller.signal);
+        invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, targetLeg, graphs, controller.signal);
       const total = reply.total;
-      setSuggestRunInfo({ total, ...reply.timings, threads: reply.threads, peak: reply.anchors[leg].peak });
+      setSuggestRunInfo({ total, ...reply.timings, threads: reply.threads, peak: reply.anchors[targetLeg].peak });
       // The suggestions belong to the film, plan, leg and scale the model ran with: paged, switched or calibrated since,
       // they are not put on.
       const now = shownFilm.current, live = deformity.get().films[key], liveView = live && now.frame ? planView(live, now.frame) : null;
       const again = liveView && now.frame ? suggestionTarget(liveView, now.frame) : null;
-      if (now.key !== key || !live || !liveView || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== leg
+      if (now.key !== key || !live || !liveView || activePlan(live).id !== planId || !again || !('leg' in again) || again.leg !== targetLeg
         || liveView.mm?.[0] !== mm[0] || liveView.mm[1] !== mm[1]) { setStatus(t('deformity.suggestChanged')); return; }
-      const found = suggestionsFrom(reply.anchors, leg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
+      const found = suggestionsFrom(reply.anchors, targetLeg, reply.channels, mm, [frame.dimensions[0], frame.dimensions[1]]);
       if (found === 'unsure') { setStatus(t('deformity.suggestUnsure')); return; }
       if (!found || !Object.keys(found).length) { setStatus(t('deformity.suggestNone')); return; }
       // Suggestions are not drawn while the simulation shows: none is put on (or marked as shown) unseen.
@@ -226,10 +252,10 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       setStatus(t('deformity.suggestDone', { count, seconds: (total / 1000).toFixed(1) }));
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      const known = { checksum: 'deformity.suggestChecksum', unavailable: 'deformity.suggestUnavailable', download: 'deformity.suggestDownload',
+      const knownErrors = { checksum: 'deformity.suggestChecksum', unavailable: 'deformity.suggestUnavailable', download: 'deformity.suggestDownload',
         frame: 'deformity.suggestFrame', run: 'deformity.suggestRun' } as const;
       setStatus(controller.signal.aborted ? t('deformity.suggestCancelled')
-        : t('deformity.suggestFailed', { reason: Object.hasOwn(known, reason) ? t(known[reason as keyof typeof known]) : reason }));
+        : t('deformity.suggestFailed', { reason: Object.hasOwn(knownErrors, reason) ? t(knownErrors[reason as keyof typeof knownErrors]) : reason }));
     } finally {
       if (suggestRun.current === controller) { suggestRun.current = null; setSuggesting(null); }
     }
@@ -242,7 +268,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   const unchecked = fromUnchecked(plan);
   // The line on what is checked shows with the suggestions, and while an unchecked one is kept as it was suggested.
   const uncheckedShown = LANDMARKS.some(name => uncheckedAsSuggested(plan, name));
-  // While the simulation shows, the film's fragment is drawn moved and suggestions are not drawn: none can be accepted.
+  // While the simulation shows, the film's fragments are drawn moved and suggestions are not drawn: none can be accepted.
   const simulated = state.simulate && Boolean(view.simulation);
   const fromModel = Boolean(plan.suggested) || LANDMARKS.some(name => plan.origin?.[name]?.model);
 
@@ -268,6 +294,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       if (operationGeneration.current !== generation || deformity.get().films[key] !== film) { setStatus(t('deformity.openChanged')); return; }
       if ('error' in result) { setStatus(result.error === 'film' ? t('deformity.wrongFilm') : t('deformity.badFile', { reason: t(`deformity.reason.${result.error}` as MessageKey) })); return; }
       deformity.setPlacing(null);
+      deformity.setEditCutout(false);
       deformity.change(key, current => ({ ...current, plans: result.plans, active: result.plans[result.active].id, marker: result.marker, patientRight: result.patientRight }), 'calibration');
       onCalibrate(series.id, key, result.calibration);
       const count = result.plans.reduce((sum, item) => sum + Object.values(item.points).reduce((n, list) => n + list.length, 0), 0);
@@ -279,7 +306,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     const element = viewport();
     if (!element) return;
     setBusy(true);
-    const simulated = state.simulate;
+    const wasSimulated = state.simulate;
+    const wasEditCutout = state.editCutout;
     const generation = operationGeneration.current;
     const check = (simulation: boolean) => {
       const live = deformity.get();
@@ -287,6 +315,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
         viewport() !== element || element.querySelector('[data-testid="deformity-drawing"]')?.getAttribute('data-film') !== key) throw REPORT_CHANGED;
     };
     try {
+      deformity.setEditCutout(false);
       deformity.setSimulate(false); await frames(3);
       // Captured at the report's own resolution (pictureSize), so the drawing is sharp whatever the screen.
       const header = reportHeader(series, frame, hidePatientData, t), bounds = element.getBoundingClientRect();
@@ -309,8 +338,8 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       }
       // The report carries the panel's cautions under the values they affect: the model's plateau points inside the rim,
       // and a value measured from an unchecked point accepted as it was.
-      const cautions = (inboard: boolean, fromUnchecked: boolean) => [inboard && plateauInboard ? t('deformity.plateauInboardShort') : '',
-        fromUnchecked ? t('deformity.uncheckedShort') : ''].filter(Boolean).join(' · ') || undefined;
+      const cautions = (inboard: boolean, isUnchecked: boolean) => [inboard && plateauInboard ? t('deformity.plateauInboardShort') : '',
+        isUnchecked ? t('deformity.uncheckedShort') : ''].filter(Boolean).join(' · ') || undefined;
       const sections: ReportSection[] = [{ title: t('deformity.values'), rows: VALUE_ORDER.map(name => leg.values[name].value === null
         ? [NAMED[name] ? t(NAMED[name]) : name, missingText(leg.values[name].missing, t), normalText(name) || undefined]
         : [NAMED[name] ? t(NAMED[name]) : name, valueText(leg.values[name], tag, t), normalText(name) || undefined, cautions(name === 'WBL', unchecked.has(name))]) },
@@ -318,11 +347,29 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           step.result === 'unassessable' ? undefined : cautions(step.step === 'subluxation', unchecked.has(STEP_KEY[step.step]))]) },
         { title: t('deformity.cora'), rows: (['femur', 'tibia'] as const).map(boneName => [t(`deformity.bone.${boneName}` as MessageKey), coraText(view, boneName, t), undefined,
           cautions(false, Boolean(view.cora[boneName]) && unchecked.has(CORA_KEY[boneName]))]) }];
-      if (view.simulation && plan.osteotomy) {
-        const after = view.simulation.leg.values, o = plan.osteotomy;
+      if (view.simulation && cuts.length) {
+        const after = view.simulation.leg.values;
+        const multi = view.simulation.cuts.length > 1;
+        const cutRows: ReportSection['rows'] = [];
+        view.simulation.cuts.forEach((cutSim, orderIdx) => {
+          const o = cutSim.osteotomy, cutRule = view.rules[cutSim.index];
+          const cutLabel = multi ? t('deformity.report.cutNumber', { number: orderIdx + 1 }) : t('deformity.report.cut');
+          const wedgeLabel = multi ? t('deformity.report.wedgeNumber', { number: orderIdx + 1 }) : t('deformity.report.wedge');
+          const rulePart = cutRule ? ` · ${t('deformity.rule', { rule: cutRule.rule })}` : '';
+          cutRows.push([
+            cutLabel,
+            `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t((cutSim.wedge ?? o.wedge) === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}${rulePart}`,
+            undefined,
+            cutRule && unchecked.has(CORA_KEY[o.bone]) ? t('deformity.uncheckedShort') : undefined,
+          ]);
+          cutRows.push([wedgeLabel, `${cutSim.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`]);
+        });
+        if (multi && view.simulation.lengthChange !== null) {
+          const delta = view.simulation.lengthChange;
+          cutRows.push([t('deformity.report.lengthChange'), `${delta >= 0 ? '+' : ''}${delta.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`]);
+        }
         sections.push({ title: t('deformity.osteotomy'), rows: [
-          [t('deformity.report.cut'), `${t(`deformity.bone.${o.bone}` as MessageKey)} · ${t((view.simulation.wedge ?? o.wedge) === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')} · ${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`],
-          [t('deformity.report.wedge'), `${view.simulation.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`],
+          ...cutRows,
           ...(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => {
             const given = leg.values[name].value !== null || after[name].value !== null;
             return [NAMED[name] ? t(NAMED[name]) : name, `${valueText(leg.values[name], '', t)} → ${valueText(after[name], '', t)}`, undefined, given ? cautions(name === 'WBL', unchecked.has(name)) : undefined] as ReportSection['rows'][number];
@@ -336,14 +383,18 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       const where = await save('veacom-deformity-report.png', await pngBytes(canvas));
       setStatus(where ? t('deformity.reportSaved', { file: where.split(/[\\/]/).pop() ?? where }) : null);
     } catch (error) { setStatus(error === REPORT_CHANGED ? t('deformity.reportChanged') : t('deformity.failed', { reason: error instanceof Error ? error.message : String(error) })); }
-    finally { deformity.setSimulate(simulated); setBusy(false); }
+    finally { deformity.setSimulate(wasSimulated); deformity.setEditCutout(wasEditCutout); setBusy(false); }
   };
 
-  const osteotomy = plan.osteotomy, after = view.simulation?.leg.values;
+  const after = view.simulation?.leg.values;
   const placedCount = (name: LandmarkName) => plan.points[name]?.length ?? 0;
   const done = (name: LandmarkName) => placedCount(name) >= (isContour(name) ? CONTOUR_MINIMUM : 1);
   const laterality = projection?.laterality;
   const otherSide = laterality === 'R' || laterality === 'L' ? laterality !== plan.side : false;
+  const hasShifts = Boolean(osteotomy && (osteotomy.shiftLateral !== 0 || osteotomy.shiftDistal !== 0 || osteotomy.lengthen !== 0));
+  const orderedIndices = simOrder.length === cuts.length ? simOrder.map(item => item.index) : cuts.map((_, i) => i);
+  const displayCutNumber = selectedCut >= 0 ? orderedIndices.indexOf(selectedCut) + 1 : 0;
+
   return <section className="deformity-panel" aria-label={t('deformity.title')} data-testid="deformity-panel" onKeyDown={keyDown}>
     <header><h2 ref={headingRef} tabIndex={-1}>{t('deformity.title')}</h2>
       <button type="button" className="icon-button" aria-label={t('deformity.close')} data-tooltip={t('deformity.close')} data-action="deformity-close" onClick={onClose}><X size={16} /></button></header>
@@ -364,7 +415,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
 
       <div className="deformity-plans" role="tablist" aria-label={t('deformity.plans')}>
         {film.plans.map(item => <button key={item.id} type="button" role="tab" data-action="deformity-plan-tab" aria-selected={item.id === film.active}
-          onClick={() => { deformity.setPlacing(null); change(current => ({ ...current, active: item.id })); }}>{planName(film, item.id, t)}</button>)}
+          onClick={() => { deformity.setPlacing(null); deformity.setEditCutout(false); change(current => ({ ...current, active: item.id })); }}>{planName(film, item.id, t)}</button>)}
         {/* Another plan of the same leg, to compare corrections. */}
         <button type="button" className="icon-button" data-action="deformity-plan-add" disabled={film.plans.length >= MAX_PLANS} aria-label={t('deformity.addPlan')} data-tooltip={t('deformity.addPlan')}
           onClick={() => { const next = newPlan(plan.side); change(current => ({ ...current, plans: [...current.plans, next], active: next.id })); }}><Plus size={15} /></button>
@@ -483,18 +534,33 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       <h3>{t('deformity.cora')}</h3>
       <dl className="deformity-cora">{(['femur', 'tibia'] as const).map(name => <div key={name} data-cora={name} data-magnitude={view.cora[name]?.magnitude}>
         <dt>{t(`deformity.bone.${name}` as MessageKey)}</dt><dd>{coraText(view, name, t)}
-          {view.cora[name] && unchecked.has(CORA_KEY[name]) && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</dd></div>)}</dl>
+          {view.cora[name] && unchecked.has(CORA_KEY[name]) && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}
+          {canPlaceAtCora(name) && <span className="deformity-cora-action"> · <button type="button" className="text-button" data-action="deformity-cut-cora" data-bone={name}
+            onClick={() => placeAtCora(name)}>{t('deformity.placeAtCora')}</button></span>}</dd></div>)}</dl>
 
       <h3>{t('deformity.osteotomy')}</h3>
       {!osteotomy ? <div className="deformity-osteotomy">
         <div className="deformity-segments" role="radiogroup" aria-label={t('deformity.bone')}>{(['femur', 'tibia'] as const).map(name => <button key={name} type="button" role="radio" data-action="deformity-bone"
           aria-checked={bone === name} className="secondary-button compact" onClick={() => setBone(name)}>{t(`deformity.bone.${name}` as MessageKey)}</button>)}</div>
-        <button type="button" className="secondary-button compact" data-action="deformity-cut" disabled={!leg.ankle || !(bone === 'tibia' ? leg.knee : leg.hip)}
-          onClick={() => deformity.setPlacing({ film: key, kind: 'cut', bone })}>{t('deformity.placeCut')}</button>
+        <div className="deformity-actions">
+          <button type="button" className="secondary-button compact" data-action="deformity-cut" disabled={!canPlaceCut(bone)}
+            onClick={() => deformity.setPlacing({ film: key, kind: 'cut', bone })}>{t('deformity.placeCut')}</button>
+          {canPlaceAtCora(bone) && <button type="button" className="secondary-button compact" data-action="deformity-cut-cora" data-bone={bone}
+            onClick={() => placeAtCora(bone)}>{t('deformity.placeAtCora')}</button>}
+        </div>
         {placing?.kind === 'cut' && <p className="deformity-hint" role="status">{t('deformity.cutHint')}</p>}
         {(!leg.ankle || !leg.knee) && <p className="deformity-missing">{t('deformity.needsLandmarks')}</p>}
       </div> : <div className="deformity-osteotomy" data-testid="deformity-osteotomy">
-        <p>{t('deformity.cutOn', { bone: t(`deformity.bone.${osteotomy.bone}` as MessageKey).toLocaleLowerCase(locale) })}</p>
+        {cuts.length > 1 && <div className="deformity-cuts" role="tablist" aria-label={t('deformity.cutSummary')}>
+          {orderedIndices.map((idx, orderPos) => {
+            const cut = cuts[idx];
+            return <button key={cut.id ?? idx} type="button" role="tab" data-action="deformity-cut-select" data-cut-index={idx}
+              aria-selected={idx === selectedCut} onClick={() => { deformity.setPlacing(null); change(current => selectOsteotomy(current, idx)); }}>
+              {t('deformity.cutTab', { number: orderPos + 1, bone: t(`deformity.bone.${cut.bone}` as MessageKey), angle: cut.degrees.toFixed(1) })}
+            </button>;
+          })}
+        </div>}
+        <p>{cuts.length > 1 ? `${t('deformity.cutNumber', { number: displayCutNumber })} · ` : ''}{t('deformity.cutOn', { bone: t(`deformity.bone.${osteotomy.bone}` as MessageKey).toLocaleLowerCase(locale) })}</p>
         <div className="deformity-segments" role="radiogroup" aria-label={t('deformity.wedge')}>{(['opening', 'closing'] as const).map(wedge => <button key={wedge} type="button" role="radio" data-action="deformity-wedge"
           aria-checked={osteotomy.wedge === wedge} className="secondary-button compact" onClick={() => changeOsteotomy({ wedge })}>{t(wedge === 'opening' ? 'deformity.wedge.opening' : 'deformity.wedge.closing')}</button>)}</div>
         <div className="deformity-fields">
@@ -504,14 +570,15 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             aria-checked={osteotomy.direction === direction} className="secondary-button compact" onClick={() => changeOsteotomy({ direction })}>{t(direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}</button>)}</div>
         </div>
         <div className="deformity-actions"><span>{t('deformity.solve')}</span>
-          <button type="button" className="secondary-button compact" data-action="deformity-solve-mad" onClick={() => {
-            const solved = solveAngle(view.input, leg, osteotomy, { kind: 'mad', mm: 0 });
-            if (solved) changeOsteotomy(solved); else setStatus(t('deformity.solveFailed'));
-          }}>{t('deformity.solveMad')}</button>
-          <button type="button" className="secondary-button compact" data-action="deformity-solve-wbl" onClick={() => {
-            const solved = solveAngle(view.input, leg, osteotomy, { kind: 'wbl', percent: 62.5 });
-            if (solved) changeOsteotomy(solved); else setStatus(t('deformity.solveFailed'));
-          }}>{t('deformity.solveWbl')}</button></div>
+          <button type="button" className="secondary-button compact" data-action="deformity-solve-mad" onClick={() => solveFor({ kind: 'mad', mm: 0 })}>{t('deformity.solveMad')}</button>
+          <button type="button" className="secondary-button compact" data-action="deformity-solve-wbl" onClick={() => solveFor({ kind: 'wbl', percent: 62.5 })}>{t('deformity.solveWbl')}</button>
+          {osteotomy.bone === 'femur' && <button type="button" className="secondary-button compact" data-action="deformity-solve-mldfa" disabled={leg.values.mLDFA.value === null}
+            onClick={() => solveFor({ kind: 'mLDFA', degrees: 87 })}>{t('deformity.solveMldfa')}</button>}
+          {osteotomy.bone === 'tibia' && <button type="button" className="secondary-button compact" data-action="deformity-solve-mpta" disabled={leg.values.MPTA.value === null}
+            onClick={() => solveFor({ kind: 'MPTA', degrees: 87 })}>{t('deformity.solveMpta')}</button>}
+          {osteotomy.bone === 'tibia' && leg.values.LDTA.value !== null && <button type="button" className="secondary-button compact" data-action="deformity-solve-ldta"
+            onClick={() => solveFor({ kind: 'LDTA', degrees: 89 })}>{t('deformity.solveLdta')}</button>}
+        </div>
         <div className="deformity-fields">
           <label>{t('deformity.shiftLateral')} ({leg.unit})<input type="number" min={-200} max={200} step={0.5} data-action="deformity-shift-lateral" value={osteotomy.shiftLateral}
             onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && Math.abs(value) <= 200) changeOsteotomy({ shiftLateral: value }); }} /></label>
@@ -519,8 +586,47 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && Math.abs(value) <= 200) changeOsteotomy({ shiftDistal: value }); }} /></label>
           <label>{t('deformity.lengthen')} ({leg.unit})<input type="number" min={-200} max={200} step={0.5} data-action="deformity-lengthen" value={osteotomy.lengthen}
             onChange={event => { const value = Number(event.target.value); if (Number.isFinite(value) && Math.abs(value) <= 200) changeOsteotomy({ lengthen: value }); }} /></label>
+          {hasShifts && <button type="button" className="text-button" data-action="deformity-reset-shifts"
+            onClick={() => change(current => resetCutShifts(current, selectedCut))}>{t('deformity.resetShifts')}</button>}
         </div>
-        <label className="deformity-check"><input type="checkbox" data-action="deformity-simulate" checked={state.simulate} onChange={event => deformity.setSimulate(event.target.checked)} />{t('deformity.show')}</label>
+        <div className="deformity-actions">
+          <button type="button" className="secondary-button compact" data-action="deformity-cutout-edit" aria-pressed={state.editCutout}
+            onClick={() => { if (placing?.kind === 'lasso') deformity.setPlacing(null); deformity.setEditCutout(!state.editCutout); }}>{t('deformity.editCutout')}</button>
+          <button type="button" className="secondary-button compact" data-action="deformity-cutout-lasso" aria-pressed={placing?.kind === 'lasso'}
+            onClick={() => {
+              if (placing?.kind === 'lasso') { deformity.setPlacing(null); return; }
+              deformity.setEditCutout(false);
+              deformity.setPlacing({ film: key, kind: 'lasso', cutIndex: selectedCut });
+            }}>{t('deformity.traceCutout')}</button>
+          <button type="button" className="text-button" data-action="deformity-cutout-reset"
+            onClick={() => change(current => resetCutFragment(current, selectedCut, frame))}>{t('deformity.resetCutout')}</button>
+        </div>
+        {placing?.kind === 'lasso' && <p className="deformity-hint" role="status">{t('deformity.lassoHint')}</p>}
+        {state.editCutout && placing?.kind !== 'lasso' && <p className="deformity-note">{t('deformity.cutoutHint')}</p>}
+        <div className="deformity-toggles">
+          <label className="deformity-check"><input type="checkbox" data-action="deformity-simulate" checked={state.simulate} onChange={event => deformity.setSimulate(event.target.checked)} />{t('deformity.show')}</label>
+          <label className="deformity-check"><input type="checkbox" data-action="deformity-guides" checked={state.showGuides} onChange={event => deformity.setShowGuides(event.target.checked)} />{t('deformity.guides')}</label>
+        </div>
+        {simulated && !state.editCutout && !placing && <p className="deformity-note">{t('deformity.canvasHint')}</p>}
+        {selectedSim?.wedge && selectedSim.wedge !== osteotomy.wedge && <p className="deformity-caution" role="note" data-testid="deformity-wedge-mismatch">
+          {t(selectedSim.wedge === 'opening' ? 'deformity.wedgeIsOpening' : 'deformity.wedgeIsClosing')}</p>}
+        {selectedSim && view.simulation && <p className="deformity-fit" data-testid="deformity-wedge" data-wedge={selectedSim.wedgeHeight}>
+          {t('deformity.wedgeHeight', { height: selectedSim.wedgeHeight.toFixed(1), unit: leg.unit })}
+          {view.simulation.lengthChange !== null ? ` · ${t('deformity.lengthChange', { change: `${view.simulation.lengthChange >= 0 ? '+' : ''}${view.simulation.lengthChange.toFixed(1)}`, unit: leg.unit })}` : ''}
+          {leg.unit === 'mm' && tag ? ` · ${tag}` : ''}</p>}
+        {selectedRule && <p className="deformity-fit" data-testid="deformity-rule" data-rule={selectedRule.rule} data-translation={selectedRule.translation}>{t('deformity.rule', { rule: selectedRule.rule })}{selectedRule.rule === 3 ? ` · ${t('deformity.ruleTranslation', { offset: selectedRule.offset.toFixed(1), translation: selectedRule.translation.toFixed(1), unit: leg.unit })}` : ''}
+          {unchecked.has(CORA_KEY[osteotomy.bone]) && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</p>}
+        {cuts.length > 1 && view.simulation && <table className="deformity-values deformity-cut-summary" data-testid="deformity-cut-summary">
+          <thead><tr><th scope="col">{t('deformity.cutSummary')}</th><th scope="col">{t('deformity.angle')}</th><th scope="col">{t('deformity.wedge')}</th></tr></thead>
+          <tbody>{view.simulation.cuts.map((cutSim, orderPos) => {
+            const o = cutSim.osteotomy, cutRule = view.rules[cutSim.index];
+            return <tr key={o.id ?? cutSim.index} data-cut-index={cutSim.index} className={cutSim.index === selectedCut ? 'is-selected' : ''}>
+              <th scope="row">{`${orderPos + 1}. ${t(`deformity.bone.${o.bone}` as MessageKey)}`}</th>
+              <td>{`${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`}</td>
+              <td>{`${cutSim.wedgeHeight.toFixed(1)} ${leg.unit}${cutRule ? ` · R${cutRule.rule}` : ''}`}</td>
+            </tr>;
+          })}</tbody>
+        </table>}
         {view.simulation && after && <table className="deformity-values deformity-compare" data-testid="deformity-planned">
           <thead><tr><th scope="col" /><th scope="col">{t('deformity.before')}</th><th scope="col">{t('deformity.after')}</th></tr></thead>
           <tbody>{(['mLDFA', 'MPTA', 'LDTA', 'JLCA', 'HKA', 'MAD', 'WBL', 'limbLength'] as const).map(name => <tr key={name} data-value-key={name} data-value={after[name].value ?? undefined}
@@ -530,15 +636,20 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
               {plateauInboard && name === 'WBL' && value.value !== null && <span className="deformity-caution"> · {t('deformity.plateauInboardShort')}</span>}
               {unchecked.has(name) && value.value !== null && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</td>)}</tr>)}</tbody>
         </table>}
-        {view.simulation?.wedge && view.simulation.wedge !== osteotomy.wedge && <p className="deformity-caution" role="note" data-testid="deformity-wedge-mismatch">
-          {t(view.simulation.wedge === 'opening' ? 'deformity.wedgeIsOpening' : 'deformity.wedgeIsClosing')}</p>}
-        {view.simulation && <p className="deformity-fit" data-testid="deformity-wedge" data-wedge={view.simulation.wedgeHeight}>
-          {t('deformity.wedgeHeight', { height: view.simulation.wedgeHeight.toFixed(1), unit: leg.unit })}
-          {view.simulation.lengthChange !== null ? ` · ${t('deformity.lengthChange', { change: `${view.simulation.lengthChange >= 0 ? '+' : ''}${view.simulation.lengthChange.toFixed(1)}`, unit: leg.unit })}` : ''}
-          {leg.unit === 'mm' && tag ? ` · ${tag}` : ''}</p>}
-        {view.rule && <p className="deformity-fit" data-testid="deformity-rule" data-rule={view.rule.rule} data-translation={view.rule.translation}>{t('deformity.rule', { rule: view.rule.rule })}{view.rule.rule === 3 ? ` · ${t('deformity.ruleTranslation', { offset: view.rule.offset.toFixed(1), translation: view.rule.translation.toFixed(1), unit: leg.unit })}` : ''}
-          {unchecked.has(CORA_KEY[osteotomy.bone]) && <span className="deformity-caution" data-unchecked-value> · {t('deformity.uncheckedShort')}</span>}</p>}
-        <div className="deformity-actions"><button type="button" className="text-button" data-action="deformity-cut-remove" onClick={() => changePlan(current => ({ ...current, osteotomy: null }))}>{t('deformity.removeCut')}</button></div>
+        {cuts.length < MAX_OSTEOTOMIES && <div className="deformity-add-cut">
+          <div className="deformity-segments" role="radiogroup" aria-label={t('deformity.bone')}>{(['femur', 'tibia'] as const).map(name => <button key={name} type="button" role="radio" data-action="deformity-cut-bone"
+            aria-checked={bone === name} className="secondary-button compact" onClick={() => setBone(name)}>{t(`deformity.bone.${name}` as MessageKey)}</button>)}</div>
+          <button type="button" className="secondary-button compact" data-action="deformity-cut-add" disabled={!canPlaceCut(bone)}
+            onClick={() => { deformity.setEditCutout(false); deformity.setPlacing({ film: key, kind: 'cut', bone }); }}>{t('deformity.addCut')}</button>
+          {canPlaceAtCora(bone) && <button type="button" className="secondary-button compact" data-action="deformity-cut-cora" data-bone={bone}
+            onClick={() => placeAtCora(bone)}>{t('deformity.placeAtCora')}</button>}
+        </div>}
+        {placing?.kind === 'cut' && <p className="deformity-hint" role="status">{t('deformity.cutHint')}</p>}
+        <div className="deformity-actions"><button type="button" className="text-button" data-action="deformity-cut-remove" onClick={() => {
+          if (placing?.kind === 'lasso') deformity.setPlacing(null);
+          if (cuts.length <= 1) deformity.setEditCutout(false);
+          change(current => removeOsteotomy(current, selectedCut));
+        }}>{t('deformity.removeCut')}</button></div>
       </div>}
     </div>
     <p className="deformity-status" role="status" data-testid="deformity-status">{status ?? t(film.sopInstanceUid ? 'deformity.saveHelp' : 'deformity.noFilmIdentity')}</p>

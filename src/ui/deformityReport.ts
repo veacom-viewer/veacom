@@ -39,6 +39,18 @@ export function pictureSize(pane: { width: number; height: number }, count: numb
   return { width: Math.max(16, Math.round(pane.width * scale)), height: Math.max(16, Math.round(pane.height * scale)) };
 }
 
+const ROW = 44, CAUTION_LINE = 38, RULE_GAP = 18, SECTION_GAP = 24;
+
+/** Fit every value and caution above the footer of the A4 page. */
+export function reportTableScale(sections: ReportSection[], availableHeight: number): number {
+  let height = 20;
+  for (const section of sections) {
+    height += RULE_GAP + ROW + SECTION_GAP;
+    for (const row of section.rows) height += ROW + (row[3] ? CAUTION_LINE : 0);
+  }
+  return Math.min(1, availableHeight / height);
+}
+
 export function drawReport(content: ReportContent): HTMLCanvasElement {
   const canvas = document.createElement('canvas');
   canvas.width = PAGE.width; canvas.height = PAGE.height;
@@ -61,25 +73,29 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
     context.fillStyle = MUTED; context.font = font(30, 500); context.fillText(picture.caption, MARGIN, pictureY + height + 40);
     pictureY += box.height + 60;
   }
-  const left = MARGIN + (content.pictures.length ? pictureWidth + 60 : 0), width = PAGE.width - MARGIN - left;
-  y = top + 20;
-  for (const section of content.sections) {
-    if (y > PAGE.height - 300) break;
-    context.fillStyle = TEXT; context.font = font(38, 600); context.fillText(section.title, left, y); y += 18;
-    context.strokeStyle = RULE; context.lineWidth = 2; context.beginPath(); context.moveTo(left, y); context.lineTo(left + width, y); context.stroke();
-    y += 44;
-    for (const [label, value, normal, caution] of section.rows) {
-      context.font = font(31, 500); context.fillStyle = TEXT; context.fillText(label, left, y, width * 0.34);
-      context.font = font(31); context.fillText(value, left + width * 0.36, y, width * 0.34);
-      if (normal) { context.fillStyle = MUTED; context.font = font(27); context.fillText(normal, left + width * 0.72, y, width * 0.28); }
-      // A caution takes the line under the value, across the value and normal columns, so it is not squeezed.
-      if (caution) { y += 38; context.fillStyle = CAUTION; context.font = font(27); context.fillText(caution, left + width * 0.36, y, width * 0.64); }
-      y += 44;
-    }
-    y += 24;
-  }
-  context.fillStyle = MUTED; context.font = font(26);
+  const left = MARGIN + (content.pictures.length ? pictureWidth + 60 : 0);
   let footerY = PAGE.height - MARGIN - (content.footer.length - 1) * 36;
+  const tableScale = reportTableScale(content.sections, footerY - top - 48);
+  const width = (PAGE.width - MARGIN - left) / tableScale;
+  context.save();
+  context.translate(left, top);
+  context.scale(tableScale, tableScale);
+  y = 20;
+  for (const section of content.sections) {
+    context.fillStyle = TEXT; context.font = font(38, 600); context.fillText(section.title, 0, y); y += RULE_GAP;
+    context.strokeStyle = RULE; context.lineWidth = 2; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
+    y += ROW;
+    for (const [label, value, normal, caution] of section.rows) {
+      context.font = font(31, 500); context.fillStyle = TEXT; context.fillText(label, 0, y, width * 0.34);
+      context.font = font(31); context.fillText(value, width * 0.36, y, normal ? width * 0.34 : width * 0.64);
+      if (normal) { context.fillStyle = MUTED; context.font = font(27); context.fillText(normal, width * 0.72, y, width * 0.28); }
+      if (caution) { y += CAUTION_LINE; context.fillStyle = CAUTION; context.font = font(27); context.fillText(caution, width * 0.36, y, width * 0.64); }
+      y += ROW;
+    }
+    y += SECTION_GAP;
+  }
+  context.restore();
+  context.fillStyle = MUTED; context.font = font(26);
   for (const line of content.footer) { context.fillText(line, MARGIN, footerY, PAGE.width - 2 * MARGIN); footerY += 36; }
   return canvas;
 }

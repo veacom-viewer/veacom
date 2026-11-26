@@ -170,30 +170,44 @@ parallel only when nothing is missing.
 
 ### Osteotomy
 
-Place the cut takes two clicks: the cortex that opens (or closes), then the hinge's. The hinge starts at the second
-click and can be dragged. The fragment is a polygon around the leg below the cut (the cut carried 40% further each side,
-25 mm at least, down to 60 mm past the ankle), never a half-plane, so a film of both legs moves one leg only; its
-corners can be dragged. Then:
+Place the cut takes two clicks: the cortex that opens (or closes), then the hinge's; where a bone has a CORA of 1.5° or
+more, **Place at CORA** pre-places a Paley rule 1 cut right through the CORA along its transverse bisector, hinged on
+the convex cortex at the CORA angle. Multiple cuts (up to six, e.g. combined DFO + HTO or bifocal tibial cuts) can be
+planned on the same leg: their rigid motions compose proximally to distally (`M_0 ∘ M_1 ∘ …`) so intermediate and distal
+segments stay joined at every moved hinge and render cleanly without double-drawing or gaps.
 
+The fragment starts as a polygon around the leg below the cut (the cut carried 40% further each side, 25 mm at least,
+down to 60 mm past the ankle), never a half-plane, so a film of both legs moves one leg only. **Edit cutout** lets the
+reader drag corners, click or double-click edges to insert vertices (up to 32) and right-click or double-click a vertex
+to remove it; **Trace cutout** draws a freehand bone-hugging polygon; **Reset cutout** restores the default outline.
+Then:
+
+- On the film while simulating, grab the green rotation handle on a moved distal fragment to swing it live, drag the
+  moved bone fragment itself to translate along its lateral and distal axes (Shift snaps to 1° or 1 mm, Alt gives fine
+  precision), or drag the hinge and cut endpoints live against the subtle CORA bisector to watch Paley's rules respond.
 - Opening or closing wedge, the angle and its direction (valgus turns the distal end laterally). Which wedge a cut
   makes follows from the hinge's side and the direction: the first cortex moving away from the proximal fragment opens
   the cut, moving into it closes it. The panel says so when that differs from the wedge chosen, and the report and the
   drawing give the wedge the geometry makes.
-- Solve for MAD 0, or for the weight-bearing line at 62.5% of the plateau (Fujisawa), between 45° of varus and valgus,
-  on the leg measured again: a femoral cut moves the knee and the plateau too.
-- Shift lateral and distal, and lengthen along the bone, in mm.
+- Solve each cut for MAD 0, for the weight-bearing line at 62.5% of the plateau (Fujisawa), or for joint-specific
+  targets (`mLDFA 87°` on the femur, `MPTA 87°` and `LDTA 89°` on the tibia) between 45° of varus and valgus, on the
+  combined simulated leg: for a double-level correction, solve the femur to `mLDFA 87°` first and then solve the tibia
+  to the final WBL or MAD.
+- Shift lateral and distal, and lengthen along the bone, in mm, with one-click **Reset shifts**.
+- **Planning guides** toggles calibrated millimetre wedge ticks and extended intramedullary shaft reference lines.
 - The wedge height at the opening (or closing) cortex, 2 w sin(θ/2) with w the distance from the hinge to that cortex
   (Rolim 2016), and the limb's change in length.
 - Paley's rule: 1 with the cut through the CORA and the hinge on its transverse bisector; 2 with the hinge on the
   bisector and the cut away from the CORA; 3 with the hinge more than 5 mm off it, and the translation it leaves,
   2 d sin(θ/2) for a hinge d off the bisector. The distances are in mm, so a film measured in pixels gets no rule.
 
-Every landmark beyond the cut's line, distally along the bone, moves with the fragment and the leg is measured again at
-once (the outline says only which pixels are drawn moved); the panel lists now and planned
-side by side. The pane shows the fragment moved and the place it left dimmed, and says "Simulated". The fragment is the
-film itself, drawn by the pane's renderer with the fragment's turn and shift as its view and cut to its outline: no
-pixel is changed or copied into a new image, and the fragment can move past the film's edge. Show simulation turns this
-off to edit the landmarks it moved.
+Every landmark beyond a cut's line, distally along the bone, moves with the cumulative transform of all cuts proximal to
+it and the leg is measured again at once (the outline says only which pixels are drawn moved); the panel lists now and
+planned side by side, together with a per-cut summary for multi-level plans. The pane shows the moved fragments and the
+vacated area uniformly dimmed, carries a crisp angle/wedge HUD near each cut, and says "Simulated". Each fragment is the
+film itself, drawn by the pane's renderer with the segment's turn and shift as its view and cut to its outline: no pixel
+is changed or copied into a new image, and the fragment can move past the film's edge. Show simulation turns this off
+to edit the landmarks it moved.
 
 ### Undo, plans and saving
 
@@ -223,7 +237,7 @@ write beside the films; other browsers download each plan instead.
 - **The films** are the DICOM files directly inside the chosen folder (a Part 10 preamble, or a .dcm name), in the order
   a person would number them (2 before 10). Each has a state, read from the plan file beside it,
   `<film's file name>.veacom-plan.json`: no plan, plan saved, plan saved with suggestions shown (any landmark's
-  `suggestionShown`), plan saved with no landmark, or a plan file that cannot be read (not a version 1 plan, or over
+  `suggestionShown`), plan saved with no landmark, or a plan file that cannot be read (unsupported plan version, or over
   2 MB). The run starts at the first film without a plan, so a run stopped halfway goes on where it was. With patient
   data hidden, the folder's and the files' names are not shown: file names can name the patient.
 - **Above the plan**, the queue shows the film, Previous and Next, a list to go to any film, and two settings:
@@ -267,5 +281,5 @@ would (`tests/source-renderer.browser.mjs`). Before, such a film failed to draw 
 - A keyboard way to place and nudge points: they are placed and moved with the mouse, pen or touch only.
 - A real-film check of the trochanter and plafond suggestions: no public dataset the model learnt from labels them, and
   no reference traced on its films is reliable enough yet.
-- Snapping points to bone edges, automatic ball detection, stitched films, implant templates, double-level and dome
-  osteotomies, sagittal analysis and printing the report through the system print dialog (PR #31's path).
+- Snapping points to bone edges, automatic ball detection, stitched films, implant templates, dome osteotomies,
+  sagittal analysis and printing the report through the system print dialog (PR #31's path).
