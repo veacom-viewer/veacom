@@ -1,6 +1,22 @@
 const { assert,closeDesktop,fresh,fs,launch,output,path,repo,save,settle }=require('./desktop.cjs');
 const { toggleMpr }=require(path.join(repo,'tools/lib/mpr.cjs'));
 const studyRoot=path.resolve(process.argv[5]), candidate=path.resolve(process.argv[6]);
+const measureEdges=process.env.EXERCISE==='physical-edges';
+const source=JSON.parse(require('node:fs').readFileSync(path.join(output,'coordinate-source.json'),'utf8'));
+
+function edgeViews(plane,bright,dark,width,height){
+  const [h,v]=plane==='axial'?[0,1]:plane==='coronal'?[0,2]:[1,2];
+  const {dimensions,spacing,markers}=source;
+  const fit=Math.min(width/(dimensions[h]*spacing[h]),height/(dimensions[v]*spacing[v]));
+  const views=[];
+  for(const [i,slice] of [bright,dark].entries())for(const zoom of [1,2,4]){
+    const marker=markers[i];
+    const offset=axis=>(marker.low[axis]+marker.high[axis]-dimensions[axis]+1)*spacing[axis]/2;
+    const pan=[-offset(h)*fit*zoom,offset(v)*fit*zoom*(plane==='axial'?-1:1)];
+    views.push({label:(i===0?'bright':'dark')+'-'+zoom+'x',slice,zoom,pan});
+  }
+  return views;
+}
 const report={reference:process.env.REFERENCE_COMMIT,candidate:process.env.CANDIDATE_COMMIT,views:[]};
 async function capture(checkout,build,encoding){
   const profile=await fresh();let current;
@@ -19,9 +35,14 @@ async function capture(checkout,build,encoding){
       const cell=page.getByTestId('viewport-cell').filter({has:canvas});
       await cell.getByTestId('dicom-viewport').focus();
       await page.waitForFunction(p=>document.querySelector('.viewport-cell.is-active canvas[data-renderer]')?.dataset.plane===p,plane);
-      for(const [label,slice] of Object.entries({below:3,above:4,bright,dark,center:Math.floor((count-1)/2),last:count-4})){
-        await page.evaluate(z=>window.__VEACOM_TEST__.setView({mode:'mpr',slice:z,windowWidth:2000,windowCenter:0,zoom:1,rotation:0,pan:[0,0],flipX:false,flipY:false}),slice);
-        await page.waitForFunction(([p,z])=>{const c=document.querySelector('.viewport-cell.is-active canvas[data-renderer]');return c?.dataset.plane===p&&Math.abs(Number(c.dataset.slice)-z)<1e-7;},[plane,slice],{timeout:15000});
+      const box=await canvas.boundingBox();
+      const views=measureEdges?edgeViews(plane,bright,dark,box.width,box.height)
+        :Object.entries({below:3,above:4,bright,dark,center:Math.floor((count-1)/2),last:count-4}).map(([label,slice])=>({label,slice,zoom:1,pan:[0,0]}));
+      for(const {label,slice,zoom,pan} of views){
+        const windowWidth=measureEdges?4096:2000;
+        await page.evaluate(({slice,zoom,pan,windowWidth})=>window.__VEACOM_TEST__.setView({mode:'mpr',slice,windowWidth,windowCenter:0,zoom,rotation:0,pan,flipX:false,flipY:false}),{slice,zoom,pan,windowWidth});
+        await page.waitForFunction(([p,z,zoom,width])=>{const c=document.querySelector('.viewport-cell.is-active canvas[data-renderer]'),v=window.__VEACOM_TEST__.state().displayedView;
+          return c?.dataset.plane===p&&Math.abs(Number(c.dataset.slice)-z)<1e-7&&v.zoom===zoom&&v.windowWidth===width;},[plane,slice,zoom,windowWidth],{timeout:15000});
         await settle(page);
         const image=await canvas.evaluate(c=>{
           const rect=c.getBoundingClientRect(), state=window.__VEACOM_TEST__.state().displayedView;
@@ -30,7 +51,7 @@ async function capture(checkout,build,encoding){
         });
         const name=build+'-'+encoding+'-'+plane+'-'+label;
         await fs.writeFile(path.join(output,name+'.png'),Buffer.from(image.png,'base64'));delete image.png;
-        if(label==='bright'||label==='dark')await cell.screenshot({path:path.join(output,name+'-visible.png')});
+        if(label==='bright'||label==='dark'||(measureEdges&&zoom===4))await cell.screenshot({path:path.join(output,name+'-visible.png')});
         report.views.push({name,build,encoding,series:s,plane,label,slice,...image});
         await save('patient-space.json',report);
       }
