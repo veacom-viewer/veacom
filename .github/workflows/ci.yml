@@ -120,7 +120,18 @@ jobs:
       - run: pnpm exec playwright install --with-deps chromium
       - run: pnpm run build:browser
       - run: node web/site/prepare.mjs
-      - run: node web/tools/browser-check.mjs
+      - id: browser-check
+        run: node web/tools/browser-check.mjs
+        env:
+          VEACOM_SWITCH_EVIDENCE: ${{ runner.temp }}/patient-switch
+      - name: Keep the first synthetic image under a mismatched patient label
+        if: failure() && steps.browser-check.outcome == 'failure'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: patient-switch-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/patient-switch
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Check catalog memory and source pixels on 1,024 CT files
         run: node web/tools/import-memory.mjs
       - name: Restore browser measurements after quit and process crash

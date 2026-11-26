@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -480,7 +480,7 @@ async function checkCachedPatientSwitches(page, series, sourceFrame) {
     references.set(id, await reference.jsonValue());
     await reference.dispose();
   }
-  assert.equal(new Set(references.values()).size, 2, 'The two source images must differ.');
+  assert.equal(new Set([...references.values()].map(reference => reference.pixels)).size, 2, 'The two source images must differ.');
   for (const { id, modality } of series) {
     const first = await page.getByTestId('series-' + id).evaluate((card, modality) => new Promise((resolve, reject) => {
       const pane = document.querySelector('[data-testid="dicom-viewport"]');
@@ -490,15 +490,27 @@ async function checkCachedPatientSwitches(page, series, sourceFrame) {
         observer.disconnect();
         clearTimeout(timeout);
         const canvas = pane.querySelector('canvas');
-        resolve({ pixels: canvas.toDataURL(), series: canvas.dataset.seriesId, frame: canvas.dataset.sourceFrame });
+        resolve({ pixels: canvas.toDataURL(), series: canvas.dataset.seriesId, frame: canvas.dataset.sourceFrame,
+          size: [canvas.width, canvas.height], view: window.__VEACOM_TEST__.state().displayedView, isolated: self.crossOriginIsolated });
       });
       const timeout = setTimeout(() => { observer.disconnect(); reject(new Error('The new patient overlay did not appear.')); }, 5000);
       observer.observe(pane, { childList: true, characterData: true, subtree: true });
       card.click();
     }), modality);
+    const reference = references.get(id);
+    const evidence = process.env.VEACOM_SWITCH_EVIDENCE;
+    if (evidence && (first.series !== id || first.frame !== String(sourceFrame) || first.pixels !== reference.pixels)) {
+      const directory = path.join(evidence, first.isolated ? 'threaded' : 'single', modality);
+      mkdirSync(directory, { recursive: true });
+      for (const [name, image] of [['reference', reference], ['first', first]]) {
+        const { pixels, ...metadata } = image;
+        writeFileSync(path.join(directory, name + '.png'), Buffer.from(pixels.split(',')[1], 'base64'));
+        writeFileSync(path.join(directory, name + '.json'), JSON.stringify({ expectedSeries: id, expectedFrame: sourceFrame, ...metadata }, null, 2));
+      }
+    }
     assert.equal(first.series, id, 'The first canvas under the new label must show the selected series.');
     assert.equal(first.frame, String(sourceFrame), 'The first canvas under the new label must show the selected source frame.');
-    assert(first.pixels === references.get(id), 'The first bitmap under the ' + modality + ' label must match that patient and source frame.');
+    assert(first.pixels === reference.pixels, 'The first bitmap under the ' + modality + ' label must match that patient and source frame.');
   }
 }
 
