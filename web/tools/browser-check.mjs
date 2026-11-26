@@ -780,6 +780,7 @@ try {
       check(!errors.length, `page errors: ${errors.join(' | ')}`);
       console.log(`${mode}: ${started.threads} thread(s), ${opened.series} series ${opened.dimensions.join('x')}, landmark model on ${model.threads} thread(s), ${errors.length} errors`);
     } catch (error) {
+      console.error(mode, error.stack);
       failures.push(`${mode}: ${error.message}${errors.length ? ` (page errors: ${errors.join(' | ')})` : ''}`);
     } finally {
       await page.close();
