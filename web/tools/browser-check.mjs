@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -465,6 +465,9 @@ async function checkPatientDrop(browser, url, folders) {
       const archive = readStoredZip(buffer);
       const source = modality === 'CT' ? study : mrStudy;
       if (folders) {
+        const engine = await page.evaluate(() => self.crossOriginIsolated ? 'threaded' : 'single');
+        mkdirSync('export-proof', { recursive: true });
+        writeFileSync(path.join('export-proof', engine + '-' + modality + '.zip'), buffer);
         checkPatientMedia(archive, source);
         await reopenPatientMedia(browser, url, { name: download.suggestedFilename(), mimeType: 'application/zip', buffer }, modality);
       } else {

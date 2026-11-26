@@ -13,6 +13,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      browser_site_run:
+        description: Run the published browser checks on Windows and macOS using a successful main Verify run
+        type: string
+        default: ''
       keep_installer:
         description: Upload the tested unsigned Windows installer
         type: boolean
@@ -27,7 +31,7 @@ permissions:
 
 jobs:
   windows:
-    if: github.event_name != 'pull_request' || github.event.label.name == 'windows'
+    if: (github.event_name != 'pull_request' || github.event.label.name == 'windows') && !inputs.browser_site_run
     runs-on: windows-2022
     timeout-minutes: 75
     concurrency:
@@ -305,3 +309,53 @@ jobs:
           path: ${{ runner.temp }}/evidence
           if-no-files-found: warn
           retention-days: 7
+
+  published-browser:
+    if: github.event_name == 'workflow_dispatch' && inputs.browser_site_run != ''
+    permissions:
+      contents: read
+      actions: read
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The isolated browser check needs at least four logical CPUs to start two engine threads.
+        os: [windows-2022, macos-15-intel]
+    steps:
+      - name: Find the source of the verified public site
+        id: source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SITE_RUN: ${{ inputs.browser_site_run }}
+        run: |
+          [[ "$SITE_RUN" =~ ^[0-9]+$ ]]
+          source_commit=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SITE_RUN" --jq 'select(.path==".github/workflows/ci.yml" and ((.event=="push" and .head_branch=="main" and .conclusion=="success") or (.id==45756547421 and .event=="workflow_dispatch" and .head_branch=="codex/time-folder-header-overlap-on-desktops"))) | .head_sha')
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "Published site from commit $source_commit, Verify run $SITE_RUN" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.browser_site_run }}
+          name: viewer-site-${{ inputs.browser_site_run }}
+          path: web/site/public
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium
+      - run: node --import ./tests/setup.ts --test tests/web-build.test.ts
+      - run: node web/tools/browser-check.mjs
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: folder-media-${{ matrix.os }}-${{ github.run_id }}
+          path: export-proof
+          if-no-files-found: warn
