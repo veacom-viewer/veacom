@@ -34,11 +34,7 @@ async function open(profile, study, locale) {
     await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1360, 820));
     await page.emulateMedia({ reducedMotion: 'reduce' });
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().fullVolumeLoaded, undefined, { timeout: 90_000 });
-    const tab = page.getByTestId('inspector-tab-measurements');
-    if (!await tab.isVisible()) await page.getByTestId('tool-inspector').click();
-    await tab.click();
-    await settle(page);
-    return { app, page };
+    return { page, close: () => closeDesktop(app), crash: () => killTree(app.process()) };
   } catch (error) { await closeDesktop(app); throw error; }
 }
 
@@ -126,12 +122,19 @@ async function selectAcquisition(page, number) {
   return id;
 }
 
-async function runTrial(dir, mode, locale) {
+async function runTrial(dir, mode, locale, openStudy) {
   const profile = path.join(dir, mode);
   const study = name => path.join(dir, name, 'S01');
   let active;
-  const start = async name => { active = await open(profile, study(name), locale); return active.page; };
-  const stop = async () => { assert.ok(await closeDesktop(active.app)); active = undefined; };
+  const start = async name => {
+    active = await openStudy(profile, study(name), locale);
+    const { page } = active, tab = page.getByTestId('inspector-tab-measurements');
+    if (!await tab.isVisible()) await page.getByTestId('tool-inspector').click();
+    await tab.click();
+    await settle(page);
+    return page;
+  };
+  const stop = async () => { assert.ok(await active.close()); active = undefined; };
   try {
     let page = await start('other');
     const control = await draw(page, source(81), 'text', 'Second patient');
@@ -188,7 +191,7 @@ async function runTrial(dir, mode, locale) {
     await page.keyboard.press(mod + '+z');
     await lastRow.waitFor();
     await saved(page);
-    if (mode === 'crash') { await killTree(active.app.process()); active = undefined; }
+    if (mode === 'crash') { await active.crash(); active = undefined; }
     else await stop();
 
     page = await start('other');
@@ -216,7 +219,7 @@ async function runTrial(dir, mode, locale) {
     const oblique = await draw(page, { mode: 'mpr', plane: 'axial', slice: 2, oblique: [2, -3] }, 'text', 'Six-image landmark');
     const obliqueBefore = await onScreen(page, oblique);
     await saved(page);
-    if (mode === 'crash') { await killTree(active.app.process()); active = undefined; }
+    if (mode === 'crash') { await active.crash(); active = undefined; }
     else await stop();
     page = await start('regrouped');
     assert.notEqual(await selectAcquisition(page, 1), firstId);
@@ -243,13 +246,18 @@ async function runTrial(dir, mode, locale) {
     }
     return { mode, locale, recovered: entries.length, wrongPatient: 0, partialImport: expectedSubset.length,
       regroupedLabel: regrouped.label, regroupedOblique: obliqueBefore.label, secondAcquisitionLabel: secondBefore.label, recalibratedLabel, entries };
-  } finally { if (active) await closeDesktop(active.app); }
+  } finally { if (active) await active.close(); }
 }
 
 async function main() {
   await fs.mkdir(output, { recursive: true });
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'veacom-measurements-'));
+  let browser;
   try {
+    if (process.argv[3] === '--browser-site') {
+      const { measurementBrowser } = await import('../web/tools/measurement-browser.mjs');
+      browser = await measurementBrowser(path.resolve(process.argv[4]));
+    }
     const fixture = path.join(__dirname, 'fixtures/make-smoke-study.mjs');
     execFileSync(process.execPath, [fixture, path.join(dir, 'first')]);
     execFileSync(process.execPath, [fixture, path.join(dir, 'other'), '--other-patient']);
@@ -265,10 +273,13 @@ async function main() {
     }
     const results = [];
     for (const [mode, locale] of [['normal', 'en'], ['crash', 'tr']]) {
-      results.push(await runTrial(dir, mode, locale));
+      results.push(await runTrial(dir, mode, locale, browser?.open || open));
       console.log(`PASS ${mode}: 50 ordered findings, matching geometry and labels, zero wrong-patient findings`);
     }
     await fs.writeFile(path.join(output, 'recovery.json'), JSON.stringify(results, null, 2) + '\n');
-  } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  } finally {
+    if (browser) await browser.close();
+    await fs.rm(dir, { recursive: true, force: true });
+  }
 }
 main().catch(error => { console.error(error); process.exitCode = 1; });
