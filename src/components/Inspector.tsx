@@ -79,14 +79,15 @@ function TagPanel({ series, frame, joined, query, onQuery, onError }: TagSource 
   </div>;
 }
 
-export function Inspector({ open, showTags, inert, children, series, frame, joined, onError, query, onQuery }: TagSource & {
-  open: boolean; showTags: boolean; inert: boolean; children: ReactNode; query: string; onQuery: (value: string) => void;
+export function Inspector({ open, showTags, inert, children, series, frame, joined, onError }: TagSource & {
+  open: boolean; showTags: boolean; inert: boolean; children: ReactNode;
 }) {
   const { t } = useTranslation();
+  const [query, setQuery] = useState('');
   if (!open) return null;
   return <aside className="inspector" aria-label={t('inspector.label')} inert={inert || undefined}>
     {children}
     {showTags && <TagPanel series={series} frame={frame} joined={joined} onError={onError} query={query}
-      onQuery={value => { onQuery(value); usage.touch('panel'); }} />}
+      onQuery={value => { setQuery(value); usage.touch('panel'); }} />}
   </aside>;
 }

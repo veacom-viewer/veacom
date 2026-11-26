@@ -15,20 +15,12 @@ import { Glyph } from './Glyph';
 import { Menu, MenuDivider, MenuHeading, MenuItem } from './Toolbar';
 import './SeriesBrowser.css';
 
-export function useSeriesFilters() {
-  const [search, setSearch] = useState('');
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  return { search, setSearch, searchOpen, setSearchOpen, collapsed, setCollapsed };
-}
-
 export interface SeriesBrowserProps {
-  filters: ReturnType<typeof useSeriesFilters>;
   series: Series[];
   activeId: string | null;
   loadingIds: Set<string>;
   /** Segmentations drawn over their images; selecting one shows or hides it. */
-  shownSegmentations?: readonly string[];
+  shownSegmentationIds?: ReadonlySet<string>;
   /** Series whose preview could not be made: their card shows a dash. */
   failedIds?: ReadonlySet<string>;
   /** The series of a disc being read, as its DICOMDIR lists them (App's importStudies). */
@@ -314,17 +306,17 @@ function storeGuessNames(enabled: boolean) {
   try { localStorage.setItem('veacom:guess-names', enabled ? '1' : '0'); } catch { /* Storage may be disabled. */ }
 }
 
-export function SeriesBrowser({ filters, series, activeId, loadingIds, shownSegmentations, failedIds, waiting, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
+export function SeriesBrowser({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, actionsRef, inert }: SeriesBrowserProps & { actionsRef: RefObject<SeriesActions>; inert: boolean }) {
   return <div className="series-browser-slot" inert={inert || undefined}>
-    <SeriesList filters={filters} series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedIds} waiting={waiting}
+    <SeriesList series={series} activeId={activeId} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedIds} waiting={waiting}
       onSelect={item => actionsRef.current.select(item)} onRemove={ids => actionsRef.current.remove(ids)} onOpen={card => actionsRef.current.open(card)} />
   </div>;
 }
 
-function SeriesList({ filters, series, activeId, loadingIds, shownSegmentations, failedIds, waiting, onSelect, onRemove, onOpen }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove']; onOpen: SeriesActions['open'] }) {
-  const { search, setSearch, searchOpen, setSearchOpen, collapsed, setCollapsed } = filters;
-  const shownSegmentationIds = new Set(shownSegmentations);
+function SeriesList({ series, activeId, loadingIds, shownSegmentationIds, failedIds, waiting, onSelect, onRemove, onOpen }: SeriesBrowserProps & { onSelect: SeriesActions['select']; onRemove: SeriesActions['remove']; onOpen: SeriesActions['open'] }) {
   const { locale, t } = useTranslation();
+  const [search, setSearch] = useState('');
+  const [searchOpen, setSearchOpen] = useState(false);
   // The likely sequence in place of a series' own name (VEAcom Next's "sequence names"), remembered.
   const [guessNames, setGuessNames] = useState(() => { try { return localStorage.getItem('veacom:guess-names') === '1'; } catch { return false; } });
   const toggleGuessNames = () => {
@@ -332,6 +324,7 @@ function SeriesList({ filters, series, activeId, loadingIds, shownSegmentations,
     storeGuessNames(!guessNames);
   };
   const findButton = useRef<HTMLButtonElement>(null), searchInput = useRef<HTMLInputElement>(null);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   useEffect(() => { usage.touch('panel'); }, [search, searchOpen, collapsed]);
   const guesses = new Map(series.map(item => [item.id, sequenceGuess(item, t)]));
   const query = foldSearch(search.trim());
@@ -468,7 +461,7 @@ function SeriesList({ filters, series, activeId, loadingIds, shownSegmentations,
           {!hidden && <div className="series-study-items">{withWaiting(study.items, unread, study.first.studyUid).map(entry => {
             if (entry.kind === 'waiting') return <WaitingCard key={`waiting:${entry.card.info.uid}`} card={entry.card} onOpen={onOpen} />;
             const item = entry.item;
-            if (item.segmentation) return <SegmentationCard key={item.id} item={item} series={series} shown={shownSegmentationIds.has(item.id)} onSelect={onSelect} onMenu={event => openMenu(event, { item })} />;
+            if (item.segmentation) return <SegmentationCard key={item.id} item={item} series={series} shown={shownSegmentationIds?.has(item.id) ?? false} onSelect={onSelect} onMenu={event => openMenu(event, { item })} />;
             const loading = loadingIds.has(item.id);
             const reference = references.get(item.id);
             // The card is the open one while its series or its reference image is shown.

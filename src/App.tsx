@@ -12,7 +12,7 @@ import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgres
 import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, useSeriesFilters, type WaitingSeries } from './components/SeriesBrowser';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, type WaitingSeries } from './components/SeriesBrowser';
 import { SliceBar } from './components/SliceBar';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
@@ -541,10 +541,6 @@ export default function App() {
   const [annotations, setAnnotations] = useState<Record<string, Annotation[]>>({});
   const annotationRef = useRef(annotations);
   const [settings, setSettings] = useState(readSettings);
-  const [workspaceRevision, setWorkspaceRevision] = useState(0);
-  const [toolbarExpanded, setToolbarExpanded] = useState(false);
-  const [tagQuery, setTagQuery] = useState('');
-  const seriesFilters = useSeriesFilters();
   const [openSections, setOpenSections] = useState(readOpenSections);
   const [calibrationScales, setCalibrationScales] = useState<Record<string, number>>({});
   // Ball and ruler calibrations from the deformity plan, by series and film: each stands for its own film only.
@@ -972,6 +968,7 @@ export default function App() {
   const mrFusion = fusionPet ? fusionPet.modality === 'MR' : mrActive && !overlayChoices.length;
   const plainFusion = mrFusion || fusionPet?.modality === 'NM';
   const segmentationOverlays = shownSegmentations.flatMap(id => segmentationMasks.get(id) ?? []);
+  const shownSegmentationIds = new Set(shownSegmentations);
   const assessmentVolumes = showAssessment ? Array.from(displayVolumes, ([, volume]) => volume).filter(volume => volume.sourceFrameIndex === undefined) : [];
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
@@ -2175,8 +2172,6 @@ export default function App() {
       // With the list emptied, the workspace starts afresh as at launch: one pane, nothing hidden, maximized, in MPR,
       // in 3D, fused or playing, so the next study opens as the first one did.
       const fresh = makeSlot();
-      // The old browser DOM can retain handlers and their captured CT volume after its last pane closes.
-      if (window.veacom?.web) setWorkspaceRevision(value => value + 1);
       hiddenSlots.current = []; beforeMpr.current = null;
       setSlots([fresh]); setLayout([1, 1]); activateSlot(fresh.id);
       setMaximized(null); setIsMpr(false); setShow3d(false); setShowFusion(false); setFusionId(null);
@@ -3304,7 +3299,7 @@ export default function App() {
     }),
     { id: 'series', group: 'series', priority: 1, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<List size={18} />} label={t('toolbar.chooseSeries')} testId="tool-series" popup="menu" indicator expanded={menu === 'series'} disabled={!series.length} onClick={() => toggleMenu('series')} />
-      {menu === 'series' && <Menu label={t('toolbar.series')} onClose={closeMenu} className="series-menu"><SeriesMenuItems series={series} activeId={activeSeries?.id} shown={new Set(shownSegmentations)} onSelect={selectFromMenu} /></Menu>}</div> },
+      {menu === 'series' && <Menu label={t('toolbar.series')} onClose={closeMenu} className="series-menu"><SeriesMenuItems series={series} activeId={activeSeries?.id} shown={shownSegmentationIds} onSelect={selectFromMenu} /></Menu>}</div> },
     { id: 'layout', group: 'layout', priority: 11, node: <div className="menu-anchor" data-menu>
       <ToolButton icon={<LayoutIcon rows={layout[0]} columns={layout[1]} />} label={`${t('toolbar.layout')}: ${layout[0]} × ${layout[1]}`} testId="tool-layout" popup="dialog" indicator expanded={menu === 'layout'} disabled={noStudy} onClick={() => toggleMenu('layout')} />
       {menu === 'layout' && <Popover label={t('toolbar.layout')} onClose={closeMenu} className="layout-popover">
@@ -3429,7 +3424,7 @@ export default function App() {
   const fileChoiceDisabled = Boolean(busy && !(busy === 'status.connecting' && window.veacom?.web));
   const noticeBar = notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : undefined} data-testid="notice" data-kind={notice.kind} data-code={notice.code ?? notice.key}><span>{notice.key ? t(notice.key, notice.params) : notice.warnings ? warningTexts(notice.warnings, locale).join(' · ') : notice.message}</span>{notice.action && <button type="button" className="notice-action" data-testid="notice-action" onClick={() => { notice.action?.run(); setNotice(null); focusSoon('[data-annotation-row] .annotation-main', '[data-testid="findings-add"]'); }}>{t(notice.action.label)}</button>}<button type="button" className="notice-dismiss" aria-label={t('notice.dismiss')} data-testid="notice-dismiss" onClick={() => { setNotice(null); focusImage(); }}><X size={14} /></button></div>;
 
-  return <div key={workspaceRevision} className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
+  return <div className="app-shell" data-testid="veacom-app" data-measurement-save={recovery.status} data-ready={!busy && !connectionError} data-locale={locale}
     onPointerMoveCapture={event => { pointerAt.current = { x: event.clientX, y: event.clientY }; }}
     onPointerDownCapture={event => {
       if (quick && !quickRef.current?.contains(event.target as Node)) setQuick(null);
@@ -3437,13 +3432,13 @@ export default function App() {
     }}>
     {quickMenu}
     <div className={`toolbar-region${show3d ? ' beside-3d' : ''}`} inert={show3d || capturing || undefined} onPointerEnter={() => usage.toolbarHover(true)} onPointerLeave={() => usage.toolbarHover(false)}>
-      <Toolbar secondRow={toolbarExpanded} onSecondRow={setToolbarExpanded} label={t('toolbar.label')} start={toolbarStart} end={toolbarEnd} moreLabel={t('toolbar.more')} />
+      <Toolbar label={t('toolbar.label')} start={toolbarStart} end={toolbarEnd} moreLabel={t('toolbar.more')} />
     </div>
     <TooltipLayer />
     {/* 3D opens beside the images (as in VEAcom Next): the panes stay in view and in use, so a point picked in
         3D shows in them; the series list and the toolbar wait until 3D closes. */}
     <div className={`workspace${show3d ? ' beside-3d' : ''}`}>
-      <SeriesBrowser filters={seriesFilters} series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentations={shownSegmentations} failedIds={failedPreviews} waiting={waiting}
+      <SeriesBrowser series={series} activeId={activeSeries?.id ?? null} loadingIds={loadingIds} shownSegmentationIds={shownSegmentationIds} failedIds={failedPreviews} waiting={waiting}
         actionsRef={seriesActions} inert={show3d || capturing} />
       {/* While a pane's slices are captured for pictures or video, the panes are held still. */}
       <main className="imaging-workspace" inert={(exportBusy && (exportMode === 'images' || exportMode === 'video')) || undefined}>
@@ -3529,7 +3524,7 @@ export default function App() {
         return plan && <div className="assessment-overlay">{plan}</div>;
       })()}
       {showAssessment && <div className="assessment-overlay" hidden={!assessmentShown}><Suspense fallback={<div className="centered-loading"><LoaderCircle /> {t('loading.assessment')}</div>}><AssessmentPanel volumes={assessmentVolumes} joinedOf={joinedOf} annotations={annotations} activeSeriesId={activeSeries?.id} onRequestRoi={requestAssessmentRoi} onFinishRoi={finishAssessmentRoi} onClose={closeAssessment} hidden={!assessmentShown} /></Suspense></div>}
-      <Inspector query={tagQuery} onQuery={setTagQuery} open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
+      <Inspector open={inspectorShown} showTags={settings.panel === 'tags'} inert={capturing} series={activeSeries} frame={currentSourceFrame} joined={activeSeries ? joinedOf(activeSeries) : null} onError={showTagError}>
         {inspectorShown && <>
         <div className="inspector-tabs"><div className="inspector-tablist" role="tablist" aria-label={t('inspector.label')} onKeyDown={event => {
           const order: Exclude<Panel, null>[] = ['measurements', 'display', 'tags'];
