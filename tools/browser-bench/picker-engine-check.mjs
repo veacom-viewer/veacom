@@ -7,15 +7,14 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { chromium, firefox, webkit } from 'playwright';
-import { makeStudy } from './make-study.mjs';
+import { makeEdgeSeries, patient, root } from './edge-study.mjs';
 import { serveVeacom } from './lib/serve.mjs';
 
 const [engine, dist, evidence] = process.argv.slice(2);
 const scratch = await mkdtemp(path.join(tmpdir(), 'veacom-ct-picker-'));
-const folder = path.join(scratch, 'ct-300'), sourceNumbers = [17,19,18];
-const root = '2.25.' + BigInt('0x' + createHash('sha256').update('ct-300').digest('hex').slice(0,24));
+const folder = path.join(scratch, 'edges'), sourceNumbers = [17,19,18];
 await mkdir(evidence, { recursive:true });
-await makeStudy('ct-300', folder);
+await writeFile(path.join(evidence,'geometry.json'),JSON.stringify(await makeEdgeSeries(folder,sourceNumbers),null,2));
 const files = sourceNumbers.map(n => path.join(folder, 'S01', 'IM' + String(n).padStart(5,'0') + '.dcm'));
 await writeFile(path.join(evidence,'source.dcm'),await readFile(files[0]));
 const archive=path.join(scratch,'source-frames.zip');
@@ -99,7 +98,7 @@ try {
       Object.assign(row,data);
       const byUid = (a,b) => a.uid.localeCompare(b.uid);
       assert.equal(row.isolation,isolated);
-      assert.equal(row.patient,'BENCH-ct-300');
+      assert.equal(row.patient,patient);
       const sources=kind==='file'?expected.slice(0,1):[...expected];
       assert.deepEqual(row.dimensions,[512,512,sources.length]);
       assert.deepEqual([...row.frames].sort(byUid),sources.sort(byUid));
@@ -115,7 +114,7 @@ try {
       row.imageAnnotations='off';
       await page.evaluate(() => new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
       row.scales=[];
-      for(const [sample,height] of [['native',512],['larger',640],['half',256],['native-again',512]]){
+      for(const [sample,height] of [['native',512],['larger',640],['double',1024],['half',256],['native-again',512]]){
         for(let tries=0;tries<5;tries++){
           const actual=await pane.boundingBox();
           const delta=height-Math.round(actual.height);
