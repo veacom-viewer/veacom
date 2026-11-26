@@ -20,25 +20,31 @@ const cases = [
   ['sigmoid-narrow', 'SIGMOID', 0.5, 0.125, 0.015625, 0.5],
   ['exact-small-units', 'LINEAR_EXACT', 0.01, 0.005, 0.00125, 0.01],
 ];
-function makeFile([name, curve, center, width, slope, intercept], index) {
-  const sop = root + '.3.' + (index + 1), series = root + '.2.' + (index + 1), ct = '1.2.840.10008.5.1.4.1.1.2';
+const petCases = [
+  ['pet-exact', 'LINEAR_EXACT', .5, .125, .015625, .5, {corrected:true,codes}],
+  ['pet-sigmoid', 'SIGMOID', 2.5, 2, .15625, 0, {corrected:true,codes:[0,4,8,12,16,20,24,28,32]}],
+  ['pet-uncorrected', 'LINEAR_EXACT', .5, .125, .015625, .5, {corrected:false,codes}],
+];
+function makeFile([name, curve, center, width, slope, intercept, pet], index) {
+  const sop = root + '.3.' + (index + 1), series = root + '.2.' + (index + 1), ct = pet ? '1.2.840.10008.5.1.4.1.1.128' : '1.2.840.10008.5.1.4.1.1.2';
   const pixels = Buffer.alloc(size * size * 2);
-  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) pixels.writeInt16LE(codes[Math.floor(x / band)], (y * size + x) * 2);
+  for (let y = 0; y < size; y++) for (let x = 0; x < size; x++) pixels.writeInt16LE((pet?.codes ?? codes)[Math.floor(x / band)], (y * size + x) * 2);
   const meta = dataset([[2,1,'OB',[0,1]], [2,2,'UI',ct], [2,3,'UI',sop], [2,0x10,'UI','1.2.840.10008.1.2.1'], [2,0x12,'UI',root+'.4']]);
   const fields = dataset([
-    [8,0x16,'UI',ct], [8,0x18,'UI',sop], [8,0x20,'DA','20000101'], [8,0x60,'CS','CT'], [8,0x103e,'LO',name],
+    [8,0x16,'UI',ct], [8,0x18,'UI',sop], [8,0x20,'DA','20000101'], [8,0x60,'CS',pet ? 'PT' : 'CT'], [8,0x103e,'LO',name],
     [0x10,0x10,'PN','PHANTOM^GREYSCALE'], [0x10,0x20,'LO','SYNTHETIC-WINDOW'], [0x18,0x50,'DS',1],
     [0x20,0xd,'UI',root+'.1'], [0x20,0xe,'UI',series], [0x20,0x11,'IS',index+1], [0x20,0x13,'IS',1],
     [0x20,0x32,'DS',[0,0,0]], [0x20,0x37,'DS',[1,0,0,0,1,0]], [0x20,0x52,'UI',root+'.5'],
     [0x28,2,'US',1], [0x28,4,'CS','MONOCHROME2'], [0x28,0x10,'US',size], [0x28,0x11,'US',size], [0x28,0x30,'DS',[1,1]],
     [0x28,0x100,'US',16], [0x28,0x101,'US',16], [0x28,0x102,'US',15], [0x28,0x103,'US',1],
     [0x28,0x1050,'DS',center], [0x28,0x1051,'DS',width], [0x28,0x1052,'DS',intercept], [0x28,0x1053,'DS',slope],
-    ...(curve ? [[0x28,0x1056,'CS',curve]] : []), [0x7fe0,0x10,'OW',pixels],
-  ]);
+    ...(curve ? [[0x28,0x1056,'CS',curve]] : []), ...(pet ? [[0x28,0x51,'CS',pet.corrected?['ATTN','DECY']:['DECY']],[0x54,0x1000,'CS',['STATIC','IMAGE']],
+      [0x54,0x1001,'CS','GML'],[0x54,0x1002,'CS','EMISSION'],[0x54,0x1006,'CS','BW']] : []), [0x7fe0,0x10,'OW',pixels],
+  ].sort((a,b)=>a[0]-b[0] || a[1]-b[1]));
   const file = path.join(output, 'sources', name + '.dcm');
   const contents = Buffer.concat([Buffer.alloc(128),Buffer.from('DICM'),element(2,0,'UL',meta.length),meta,fields]);
   writeFileSync(file,contents);
-  return { name, sop, series, file, sha256:createHash('sha256').update(contents).digest('hex') };
+  return { name, sop, series, file, pet: !!pet, sha256:createHash('sha256').update(contents).digest('hex') };
 }
 
 async function observe(browser, fixtures, isolated) {
@@ -66,7 +72,7 @@ async function observe(browser, fixtures, isolated) {
     assert.equal(await page.locator('html').getAttribute('lang'),language);
     report.language=language;
     const catalog = await page.evaluate(async()=>(await window.veacom.listSeries()).series.map(s=>({id:s.id,uid:s.uid,name:s.description})));
-    for(const entry of fixtures) {
+    for(const entry of fixtures.filter(f=>!f.pet)) {
       const selected=catalog.find(s=>s.uid===entry.series); assert.equal(selected?.name,entry.name);
       const id=selected.id, card=page.getByTestId('series-'+id); await card.click();
       await page.waitForFunction(id=>document.querySelector('[data-testid="dicom-canvas"]')?.dataset.seriesId===id && window.__VEACOM_TEST__.state().activeSeriesId===id, id);
@@ -155,6 +161,42 @@ async function observe(browser, fixtures, isolated) {
         await width.press('ArrowDown');const down=await fieldValues();
         report.manual[key+'Arrows']={initial,up,down};
       }
+      await width.fill('');await width.pressSequentially('1.25');
+      await level.fill('');await level.pressSequentially('-0.375');await level.press('Tab');
+      report.manual.typedNegative=await inspect('typed-negative');
+      report.pet=[];
+      for(const item of fixtures.filter(f=>f.pet)) {
+        const id=catalog.find(s=>s.uid===item.series).id;
+        await page.getByTestId('series-'+id).click();
+        await page.waitForFunction(id=>document.querySelector('[data-testid="dicom-canvas"]')?.dataset.seriesId===id,id);
+        const source=await page.evaluate(async id=>{
+          const api=window.veacom,s=(await api.listSeries()).series.find(s=>s.id===id),{generation}=await api.getCoreState();
+          const frame=s.frameMetadata[0], values=[];
+          for(let i=0;i<9;i++){
+            const x=8+16*i,stats=await api.measure(id,generation,s.sourceRevision,{kind:'sourceRegion',frame:{index:0,sopInstanceUid:frame.sopInstanceUid},shape:'rectangle',points:[[x-1,82,0],[x+1,84,0]],pixelUnits:false});
+            if(stats.min!==stats.max)throw new Error('PET source band varies');
+            values.push(stats.min);
+          }
+          return {sop:frame.sopInstanceUid,unit:s.valueUnit,factor:s.suvFactor,values};
+        },id);
+        assert.equal(item.sop,source.sop);
+        const row={name:item.name,...source,states:{}};
+        const capture=async stage=>{
+          await page.evaluate(()=>new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r))));
+          const view=await page.evaluate(()=>window.__VEACOM_TEST__.state().displayedView);
+          row.states[stage]={view,overlay:await page.getByTestId('image-overlay').first().textContent()};
+          await page.getByTestId('dicom-canvas').first().screenshot({path:path.join(dir,item.name+'-'+stage+'.png')});
+        };
+        await capture('opening');
+        await page.getByTestId('tool-window-presets').click();
+        row.offersSuv=await page.getByTestId('preset-suv10').isVisible();
+        if(row.offersSuv){
+          await page.getByTestId('preset-suv10').click();await capture('suv10');
+          await page.getByTestId('tool-window-presets').click();
+        }
+        await page.getByTestId('preset-dicom').click();await capture('dicom');
+        report.pet.push(row);
+      }
     }
   } catch(error) {
     report.error=String(error?.stack??error);await page.screenshot({path:path.join(dir,'error.png')}).catch(()=>{});throw error;
@@ -166,7 +208,7 @@ async function observe(browser, fixtures, isolated) {
   }
 }
 mkdirSync(path.join(output,'sources'),{recursive:true});
-const fixtures=cases.map(makeFile);
+const fixtures=[...cases,...petCases].map(makeFile);
 writeFileSync(path.join(output,'sources.json'),JSON.stringify(fixtures.map(({file,...other})=>({...other,file:path.basename(file)})),null,2));
 const browser=await ({chromium,firefox,webkit}[engine]).launch(engine==='firefox'
   ? {headless:false,firefoxUserPrefs:{'webgl.force-enabled':true,'gfx.webrender.software':true}} : {});
