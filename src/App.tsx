@@ -1340,11 +1340,16 @@ export default function App() {
     pending.current.set(item.id, full);
     // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
     const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
-    if (!cached && item.dimensions[2] > 1) void frameCache.get(item, openingSlice(item)).then(async volume => {
-      if (!previewWanted()) return;
-      await prepareSourceProgram(volume);
-      if (previewWanted()) storeVolume(volume);
-    }).catch(() => { /* The full decoder supplies the actionable error. */ });
+    if (!cached && item.dimensions[2] > 1) {
+      const preview = frameCache.get(item, openingSlice(item));
+      // Link for the catalog's pixel type while the frame is read. The decoded array still selects the actual program.
+      void prepareSourceProgram(item);
+      void preview.then(async volume => {
+        if (!previewWanted()) return;
+        await prepareSourceProgram(volume);
+        if (previewWanted()) storeVolume(volume);
+      }).catch(() => { /* The full decoder supplies the actionable error. */ });
+    }
     return full;
   };
 
