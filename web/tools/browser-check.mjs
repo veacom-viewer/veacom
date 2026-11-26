@@ -266,7 +266,8 @@ async function checkClosedCTBuffer(browser, url) {
     }
     await chooseCT();
     const first = await page.evaluate(() => window.firstPaneFrame);
-    assert.deepEqual(first, { series: await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId), slice: '0' },
+    // The smoke CT has increasing patient Z. Its superior opening slice is the last source in the stack.
+    assert.deepEqual(first, { series: await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId), slice: String(slices - 1) },
       'The first animation frame after mounting must draw the opening CT slice.');
     const paging = await page.evaluate(async () => {
       const original = Array.prototype.sort;
