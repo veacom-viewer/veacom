@@ -38,17 +38,18 @@ try {
           for (const type of ['dragEnter', 'dragOver', 'drop']) {
             await cdp.send('Input.dispatchDragEvent', { type, x: 640, y: 400, data: { items: [], files: [study], dragOperationsMask: 1 } });
           }
-          await page.locator('canvas[data-series-id][data-slice="0"]').first().waitFor();
+          await page.locator('canvas[data-series-id][data-slice]').first().waitFor();
           await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
           const result = await page.evaluate(async () => {
             const [series] = (await window.veacom.listSeries()).series;
             const { generation } = await window.veacom.getCoreState();
-            const frame = await window.veacom.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision, index: 0 });
+            const index = Number(document.querySelector('canvas[data-series-id][data-slice]').dataset.slice);
+            const frame = await window.veacom.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision, index });
             return { locale: document.querySelector('[data-testid="veacom-app"]').dataset.locale, patient: series.patientId,
-              slices: series.dimensions[2], first: frame.headers.get('X-SOP-Instance-UID') };
+              slices: series.dimensions[2], index, first: frame.headers.get('X-SOP-Instance-UID') };
           });
           const id = BigInt('0x'+createHash('sha256').update('ct-300').digest('hex').slice(0,24)).toString();
-          assert.deepEqual(result, { locale, patient:'BENCH-ct-300', slices:300, first:'2.25.'+id+'.3.1' });
+          assert.deepEqual(result, { locale, patient:'BENCH-ct-300', slices:300, index:299, first:'2.25.'+id+'.3.1' });
           await page.screenshot({ path: path.join(out, label + '-' + locale + '-ct.png') });
           records.push({ label, ...result });
         } finally { await context.close(); }
