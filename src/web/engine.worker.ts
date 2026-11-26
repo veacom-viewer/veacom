@@ -176,6 +176,7 @@ const consoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => { lastError = args.map(String).join(' ').slice(0, 4000); consoleError(...args); };
 
 async function answer(data: EngineRequest): Promise<void> {
+  performance.mark('veacom:worker-receive-' + data.op);
   let loaded: Awaited<typeof ready>;
   try {
     loaded = await ready;
@@ -203,6 +204,7 @@ async function answer(data: EngineRequest): Promise<void> {
       }
       case 'import': {
         const { files, heads } = await readImportFiles(data.files);
+        performance.mark('veacom:heads-ready');
         const ids: number[] = [];
         try {
           for (const [i, { path, file }] of files.entries()) {
@@ -210,7 +212,9 @@ async function answer(data: EngineRequest): Promise<void> {
             ids.push(id);
             pageFiles.set(id, file);
           }
+          performance.mark('veacom:files-registered');
           value = JSON.parse(engine.importPaths(data.roots));
+          performance.mark('veacom:catalog-ready');
         } finally {
           if (ids.length < files.length) engine.pruneFiles();
           forgetUnlisted();
@@ -243,6 +247,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
     }
+    performance.mark('veacom:worker-send-' + data.op);
     scope.postMessage({ id: data.id, ok: true, value }, transfer);
   } catch (error) {
     // The engine's own messages arrive as plain Errors holding its JSON body. Anything else is the engine crashing

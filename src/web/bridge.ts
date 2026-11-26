@@ -207,6 +207,7 @@ export function createWebBridge(): DesktopBridge {
     const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
     inFlight = next.id;
     const source = next.request.op === 'import' ? next.request.files : undefined;
+    performance.mark('veacom:post-' + next.request.op);
     worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
@@ -226,6 +227,7 @@ export function createWebBridge(): DesktopBridge {
   /** A fresh engine Worker, in place of the old one. */
   function spawn(): void {
     stop();
+    performance.mark('veacom:worker-start');
     const own = worker = new Worker(new URL('./engine.worker.ts', import.meta.url), { type: 'module' });
     own.onmessage = ({ data }) => {
       if (own !== worker) return;
@@ -237,6 +239,7 @@ export function createWebBridge(): DesktopBridge {
       if (data.id !== inFlight) return;
       const request = pending.get(data.id);
       if (!request) return;
+      performance.mark('veacom:receive-' + request.op);
       inFlight = null;
       pending.delete(data.id);
       releaseWhenDrained();

@@ -1343,10 +1343,14 @@ export default function App() {
     if (!cached && item.dimensions[2] > 1) {
       const preview = frameCache.get(item, openingSlice(item));
       // Link for the catalog's pixel type while the frame is read. The decoded array still selects the actual program.
-      void prepareSourceProgram(item);
+      performance.mark('veacom:catalog-shader-start');
+      void prepareSourceProgram(item).then(() => performance.mark('veacom:catalog-shader-ready'));
+      performance.mark('veacom:catalog-shader-return');
       void preview.then(async volume => {
         if (!previewWanted()) return;
+        performance.mark('veacom:preview-ready');
         await prepareSourceProgram(volume);
+        performance.mark('veacom:preview-shader-ready');
         if (previewWanted()) storeVolume(volume);
       }).catch(() => { /* The full decoder supplies the actionable error. */ });
     }
