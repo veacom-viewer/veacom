@@ -13,7 +13,13 @@ import { zipStored } from '../src/web/zip';
 import { readStoredZip } from './storedZip';
 
 const desktop = createRequire(import.meta.url)('../electron/mp4.cjs');
-const { readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
+const { catalogPrefixMap, readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
+
+it('uses the number of prefetched bytes to choose how the catalog receives them', () => {
+  const head = new Uint8Array(64 * 1024);
+  assert.equal(catalogPrefixMap([...Array(300).fill(head), ...Array(800).fill(undefined)]), undefined);
+  assert(catalogPrefixMap(Array(1000).fill(head)) instanceof Map);
+});
 
 it('bounds the total bytes read ahead and preserves file indices when reads are skipped', async () => {
   const file = new File([new Uint8Array(64 * 1024)], 'slice.dcm');

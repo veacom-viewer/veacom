@@ -4,7 +4,7 @@
 // Without it: half the cores, at most 4.
 // The site's Trusted Types rule holds in Workers too: the helpers are started from here, and only this site's scripts
 // may be started.
-import { readHeads } from './file-heads.js';
+import { catalogPrefixMap, readHeads } from './file-heads.js';
 
 self.trustedTypes?.createPolicy('default', {
   createScriptURL: (url) => {
@@ -113,10 +113,11 @@ self.onmessage = async ({ data }) => {
     series = [];
     const heads = data.prefetch ? await readHeads(data.files) : [];
     const prefetched = performance.now() - t0;
-    const prefixes = new Map();
+    const prefixes = catalogPrefixMap(heads);
     data.files.forEach(({ path, file }, i) => {
-      const id = engine.addFile(`/in/${path}`, file);
-      if (heads[i]) prefixes.set(id, heads[i]);
+      const head = heads[i];
+      const id = engine.addFile(`/in/${path}`, file, prefixes ? undefined : head);
+      if (prefixes && head) prefixes.set(id, head);
     });
     const result = JSON.parse(engine.importPaths(data.roots.map((root) => `/in/${root}`), prefixes));
     series = result.series;

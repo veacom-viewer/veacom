@@ -10,6 +10,7 @@
 // runs and refuses pictures.
 
 import { readImportFiles, type ImportFiles } from './droppedFiles';
+import { catalogPrefixMap } from '../../web/file-heads.js';
 import type { HelperFiles } from './engine.helper';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
@@ -204,14 +205,14 @@ async function answer(data: EngineRequest): Promise<void> {
       case 'import': {
         const { files, heads } = await readImportFiles(data.files);
         const ids: number[] = [];
-        const prefixes = new Map<number, Uint8Array>();
+        const prefixes = catalogPrefixMap(heads);
         try {
           for (const [i, { path, file }] of files.entries()) {
-            const id = engine.addFile(path, file);
+            const head = heads[i];
+            const id = engine.addFile(path, file, prefixes ? undefined : head);
             ids.push(id);
             pageFiles.set(id, file);
-            const head = heads[i];
-            if (head) prefixes.set(id, head);
+            if (prefixes && head) prefixes.set(id, head);
           }
           value = JSON.parse(engine.importPaths(data.roots, prefixes));
         } finally {

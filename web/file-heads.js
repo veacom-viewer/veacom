@@ -4,8 +4,18 @@ export const HEAD_GROUP_SIZE = 16;
 // The heads of 1024 files: a PET/CT is often 500 to 1000. The engine reads the head of every file beyond this one by one
 // while it lists them, about 0.7 ms each; these are read several at once, and dropped once the listing ends.
 const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
+// Individually owned heads lowered peak process memory on the 300-slice CT while its full volume decoded.
+const MAX_OWNED_HEAD_BYTES = 32 * 1024 * 1024;
 // Larger files use 1 MiB pieces in web/engine/src/blob.rs and discard a 64 KiB head.
 const LARGE_FILE_BYTES = 16 * 1024 * 1024;
+
+/** Larger imports lend the Worker its prefetched bytes by file ID for the duration of cataloging.
+ * @param {ReadonlyArray<Uint8Array | undefined>} heads
+ * @returns {Map<number, Uint8Array> | undefined} */
+export function catalogPrefixMap(heads) {
+  const bytes = heads.reduce((total, head) => total + (head?.byteLength ?? 0), 0);
+  return bytes > MAX_OWNED_HEAD_BYTES ? new Map() : undefined;
+}
 
 /** @param {{ index: number, part: Blob }[]} group @param {(Uint8Array | undefined)[]} result */
 async function readGroup(group, result) {
