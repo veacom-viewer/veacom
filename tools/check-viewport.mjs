@@ -149,6 +149,8 @@ try {
   await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:210,y:320,id:1},{x:410,y:320,id:2}]});
   await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await settle();
   check('Two-finger touch gesture zooms and pans',Math.abs((await state()).view.zoom-2)<0.01&&(await state()).view.pan[1]!==0);
+  // The harness omits the app stylesheet. Its keyboard instructions must stay out of the image area.
+  await page.addStyleTag({content:'.sr-only{position:absolute;clip-path:inset(50%)}'});
   await page.evaluate(() => {
     const harness = window.viewportTest, [coronal, sagittal] = harness.referencePlanes;
     harness.reset(); harness.clear(); harness.setCrosshair([32, 32, 32]);
@@ -184,7 +186,6 @@ try {
   check('5×5 grid renders all25 viewports',await page.locator('canvas[data-renderer]').count()===25);
   for(const width of [780,900,640]){await page.setViewportSize({width,height:640});await settle();}
   check('Layout resize has no observer loop errors',(await page.evaluate(()=>window.viewportWindowErrors)).length===0);
-  await page.addStyleTag({content:'.sr-only{position:absolute;clip-path:inset(50%)}'});
   await page.evaluate(()=>{
     const root=document.getElementById('root');
     Object.assign(root.style,{position:'absolute',left:'3px',top:'5px',width:'333px',height:'267px'});
