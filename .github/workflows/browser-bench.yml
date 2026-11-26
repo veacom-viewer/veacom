@@ -145,6 +145,18 @@ jobs:
           if [ "$AA" = true ]; then args+=(--aa); fi
           if [ -n "${BASE_DIST:-}" ]; then args+=(--base "$BASE_DIST"); fi
           node tools/browser-bench/bench.mjs run "${args[@]}"
+      - name: Record the graphics warning and recovered CT before and after in English and Turkish
+        if: matrix.runner == 1 && env.BASE != ''
+        run: |
+          pnpm exec playwright install --with-deps chromium
+          node tools/browser-bench/graphics-startup-evidence.mjs dist-web "$BASE_DIST" "$RUNNER_TEMP/graphics-screens"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: matrix.runner == 1 && !cancelled() && env.BASE != ''
+        with:
+          name: graphics-screens-${{ github.run_id }}
+          path: ${{ runner.temp }}/graphics-screens
+          if-no-files-found: error
+          retention-days: 90
       # This runner's own report, kept with its results; the report job pools all three. hashFiles() sees only the
       # workspace, so the results folder in the runner's temp is checked here instead.
       - name: This runner's report
@@ -181,6 +193,7 @@ jobs:
       - name: Pool the runners
         run: |
           folders=()
+          if [ -s "$RUNNER_TEMP/runs/results.jsonl" ]; then folders+=("$RUNNER_TEMP/runs"); fi
           for folder in "$RUNNER_TEMP"/runs/*/; do
             if [ -s "$folder/results.jsonl" ]; then folders+=("$folder"); fi
           done

@@ -5,9 +5,8 @@ import { serveVeacom } from '../lib/serve.mjs';
 export default {
   name: 'veacom',
   serve: ({ dist, isolation = true }) => serveVeacom(dist, { isolation }),
-  // A dropped folder lands anywhere on the page.
-  drop: null,
-  navigationDrop: { control: '[data-testid="welcome-open-folder"]', firstSlice: 0 },
+  open: { type: 'chooser', pointer: '[data-testid="welcome-open-files"]' },
+  navigationDrop: { control: '[data-testid="welcome-open-files"]', firstSlice: 0 },
   // The left button sets the window by default; dragging right widens it.
   windowLevel: { button: 'left' },
 };
