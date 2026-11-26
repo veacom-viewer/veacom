@@ -22,14 +22,24 @@ const browser = await ({ chromium, firefox, webkit }[engine]).launch(engine === 
   ? {headless:false,firefoxUserPrefs:{'webgl.force-enabled':true,'gfx.webrender.software':true}} : {});
 const rows = [];
 try {
-  for (const isolated of [true, false]) {
+  for (const attach of [false,true]) for (const isolated of [true, false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation:isolated });
     const page = await browser.newPage({ viewport:{ width:1280,height:800 } });
-    const row = { engine, version:browser.version(), isolated, errors:[], failedRequests:[] };
+    const row = { engine, version:browser.version(), isolated, attach, errors:[], failedRequests:[] };
     page.on('pageerror', error => row.errors.push([error.message,error.stack]));
     page.on('requestfailed', r => row.failedRequests.push([new URL(r.url()).pathname,r.failure()?.errorText]));
     try {
-      await page.addInitScript(() => {
+      await page.addInitScript(attach => {
+        window.pickerTrace = [];
+        const click = HTMLInputElement.prototype.click;
+        HTMLInputElement.prototype.click = function () {
+          if (this.type === 'file') {
+            if (attach && !this.isConnected) { this.hidden=true; document.body.appendChild(this); }
+            window.pickerTrace.push(['opened',this.isConnected]);
+            for (const type of ['input','change','cancel']) this.addEventListener(type,e=>window.pickerTrace.push([type,e.isTrusted,this.files.length]));
+          }
+          return click.call(this);
+        };
         window.decodedFrames = new Map();
         window.Worker = class extends Worker {
           constructor(...args) {
@@ -40,8 +50,19 @@ try {
             });
           }
         };
-      });
+      }, attach);
       await page.goto(site.url);
+      await page.waitForFunction(() => window.veacom && document.documentElement.dataset.engineThreads);
+      await page.evaluate(() => {
+        for(const key of ['openPaths','importSelected']){
+          const fn=window.veacom[key];
+          window.veacom[key]=async(...args)=>{
+            window.pickerTrace.push(['call',key]);
+            try { const value=await fn(...args);window.pickerTrace.push(['returned',key,Array.isArray(value)?value.length:value.series?.length]);return value; }
+            catch(e){window.pickerTrace.push(['error',key,e.message]);throw e;}
+          };
+        }
+      });
       const picker = page.waitForEvent('filechooser', { timeout:20000 });
       await page.getByTestId('welcome-open-files').click();
       await (await picker).setFiles(files);
@@ -76,6 +97,8 @@ try {
       row.status=await page.evaluate(() => ({bridge:!!window.veacom,app:!!window.__VEACOM_TEST__,notice:document.body.innerText.slice(-1200)})).catch(()=>null);
       await page.screenshot({path:path.join(evidence, isolated?'isolated-failure.png':'single-failure.png'),timeout:3000}).catch(()=>{});
     } finally {
+      row.trace=await page.evaluate(()=>window.pickerTrace).catch(()=>[]);
+      console.log(JSON.stringify({isolated,attach,trace:row.trace,failure:row.failure}));
       rows.push(row);
       await page.close();
       await site.close();
