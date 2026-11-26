@@ -54,7 +54,10 @@ try {
           const shouldReconstruct=build==='old'||type==='AXIAL';
           assert.equal(reading.isolated,isolated);assert.equal(reading.patient,'SYNTHETIC-SCOUT');assert.deepEqual(reading.dimensions,[32,32,3]);assert.deepEqual(reading.spacing,[1,1,2]);
           assert.deepEqual(reading.frames,source.map(({sop,sha})=>({sop,sha})));assert.equal(reading.canReconstruct,shouldReconstruct);
-          await page.waitForFunction(disabled=>document.querySelector('[data-testid="tool-mpr"]')?.disabled===disabled,!shouldReconstruct);
+          await page.waitForFunction(disabled=>{
+            const button=document.querySelector('[data-testid="tool-mpr"]');
+            return button && (button.disabled || button.getAttribute('aria-disabled')==='true')===disabled;
+          },!shouldReconstruct);
           await page.getByTestId('dicom-viewport').first().focus();await page.keyboard.press('m');
           if(shouldReconstruct)await page.waitForFunction(()=>document.querySelectorAll('canvas[data-renderer][data-plane]').length===3);
           await page.evaluate(()=>new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
