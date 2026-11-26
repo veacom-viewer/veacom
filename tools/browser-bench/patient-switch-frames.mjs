@@ -55,7 +55,7 @@ function readPane() {
 
 async function observe(browser, sources, isolated) {
   const dir=path.join(out,isolated?'threaded':'single');mkdirSync(dir,{recursive:true});
-  const site=await serveVeacom(path.resolve(siteDirectory),{isolation:isolated});
+  const site=siteDirectory==='live' ? {url:'https://viewer.veacom.app/',close:async()=>{}} : await serveVeacom(path.resolve(siteDirectory),{isolation:isolated});
   const page=await browser.newPage({viewport:{width:1120,height:760}, deviceScaleFactor:1, locale:'en-US'});
   const cdp=await page.context().newCDPSession(page);
   const report={isolated, references:{}, naturalFrames:[], held:[], switches:[]};
@@ -156,5 +156,5 @@ const browser=await chromium.launch(hardware ? {channel:'msedge',headless:false,
 try{
   const sources=makeSources();
   writeFileSync(path.join(out,'sources.json'),JSON.stringify(sources.map(({file,...s})=>({...s,file:path.basename(file)})),null,2)+'\n');
-  for(const isolated of [true,false])await observe(browser,sources,isolated);
+  for(const isolated of siteDirectory==='live' ? [true] : [true,false])await observe(browser,sources,isolated);
 } finally {await browser.close();rmSync(scratch,{recursive:true,force:true});}
