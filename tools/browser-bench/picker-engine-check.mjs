@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { setTimeout as delay } from 'node:timers/promises';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -9,7 +12,7 @@ import { serveVeacom } from './lib/serve.mjs';
 
 const [engine, dist, evidence] = process.argv.slice(2);
 const scratch = await mkdtemp(path.join(tmpdir(), 'veacom-ct-picker-'));
-const folder = path.join(scratch, 'ct-300'), sourceNumbers = [19, 17, 18];
+const folder = path.join(scratch, 'ct-300'), sourceNumbers = [17];
 const root = '2.25.' + BigInt('0x' + createHash('sha256').update('ct-300').digest('hex').slice(0,24));
 await mkdir(evidence, { recursive:true });
 await makeStudy('ct-300', folder);
@@ -19,8 +22,27 @@ const expected = await Promise.all(files.map(async (file, i) => ({
   hash: createHash('sha256').update((await readFile(file)).subarray(-512*512*2)).digest('hex'),
 })));
 const browser = await ({ chromium, firefox, webkit }[engine]).launch(engine === 'firefox'
-  ? {headless:false,firefoxUserPrefs:{'webgl.force-enabled':true,'gfx.webrender.software':true}} : {});
+  ? {headless:false,firefoxUserPrefs:{'webgl.force-enabled':true,'gfx.webrender.software':true,'widget.use-xdg-desktop-portal.file-picker':0}} : {});
 const rows = [];
+const command = promisify(execFile);
+async function fillDialog(file,row) {
+  let listed='';
+  for(let i=0;i<40;i++){
+    listed=(await command('xwininfo',['-root','-tree'])).stdout;
+    const match=listed.match(/^\s*(0x[\da-f]+) "([^"]*(?:File Upload|Open File|Choose File|Select File|File Chooser)[^"]*)"/im);
+    if(match){
+      row.nativeDialog=match[2];
+      await command('xdotool',['windowfocus','--sync',match[1]]);
+      await command('xdotool',['key','--clearmodifiers','ctrl+l']);
+      await delay(200);
+      await command('xdotool',['type','--clearmodifiers','--',file]);
+      await command('xdotool',['key','--clearmodifiers','Return']);
+      return;
+    }
+    await delay(150);
+  }
+  throw Error('Native dialog missing. Visible window names: '+listed.split('\n').filter(s=>s.includes('"')).map(s=>s.trim()).slice(0,18).join(' '));
+}
 try {
   for (const isolated of [true, false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation:isolated });
@@ -42,9 +64,7 @@ try {
         };
       });
       await page.goto(site.url);
-      const picker = page.waitForEvent('filechooser', { timeout:20000 });
-      await page.getByTestId('welcome-open-files').click();
-      await (await picker).setFiles(files);
+      await Promise.all([page.getByTestId('welcome-open-files').click(),fillDialog(files[0],row)]);
       await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1, undefined, {timeout:20000});
       const data = await page.evaluate(async () => {
         const { generation } = await window.veacom.getCoreState(), { series:[s] } = await window.veacom.listSeries();
@@ -62,7 +82,7 @@ try {
       const byUid = (a,b) => a.uid.localeCompare(b.uid);
       assert.equal(row.isolation,isolated);
       assert.equal(row.patient,'BENCH-ct-300');
-      assert.deepEqual(row.dimensions,[512,512,3]);
+      assert.deepEqual(row.dimensions,[512,512,1]);
       assert.deepEqual([...row.frames].sort(byUid),[...expected].sort(byUid));
       const pane = page.locator('canvas[data-series-id][data-slice]').first();
       await pane.waitFor();

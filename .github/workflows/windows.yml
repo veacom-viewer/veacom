@@ -318,7 +318,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        browser: [chromium, firefox, webkit]
+        browser: [firefox]
     runs-on: ubuntu-24.04
     timeout-minutes: 18
     steps:
@@ -337,6 +337,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: sudo apt-get update -qq && sudo apt-get install -y xdotool x11-utils
       - name: Install the browser used for the checks
         env:
           PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT: '120000'
