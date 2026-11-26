@@ -22,16 +22,16 @@ const scenarios = [
   { name: 'two-folders', items: [[ctFolder], [mrFolder]], modalities: ['CT', 'MR'] },
 ];
 const browser = await chromium.launch(), results = [];
-async function check(url, isolated, scenario, early) {
+async function check(url, isolated, scenario, early, round) {
   const page = await browser.newPage({ viewport: { width: 1024, height: 768 } });
   const hold = Promise.withResolvers();
   const activity = [];
   try {
     await page.exposeFunction('recordDrop', record => activity.push(record));
     await page.addInitScript(() => {
-      for (const type of ['dragover', 'drop']) {
+      for (const type of ['dragenter','dragover','dragleave','drop']) {
         addEventListener(type, e => {
-          const event = { type, files: e.dataTransfer?.files.length ?? 0, kinds: Array.from(e.dataTransfer?.types ?? []) };
+          const event = { type, time:performance.now(), target:e.target?.tagName, trusted:e.isTrusted, files: e.dataTransfer?.files.length ?? 0, kinds: Array.from(e.dataTransfer?.types ?? []) };
           setTimeout(() => { void window.recordDrop({ ...event, prevented: e.defaultPrevented }); });
         }, true);
       }
@@ -47,6 +47,7 @@ async function check(url, isolated, scenario, early) {
     else await page.getByTestId('welcome-open-folder').waitFor();
     const cdp = await page.context().newCDPSession(page);
     for (const files of scenario.items) for (const type of ['dragEnter', 'dragOver', 'drop']) {
+      if (round%2 && type==='drop') await page.waitForTimeout(100);
       await cdp.send('Input.dispatchDragEvent', { type, x: 320, y: 260, data: { items: [], files, dragOperationsMask: 1 } });
     }
     hold.resolve();
@@ -69,7 +70,7 @@ async function check(url, isolated, scenario, early) {
     const expected = scenario.modalities.map(m => m === 'CT'
       ? { modality:'CT', patient:'SYNTHETIC-SMOKE', depth:100, source:root+'.3.1' }
       : { modality:'MR', patient:'SYNTHETIC-OTHER', depth:scenario.name === 'file' ? 1 : 100, source:root+'.10.3.1' });
-    const row = { isolated, scenario: scenario.name, early, onViewer, activity, downloads, catalog, expected, correct: JSON.stringify(catalog)===JSON.stringify(expected) };
+    const row = { isolated, scenario: scenario.name, early, round, pauseBeforeDropMs:(round%2)*100, onViewer, activity, downloads, catalog, expected, correct: JSON.stringify(catalog)===JSON.stringify(expected) };
     results.push(row);
     console.log(JSON.stringify(row));
     if (!early) assert.deepEqual(catalog,expected);
@@ -79,7 +80,10 @@ try {
   for (const isolated of [true,false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation: isolated });
     try {
-      for (const scenario of scenarios) for (const early of [false,true]) await check(site.url,isolated,scenario,early);
+      for (const scenario of scenarios) await check(site.url,isolated,scenario,false,0);
+      for(let round=0;round<8;round++) for(let n=0;n<scenarios.length;n++){
+        await check(site.url,isolated,scenarios[(n+round)%scenarios.length],true,round);
+      }
     } finally { await site.close(); }
   }
 } finally {
