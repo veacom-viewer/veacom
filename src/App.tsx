@@ -23,7 +23,7 @@ import { allowExternalDrop, externalDropEffect } from './ui/fileDrop';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine, cineCycle, recordedFps } from './imaging/cine';
-import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
+import { acquiredPlane, autoWindow, dot, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice, sub } from './imaging/geometry';
 import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
 import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
@@ -163,6 +163,15 @@ function clockText(ms: number) {
 }
 const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
 const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
+/** The plane a pane shows, as its centre and normal; none for a projection or an empty pane. */
+const shownPlane = (volume: Volume | undefined, view: ViewState) => {
+  if (!volume || isProjection(volume.series, view)) return null;
+  const { center, normal } = getPlaneFrame(volume.series, view);
+  return { center, normal };
+};
+/** Two views of one plane, tilted alike: they differ at most in the slice shown, and in how it is shown. */
+const sameTilt = (a: ViewState, b: ViewState) => a.plane === b.plane && (a.mode ?? 'mpr') === (b.mode ?? 'mpr') && a.projection === b.projection
+  && (a.oblique?.[0] ?? 0) === (b.oblique?.[0] ?? 0) && (a.oblique?.[1] ?? 0) === (b.oblique?.[1] ?? 0);
 /** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
 function draggedSeries(data: DataTransfer): string[] {
   try {
@@ -2650,6 +2659,24 @@ export default function App() {
     const next = { ...slot.view, mode: 'mpr' as const, oblique };
     updateView(slotId, { mode: 'mpr', oblique, slice: sliceAtWorld(volume.series, next, pivot) });
   };
+  // The three-plane MPR's crosshair stays on the planes it is seen in: a pane paged (its slice changed, its tilt not)
+  // takes it along that pane's normal onto the slice it shows now. The other panes' lines then cross at it, and the next
+  // turn turns about it. A plane turned keeps the crosshair, about which it turned.
+  const mprViews = useRef(new Map<string, ViewState>());
+  const followPagedPlanes = useEffectEvent(() => {
+    const before = mprViews.current;
+    mprViews.current = new Map(isMpr ? slots.map(slot => [slot.id, slot.view] as const) : []);
+    if (!isMpr || !crosshair) return;
+    let point = crosshair;
+    for (const slot of slots) {
+      const was = before.get(slot.id), volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
+      if (!was || !volume || slot.seriesId !== crosshairSeriesId || was.slice === slot.view.slice || !sameTilt(was, slot.view)) continue;
+      const { center, normal } = getPlaneFrame(volume.series, slot.view), unit = scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal)));
+      point = sub(point, scale(unit, dot(sub(point, center), unit)));
+    }
+    if (point !== crosshair) setCrosshair(point);
+  });
+  useLayoutEffect(() => { followPagedPlanes(); }, [slots, isMpr]);
   const resetView = () => {
     const slot = slotsRef.current.find(item => item.id === activeIdRef.current), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
     if (slot && volume) {
@@ -3041,7 +3068,10 @@ export default function App() {
         similarity: item.similarity, similarityBefore: item.similarityBefore, overlap: item.overlap })),
       layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
         projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
-        windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan })),
+        windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan,
+        // For the MPR checks: each pane's tilt, and the plane it shows (its centre and normal).
+        oblique: slot.view.oblique ?? null, frame: shownPlane(slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined, slot.view) })),
+      crosshair, crosshairSeriesId,
       graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
     };
   });
