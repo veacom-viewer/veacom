@@ -332,6 +332,37 @@ async function checkClosedCTBuffer(browser, url) {
   } finally { await cdp.detach(); await page.close(); }
 }
 
+async function checkRestartedCatalog(browser, url) {
+  const page = await browser.newPage();
+  try {
+    await page.goto(url);
+    await page.waitForFunction(() => document.documentElement.dataset.engineThreads && document.querySelector('[data-ready="true"]'));
+    assert.deepEqual(await importPickedFiles(page, studyFiles.map(name => path.join(study, name))), [slices]);
+    const generation = await page.evaluate(async () => {
+      const [ct] = (await window.veacom.listSeries()).series;
+      window.ctCatalogFrames = new WeakRef(ct.frameMetadata);
+      return ct.engineGeneration;
+    });
+    const devtools = await page.context().newCDPSession(page);
+    await devtools.send('HeapProfiler.collectGarbage');
+    assert.equal(await page.evaluate(() => window.ctCatalogFrames.deref()?.length), slices);
+    const engine = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
+    assert(engine);
+    await engine.evaluate(() => { setTimeout(() => { throw new Error('Simulated engine failure'); }, 0); });
+    await page.waitForFunction(async old => (await window.veacom.getCoreState()).generation > old, generation);
+    assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 0);
+    assert.deepEqual(await importPickedFiles(page, [path.join(mrStudy, studyFiles[0])]), [1]);
+    const next = await page.evaluate(async () => {
+      const bridge = window.veacom, [mr] = (await bridge.listSeries()).series;
+      const frame = await bridge.fetchPixels({ seriesId: mr.id, generation: mr.engineGeneration, revision: mr.catalogRevision, index: 0 });
+      return [mr.patientId, frame.headers.get('X-SOP-Instance-UID'), Number(frame.headers.get('Content-Length'))];
+    });
+    assert.deepEqual(next, ['SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1', columns * rows * 2]);
+    await devtools.send('HeapProfiler.collectGarbage');
+    assert.equal(await page.evaluate(() => window.ctCatalogFrames.deref()?.length ?? 0), 0, 'The previous engine still holds CT frame metadata.');
+  } finally { await page.close(); }
+}
+
 /** The actual browser file list contains the same basename twice, once for each patient. */
 async function checkLooseFileDrop(browser, url) {
   const page = await browser.newPage();
@@ -614,6 +645,7 @@ try {
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkWelcomeBeforeGraphics(browser, page.url());
       await checkClosedCTBuffer(browser, page.url());
+      await checkRestartedCatalog(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
