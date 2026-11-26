@@ -29,7 +29,7 @@ const rows = [];
 const command = promisify(execFile);
 async function fillDialog(file,row) {
   let listed='';
-  for(let i=0;i<40;i++){
+  for(let i=0;i<120;i++){
     listed=(await command('xwininfo',['-root','-tree'])).stdout;
     const matches=[...listed.matchAll(/^\s*(0x[\da-f]+) "([^"]*(?:File Upload|Open File|Choose File|Select File|File Chooser)[^"]*)"/gim)];
     for(const match of matches){
@@ -76,7 +76,11 @@ try {
       await page.goto(site.url);
       const source=kind==='file'?files[0]:archive;
       const button=page.getByTestId(kind==='file'?'welcome-open-files':'welcome-open-archive');
-      if(engine==='firefox') await Promise.all([button.click(),fillDialog(source,row)]);
+      if(engine==='firefox') {
+        await page.bringToFront();
+        await button.click({trial:true});
+        await Promise.all([button.click(),fillDialog(source,row)]);
+      }
       else {
         const chooser=page.waitForEvent('filechooser');
         await button.click();
