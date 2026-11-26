@@ -3,10 +3,13 @@
 // quantity is turned into the exact centre and width that draw it: "SUV 0–5" on screen is what the pixels show.
 import type { Series, ViewState } from '../model';
 import { petHasSuv } from './emission';
+import { displayWindowWidth } from './viewState';
 import { general } from '../ui/overlayCorners';
 
 export type QuantityUnit = 'SUV' | 'HU';
 export interface QuantityWindow { unit: QuantityUnit; from: number; to: number }
+type DisplayWindow = Pick<ViewState, 'windowCenter' | 'windowWidth' | 'voiFunction'>;
+type LinearRange = Pick<ViewState, 'windowCenter' | 'windowWidth' | 'sharedWindow'>;
 
 /** What a stored value is multiplied by to read in `unit`, or null when the series has no such quantity. A PET without
  * SUV has none: nothing on it is called SUV. */
@@ -26,33 +29,34 @@ export function bodyWeightFactor(series: Series): number | null {
 
 /** The centre and width (in stored values) that draw `from` as black and `to` as white: the inverse of
  * `windowGrey`'s linear function, (v - (c - 0.5)) / (w - 1) + 0.5. */
-export function windowFor(series: Series, window: QuantityWindow): Pick<ViewState, 'windowCenter' | 'windowWidth'> | null {
+export function windowFor(series: Series, window: QuantityWindow): LinearRange | null {
   const scale = quantityScale(series, window.unit);
   if (!scale || !(window.to > window.from)) return null;
   const low = window.from / scale, high = window.to / scale;
-  return { windowCenter: (low + high) / 2 + 0.5, windowWidth: high - low + 1 };
+  return { windowCenter: (low + high) / 2 + 0.5, windowWidth: high - low + 1, sharedWindow: true };
 }
 
 /** The window a view draws, in `unit`: where its grey starts and where it ends. */
-export function windowIn(series: Series, view: Pick<ViewState, 'windowCenter' | 'windowWidth'>, unit: QuantityUnit): QuantityWindow | null {
+export function windowIn(series: Series, view: DisplayWindow, unit: QuantityUnit): QuantityWindow | null {
   const scale = quantityScale(series, unit);
-  if (!scale) return null;
-  const half = (Math.max(1, view.windowWidth) - 1) / 2, middle = view.windowCenter - 0.5;
+  if (!scale || view.voiFunction === 'SIGMOID') return null;
+  const offset = view.voiFunction === 'LINEAR_EXACT' ? 0 : 1;
+  const half = (displayWindowWidth(view.windowWidth, view.voiFunction) - offset) / 2, middle = view.windowCenter - offset / 2;
   return { unit, from: (middle - half) * scale, to: (middle + half) * scale };
 }
 
 /** The window that shows `view`'s range of `from` on series `to`, in `unit`: SUV 0–10 on one PET is SUV 0–10 on another,
  * whatever their own values per SUV. Null when either series lacks the quantity. */
-export function sameRangeWindow(from: Series, view: Pick<ViewState, 'windowCenter' | 'windowWidth'>, to: Series, unit: QuantityUnit): Pick<ViewState, 'windowCenter' | 'windowWidth'> | null {
+export function sameRangeWindow(from: Series, view: DisplayWindow, to: Series, unit: QuantityUnit): LinearRange | null {
   const range = windowIn(from, view, unit);
   return range && range.to > range.from ? windowFor(to, range) : null;
 }
 
 /** A PET's window as it reads on screen, "SUV 0–5", when the PET has SUV; null otherwise (the W/L line stays). */
-export function suvWindowText(series: Series, view: Pick<ViewState, 'windowCenter' | 'windowWidth'>): string | null {
+export function suvWindowText(series: Series, view: DisplayWindow): string | null {
   const window = windowIn(series, view, 'SUV');
   if (!window) return null;
-  const round = (value: number) => general(Math.round(value * 10) / 10 || 0);
+  const round = window.to - window.from < 0.1 || view.voiFunction === 'LINEAR_EXACT' ? general : (value: number) => general(Math.round(value * 10) / 10 || 0);
   return `SUV ${round(window.from)}–${round(window.to)}`;
 }
 
@@ -60,7 +64,7 @@ export function suvWindowText(series: Series, view: Pick<ViewState, 'windowCente
 export const SUV_PRESETS = [{ key: 'suv5', to: 5 }, { key: 'suv7', to: 7 }, { key: 'suv10', to: 10 }] as const;
 
 /** The SUV preset a view shows, if any (to a tenth of an SUV). */
-export function suvPresetFor(series: Series, view: Pick<ViewState, 'windowCenter' | 'windowWidth'>): typeof SUV_PRESETS[number] | undefined {
+export function suvPresetFor(series: Series, view: DisplayWindow): typeof SUV_PRESETS[number] | undefined {
   const window = windowIn(series, view, 'SUV');
   return window && Math.abs(window.from) < 0.05 ? SUV_PRESETS.find(preset => Math.abs(window.to - preset.to) < 0.05) : undefined;
 }

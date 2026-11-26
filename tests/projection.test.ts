@@ -69,6 +69,14 @@ describe('a whole-volume MIP pane', () => {
 
 describe('a window in SUV', () => {
   const pet = series(), gml = series({ valueUnit: 'SUVbw', suvFactor: 1 }), raw = series({ suvFactor: null }), ct = series({ modality: 'CT', valueUnit: 'HU', suvFactor: null });
+  it('uses the actual curve when reporting calibrated endpoints', () => {
+    const view = { windowCenter: 0.5, windowWidth: 0.125 };
+    assert.deepEqual(windowIn(gml, { ...view, voiFunction: 'LINEAR_EXACT' }, 'SUV'), { unit: 'SUV', from: 0.4375, to: 0.5625 });
+    assert.equal(suvWindowText(gml, { ...view, voiFunction: 'LINEAR_EXACT' }), 'SUV 0.4375–0.5625');
+    assert.equal(windowIn(gml, { ...view, voiFunction: 'SIGMOID' }, 'SUV'), null);
+    assert.equal(suvWindowText(gml, { ...view, voiFunction: 'SIGMOID' }), null);
+    assert.equal(windowFor(gml, { unit: 'SUV', from: 0, to: 5 })!.sharedWindow, true);
+  });
   it('draws exactly the SUV range asked for, through the renderer\'s linear window', () => {
     for (const item of [pet, gml]) {
       const window = windowFor(item, { unit: 'SUV', from: 0, to: 5 })!, scale = quantityScale(item, 'SUV')!;
