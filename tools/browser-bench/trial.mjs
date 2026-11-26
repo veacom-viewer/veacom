@@ -9,7 +9,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
+import { mainFrames, navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
 import { openingTrace, readPicture, readTrace, startTrace } from './lib/trace.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -55,6 +55,21 @@ async function showsSlice(win) {
 
 function wheel(win, at, direction) {
   win.webContents.sendInputEvent({ type: 'mouseWheel', x: Math.round(at.x), y: Math.round(at.y), deltaX: 0, deltaY: -120 * direction, wheelTicksX: 0, wheelTicksY: -direction, canScroll: true });
+}
+
+/** Runs in the page. A passive observer timestamps delivery before the viewer handles the wheel. */
+function recordWheelReceipts(prefix) {
+  const events = [];
+  const received = event => {
+    performance.mark(prefix + events.length);
+    events.push({ detents: event.wheelDeltaY / 120, trusted: event.isTrusted });
+  };
+  window.addEventListener('wheel', received, { capture: true, passive: true });
+  window.finishBenchWheelReceipts = () => {
+    window.removeEventListener('wheel', received, true);
+    delete window.finishBenchWheelReceipts;
+    return events;
+  };
 }
 
 /** Sends `count` notches `rate` a second, on time however long each send takes. */
@@ -281,16 +296,34 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
         if (Math.max(at.index, study.slices - 1 - at.index) < travel) at = await recenter();
         const towards = study.slices - 1 - at.index >= at.index ? 1 : -1;
         trace = await startTrace(devtools);
+        const prefix = `bench:receipt-${rate}-`;
+        await js(`(${recordWheelReceipts.toString()})(${JSON.stringify(prefix)}); 0`);
         const costBefore = await threadCost();
         await mark(`bench:page${rate}:start`);
         await notches(win, at, towards * sign, count, rate);
+        const lastSend = performance.now();
         await mark(`bench:page${rate}:end`);
+        const endMarkRoundTripMs = performance.now() - lastSend;
         await sleep(1500);
         await mark(`bench:page${rate}:settled`);
         const cost = spent(costBefore, await threadCost());
+        const receipts = await js('window.finishBenchWheelReceipts()');
         ({ marks, frames } = readTrace(await trace.stop(), decode));
-        line.paging.rates[rate] = pagingMetrics(marks, frames, MAIN, `page${rate}`, count, step);
-        line.paging.rates[rate].rendererCost = cost;
+        const result = pagingMetrics(marks, frames, MAIN, `page${rate}`, count, step);
+        line.paging.rates[rate] = result;
+        result.rendererCost = cost;
+        const times = receipts.map((_, i) => marks[prefix + i]);
+        const notchesReceived = receipts.reduce((sum, event) => sum + Math.abs(event.detents), 0);
+        const net = receipts.reduce((sum, event) => sum + event.detents, 0);
+        const end = marks[`bench:page${rate}:end`];
+        const reached = mainFrames(frames, MAIN).find(f => f.ts > marks[`bench:page${rate}:start`] && f.index === result.to);
+        if (result.kept !== 1 || !reached || !times.length || !times.every(Number.isFinite) || !receipts.every(e => e.trusted)
+            || notchesReceived !== count || Math.abs(net) !== count) throw new Error('Wheel receipts or displayed endpoint did not match the input');
+        const lastReceipt = times.at(-1);
+        result.inputDelivery = { events: times.length, notchesReceived, net, endMarkRoundTripMs,
+          receiptsAfterEnd: times.filter(t => t > end).length, firstReceiptFromStartMs: times[0] - marks[`bench:page${rate}:start`],
+          lastReceiptAfterEndMs: lastReceipt - end, endpointAfterLastReceiptMs: reached.ts - lastReceipt,
+          endpointAfterEndMs: reached.ts - end };
         at = await look(win);
       }
     }
