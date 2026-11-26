@@ -85,7 +85,7 @@ function drawPreview(volume: Volume): ImageData | null {
   const lut = frame?.voiLut !== undefined && frame.windowWidth === undefined ? volume.series.voiLuts?.[frame.voiLut] : undefined;
   const grey = (value: number) => {
     if (!Number.isFinite(value) || isPaddingValue(volume.series, value, slice)) return 0;
-    const level = Math.min(1, Math.max(0, lut ? voiGrey(lut, value) : windowGrey(value, windowCenter, Math.max(1, windowWidth), frame?.voiFunction)));
+    const level = Math.min(1, Math.max(0, lut ? voiGrey(lut, value) : windowGrey(value, windowCenter, windowWidth, frame?.voiFunction)));
     return inverted ? 1 - level : level;
   };
   for (let y = 0; y < height; y += 1) {

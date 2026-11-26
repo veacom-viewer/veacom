@@ -483,11 +483,17 @@ pub fn render_frame(series: usize, frame: usize) -> Result<Vec<u8>, JsError> {
     session(|session| {
         let info = session.source(&id)?.info.clone();
         let pixels = session.frame(&id, frame, None)?.pixels;
+        let metadata = info.frame_metadata.get(frame);
         Ok(crate::view::window_rgba(
             &pixels,
             info.components as usize,
-            info.window_center,
-            info.window_width,
+            metadata
+                .and_then(|f| f.window_center)
+                .unwrap_or(info.window_center),
+            metadata
+                .and_then(|f| f.window_width)
+                .unwrap_or(info.window_width),
+            metadata.and_then(|f| f.voi_function),
             info.photometric_interpretation == "MONOCHROME1",
         ))
     })
