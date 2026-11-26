@@ -121,6 +121,8 @@ jobs:
       - run: pnpm run build:browser
       - run: node web/site/prepare.mjs
       - run: node web/tools/browser-check.mjs
+      - name: Check catalog memory and source pixels on 1,024 CT files
+        run: node web/tools/import-memory.mjs
       - name: Restore browser measurements after quit and process crash
         run: node tools/check-measurement-recovery.cjs "$RUNNER_TEMP/browser-measurements" --browser-site web/site/public
       # wrangler, from web/site's own lockfile, reads wrangler.jsonc and bundles worker.js as a deploy would, and stops

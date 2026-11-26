@@ -126,6 +126,9 @@ where the page runs the single-thread engine. CI's `browser` job builds both eng
 with and without the headers (`tools/browser-check.mjs`). The test studies for `?test=` are read from the folder
 `VEACOM_TESTDATA` names.
 
+`node web/tools/import-memory.mjs web/site/public` opens 1,024 CT files in each engine mode, measures catalog memory
+before loading their volume and checks the decoded pixels against the original slices.
+
 To check saved measurements in the built viewer, run `node tools/check-measurement-recovery.cjs /path/to/evidence --browser-site web/site/public`.
 It reopens a real Chromium profile after a normal exit and a browser process crash. It checks the patient, source frames,
 geometry and labels of 100 drawings, including oblique reconstructions and a calibrated subset.
