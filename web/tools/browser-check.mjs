@@ -132,8 +132,20 @@ async function openPictures() {
   }
 }
 
+async function waitForPicker(page, action) {
+  const started = performance.now();
+  try {
+    const result = await page.waitForEvent('filechooser');
+    console.log('picker-event', JSON.stringify({ action, opened: true, ms: Math.round(performance.now() - started) }));
+    return result;
+  } catch (error) {
+    console.error('picker-event', JSON.stringify({ action, opened: false, ms: Math.round(performance.now() - started) }));
+    throw error;
+  }
+}
+
 async function importPickedFiles(page, files, kind = 'files') {
-  const selection = page.waitForEvent('filechooser').then(picker => picker.setFiles(files));
+  const selection = waitForPicker(page, 'bridge-' + kind).then(picker => picker.setFiles(files));
   const [frames] = await Promise.all([page.evaluate(async kind => {
     const bridge = window.veacom;
     const result = await bridge.importSelected(await bridge.openPaths(kind));
@@ -169,7 +181,7 @@ async function checkChooseDuringStartup(browser, url, fail) {
     await page.waitForFunction(() => typeof window.releaseOpeningRequest.init === 'function');
     assert.equal(await app.getAttribute('data-ready'), 'false');
     for (const kind of ['folder', 'files', 'archive']) assert(await page.getByTestId('welcome-open-' + kind).isEnabled());
-    const picked = page.waitForEvent('filechooser');
+    const picked = waitForPicker(page, 'during-startup-' + (fail ? 'offline' : 'online'));
     await choose.click();
     await (await picked).setFiles(path.join(study, studyFiles[0]));
     await page.waitForFunction(() => document.querySelector('[data-testid="welcome-open-files"]').disabled);
@@ -223,7 +235,7 @@ async function checkWelcomeBeforeGraphics(browser, url) {
     const unavailable = page.getByTestId('graphics-unavailable-notice');
     await unavailable.waitFor();
     assert(await page.evaluate(() => window.welcomeFramesAtGraphics >= 2), 'The opener needs a paint opportunity before the graphics check.');
-    const selected = page.waitForEvent('filechooser');
+    const selected = waitForPicker(page, 'welcome-before-graphics');
     await page.getByTestId('welcome-open-files').click();
     await (await selected).setFiles([]);
     await page.evaluate(() => window.restoreWelcomeGraphics());
@@ -250,7 +262,7 @@ async function checkClosedCTBuffer(browser, url) {
     }, columns * rows * slices * 2);
     await page.goto(url);
     async function chooseCT() {
-      const selected = page.waitForEvent('filechooser');
+      const selected = waitForPicker(page, 'select-ct-before-release');
       await page.getByTestId('welcome-open-files').click();
       await (await selected).setFiles(studyFiles.map(name => path.join(study, name)));
       await page.waitForFunction(() => Boolean(window.lastCTBuffer?.deref()) && window.__VEACOM_TEST__.state().fullVolumeLoaded);
@@ -400,7 +412,7 @@ async function reopenPatientMedia(browser, url, file, modality) {
   const page = await browser.newPage();
   try {
     await page.goto(url);
-    const chooser = page.waitForEvent('filechooser');
+    const chooser = waitForPicker(page, 'reopen-media-' + modality);
     await page.getByTestId('welcome-open-files').click();
     await (await chooser).setFiles(file);
     await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
