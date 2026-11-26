@@ -53,12 +53,12 @@ function readPane() {
     active:window.__VEACOM_TEST__?.state().activeSeriesId, engineThreads:Number(document.documentElement.dataset.engineThreads)};
 }
 
-async function observe(browser, sources, isolated) {
-  const dir=path.join(out,isolated?'threaded':'single');mkdirSync(dir,{recursive:true});
+async function observe(browser, sources, isolated, language) {
+  const dir=path.join(out,language,isolated?'threaded':'single');mkdirSync(dir,{recursive:true});
   const site=await serveVeacom(path.resolve(siteDirectory),{isolation:isolated});
-  const page=await browser.newPage({viewport:{width:1120,height:760}, deviceScaleFactor:1, locale:'en-US'});
+  const page=await browser.newPage({viewport:{width:1120,height:760}, deviceScaleFactor:1, locale:language==='tr'?'tr-TR':'en-US',permissions:['clipboard-read','clipboard-write']});
   const cdp=await page.context().newCDPSession(page);
-  const report={isolated, references:{}, naturalFrames:[], held:[], switches:[]};
+  const report={isolated,language, references:{}, naturalFrames:[], held:[], switches:[]};
   try {
     await page.addInitScript(()=>{
       const nativeRequest=requestAnimationFrame.bind(window), nativeCancel=cancelAnimationFrame.bind(window);
@@ -76,11 +76,13 @@ async function observe(browser, sources, isolated) {
         waiting.clear();return n;
       };
     });
+    await page.addInitScript(language=>{if(location.protocol==='http:')localStorage.setItem('veacom.locale',language);},language);
     await page.goto(site.url);
     const picker=page.waitForEvent('filechooser');
     await page.getByTestId('welcome-open-files').click();
     await (await picker).setFiles(sources.map(s=>s.file));
     await page.waitForFunction(()=>window.__VEACOM_TEST__?.state().series.length===2);
+    assert.equal(await page.locator('html').getAttribute('lang'),language);
     const series=await page.evaluate(async()=>(await window.veacom.listSeries()).series.map(s=>({id:s.id,patient:s.patientId,name:s.patientName,frames:s.frameMetadata.map(f=>f.sopInstanceUid)})));
     const ids={};
     for(const {code,name} of patients) {
@@ -129,7 +131,21 @@ async function observe(browser, sources, isolated) {
         await page.waitForTimeout(100);
         const state=await page.evaluate(readPane);
         const file='delayed-'+i+'-'+code+'.png';await page.screenshot({path:path.join(dir,file),timeout:5000});
-        report.held.push({target:code,state,file});
+        await page.evaluate(()=>navigator.clipboard.writeText('Synthetic switch'));
+        await page.keyboard.press('Control+c');
+        await page.waitForFunction(async()=>(await navigator.clipboard.read()).some(item=>item.types.includes('image/png')),null,{polling:40,timeout:5000});
+        const copied=await page.evaluate(async()=>{
+          const item=(await navigator.clipboard.read()).find(item=>item.types.includes('image/png'));
+          const blob=await item.getType('image/png'), bit=await createImageBitmap(blob);
+          const c=document.createElement('canvas');c.width=bit.width;c.height=bit.height;
+          const ctx=c.getContext('2d');ctx.drawImage(bit,0,0);bit.close();
+          const center=Array.from(ctx.getImageData(c.width>>1,c.height>>1,1,1).data);
+          const data=await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=()=>reject(r.error);r.readAsDataURL(blob);});
+          return {data,center,width:c.width,height:c.height};
+        });
+        const {data,...clipboard}=copied;
+        const clipboardFile='copied-'+i+'-'+code+'.png';writeFileSync(path.join(dir,clipboardFile),Buffer.from(data,'base64'));
+        report.held.push({target:code,state,file,clipboard,clipboardFile});
       } finally { await page.evaluate(()=>window.releaseSwitchPaint()); }
       await settled(code);
     }
@@ -150,5 +166,5 @@ const browser=await chromium.launch();
 try{
   const sources=makeSources();
   writeFileSync(path.join(out,'sources.json'),JSON.stringify(sources.map(({file,...s})=>({...s,file:path.basename(file)})),null,2)+'\n');
-  for(const isolated of [true,false])await observe(browser,sources,isolated);
+  for(const language of ['en','tr'])for(const isolated of [true,false])await observe(browser,sources,isolated,language);
 } finally {await browser.close();rmSync(scratch,{recursive:true,force:true});}
