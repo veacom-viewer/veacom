@@ -20,7 +20,7 @@ import { useAnnotationSummaries } from '../imaging/useAnnotationSummary';
 import { wrapLabel } from '../ui/navigation';
 import { twoPointWorld } from '../ui/measureGesture';
 import { general, scannerLines, sliceDetail, topLeftLines, topRightLines, type CornerLine } from '../ui/overlayCorners';
-import { fusionLine } from '../ui/seriesNames';
+import { fusionLine, patientKey } from '../ui/seriesNames';
 import { presetFor } from '../ui/presets';
 import { hitAnnotation, leaderLine, movedHandle, screenPaths, type AnnotationPart, type HitTarget } from '../ui/annotationEdit';
 import { draggedFusion, petHasSuv } from '../imaging/fusion';
@@ -248,6 +248,10 @@ function paneRaster(bounds: DOMRect) {
     x: left / ratio - bounds.left, y: top / ratio - bounds.top };
 }
 
+function imageSource(series: Series) {
+  return [patientKey(series), series.id, series.uid, series.engineGeneration, series.sourceRevision ?? series.catalogRevision];
+}
+
 let firstDrawMarked = false;
 function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number, raster: ReturnType<typeof paneRaster>) {
   const renderer = sliceRenderer();
@@ -371,6 +375,17 @@ export function Viewport(props: ViewportProps) {
       set(pointerReadout(current.volume, view, screenToWorld(screenMapping(current.volume.series, view, width, height), ...at), current.fusion));
     } catch { set([]); }
   };
+  const draw = (current: ViewportProps, displayed: ViewState) => {
+    if (!renderNeeded.current || !canvas.current || !container.current || !sized.current) return;
+    renderNeeded.current = false;
+    try {
+      paintSlice(canvas.current, current, displayed, liveView.current.slice, paneRaster(container.current.getBoundingClientRect()));
+      if (errorLive.current) { errorLive.current = null; setError(null); }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : t('viewport.renderFailed');
+      if (message !== errorLive.current) { errorLive.current = message; setError(message); }
+    }
+  };
   const queue = (render = true) => {
     if (render) renderNeeded.current = true;
     if (raf.current !== null) return;
@@ -379,16 +394,7 @@ export function Viewport(props: ViewportProps) {
       const current = latest.current;
       syncInteractionContext(current.volume, liveView.current);
       const displayed = renderedView(current.volume, liveView.current);
-      if (renderNeeded.current && canvas.current && container.current && sized.current) {
-        renderNeeded.current = false;
-        try {
-          paintSlice(canvas.current, current, displayed, liveView.current.slice, paneRaster(container.current.getBoundingClientRect()));
-          if (errorLive.current) { errorLive.current = null; setError(null); }
-        } catch (e) {
-          const message = e instanceof Error ? e.message : t('viewport.renderFailed');
-          if (message !== errorLive.current) { errorLive.current = message; setError(message); }
-        }
-      }
+      draw(current, displayed);
       setOverlayView(displayed);
       updateReadout();
       setDraft(draftLive.current);
@@ -507,13 +513,22 @@ export function Viewport(props: ViewportProps) {
       syncInteractionContext(props.volume, next);
       if (!sameView(liveView.current, next)) { liveView.current = next; queue(); }
     }
-    if (previous.volume !== props.volume || previous.fusion !== props.fusion) queue();
+    if (previous.volume !== props.volume || previous.fusion !== props.fusion) {
+      queue();
+      // A different source gets a fresh canvas. Present its cached image with its labels in this commit.
+      if (sized.current && canvas.current && !canvas.current.dataset.seriesId) {
+        const displayed = renderedView(props.volume, liveView.current);
+        draw(props, displayed);
+        setOverlayView(displayed);
+        updateReadout();
+      }
+    }
     // An undo, deletion or tool change invalidates a drag before its release can overwrite the change; so does another
     // caliper, whose points mean something else.
     const edit = editing.current;
     if (previous.tool !== props.tool || previous.caliper?.key !== props.caliper?.key || (edit && previous.annotations !== props.annotations && !props.annotations.includes(edit.original))) cancelGesture();
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
-  }, [props, queue, syncInteractionContext, cancelGesture]);
+  }, [props, queue, syncInteractionContext, cancelGesture, draw, updateReadout]);
   const refreshReadout = useEffectEvent(updateReadout);
   useEffect(() => { refreshReadout(); }, [props.showOverlay, props.showPointerValue, locale]);
   const resizePane = useEffectEvent((element: HTMLElement) => measurePane(element.getBoundingClientRect()));
@@ -1076,7 +1091,8 @@ export function Viewport(props: ViewportProps) {
     }} onContextMenu={event => event.preventDefault()} onKeyDown={keyDown}
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
-    <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    <canvas key={JSON.stringify([imageSource(props.volume.series), props.fusion && imageSource(props.fusion.volume.series)])}
+      ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
     {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
     <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
