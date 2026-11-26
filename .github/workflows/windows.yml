@@ -13,6 +13,10 @@ on:
     tags: ['v*']
   workflow_dispatch:
     inputs:
+      entry_drop:
+        description: Measure a real file or folder dropped while the browser starts
+        type: boolean
+        default: false
       keep_installer:
         description: Upload the tested unsigned Windows installer
         type: boolean
@@ -27,7 +31,7 @@ permissions:
 
 jobs:
   windows:
-    if: github.event_name != 'pull_request' || github.event.label.name == 'windows'
+    if: (github.event_name != 'pull_request' || github.event.label.name == 'windows') && !inputs.entry_drop
     runs-on: windows-2022
     timeout-minutes: 75
     concurrency:
@@ -305,3 +309,59 @@ jobs:
           path: ${{ runner.temp }}/evidence
           if-no-files-found: warn
           retention-days: 7
+
+
+  entry-drop:
+    if: github.event_name == 'workflow_dispatch' && inputs.entry_drop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [1, 2]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Verify the source and SHA-256 of the public browser build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'CHECK'
+          from pathlib import Path
+          from io import BytesIO
+          from zipfile import ZipFile
+          from hashlib import sha256
+          import json,subprocess
+          for role,run,head,artifact,digest in [
+            ('main','45858342250','5a1cf52bd9833a9245db096cddccff381b8d92c1','15138270184','sha256:010c8cb471420eb205182773726c66445c846147ee2195019d9ebee1775f84da'),
+          ]:
+              api=lambda route:subprocess.check_output(['gh','api','repos/veacom-viewer/veacom/actions/'+route])
+              meta=json.loads(api('runs/'+run));assert meta['conclusion']=='success' and meta['head_sha'].startswith(head)
+              a=json.loads(api('artifacts/'+artifact));assert str(a['workflow_run']['id'])==run and a['digest']==digest
+              raw=api('artifacts/'+artifact+'/zip');assert 'sha256:'+sha256(raw).hexdigest()==digest
+              with ZipFile(BytesIO(raw)) as z:
+                  assert z.testzip() is None and 'index.html' in z.namelist()
+                  for name in z.namelist():assert not Path(name).is_absolute() and '..' not in Path(name).parts
+                  z.extractall('sites/'+role)
+          CHECK
+      - name: Drop a real study at three startup stages
+        env:
+          TEST_HOST: ${{ matrix.host }}
+        run: node tools/browser-bench/study-drop-at-entry.mjs sites/main "$RUNNER_TEMP/entry-drop" "$TEST_HOST"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        if: always()
+        with:
+          name: entry-drop-${{ matrix.host }}
+          path: ${{ runner.temp }}/entry-drop
+          retention-days: 14
