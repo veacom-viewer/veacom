@@ -12,11 +12,13 @@ import { serveVeacom } from './lib/serve.mjs';
 
 const [engine, dist, evidence] = process.argv.slice(2);
 const scratch = await mkdtemp(path.join(tmpdir(), 'veacom-ct-picker-'));
-const folder = path.join(scratch, 'ct-300'), sourceNumbers = [17];
+const folder = path.join(scratch, 'ct-300'), sourceNumbers = [17,19,18];
 const root = '2.25.' + BigInt('0x' + createHash('sha256').update('ct-300').digest('hex').slice(0,24));
 await mkdir(evidence, { recursive:true });
 await makeStudy('ct-300', folder);
 const files = sourceNumbers.map(n => path.join(folder, 'S01', 'IM' + String(n).padStart(5,'0') + '.dcm'));
+const archive=path.join(scratch,'source-frames.zip');
+await promisify(execFile)('zip',['-j','-0',archive,...files]);
 const expected = await Promise.all(files.map(async (file, i) => ({
   uid: root + '.3.' + (sourceNumbers[i]+1),
   hash: createHash('sha256').update((await readFile(file)).subarray(-512*512*2)).digest('hex'),
@@ -44,10 +46,11 @@ async function fillDialog(file,row) {
   throw Error('Native dialog missing. Visible window names: '+listed.split('\n').filter(s=>s.includes('"')).map(s=>s.trim()).slice(0,18).join(' '));
 }
 try {
-  for (const isolated of [true, false]) {
+  for (const kind of ['file','archive']) for (const isolated of [true, false]) {
     const site = await serveVeacom(path.resolve(dist), { isolation:isolated });
     const page = await browser.newPage({ viewport:{ width:1280,height:800 } });
-    const row = { engine, version:browser.version(), isolated, errors:[], failedRequests:[] };
+    const row = { engine, version:browser.version(), isolated, kind, errors:[], failedRequests:[] };
+    const name=(isolated?'isolated':'single')+'-'+kind;
     page.on('pageerror', error => row.errors.push([error.message,error.stack]));
     page.on('requestfailed', r => row.failedRequests.push([new URL(r.url()).pathname,r.failure()?.errorText]));
     try {
@@ -64,7 +67,14 @@ try {
         };
       });
       await page.goto(site.url);
-      await Promise.all([page.getByTestId('welcome-open-files').click(),fillDialog(files[0],row)]);
+      const source=kind==='file'?files[0]:archive;
+      const button=page.getByTestId(kind==='file'?'welcome-open-files':'welcome-open-archive');
+      if(engine==='firefox') await Promise.all([button.click(),fillDialog(source,row)]);
+      else {
+        const chooser=page.waitForEvent('filechooser');
+        await button.click();
+        await (await chooser).setFiles(source);
+      }
       await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1, undefined, {timeout:20000});
       const data = await page.evaluate(async () => {
         const { generation } = await window.veacom.getCoreState(), { series:[s] } = await window.veacom.listSeries();
@@ -82,19 +92,20 @@ try {
       const byUid = (a,b) => a.uid.localeCompare(b.uid);
       assert.equal(row.isolation,isolated);
       assert.equal(row.patient,'BENCH-ct-300');
-      assert.deepEqual(row.dimensions,[512,512,1]);
-      assert.deepEqual([...row.frames].sort(byUid),[...expected].sort(byUid));
+      const sources=kind==='file'?expected.slice(0,1):[...expected];
+      assert.deepEqual(row.dimensions,[512,512,sources.length]);
+      assert.deepEqual([...row.frames].sort(byUid),sources.sort(byUid));
       const pane = page.locator('canvas[data-series-id][data-slice]').first();
       await pane.waitFor();
       await page.waitForFunction(() => window.__VEACOM_TEST__.state().fullVolumeLoaded);
       row.displayedIndex = Number(await pane.getAttribute('data-slice'));
       assert.equal(row.frames[row.displayedIndex].uid,root+'.3.18');
       await page.evaluate(() => new Promise(done=>requestAnimationFrame(()=>requestAnimationFrame(done))));
-      await pane.screenshot({ path:path.join(evidence, isolated?'isolated.png':'single.png') });
+      await pane.screenshot({ path:path.join(evidence,name+'.png') });
     } catch (e) {
       row.failure=e.message;
       row.status=await page.evaluate(() => ({bridge:!!window.veacom,app:!!window.__VEACOM_TEST__,notice:document.body.innerText.slice(-1200)})).catch(()=>null);
-      await page.screenshot({path:path.join(evidence, isolated?'isolated-failure.png':'single-failure.png'),timeout:3000}).catch(()=>{});
+      await page.screenshot({path:path.join(evidence,name+'-failure.png'),timeout:3000}).catch(()=>{});
     } finally {
       rows.push(row);
       await page.close();
