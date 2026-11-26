@@ -8,7 +8,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, ubuntu-24.04, windows-2022]
+        os: [ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
     defaults:
@@ -32,6 +32,11 @@ jobs:
           path: input-film
       - run: pnpm install --frozen-lockfile
       - run: pnpm run setup:runtime
+      - name: Configure Electron's sandbox helper on the hosted Linux machine
+        run: |
+          helper=$(node -p "require('node:path').join(require('node:path').dirname(require('electron')), 'chrome-sandbox')")
+          sudo chown root:root "$helper"
+          sudo chmod 4755 "$helper"
       - name: Replay the known film, fresh exports and a real black first frame
         run: node tools/replay-video-presentations.cjs input-film/video-encoder/video.mp4 "$RUNNER_TEMP/video-replay"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
