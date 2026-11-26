@@ -156,6 +156,28 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     let trace, ready;
     if (spec.fromNavigation) {
       devtools.attach('1.3');
+      await devtools.sendCommand('Page.addScriptToEvaluateOnNewDocument', { source: `(() => {
+        let memory;
+        window.openingMemory = [];
+        window.openingMessages = [];
+        const original = Worker.prototype.postMessage;
+        Worker.prototype.postMessage = function(value, ...rest) {
+          if (value?.memory instanceof WebAssembly.Memory) memory = value.memory;
+          return original.call(this, value, ...rest);
+        };
+        window.Worker = class extends Worker {
+          constructor(...args) {
+            super(...args);
+            this.addEventListener('message', ({data}) => {
+              const n = data?.value?.bytes?.byteLength;
+              if (n) window.openingMessages.push([Date.now(), n, data.value.index ?? null]);
+            });
+          }
+        };
+        setInterval(() => {
+          window.openingMemory.push([Date.now(), memory?.buffer.byteLength ?? 0, performance.memory?.usedJSHeapSize ?? 0]);
+        }, 50);
+      })();` });
       trace = await startOpeningTrace();
     }
     const loadStart = performance.now();
@@ -177,6 +199,12 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
 
     const firstRequest = requests.length, before = new Map(processes().map(m => [m.pid, m.cpu.cumulativeCPUUsage]));
     trace ??= await startOpeningTrace();
+    const processSamples=[];
+    const timer=setInterval(() => {
+      const samples=processes().map(m => [m.type, m.pid, m.memory.privateBytes ?? m.memory.workingSetSize]);
+      processSamples.push([Date.now(),samples]);
+    }, 50);
+    timer.unref();
     line.openedBy = await openStudy(viewer.adapter.open ?? { type: 'drop' }, { devtools, js, mark, study });
     const dropped = performance.now();
     // What a user does next, if anything (NiiVue's demo: pick the converted volume), runs alongside the measuring.
@@ -197,6 +225,8 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
     }
     await afterOpen;
     const after = processes();
+    clearInterval(timer);
+    line.memoryTimeline = { processes:processSamples, page: await js('({ memory:window.openingMemory, messages:window.openingMessages, marks:performance.getEntriesByType("mark").map(m=>[m.name,performance.timeOrigin+m.startTime]) })') };
     line.cpuSeconds = +after.reduce((total, m) => total + (m.cpu.cumulativeCPUUsage - (before.get(m.pid) ?? 0)), 0).toFixed(2);
     line.peakMB = peakMB; line.loadedMB = memoryMB(after);
     const openingEvents = await trace.stop();
