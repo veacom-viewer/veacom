@@ -8,6 +8,10 @@ type Batch = { series: Series; edits: Edit[] };
 type Read = { series: Series; edited?: Set<string> };
 
 export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Series | undefined, onRestore: (series: Series, drawings: Annotation[], calibration: CalibrationEdit[], edited: ReadonlySet<string>) => void) {
+  return useSeriesMeasurementRecovery(Array.from(volumes.values(), volume => volume.series), active, onRestore);
+}
+
+function useSeriesMeasurementRecovery(loaded: readonly Series[], active: Series | undefined, onRestore: (series: Series, drawings: Annotation[], calibration: CalibrationEdit[], edited: ReadonlySet<string>) => void) {
   const restore = useEffectEvent(onRestore);
   const reads = useRef(new Map<string, Read>());
   const readFailures = useRef(new Set<string>());
@@ -64,7 +68,7 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Ser
 
   useEffect(() => {
     // Begin with the selected catalog entry while its pixels are loading. The decoded series takes precedence.
-    const candidates = new Map([...volumes].map(([id, volume]) => [id, volume.series]));
+    const candidates = new Map(loaded.map(item => [item.id, item]));
     if (active && !candidates.has(active.id)) candidates.set(active.id, active);
     for (const id of reads.current.keys()) if (!candidates.has(id)) {
       reads.current.delete(id);
@@ -98,7 +102,7 @@ export function useMeasurementRecovery(volumes: Map<string, Volume>, active: Ser
         readFailures.current.add(id);
       }).finally(() => { delete read.edited; loading.current--; updateStatus(); });
     }
-  }, [volumes, active, attempt]);
+  }, [loaded, active, attempt]);
 
   useEffect(() => {
     const warn = (event: BeforeUnloadEvent) => {

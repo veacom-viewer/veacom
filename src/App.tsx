@@ -467,6 +467,26 @@ function useViewportGrid() {
   return { gridRef, gridTall, attachGrid };
 }
 
+function volumesForIds(ids: Iterable<string>, volumes: ReadonlyMap<string, Volume>) {
+  const found = new Map<string, Volume>();
+  for (const id of ids) {
+    const volume = volumes.get(id);
+    if (volume) found.set(id, volume);
+  }
+  return found;
+}
+
+function useCommittedVolumes(volumes: Map<string, Volume>) {
+  const latest = useRef(volumes);
+  useLayoutEffect(() => { latest.current = volumes; }, [volumes]);
+  return latest;
+}
+
+function volumeInSlot(slot: Slot, volumes: ReadonlyMap<string, Volume>, frames: ReadonlyMap<string, Volume>) {
+  const volume = slot.seriesId ? volumes.get(slot.seriesId) : undefined, frame = frames.get(slot.id);
+  return volume?.sourceFrameIndex !== undefined && frame?.series.id === slot.seriesId ? frame : volume;
+}
+
 export default function App() {
   'use no web memo';
   const { locale, t } = useTranslation();
@@ -798,8 +818,9 @@ export default function App() {
   const [decorated] = useState(() => createVolumeDecorator(decorateVolume, sameDecoration));
   const displayVolumes = new Map([...volumes].map(([id, volume]) => [id, decorated(volume,
     { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
+  const paneVolumes = volumesForIds(slots.flatMap(slot => slot.seriesId ?? []), displayVolumes);
   const resolvedSlots = slots.map(slot => {
-    const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
+    const volume = slot.seriesId ? paneVolumes.get(slot.seriesId) : undefined;
     // Keep the requested reconstruction while a preview stands in for its volume.
     if (!volume || (volume.sourceFrameIndex !== undefined && slot.view.mode === 'mpr')) return slot;
     const view = resolveView(volume, slot.view);
@@ -808,14 +829,10 @@ export default function App() {
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
   const displaySlotFrames = new Map(Object.entries(slotFrames).map(([id, volume]) => [id, decorated(volume,
     { scale: calibrationScales[volume.series.id], films: filmCalibrations[volume.series.id], units: settings.measurementUnits, suvNormalization: settings.suvNormalization, glucose: petRecords.typedGlucose(volume.series) })]));
-  const volumeForSlot = (slot: Slot) => {
-    const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
-    const frame = displaySlotFrames.get(slot.id);
-    return volume?.sourceFrameIndex !== undefined && frame?.series.id === slot.seriesId ? frame : volume;
-  };
-  const displayVolumesRef = useRef(displayVolumes);
+  const volumeForSlot = (slot: Slot) => volumeInSlot(slot, paneVolumes, displaySlotFrames);
+  const displayVolumesRef = useCommittedVolumes(displayVolumes);
   // A PET's reference spheres and lesion table are kept with its study, on this computer (src/domain/petStudies.ts).
-  const petStudies = usePetStudies(series, annotations, setAnnotations, displayVolumes, petRecords);
+  const petStudies = usePetStudies(series, annotations, setAnnotations, volumesForIds(petRecords.keys.keys(), displayVolumes), petRecords);
   // Cine: the active pane pages through its slices by itself, at the chosen speed, round and round, until paused.
   const [playing, setPlaying] = useState(false);
   const [cineOverrides, setCineOverrides] = useState<Record<string, number>>({});
@@ -952,8 +969,7 @@ export default function App() {
   // As in VEAcom Next, only the pane being driven draws its slice on the others; nothing is drawn on it.
   // The three-plane MPR keeps every pane's lines, with the handles that turn them (oblique MPR).
   const activeReferences = !settings.showReferences || slots.length < 2 ? EMPTY_REFERENCES : (isMpr ? slots : [activeSlot]).flatMap(slot => {
-    const base = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined, delivered = displaySlotFrames.get(slot.id);
-    const volume = base?.sourceFrameIndex !== undefined && delivered?.series.id === slot.seriesId ? delivered : base;
+    const volume = volumeForSlot(slot);
     if (!volume) return [];
     const view = renderedView(volume, slot.view);
     return isProjection(volume.series, view) ? [] : [{ id: slot.id, series: volume.series, view }];
@@ -1371,7 +1387,7 @@ export default function App() {
     for (const [id, request] of frameRequests.current) if (!activeSlots.has(id)) { request.controller.abort(); frameRequests.current.delete(id); }
     for (const slot of slots) {
       if (reading && !(slot.seriesId && early.has(slot.seriesId))) continue;
-      const base = slot.seriesId ? volumes.get(slot.seriesId) : undefined;
+      const base = slot.seriesId ? volumesRef.current.get(slot.seriesId) : undefined;
       if (!base || base.sourceFrameIndex === undefined) {
         frameRequests.current.get(slot.id)?.controller.abort(); frameRequests.current.delete(slot.id); continue;
       }
@@ -2219,7 +2235,7 @@ export default function App() {
     if ('blocked' in plan || !slot) return;
     if (caliperRef.current) stopCaliper();
     if (slot.id !== activeIdRef.current) activateSlot(slot.id);
-    const setUp = plan.setUp, volume = volumeForSlot(slot), paneSeries = slot.seriesId;
+    const setUp = plan.setUp, volume = volumeInSlot(slot, displayVolumesRef.current, displaySlotFrames), paneSeries = slot.seriesId;
     if (!volume || !paneSeries) return;
     const onIt = (place: SliceNote | undefined): place is SliceNote => place !== undefined && place.seriesId === paneSeries
       && showsPlane(plane, volume.series, { plane: place.plane as Plane, mode: place.mode as ViewState['mode'], oblique: place.oblique });
@@ -3106,7 +3122,6 @@ export default function App() {
     alignmentsRef.current = alignments;
     paneToastRef.current = paneToast;
     fusionDeviceModeRef.current = fusionDeviceMode;
-    displayVolumesRef.current = displayVolumes;
     fusionState.current = { show: showFusion, opacity: fusionOpacity, upper: fusionUpper, palette: fusionPalette, blend: fusionBlend, deviceMode: fusionDeviceMode };
     offerKeep.current = offerKeepForSlot;
     openStudy.current = openImportedStudy;
@@ -3432,7 +3447,7 @@ export default function App() {
         </div> : <div ref={attachGrid} className="viewport-grid" data-testid="viewport-grid" data-panes={slots.length} style={{ '--grid-rows': gridShape[0], '--grid-columns': gridShape[1] } as CSSProperties}>
           {slots.map((slot, index) => {
             const volume = volumeForSlot(slot), metadata = slot.seriesId ? seriesById.get(slot.seriesId) : undefined;
-            const origin = crosshairSeriesId ? volumes.get(crosshairSeriesId) : undefined;
+            const origin = crosshairOrigin;
             // The crosshair in this pane's own coordinates: as set in one frame of reference, through the alignment in another.
             const linkedCrosshair = settings.showCrosshair ? crosshairIn(alignments, crosshair, origin?.series, volume?.series) : null;
             const fused = fusion && !slot.unfused && volume && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series, alignments)
