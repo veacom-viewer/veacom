@@ -149,6 +149,37 @@ try {
   await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:210,y:320,id:1},{x:410,y:320,id:2}]});
   await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});await settle();
   check('Two-finger touch gesture zooms and pans',Math.abs((await state()).view.zoom-2)<0.01&&(await state()).view.pan[1]!==0);
+  await page.evaluate(() => {
+    const harness = window.viewportTest, [coronal, sagittal] = harness.referencePlanes;
+    harness.reset(); harness.clear();
+    harness.setOptions({ crosshair: [32, 32, 32], onRotateReference() {}, referencePlanes: [
+      coronal, { ...sagittal, view: { ...sagittal.view, plane: 'sagittal', oblique: undefined, slice: 32 } },
+    ] });
+  });
+  await settle();
+  const middle = await page.locator('[data-reference-plane="reference-coronal"] circle').evaluateAll(circles => {
+    const boxes = circles.map(circle => circle.getBoundingClientRect());
+    if (boxes.length !== 2) throw new Error('Expected both MPR handles');
+    return { x: (boxes[0].left + boxes[0].right + boxes[1].left + boxes[1].right) / 4,
+      y: (boxes[0].top + boxes[0].bottom + boxes[1].top + boxes[1].bottom) / 4, id: 1 };
+  });
+  const touch = (type, touchPoints) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints });
+  const held = page.locator('[data-reference-plane] path[stroke-width="3"]');
+  await touch('touchStart', [middle]); await settle();
+  check('One finger takes hold of the MPR crossing', await held.count() === 2);
+  await touch('touchEnd', []); await settle();
+  const initialPoint = (await state()).crosshair;
+  const second = { x: middle.x + 45, y: middle.y, id: 2 };
+  await touch('touchStart', [middle, second]);
+  await touch('touchMove', [middle, { ...second, x: second.x + 40 }]);
+  await page.waitForFunction(() => window.viewportTest.state().view.zoom > 1.25);
+  check('Pinching releases both MPR lines', await held.count() === 0);
+  await touch('touchMove', [middle]);
+  await touch('touchMove', [{ ...middle, y: middle.y + 30 }]);
+  await touch('touchEnd', []); await settle();
+  check('The remaining finger leaves the MPR crosshair in place',
+    JSON.stringify((await state()).crosshair) === JSON.stringify(initialPoint));
+  await page.evaluate(() => window.viewportTest.setOptions({}));
   await page.evaluate(()=>{window.viewportTest.clear();window.viewportTest.reset();window.viewportTest.setGrid(5);});await settle();
   await page.waitForFunction(()=>document.querySelectorAll('canvas[data-renderer]').length===25);
   check('5×5 grid renders all25 viewports',await page.locator('canvas[data-renderer]').count()===25);
