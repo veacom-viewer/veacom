@@ -159,9 +159,19 @@ async function checkDropDuringStartup(browser, url) {
     const requested = page.waitForRequest(reader);
     await page.goto(url, { waitUntil: 'commit' });
     await page.waitForFunction(() => document.getElementById('root') && !window.veacom);
+    // Chromium can acknowledge a native drag before its new document has a surface for hit testing.
+    await page.bringToFront();
+    await page.screenshot();
+    await page.evaluate(() => {
+      window.earlyDropNames = [];
+      document.addEventListener('drop', event => {
+        if (event.isTrusted && !window.veacom) window.earlyDropNames.push(event.dataTransfer.files[0]?.name);
+      }, { capture: true, passive: true });
+    });
     const cdp = await page.context().newCDPSession(page);
     await dropOnPage(cdp, [path.join(study, 'S01')]);
     await dropOnPage(cdp, [path.join(mrStudy, studyFiles[0])]);
+    assert.deepEqual(await page.evaluate(() => window.earlyDropNames), ['S01', path.basename(studyFiles[0])]);
     startBridge.resolve();
     await requested;
     await page.waitForFunction(() => window.veacom?.web);
