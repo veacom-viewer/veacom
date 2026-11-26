@@ -15,7 +15,7 @@ import { lateralOnImage, type Landmarks } from '../src/imaging/deformity/measure
 import { LANDMARKS } from '../src/imaging/deformity/landmarks';
 import { UNCHECKED } from '../src/imaging/deformity/suggest';
 import { parsePlanFile, planFile, PLAN_SCHEMA } from '../src/ui/deformityFile';
-import { reportHeader } from '../src/ui/deformityReport';
+import { reportHeader, reportTableScale, type ReportSection } from '../src/ui/deformityReport';
 import { composeRigid, type Point } from '../src/imaging/deformity/plane';
 import { fragmentFor, moved, type Osteotomy } from '../src/imaging/deformity/osteotomy';
 
@@ -496,6 +496,20 @@ describe('landmark suggestions', () => {
 
 /** A label's confidence when it names a model. */
 const isModel = (value: unknown): value is { unchecked?: boolean } => typeof value === 'object' && value !== null;
+
+describe('the A4 report table', () => {
+  it('fits six cuts with a caution under every affected value', () => {
+    const rows = (count: number, caution?: string): ReportSection['rows'] =>
+      Array.from({ length: count }, () => ['Label', 'Value', '', caution]);
+    const sections = [
+      { title: 'Values', rows: rows(13, 'Unchecked') }, { title: 'Malalignment', rows: rows(5, 'Unchecked') },
+      { title: 'CORA', rows: rows(2, 'Unchecked') }, { title: 'Osteotomy', rows: [...rows(13), ...rows(8, 'Unchecked')] },
+    ];
+    // At full size the last caution is 3,164 px below the header. The footer leaves 2,934 px for the table.
+    assert.ok(3164 * reportTableScale(sections, 2934) < 2934);
+    assert.equal(reportTableScale(sections.slice(0, 2), 2934), 1);
+  });
+});
 
 describe('the report header', () => {
   const named: Series = { ...series, patientName: 'DOE^JANE', patientId: 'ID-77', studyDate: '20000101', studyTime: '120000', description: 'Long leg standing',
