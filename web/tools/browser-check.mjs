@@ -38,7 +38,7 @@ const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/
 const [columns, rows, slices] = [128, 128, studyFiles.length];
 const sourcePixels = createHash('sha256');
 for (const name of studyFiles) sourcePixels.update(readFileSync(path.join(study, name)).subarray(-columns * rows * 2));
-const sourceVolumeHash = sourcePixels.digest('hex');
+const sourceVolumeHash = Array.from(sourcePixels.digest());
 
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
@@ -88,7 +88,7 @@ async function openStudy() {
     series: imported.series.length, dimensions: series.dimensions,
     frame: { index: frame.headers.get('X-Source-Frame-Index'), bytes: Number(frame.headers.get('Content-Length')) },
     volume: Number(volume.headers.get('Content-Length')),
-    volumeHash: Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', await volume.arrayBuffer())), byte => byte.toString(16).padStart(2, '0')).join(''),
+    volumeHash: Array.from(new Uint8Array(await window.smokeCTDigest)),
     state: await bridge.getCoreState(),
   };
 }
@@ -633,17 +633,20 @@ try {
   for (const isolated of [true, false]) {
     const server = await serve(isolated);
     const page = await browser.newPage();
-    await page.addInitScript(() => {
+    await page.addInitScript(volumeBytes => {
       // The bridge hands the transferred buffer to the viewer outside the Response body. Read it at the Worker boundary.
       window.Worker = class extends Worker {
         constructor(...args) {
           super(...args);
           this.addEventListener('message', ({ data }) => {
             if (data.ok && data.value?.bytes && data.value.components === 3) window.checkPictureFrame?.(data.value);
+            if (data.ok && data.value?.bytes?.byteLength === volumeBytes && data.value.index === undefined) {
+              window.smokeCTDigest = crypto.subtle.digest('SHA-256', data.value.bytes);
+            }
           });
         }
       };
-    });
+    }, columns * rows * slices * 2);
     const errors = [];
     page.on('pageerror', error => errors.push(String(error)));
     page.on('console', message => { if (message.type() === 'error') errors.push(message.text()); });
@@ -692,7 +695,7 @@ try {
       check(opened.dimensions.join('x') === `${columns}x${rows}x${slices}`, `dimensions ${opened.dimensions.join('x')}`);
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
-      check(opened.volumeHash === sourceVolumeHash, 'every decoded CT slice matches its source, including after a failed browser digest');
+      assert.deepEqual(opened.volumeHash, sourceVolumeHash, 'the decoded CT volume must match its source after a failed browser digest');
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));
       const model = await page.evaluate(runLandmarkModel, `/assets/${workerFile}`);

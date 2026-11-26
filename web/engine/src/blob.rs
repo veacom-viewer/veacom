@@ -426,7 +426,11 @@ impl Source for BlobSource {
     fn prefetched_header_digest(&self, prefix: &[u8]) -> Option<[u8; 32]> {
         let head = self.head.lock().unwrap_or_else(|e| e.into_inner());
         let head = head.as_ref()?;
-        if head.bytes.get(..prefix.len())? == prefix {
+        let length = head
+            .bytes
+            .len()
+            .min(veacom_core::source_file::HEADER_PREFIX);
+        if head.bytes[..length] == *prefix {
             head.digest
         } else {
             None
