@@ -193,6 +193,7 @@ jobs:
       - name: Pool the runners
         run: |
           folders=()
+          if [ -s "$RUNNER_TEMP/runs/results.jsonl" ]; then folders+=("$RUNNER_TEMP/runs"); fi
           for folder in "$RUNNER_TEMP"/runs/*/; do
             if [ -s "$folder/results.jsonl" ]; then folders+=("$folder"); fi
           done
