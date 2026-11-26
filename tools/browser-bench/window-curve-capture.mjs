@@ -62,8 +62,13 @@ async function observe(browser, fixtures, isolated) {
         const {generation}=await bridge.getCoreState();
         const frame=await bridge.fetchPixels({seriesId:id,generation,revision:s.catalogRevision,index:0});
         const kind=frame.headers.get('X-Pixel-Type');
-        const type={float32:Float32Array,float64:Float64Array,int16:Int16Array,uint16:Uint16Array,uint8:Uint8Array}[kind];
-        const values=new type(await frame.arrayBuffer());
+        const sop=frame.headers.get('X-SOP-Instance-UID'), sourceValues=[];
+        for(let i=0;i<9;i++){
+          const x=i*16+8,y=Math.floor(size*.58);
+          const stats=await bridge.measure(id,generation,s.sourceRevision,{kind:'sourceRegion',frame:{index:0,sopInstanceUid:sop},shape:'rectangle',points:[[x-1,y-1,0],[x+1,y+1,0]],pixelUnits:false});
+          if(!Number.isFinite(stats.min)||stats.min!==stats.max)throw new Error('The source band is not constant.');
+          sourceValues.push(stats.min);
+        }
         const pixels=document.querySelector('[data-testid="dicom-canvas"]');
         const view=window.__VEACOM_TEST__.state().displayedView;
         const thumbnail=document.querySelector('[data-testid="series-'+id+'"] canvas');
@@ -73,7 +78,7 @@ async function observe(browser, fixtures, isolated) {
         };
         return {uid:s.uid,sop:frame.headers.get('X-SOP-Instance-UID'),kind,frameWidth:meta.windowWidth,frameCenter:meta.windowCenter,frameCurve:meta.voiFunction,
           volumeWidth:s.windowWidth,volumeCenter:s.windowCenter,selectedCanvas:pixels.dataset.seriesId,view,adapter:pixels.dataset.renderer,threads:Number(document.documentElement.dataset.engineThreads),
-          sourceValues:Array.from({length:9},(_,i)=>values[Math.floor(size*.58)*size+i*16+8]),rawPane:bands(pixels),rawThumbnail:bands(thumbnail),
+          sourceValues,rawPane:bands(pixels),rawThumbnail:bands(thumbnail),
           overlay:document.querySelector('[data-testid="image-overlay"]').textContent,canvas:[pixels.width,pixels.height],thumbnail:[thumbnail.width,thumbnail.height]};
       },{id,size});
       assert.equal(row.sop,entry.sop);assert.equal(row.selectedCanvas,id);assert.equal(row.view.mode,'source');
