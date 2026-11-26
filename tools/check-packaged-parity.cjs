@@ -74,6 +74,40 @@ async function exportFiles(page, destination, mode, scope, expected) {
   assert.deepEqual(actual.sort(), [...expected].sort());
   return dir;
 }
+async function checkPointResponse(page, canvas, plane) {
+  // The parity CT has one 1000 HU voxel on a 0 HU background here. A wide window keeps both ends visible.
+  await page.evaluate(() => window.__VEACOM_TEST__.setView({ slice: 4, windowCenter: 500, windowWidth: 2000, pan: [0, 0], zoom: 1 }));
+  await page.waitForFunction(p => document.querySelector('canvas[data-plane="' + p + '"]').dataset.slice === '4'
+    && window.__VEACOM_TEST__.state().displayedView.windowWidth === 2000, plane);
+  const response = await canvas.evaluate(c => {
+    const bounds = c.getBoundingClientRect(), pane = c.closest('[data-testid="dicom-viewport"]').getBoundingClientRect();
+    const ratio = devicePixelRatio;
+    // The nine source pixels span 9 mm in-plane. The first and last slice centres are 5 mm apart.
+    const verticalSpacing = c.dataset.plane === 'axial' ? 1 : 5 / 8;
+    const scale = Math.min(pane.width / 9, pane.height / (9 * verticalSpacing));
+    const centerX = (pane.x + pane.width / 2 - bounds.x) * ratio;
+    const centerY = (pane.y + pane.height / 2 - bounds.y) * ratio;
+    const stepX = scale * ratio, stepY = stepX * verticalSpacing;
+    const left = Math.floor(centerX - 1.25 * stepX), top = Math.floor(centerY - 1.25 * stepY);
+    const width = Math.ceil(centerX + 1.25 * stepX) - left, height = Math.ceil(centerY + 1.25 * stepY) - top;
+    const { data } = c.getContext('2d').getImageData(left, top, width, height);
+    const bands = [0, 0, 0, 0, 0];
+    let maxGrayError = 0;
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+      const dx = Math.abs(left + x + .5 - centerX) / stepX;
+      const dy = Math.abs(top + y + .5 - centerY) / stepY;
+      const hu = 1000 * Math.max(0, 1 - dx) * Math.max(0, 1 - dy);
+      const expected = Math.round(255 * ((hu - 499.5) / 1999 + .5));
+      const i = 4 * (y * width + x);
+      maxGrayError = Math.max(maxGrayError, Math.abs(data[i] - expected), Math.abs(data[i + 1] - expected), Math.abs(data[i + 2] - expected));
+      bands[Math.ceil(hu / 250)]++;
+    }
+    return { pixels: width * height, bands, maxGrayError };
+  });
+  assert(response.bands.every(n => n > 0) && response.maxGrayError <= 2, plane + ' point response ' + JSON.stringify(response));
+  return response;
+}
+
 async function checkMpr(page, output) {
   await toggleMpr(page);
   await page.waitForFunction(() => document.querySelectorAll('canvas[data-renderer][data-mode="mpr"]').length === 3);
@@ -94,8 +128,8 @@ async function checkMpr(page, output) {
     };
     const center = await sample(4), adjacent = await sample(5);
     assert(center > 220 && adjacent < 30, plane + ' center=' + center + ' adjacent=' + adjacent);
-    centers[plane] = { center, adjacent };
-    await setSlice(page, 4);
+    centers[plane] = { center, adjacent, pointResponse: await checkPointResponse(page, canvas, plane) };
+    await page.evaluate(() => window.__VEACOM_TEST__.setView({ windowCenter: 500, windowWidth: 1000 }));
   }
   const sagittal = page.locator('canvas[data-plane="sagittal"]');
   await sagittal.click({ position: { x: 10, y: 10 } });
