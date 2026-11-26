@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { chromium, firefox, webkit } from 'playwright';
 import { dataset, element } from '../fixtures/dicom-elements.mjs';
 import { serveVeacom } from './lib/serve.mjs';
 
 const [siteFolder, output, hardware] = process.argv.slice(2);
+const engine = process.env.WINDOW_TEST_BROWSER ?? 'chromium';
 const root = '2.25.187661561909761364227719337832610900704', size = 144, band = 16;
 const codes = [-8, -4, -2, -1, 0, 1, 2, 4, 8];
 const cases = [
@@ -43,14 +44,19 @@ function makeFile([name, curve, center, width, slope, intercept], index) {
 async function observe(browser, fixtures, isolated) {
   const site = await serveVeacom(path.resolve(siteFolder),{isolation:isolated});
   const dir = path.join(output,isolated?'threaded':'single'); mkdirSync(dir,{recursive:true});
-  const page = await browser.newPage({viewport:{width:1250,height:800},deviceScaleFactor:1, permissions:['clipboard-read','clipboard-write'],
+  const page = await browser.newPage({viewport:{width:1250,height:800},deviceScaleFactor:1, ...(engine === 'chromium' ? {permissions:['clipboard-read','clipboard-write']} : {}),
     ...(!hardware ? {recordVideo:{dir:path.join(output,'recording'),size:{width:1250,height:800}}} : {})});
   const video = page.video();
-  const report = { isolated, cases:[] };
+  const report = { isolated, engine, clipboardTested: engine === 'chromium', cases:[] };
   try {
     await page.goto(site.url);
-    const open = page.waitForEvent('filechooser'); await page.getByTestId('welcome-open-files').click();
-    await (await open).setFiles(fixtures.map(s=>s.file));
+    await page.getByTestId('welcome-open-files').waitFor();
+    await page.evaluate(files=>{
+      const transfer=new DataTransfer();
+      for(const {name,bytes} of files)transfer.items.add(new File([Uint8Array.from(atob(bytes),c=>c.charCodeAt(0))],name,{type:'application/dicom'}));
+      const target=document.querySelector('[data-testid="welcome-open-files"]');
+      for(const type of ['dragenter','dragover','drop'])target.dispatchEvent(new DragEvent(type,{bubbles:true,cancelable:true,dataTransfer:transfer}));
+    },fixtures.map(f=>({name:path.basename(f.file),bytes:readFileSync(f.file).toString('base64')})));
     await page.waitForFunction(n=>window.__VEACOM_TEST__?.state().series.length===n, fixtures.length);
     const language=isolated?'en':'tr';
     for(const choice of [isolated?'tr':'en',language]) {
@@ -119,20 +125,22 @@ async function observe(browser, fixtures, isolated) {
       await width.fill(''); await width.pressSequentially('0.0625'); await width.press('Tab');
       await level.fill('0.484375'); await level.press('Tab');
       report.manual.typed=await inspect('typed');
-      await pane.focus();await page.evaluate(()=>navigator.clipboard.writeText('Synthetic grayscale test'));await page.keyboard.press('Control+c');
-      const copied=await page.evaluate(async()=>{
-        const expires=performance.now()+6000;
-        while(performance.now()<expires){
-          const item=(await navigator.clipboard.read()).find(x=>x.types.includes('image/png'));
-          if(item){
-            const blob=await item.getType('image/png');
-            return await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=()=>reject(r.error);r.readAsDataURL(blob);});
+      if(engine === 'chromium') {
+        await pane.focus();await page.evaluate(()=>navigator.clipboard.writeText('Synthetic grayscale test'));await page.keyboard.press('Control+c');
+        const copied=await page.evaluate(async()=>{
+          const expires=performance.now()+6000;
+          while(performance.now()<expires){
+            const item=(await navigator.clipboard.read()).find(x=>x.types.includes('image/png'));
+            if(item){
+              const blob=await item.getType('image/png');
+              return await new Promise((resolve,reject)=>{const r=new FileReader();r.onload=()=>resolve(r.result.split(',')[1]);r.onerror=()=>reject(r.error);r.readAsDataURL(blob);});
+            }
+            await new Promise(r=>setTimeout(r,50));
           }
-          await new Promise(r=>setTimeout(r,50));
-        }
-        throw new Error('Copy did not write a PNG');
-      });
-      writeFileSync(path.join(dir,'manual-copy.png'),Buffer.from(copied,'base64'));
+          throw new Error('Copy did not write a PNG');
+        });
+        writeFileSync(path.join(dir,'manual-copy.png'),Buffer.from(copied,'base64'));
+      }
       await pane.focus();await page.keyboard.press('w');
       const box=await pane.boundingBox(),x=box.x+box.width*.55,y=box.y+box.height*.61;
       await page.mouse.move(x,y);await page.mouse.down();await page.mouse.move(x+30,y,{steps:4});await page.mouse.up();
@@ -160,5 +168,6 @@ async function observe(browser, fixtures, isolated) {
 mkdirSync(path.join(output,'sources'),{recursive:true});
 const fixtures=cases.map(makeFile);
 writeFileSync(path.join(output,'sources.json'),JSON.stringify(fixtures.map(({file,...other})=>({...other,file:path.basename(file)})),null,2));
-const browser=await chromium.launch(hardware?{channel:'msedge',headless:false,args:['--enable-gpu',hardware==='t4'?'--use-angle=d3d11':'--use-angle=d3d11-warp']}: {});
+const browser=await ({chromium,firefox,webkit}[engine]).launch(engine==='firefox'
+  ? {headless:false,firefoxUserPrefs:{'webgl.force-enabled':true,'gfx.webrender.software':true}} : {});
 try { for(const isolated of [true,false]) await observe(browser,fixtures,isolated); } finally {await browser.close();}
