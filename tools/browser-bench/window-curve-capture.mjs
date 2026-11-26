@@ -42,8 +42,10 @@ function makeFile([name, curve, center, width, slope, intercept], index) {
 
 async function observe(browser, fixtures, isolated) {
   const site = await serveVeacom(path.resolve(siteFolder),{isolation:isolated});
-  const page = await browser.newPage({viewport:{width:1250,height:800},deviceScaleFactor:1, permissions:['clipboard-read','clipboard-write']});
   const dir = path.join(output,isolated?'threaded':'single'); mkdirSync(dir,{recursive:true});
+  const page = await browser.newPage({viewport:{width:1250,height:800},deviceScaleFactor:1, permissions:['clipboard-read','clipboard-write'],
+    ...(!hardware ? {recordVideo:{dir:path.join(output,'recording'),size:{width:1250,height:800}}} : {})});
+  const video = page.video();
   const report = { isolated, cases:[] };
   try {
     await page.goto(site.url);
@@ -108,7 +110,7 @@ async function observe(browser, fixtures, isolated) {
           const canvas=document.querySelector('[data-testid="dicom-canvas"]'), overlay=document.querySelector('[data-testid="image-overlay"]');
           const c=canvas.getBoundingClientRect(), v=canvas.closest('.viewport-cell').getBoundingClientRect();
           return {view:window.__VEACOM_TEST__.state().displayedView,overlay:overlay.textContent,
-            paneInCopy:[c.x-v.x,c.y-v.y,c.width,c.height]};
+            paneInCopy:[c.x-v.x,c.y-v.y,c.width,c.height], paneOnScreen:[c.x,c.y,c.width,c.height]};
         });
         await page.screenshot({path:path.join(dir,'manual-'+key+'.png')});
         return {...state,widthInput:await width.inputValue(),levelInput:await level.inputValue()};
@@ -137,10 +139,23 @@ async function observe(browser, fixtures, isolated) {
       report.manual.dragged=await inspect('dragged');
       await page.getByTestId('tool-window-presets').click();await page.getByTestId('preset-dicom').click();
       report.manual.restored=await inspect('restored');
+      const fieldValues=async()=>({width:await width.inputValue(),level:await level.inputValue()});
+      for(const [name,key] of [['exact-narrow','curved'],['linear-control','linear']]) {
+        await page.getByTestId('series-'+catalog.find(s=>s.name===name).id).click();
+        const initial=await fieldValues();
+        await width.focus();await width.press('ArrowUp');const up=await fieldValues();
+        await width.press('ArrowDown');const down=await fieldValues();
+        report.manual[key+'Arrows']={initial,up,down};
+      }
     }
   } catch(error) {
     report.error=String(error?.stack??error);await page.screenshot({path:path.join(dir,'error.png')}).catch(()=>{});throw error;
-  } finally {writeFileSync(path.join(dir,'capture.json'),JSON.stringify(report,null,2));await page.close();await site.close();}
+  } finally {
+    writeFileSync(path.join(dir,'capture.json'),JSON.stringify(report,null,2));
+    await page.close();
+    if(video){await video.saveAs(path.join(dir,'window-controls.webm'));await video.delete();}
+    await site.close();
+  }
 }
 mkdirSync(path.join(output,'sources'),{recursive:true});
 const fixtures=cases.map(makeFile);
