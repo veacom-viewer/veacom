@@ -13,7 +13,7 @@
 //   pwsh -NoProfile -File web/build.ps1; pnpm run build:browser; node web/site/prepare.mjs; node web/tools/browser-check.mjs
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -269,6 +269,13 @@ async function checkClosedCTBuffer(browser, url) {
     // The smoke CT has increasing patient Z. Its superior opening slice is the last source in the stack.
     assert.deepEqual(first, { series: await page.evaluate(() => window.__VEACOM_TEST__.state().activeSeriesId), slice: String(slices - 1) },
       'The first animation frame after mounting must draw the opening CT slice.');
+    if (hardware) {
+      const bitmap = page.locator('canvas[data-series-id]').first(), adapter = await bitmap.getAttribute('data-renderer');
+      assert((hardware === 't4' ? /NVIDIA.*T4/i : /Microsoft Basic Render Driver|WARP/i).test(adapter), String(adapter));
+      const isolated = await page.evaluate(() => self.crossOriginIsolated);
+      await bitmap.screenshot({ path: path.join(output, isolated ? 'threaded-ct.png' : 'single-thread-ct.png') });
+      hardwareChecks.push({ isolated, adapter, first, dimensions: [columns, rows, slices], expectFirst: slices - 1 });
+    }
     const paging = await page.evaluate(async () => {
       const original = Array.prototype.sort;
       const shown = [];
@@ -636,7 +643,12 @@ async function checkUnacknowledgedFiles(page) {
   assert.equal(cachedBytes, result.bytes, 'A cache hit must return while an unrelated helper transfer is pending.');
 }
 
-const browser = await chromium.launch();
+const hardware = process.argv[2], output = process.argv[3], hardwareChecks = [];
+if (hardware) {
+  assert(['t4', 'warp'].includes(hardware) && output);
+  mkdirSync(output, { recursive: true });
+}
+const browser = await chromium.launch(hardware ? { channel: 'msedge', headless: false, args: ['--enable-gpu', '--use-angle=d3d11'] } : {});
 const failures = [];
 try {
   for (const isolated of [true, false]) {
@@ -665,6 +677,11 @@ try {
         threads: Number(document.documentElement.dataset.engineThreads),
         expected: self.crossOriginIsolated ? Math.max(1, Math.min(4, Math.floor((navigator.hardwareConcurrency || 2) / 2))) : 1,
       }));
+      if (hardware) {
+        await checkClosedCTBuffer(browser, page.url());
+        await checkRestartedCatalog(browser, page.url());
+        continue;
+      }
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkWelcomeBeforeGraphics(browser, page.url());
@@ -713,6 +730,10 @@ try {
 } finally {
   await browser.close();
   rmSync(scratch, { recursive: true, force: true });
+}
+if (hardware) {
+  writeFileSync(path.join(output, 'first-frame.json'), JSON.stringify({ hardware, hardwareChecks, failures }, null, 2));
+  assert.deepEqual(hardwareChecks.map(r => r.isolated).sort(), [false, true]);
 }
 if (failures.length) {
   console.error(failures.join('\n'));
