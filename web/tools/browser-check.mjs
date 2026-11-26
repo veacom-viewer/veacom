@@ -36,6 +36,10 @@ execFileSync(process.execPath, [makeStudy, mrStudy, '--modality', 'MR', '--other
 const studyFiles = readdirSync(path.join(study, 'S01')).sort().map(name => `S01/${name}`);
 const [columns, rows, slices] = [128, 128, studyFiles.length];
 
+const petFollowup = path.join(scratch, 'pet-followup');
+execFileSync(process.execPath, [path.join(repository,'tools/fixtures/make-pet-followup.mjs'),petFollowup], {stdio:'inherit'});
+const petFacts = JSON.parse(readFileSync(path.join(petFollowup,'manifest.json'),'utf8'));
+
 const TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.wasm': 'application/wasm', '.css': 'text/css',
   '.woff2': 'font/woff2', '.svg': 'image/svg+xml', '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8' };
 /** What Cloudflare's static assets would answer for `request` (the Worker's `env.ASSETS`). */
@@ -301,6 +305,49 @@ async function checkRemoveCTWhileReadingMR(browser, url) {
     assert.equal(result.patient,'SYNTHETIC-OTHER');assert.equal(result.sop,'2.25.302617644913925066835652647005517224101.10.3.1');
     assert.equal(result.retainedBytes,0,'The active MR retained the removed CT.');
   } finally { await cdp.detach(); await page.close(); }
+}
+
+async function checkLivePETAfterRemoval(browser,url) {
+  const page=await browser.newPage({viewport:{width:1440,height:900}});
+  const cdp=await page.context().newCDPSession(page);
+  const drop=async files=>{
+    for (const type of ['dragEnter','dragOver','drop']) await cdp.send('Input.dispatchDragEvent',{type,x:160,y:140,data:{items:[],files,dragOperationsMask:1}});
+  };
+  try {
+    await page.goto(url);await page.getByTestId('welcome-open-files').waitFor();
+    await drop([path.join(petFollowup,'current','S02')]);
+    await page.waitForFunction(()=>window.__VEACOM_TEST__.state().fullVolumeLoaded);
+    const pet=await page.evaluate(()=>window.__VEACOM_TEST__.state().activeSeriesId);
+    const labels=page.locator('.annotation-label text');
+    async function probe(expected) {
+      await page.evaluate(()=>{window.__VEACOM_TEST__.setTool('probe');window.__VEACOM_TEST__.setView({slice:0});});
+      await page.waitForFunction(()=>Number(document.querySelector('canvas[data-series-id]').dataset.slice)===0);
+      const rect=await page.getByTestId('annotation-overlay').boundingBox();
+      await cdp.send('HeapProfiler.collectGarbage');
+      await page.mouse.click(rect.x+rect.width/2,rect.y+rect.height/2);
+      await labels.getByText(expected,{exact:true}).or(labels.filter({hasText:expected})).first().waitFor({timeout:10000});
+      const reading=(await labels.allTextContents()).map(t=>t.trim());assert(reading.includes(expected),JSON.stringify(reading));
+      await page.keyboard.press('Delete');await page.waitForFunction(()=>!document.querySelector('.annotation-label text'));
+      return expected;
+    }
+    const before=await probe('1.00 SUVbw');
+    await drop([path.join(study,studyFiles[0])]);
+    await page.waitForFunction(async()=>(await window.veacom.listSeries()).series.length===2);
+    await page.getByTestId('series-'+pet).click();
+    const ct=await page.evaluate(async()=>(await window.veacom.listSeries()).series.find(v=>v.modality==='CT').id);
+    await page.getByTestId('series-'+ct).click({button:'right'});await page.locator('[data-action="series-remove"]').click();
+    await page.waitForFunction(async()=>(await window.veacom.listSeries()).series.length===1);
+    const unchanged=await probe('1.00 SUVbw');
+    if(!await page.getByTestId('inspector-tab-display').isVisible())await page.getByTestId('tool-inspector').click();
+    await page.getByTestId('inspector-tab-display').click();
+    if(await page.locator('#section-units-toggle').getAttribute('aria-expanded')!=='true')await page.locator('#section-units-toggle').click();
+    await page.locator('[data-action="pet-values"]').selectOption('lbm');
+    const lean=9270/(6680+216*petFacts.suv.weightKg/petFacts.suv.heightM**2);
+    const sul=await probe(lean.toFixed(2)+' SUL');
+    const source=await page.evaluate(async()=>{const st=window.__VEACOM_TEST__.state(),[item]=(await window.veacom.listSeries()).series;return [st.activeSeriesId,item.id,item.modality,item.uid,item.patientId];});
+    assert.equal(source[0],pet);assert.equal(source[1],pet);assert.equal(source[2],'PT');
+    console.log('PET reader numeric checks with forced collection',JSON.stringify({before,unchanged,sul,source}));
+  } finally {await cdp.detach();await page.close();}
 }
 
 /** The actual browser file list contains the same basename twice, once for each patient. */
@@ -600,6 +647,7 @@ try {
       await checkChooseDuringStartup(browser, page.url(), false);
       if (isolated) await checkChooseDuringStartup(browser, page.url(), true);
       await checkClosedCTBuffer(browser, page.url());
+      await checkLivePETAfterRemoval(browser, page.url());
       await checkRemoveCTWhileReadingMR(browser, page.url());
       await checkLooseFileDrop(browser, page.url());
       await checkMeasurementTabs(browser, page.url());
