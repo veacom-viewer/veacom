@@ -131,13 +131,65 @@ jobs:
           pnpm --dir web/site exec wrangler deploy --dry-run
       # The files the checks above opened are the files the deploy job publishes.
       - name: Keep the site for the deploy job
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch' || (github.event_name != 'pull_request' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: viewer-site-${{ github.run_id }}
           path: web/site/public
           if-no-files-found: error
           retention-days: 7
+
+  folder-open:
+    name: Folder open (${{ matrix.os }} ${{ matrix.host }})
+    if: github.event_name == 'workflow_dispatch'
+    needs: browser
+    permissions:
+      actions: read
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2022, host: 1 }
+          - { os: windows-2022, host: 2 }
+          - { os: macos-15, host: 1 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      BENCH_REQUIRE_CORRECT_FIRST: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: viewer-site-${{ github.run_id }}
+          path: ${{ runner.temp }}/candidate-site
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          github-token: ${{ github.token }}
+          run-id: '45754075604'
+          name: viewer-site-45754075604
+          path: ${{ runner.temp }}/release-site
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run setup:runtime
+      - name: Time cold folder opens from navigation to the correct screen
+        shell: pwsh
+        run: |
+          node tools/browser-bench/bench.mjs run --viewers veacom --studies ct-300 --rounds 12 --warmup 1 --scenarios open --from-navigation --aa --veacom "$env:RUNNER_TEMP/candidate-site" --base "$env:RUNNER_TEMP/release-site" --out "$env:RUNNER_TEMP/folder-open"
+      - name: Keep trial data and screens
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: folder-open-${{ matrix.os }}-${{ matrix.host }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/folder-open
+          if-no-files-found: warn
+          retention-days: 30
 
   engine:
     runs-on: ubuntu-24.04

@@ -99,6 +99,9 @@ try {
       let line;
       try { line = await runTrial(spec); } catch (error) { line = { viewer: viewer.id, study: study.name, round, warmup: round <= 0, order: spec.order, error: String(error.message) }; }
       fs.appendFileSync(path.join(outDir, 'results.jsonl'), `${JSON.stringify(line)}\n`);
+      if (process.env.BENCH_REQUIRE_CORRECT_FIRST && (line.error || line.firstSlice !== 0 || !Number.isFinite(line.navigationToFirstCorrectMs))) {
+        throw new Error(`Invalid first CT frame in ${line.viewer} round ${round}: ${JSON.stringify(line)}`);
+      }
       console.log(`${line.viewer} ${study.name} r${round}${line.warmup ? ' (warm-up)' : ''}: first image ${line.firstImageMs ?? '–'} ms, done ${line.doneMs ?? '–'} ms`
         + `${line.paging?.rates ? `, paging ${Object.entries(line.paging.rates).map(([r, m]) => `${r}/s→${m.slicesPerS ?? '?'}/s kept ${m.kept ?? '?'} lag ${m.lagMs ?? '?'} ms`).join('; ')}` : ''}`
         + `${line.wl?.updatesPerS !== undefined ? `, W/L ${line.wl.updatesPerS}/s` : ''}${line.error ? ` ERROR ${line.error.split('\n')[0]}` : ''}`);
