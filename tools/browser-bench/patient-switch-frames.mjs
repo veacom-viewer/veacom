@@ -131,7 +131,7 @@ async function observe(browser, sources, isolated) {
         const file='delayed-'+i+'-'+code+'.png';await page.screenshot({path:path.join(dir,file),timeout:5000});
         report.held.push({target:code,state,file});
         if(hardware) {
-          assert.equal(hardware,'t4');assert.match(state.renderer,/NVIDIA.*T4/i);
+          assert(['t4','warp'].includes(hardware));assert.match(state.renderer,hardware==='t4'?/NVIDIA.*T4/i:/Microsoft Basic Render Driver|WARP/i);
           const patient=patients.find(p=>p.code===code);
           assert.equal(state.drawnSeries,ids[code]);assert(state.name.includes(patient.name.replace('^',' ')));
           assert(Math.abs(state.center[0]-patient.shade)<=1 && state.center[3]===255);
