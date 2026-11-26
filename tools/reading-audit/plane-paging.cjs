@@ -108,4 +108,5 @@ async function main() {
     console.log('Verified all 36 reconstructed wheel steps for', build, 'pair', pair);
   }
 }
-main().catch(async e => { report.error = String(e.stack || e); await persist(); console.error(e); process.exitCode = 1; });
+module.exports = { focusPlane, seek, withVolume };
+if (require.main === module) main().catch(async e => { report.error = String(e.stack || e); await persist(); console.error(e); process.exitCode = 1; });

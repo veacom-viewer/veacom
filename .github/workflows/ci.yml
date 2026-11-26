@@ -19,7 +19,7 @@ on:
         description: Measure opening the three planes or scrolling within them
         type: choice
         default: transition
-        options: [transition, paging, patient-space]
+        options: [transition, paging, patient-space, visible-paging]
       captured_run:
         description: Encode the captures already produced by this run
         type: string
@@ -85,7 +85,7 @@ jobs:
           system_profiler SPDisplaysDataType -json > "$RUNNER_TEMP/mpr/display.json"
           if [ "$EXERCISE" = patient-space ]; then
             node tools/reading-audit/coordinate-study.mjs "$RUNNER_TEMP/coordinate-study" "$RUNNER_TEMP/mpr"
-          elif [ "$EXERCISE" = paging ]; then
+          elif [ "$EXERCISE" = paging ] || [ "$EXERCISE" = visible-paging ]; then
             node tools/reading-audit/plane-study.mjs "$RUNNER_TEMP/plane-study" "$RUNNER_TEMP/mpr/study-manifest.json"
           else
             cd reference-build
@@ -105,6 +105,11 @@ jobs:
       - name: Read known patient coordinates in axial and reordered acquisitions
         if: inputs.exercise == 'patient-space'
         run: node tools/reading-audit/patient-space-frames.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$RUNNER_TEMP/coordinate-study" "$PWD/candidate-build"
+      - name: Time wheel input to the correct composited CT reconstruction
+        if: inputs.exercise == 'visible-paging'
+        env:
+          PAIRS: ${{ inputs.rounds }}
+        run: node tools/reading-audit/visible-paging.cjs "$PWD/reference-build" "$RUNNER_TEMP" "$RUNNER_TEMP/mpr" "$RUNNER_TEMP/plane-study" "$PAIRS" "$PWD/candidate-build"
       - name: Keep measurements and partial results
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
