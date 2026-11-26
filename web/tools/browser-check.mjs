@@ -403,6 +403,7 @@ async function reopenPatientMedia(browser, url, file, modality) {
     const chooser = page.waitForEvent('filechooser');
     await page.getByTestId('welcome-open-files').click();
     await (await chooser).setFiles(file);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 1);
     await page.locator('canvas[data-series-id]').first().waitFor();
     const opened = await page.evaluate(async () => (await window.veacom.listSeries()).series.map(series => ({
       patient: series.patientId, modality: series.modality, instances: series.frameMetadata.map(frame => frame.sopInstanceUid),
@@ -425,7 +426,7 @@ async function checkPatientDrop(browser, url, folders) {
     for (const type of ['dragEnter', 'dragOver', 'drop']) {
       await devtools.send('Input.dispatchDragEvent', { type, x: 100, y: 120, data: { items: [], files, dragOperationsMask: 1 } });
     }
-    await page.waitForFunction(async () => (await window.veacom.listSeries()).series.length >= 2);
+    await page.waitForFunction(() => window.__VEACOM_TEST__?.state().series.length === 2);
     const results = await page.evaluate(async () => {
       const bridge = window.veacom, { generation } = await bridge.getCoreState();
       const values = [];
