@@ -201,18 +201,41 @@ try {
       return c && c.width===Math.round(c.getBoundingClientRect().width*scale);
     },scale);
     await settle();
-    const bounds=await page.locator('canvas').boundingBox();
-    const surface=await cdp.send('Page.captureScreenshot',{format:'png',fromSurface:true});
-    const shot=decodePng(Buffer.from(surface.data,'base64'));
-    const y=Math.round((bounds.y+bounds.height*.31)*scale),start=Math.ceil((bounds.x+bounds.width*.35)*scale);
-    const count=Math.floor(bounds.width*.3*scale);
-    const expected=await page.locator('canvas').evaluate((canvas,{x,y,count})=>{
-      const rgba=canvas.getContext('2d').getImageData(x,y,count,1).data;
-      return Array.from({length:count},(_,i)=>rgba[4*i]);
-    },{x:start-Math.round(bounds.x*scale),y:y-Math.round(bounds.y*scale),count});
-    const levels=new Set(expected);
-    check('Desktop surface preserves each bar pixel at '+scale+'x',levels.size===2&&levels.has(32)&&levels.has(224)
-      &&expected.every((value,i)=>shot.data[(y*shot.width+start+i)*4]===value));
+    const pane = await page.getByTestId('dicom-viewport').boundingBox();
+    const fit = Math.min(pane.width, pane.height) * scale / 64;
+    const midpoint = (pane.x + pane.width / 2) * scale;
+    const y = Math.round((pane.y + pane.height / 2) * scale);
+    const start = Math.round(midpoint) - 16, count = 32;
+    for (const magnification of [1, fit]) {
+      const native = magnification === 1;
+      const centre = native ? Math.round(midpoint) : midpoint;
+      const frames = await page.evaluate(({ zoom, pan }) => {
+        const before = window.viewportTest.state().frames;
+        window.viewportTest.setView({ zoom, pan: [pan, 0] });
+        return before;
+      }, { zoom: magnification / fit, pan: (centre - midpoint) / scale });
+      await page.waitForFunction(before => window.viewportTest.state().frames > before, frames);
+      await settle();
+      const bounds = await page.locator('canvas').boundingBox();
+      const surface = await cdp.send('Page.captureScreenshot', { format: 'png', fromSurface: true });
+      const shot = decodePng(Buffer.from(surface.data, 'base64'));
+      const backing = await page.locator('canvas').evaluate((canvas, { x, y, count }) => {
+        const rgba = canvas.getContext('2d').getImageData(x, y, count, 1).data;
+        return Array.from({ length: count }, (_, i) => rgba[4 * i]);
+      }, { x: start - Math.round(bounds.x * scale), y: y - Math.round(bounds.y * scale), count });
+      const bar = x => x % 2 ? 224 : 32;
+      const reference = backing.map((_, i) => {
+        // The 64-column image is centred at source index 31.5; measure at the centre of each physical screen pixel.
+        const x = 31.5 + (start + i + 0.5 - centre) / magnification;
+        const left = Math.floor(x), fraction = x - left;
+        return native ? bar(Math.round(x)) : Math.round(bar(left) * (1 - fraction) + bar(left + 1) * fraction);
+      });
+      const mode = native ? 'native' : 'magnified';
+      check('Acquired ' + mode + ' bars match the source at ' + scale + 'x desktop scale',
+        backing.every((value, i) => Math.abs(value - reference[i]) <= (native ? 0 : 1)));
+      check('Desktop surface preserves every ' + mode + ' bar pixel at ' + scale + 'x',
+        backing.every((value, i) => shot.data[(y * shot.width + start + i) * 4] === value));
+    }
   }
   check('No runtime or GPU errors',errors.length===0&&await page.locator('[role="alert"]').count()===0);
   console.log(JSON.stringify({passed:true,checks:results.length,renderer:await page.locator('canvas').first().getAttribute('data-renderer'),results},null,2));

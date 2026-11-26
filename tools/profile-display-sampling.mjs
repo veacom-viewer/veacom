@@ -47,26 +47,33 @@ try {
   }
   const report = await page.evaluate(async () => {
     const renderers = window.renderers;
-    const cases = [['MR',256,256,1600,1200,1], ['CT 25 panes',512,512,300,200,25],
-      ['DX',3000,3000,1000,1000,1], ['MG',3328,4096,900,1100,1]];
+    // Shown larger than their matrix: MR, a CT with padding outside its circle, a colour frame, and the padded CT paged
+    // to a new frame at every redraw. Shown smaller: the 25 panes, the radiograph and the mammogram.
+    const cases = [['MR',256,256,1600,1200,1], ['CT padded',512,512,1600,1200,1], ['Colour',800,600,1600,1200,1],
+      ['CT paging',512,512,1600,1200,1], ['CT 25 panes',512,512,300,200,25], ['DX',3000,3000,1000,1000,1], ['MG',3328,4096,900,1100,1]];
     const timings = [];
-    for (const [name,width,height,outWidth,outHeight,frames] of cases) {
-      const data = new Uint16Array(width*height*frames);
-      for (let i=0;i<data.length;i++) data[i]=(i*17+Math.floor(i/width)*37)%4096;
+    for (const [name,width,height,outWidth,outHeight,panes] of cases) {
+      const colour=name==='Colour', padded=name.startsWith('CT p'), paging=name==='CT paging', frames=paging?19:panes;
+      const data = colour?new Uint8Array(width*height*3):padded?new Int16Array(width*height*frames):new Uint16Array(width*height*frames);
+      for (let i=0;i<data.length;i++) {
+        const x=i%width, y=Math.floor(i/width)%height, outside=padded&&(x-width/2)**2+(y-height/2)**2>(0.48*width)**2;
+        data[i]=colour?(i*7+Math.floor(i/width))%256:outside?-2000:(i*17+Math.floor(i/width)*37)%4096;
+      }
       const series = { id:name, dimensions:[width,height,frames], spacing:[1,1,1], origin:[0,0,0], direction:[1,0,0,0,1,0,0,0,1],
-        modality:name==='CT 25 panes'?'CT':name, photometricInterpretation:'MONOCHROME2', components:1, canReconstruct:frames>1 };
+        modality:name.startsWith('CT')?'CT':colour?'US':name, photometricInterpretation:colour?'RGB':'MONOCHROME2', components:colour?3:1,
+        canReconstruct:frames>1, ...(padded?{paddingRange:[-2000,-2000]}:{}) };
       const volume={series,data}, view={mode:'source',plane:'axial',slice:0,windowCenter:2048,windowWidth:4096,zoom:1,
         pan:[0,0],rotation:0,flipX:false,flipY:false,inverted:false};
-      const panes=renderers.map(()=>Array.from({length:frames},()=>{const c=document.createElement('canvas');c.width=outWidth;c.height=outHeight;return c;}));
+      const canvases=renderers.map(()=>Array.from({length:panes},()=>{const c=document.createElement('canvas');c.width=outWidth;c.height=outHeight;return c;}));
       const warm=[[],[]],first=[],cold=[];
       for(let round=0;round<19;round++) {
         for(const index of round%2?[1,0]:[0,1]) {
           const render=renderers[index];
           if(round===1) render.setVisibleViews([]);
           const start=performance.now();
-          for(let slice=0;slice<frames;slice++) {
-            const canvas=panes[index][slice];
-            render.render(canvas,volume,{...view,slice,windowCenter:2048+round,pan:[round%3,round%5]});
+          for(let pane=0;pane<panes;pane++) {
+            const canvas=canvases[index][pane];
+            render.render(canvas,volume,{...view,slice:paging?round:pane,windowCenter:2048+round,pan:[round%3,round%5]});
             canvas.getContext('2d').getImageData(Math.floor(outWidth/2),Math.floor(outHeight/2),1,1);
           }
           render.gl.finish();
@@ -77,7 +84,7 @@ try {
         }
       }
       const median = values => { const a=values.toSorted((x,y)=>x-y); return (a[7]+a[8])/2; };
-      timings.push({name,width,height,outWidth,outHeight,frames,firstMs:first,firstAfterShaderSetupMs:cold,medianRedrawMs:warm.map(median),redrawMs:warm});
+      timings.push({name,width,height,outWidth,outHeight,panes,frames,firstMs:first,firstAfterShaderSetupMs:cold,medianRedrawMs:warm.map(median),redrawMs:warm});
       renderers.forEach(render=>render.setVisibleViews([]));
     }
     return {renderer:renderers[0].info.renderer, candidateRenderer:renderers[1].info.renderer,timings};
