@@ -333,15 +333,21 @@ async function checkClosedCTBuffer(browser, url) {
 }
 
 async function checkRestartedCatalog(browser, url) {
-  const page = await browser.newPage();
+  const page = await browser.newPage({ locale: 'en-US' });
   try {
     await page.goto(url);
     await page.waitForFunction(() => document.documentElement.dataset.engineThreads && document.querySelector('[data-ready="true"]'));
     assert.deepEqual(await importPickedFiles(page, studyFiles.map(name => path.join(study, name))), [slices]);
-    const generation = await page.evaluate(async () => {
+    const ctRequest = await page.evaluate(async () => {
       const [ct] = (await window.veacom.listSeries()).series;
       window.ctCatalogFrames = new WeakRef(ct.frameMetadata);
-      return ct.engineGeneration;
+      const generation = ct.engineGeneration;
+      window.restartedCatalog = new Promise(resolve => {
+        const unsubscribe = window.veacom.onCoreState(state => {
+          if (state.status === 'ready' && state.generation > generation) { unsubscribe(); resolve(state.generation); }
+        });
+      });
+      return { seriesId: ct.id, generation: ct.engineGeneration, revision: ct.catalogRevision, index: 0 };
     });
     const devtools = await page.context().newCDPSession(page);
     await devtools.send('HeapProfiler.collectGarbage');
@@ -349,7 +355,7 @@ async function checkRestartedCatalog(browser, url) {
     const engine = page.workers().find(worker => new URL(worker.url()).pathname.includes('/engine.worker-'));
     assert(engine);
     await engine.evaluate(() => { setTimeout(() => { throw new Error('Simulated engine failure'); }, 0); });
-    await page.waitForFunction(async old => (await window.veacom.getCoreState()).generation > old, generation);
+    assert.equal(await page.evaluate(() => window.restartedCatalog), ctRequest.generation + 1);
     assert.equal(await page.evaluate(async () => (await window.veacom.listSeries()).series.length), 0);
     assert.deepEqual(await importPickedFiles(page, [path.join(mrStudy, studyFiles[0])]), [1]);
     const next = await page.evaluate(async () => {
@@ -358,9 +364,13 @@ async function checkRestartedCatalog(browser, url) {
       return [mr.patientId, frame.headers.get('X-SOP-Instance-UID'), Number(frame.headers.get('Content-Length'))];
     });
     assert.deepEqual(next, ['SYNTHETIC-OTHER', '2.25.302617644913925066835652647005517224101.10.3.1', columns * rows * 2]);
+    await assert.rejects(page.evaluate(request => window.veacom.fetchPixels(request), ctRequest));
+    await assert.rejects(page.evaluate(async request => window.veacom.fetchPixels({
+      ...request, generation: (await window.veacom.getCoreState()).generation,
+    }), ctRequest));
     await devtools.send('HeapProfiler.collectGarbage');
     const retained = await page.evaluate(() => window.ctCatalogFrames.deref()?.length ?? 0);
-    console.log('Source of the previous engine is still retained:', retained, 'CT frames after opening the other patient', next);
+    console.log('Prior CT frame records after the replacement engine opened MR:', retained, next);
     assert.equal(retained, slices);
   } finally { await page.close(); }
 }
