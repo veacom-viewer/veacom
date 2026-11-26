@@ -1,6 +1,7 @@
 // @ts-check
 const HEAD_BYTES = 64 * 1024;
 export const HEAD_GROUP_SIZE = 16;
+const MAX_READ_GROUPS = 16;
 // The heads of 1024 files: a PET/CT is often 500 to 1000. The engine reads the head of every file beyond this one by one
 // while it lists them, about 0.7 ms each; these are read several at once, and dropped once the listing ends.
 const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
@@ -31,24 +32,25 @@ export async function readHeads(files, waitForFiles) {
   /** @type {(Uint8Array | undefined)[]} */
   const result = Array(files.length).fill(undefined);
   let remaining = MAX_PREFETCH_BYTES;
-  for (let start = 0; start < files.length && (remaining > 0 || waitForFiles); start += 256) {
-    const reads = [];
-    const end = Math.min(start + 256, files.length);
-    try {
-      for (let from = start; from < end && (remaining > 0 || waitForFiles); from += HEAD_GROUP_SIZE) {
-        if (waitForFiles) await waitForFiles(from);
-        const group = [];
-        for (let index = from; remaining > 0 && index < Math.min(from + HEAD_GROUP_SIZE, end); index++) {
-          const { file } = files[index];
-          const length = Math.min(file.size, HEAD_BYTES);
-          if (!length || file.size > LARGE_FILE_BYTES || length > remaining) continue;
-          remaining -= length;
-          try { group.push({ index, part: file.slice(0, length) }); }
-          catch { /* The engine can still read the file on demand. */ }
-        }
-        if (group.length) reads.push(readGroup(group, result));
+  const reads = [];
+  try {
+    for (let from = 0; from < files.length && (remaining > 0 || waitForFiles); from += HEAD_GROUP_SIZE) {
+      if (waitForFiles) await waitForFiles(from);
+      const group = [];
+      const end = Math.min(from + HEAD_GROUP_SIZE, files.length);
+      for (let index = from; remaining > 0 && index < end; index++) {
+        const { file } = files[index];
+        const length = Math.min(file.size, HEAD_BYTES);
+        if (!length || file.size > LARGE_FILE_BYTES || length > remaining) continue;
+        remaining -= length;
+        try { group.push({ index, part: file.slice(0, length) }); }
+        catch { /* The engine can still read the file on demand. */ }
       }
-    } finally { await Promise.all(reads); }
-  }
+      if (group.length) {
+        if (reads.length === MAX_READ_GROUPS) await reads.shift();
+        reads.push(readGroup(group, result));
+      }
+    }
+  } finally { await Promise.all(reads); }
   return result;
 }
