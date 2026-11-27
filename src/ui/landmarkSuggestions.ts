@@ -110,19 +110,25 @@ export async function runModel(film: SuggestRequest['film'], leg: ImageLeg, grap
   });
 }
 
-/** Stage A's least peak probability (`Anchors.peak`) below which the model is not sure of a leg and suggests nothing.
- * On real films of whole legs it was 0.041 or more (BMPLE test, Mendeley Data's 49_0); on a film that stops above the
- * ankles, and on the synthetic drawing, under 0.02 (docs/landmark-model.md). */
+/** Stage A's least peak probability (`Anchors.peak`) below which a v2 graph is not sure of a leg and suggests nothing. */
 export const UNSURE_PEAK = 0.02;
+/** Stage A v3 numerical-sanity floor on heatmap peak probability alongside calibrated `presence`. */
+export const UNSURE_PEAK_V3 = 0.005;
+/** Stage A v3 calibrated visibility/OOD threshold on `min(sigmoid(presence_logits))` across the leg's three joints. */
+export const UNSURE_PRESENCE = 0.15;
 
-/** The kit's suggestions from a run; 'unsure' when stage A is not sure of the leg (`UNSURE_PEAK`); or null when the
- * model did not find two legs: the leg's hip, knee and ankle must come down the film in that order, and the image's
- * left leg must lie left of its right leg (a film of one leg, or not a long-leg film, can fail either). A suggestion
- * with a point off the film is left out. */
+/** The kit's suggestions from a run; 'unsure' when stage A is not sure of the leg (`UNSURE_PRESENCE` and `UNSURE_PEAK_V3`
+ * on v3 graphs, `UNSURE_PEAK` on v2); or null when the model did not find two legs: the leg's hip, knee and ankle must
+ * come down the film in that order, and the image's left leg must lie left of its right leg (a film of one leg, or not a
+ * long-leg film, can fail either). A suggestion with a point off the film is left out. */
 export function suggestionsFrom(legs: Record<ImageLeg, Anchors>, leg: ImageLeg, channels: Extract<SuggestReply, { ok: true }>['channels'],
   mm: readonly [number, number], size: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> | 'unsure' | null {
-  const { hip, knee, ankle, peak } = legs[leg];
-  if (!(peak >= UNSURE_PEAK)) return 'unsure';
+  const { hip, knee, ankle, peak, presence } = legs[leg];
+  if (presence !== undefined) {
+    if (!(presence >= UNSURE_PRESENCE) || !(peak >= UNSURE_PEAK_V3)) return 'unsure';
+  } else if (!(peak >= UNSURE_PEAK)) {
+    return 'unsure';
+  }
   // Two femoral heads' centres lie a pelvis apart, far more than 50 mm even in a child: closer, both legs' points are
   // on one leg.
   if (!(hip[1] < knee[1] && knee[1] < ankle[1]) || !((legs.right.hip[0] - legs.left.hip[0]) * mm[0] > 50)) return null;

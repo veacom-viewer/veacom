@@ -10,7 +10,7 @@ import {
   pixelToWorld, place, planView, putBackSuggestion, removeOsteotomy, resetCutFragment, resetCutShifts,
   rotatedOsteotomy, selectOsteotomy, settleMoved, translatedOsteotomy, updateOsteotomy, withSuggestions, worldToPixel,
 } from '../src/ui/deformityPlan';
-import { MODEL, suggestionsFrom, suggestionTarget, UNSURE_PEAK } from '../src/ui/landmarkSuggestions';
+import { MODEL, suggestionsFrom, suggestionTarget, UNSURE_PEAK, UNSURE_PEAK_V3, UNSURE_PRESENCE } from '../src/ui/landmarkSuggestions';
 import { lateralOnImage, type Landmarks } from '../src/imaging/deformity/measure';
 import { LANDMARKS } from '../src/imaging/deformity/landmarks';
 import { UNCHECKED } from '../src/imaging/deformity/suggest';
@@ -300,7 +300,7 @@ describe('landmark suggestions', () => {
     current = acceptSuggestions(settleMoved(moveHandle(current, { kind: 'suggestion', name: 'tibialPlateauMedial', index: 0 }, [231, 529]), 'tibialPlateauMedial', 0));
     current = place(current, { film: key, kind: 'landmark', name: 'plafondMedial' }, [225, 890], frame).film;
     const file = await planFile(current, frame), labels = Object.fromEntries(file.plans[0].landmarks.map(label => [label.name, label]));
-    assert.deepEqual(labels.kneeCentre.confidence, { model: 'veacom-landmarks-r2', sha256: { stageA: MODEL.sha256.stageA, stageB: MODEL.sha256.stageB } });
+    assert.deepEqual(labels.kneeCentre.confidence, { model: MODEL.model, sha256: { stageA: MODEL.sha256.stageA, stageB: MODEL.sha256.stageB } });
     assert.match(MODEL.sha256.stageA, /^[0-9a-f]{64}$/);
     assert.deepEqual([labels.kneeCentre.provenance, labels.kneeCentre.suggestionShown], [['accepted'], true]);
     assert.deepEqual([labels.tibialPlateauMedial.provenance, labels.tibialPlateauMedial.confidence], [['moved'], MODEL]);
@@ -460,8 +460,10 @@ describe('landmark suggestions', () => {
     assert.deepEqual(suggestionTarget(planView({ ...current, patientRight: 'right' }, unoriented), unoriented), { leg: 'right' });
     const colour = { ...frame, components: 3 as const };
     assert.deepEqual(suggestionTarget(planView(current, colour), colour), { block: 'colour' });
-    const tall = { ...frame, dimensions: [400, 5000, 1] as [number, number, number] };
-    assert.deepEqual(suggestionTarget(planView(current, tall), tall), { block: 'size' });
+    const tallFits = { ...frame, dimensions: [400, 5000, 1] as [number, number, number] };
+    assert.deepEqual(suggestionTarget(planView(current, tallFits), tallFits), { leg: 'left' }, 'A 1650 mm tall film fits the 1728 mm v3 canvas.');
+    const tooTall = { ...frame, dimensions: [400, 5500, 1] as [number, number, number] };
+    assert.deepEqual(suggestionTarget(planView(current, tooTall), tooTall), { block: 'size' });
     const most = acceptSuggestions(withSuggestions(current, points, MODEL, UNCHECKED));
     assert.deepEqual(suggestionTarget(planView(most, frame), frame), { leg: 'left' }, 'The trochanter, shafts and plafond are still to suggest.');
     const rest = Object.fromEntries(LANDMARKS.filter(name => !(name in points)).map((name, i) => [name, [[150 + i, 300 + 80 * i]] as Point[]]));
@@ -491,6 +493,18 @@ describe('landmark suggestions', () => {
       'Both hips found within 50 mm (140 px of 0.33 mm, 46 mm): both on one leg.');
     assert.deepEqual(suggestionsFrom(legs({ hip: [100, 120], knee: [200, 500], ankle: [205, 900] }), 'left', { femoralCondyleMedial: { point: [-1, 500] as Point, confidence: 0.06 } }, mm, size),
       {}, 'Every point off the film leaves nothing to suggest (the panel then says the model found nothing).');
+    // Stage A v3 presence gate: uses presence >= UNSURE_PRESENCE and peak >= UNSURE_PEAK_V3 when presence is present.
+    assert.equal(UNSURE_PRESENCE, 0.15);
+    assert.equal(UNSURE_PEAK_V3, 0.005);
+    const v3Legs = (presence: number, peak: number) => ({
+      left: { hip: [100, 120] as Point, knee: [200, 500] as Point, ankle: [205, 900] as Point, peak, presence },
+      right,
+    });
+    assert.deepEqual(Object.keys(suggestionsFrom(v3Legs(UNSURE_PRESENCE, UNSURE_PEAK_V3), 'left', channels, mm, size) as object), ['kneeCentre'],
+      'v3 accepts a calibrated present leg even when peak is between 0.005 and 0.02.');
+    for (const [presence, peak] of [[0.149, 0.08], [0.99, 0.0049], [Number.NaN, 0.08]] as const) {
+      assert.equal(suggestionsFrom(v3Legs(presence, peak), 'left', channels, mm, size), 'unsure', `v3 rejects presence=${presence}, peak=${peak}.`);
+    }
   });
 });
 
