@@ -2400,7 +2400,6 @@ export default function App() {
     const originId = crosshairSeriesIdRef.current, origin = originId ? volumesRef.current.get(originId) : undefined;
     const baseCrosshair = crosshairRef.current;
     setSlots(current => {
-      let changed = false;
       const updated = current.map(slot => {
         const oblique = byId.get(slot.id);
         const volume = oblique && slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
@@ -2413,10 +2412,9 @@ export default function App() {
         let nextView = waiting ? { ...proposed, slice: targetSlice } : patchView(volume, slot.view, { mode: 'mpr', oblique, slice: targetSlice });
         const slice = Math.max(0, Math.min(sliceCount(volume.series, nextView) - 1, Math.round(nextView.slice)));
         if (slice !== nextView.slice) nextView = { ...nextView, slice };
-        changed = true;
         return { ...slot, view: nextView };
       });
-      return changed ? updated : current;
+      return updated.some((slot, index) => slot !== current[index]) ? updated : current;
     });
   };
   const resetView = () => {
