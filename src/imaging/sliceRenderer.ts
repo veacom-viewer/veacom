@@ -909,16 +909,20 @@ class SharedSliceRenderer {
     const slab = sourceFrame === undefined && mainKind !== 'rgb8'
       ? (usesSourceFrames(volume.series, view) ? slabSampling(volume.series, { ...view, slab: undefined }) : slabSampling(volume.series, view))
       : undefined;
-    const mainBricks: VolumeBrick[] | null = sourceFrame === undefined && needsBricking(volume.series.dimensions, this.info.max3DTextureSize)
-      ? planSliceBricks(volume.series.dimensions, topLeftIndex, indexRight, indexDown, w, h, this.info.max3DTextureSize, slab?.step, slab?.mode ? slab.half : 0)
-      : null;
+    let mainBricks: VolumeBrick[] | null = null;
+    if (sourceFrame === undefined && needsBricking(volume.series.dimensions, this.info.max3DTextureSize)) {
+      mainBricks = planSliceBricks(volume.series.dimensions, topLeftIndex, indexRight, indexDown, w, h, this.info.max3DTextureSize, slab?.step, slab?.mode ? slab.half : 0);
+      if (mainBricks === null) throw new LocalizedError('gpu.mprLimit', { limit: this.info.max3DTextureSize });
+    }
     const petMatrix = fusion && worldToIndexMatrix(fusion.volume.series), transform = fusion?.transform;
     const petRight = petMatrix && multiply(petMatrix, transform ? applyVector(transform, right) : right);
     const petDown = petMatrix && multiply(petMatrix, transform ? applyVector(transform, down) : down);
     const petOriginWorld = fusion ? (transform ? applyPoint(transform, topLeft) : topLeft) : undefined;
-    const petBricks: VolumeBrick[] | null = fusion && petKind && needsBricking(fusion.volume.series.dimensions, this.info.max3DTextureSize)
-      ? planSliceBricks(fusion.volume.series.dimensions, worldToIndex(fusion.volume.series, petOriginWorld!), petRight!, petDown!, w, h, this.info.max3DTextureSize)
-      : null;
+    let petBricks: VolumeBrick[] | null = null;
+    if (fusion && petKind && needsBricking(fusion.volume.series.dimensions, this.info.max3DTextureSize)) {
+      petBricks = planSliceBricks(fusion.volume.series.dimensions, worldToIndex(fusion.volume.series, petOriginWorld!), petRight!, petDown!, w, h, this.info.max3DTextureSize);
+      if (petBricks === null) throw new LocalizedError('gpu.fusionLimit', { limit: this.info.max3DTextureSize });
+    }
     // Thin reconstructions integrate in their own plane. Bound work per output pixel at extreme zoom-out.
     const samples = (step: Vec3) => Math.min(8, Math.max(1, Math.ceil(Math.hypot(...step) - 1e-5)));
     const mprX = samples(indexRight), mprY = samples(indexDown);

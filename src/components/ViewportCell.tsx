@@ -28,7 +28,7 @@ export function ViewportCell({ slot, index, paneCount, volume, metadata, active,
   joined: Joined | null; onCross: (id: string, place: number) => void;
   onActivate: (id: string) => void; onViewChange: (id: string, patch: Partial<ViewState>) => void;
   onAnnotationsChange: (seriesId: string, annotations: Annotation[]) => void;
-  onRotateReference?: (id: string, oblique: [number, number]) => void; clickPicksPoint?: boolean;
+  onRotateReference?: ViewportProps['onRotateReference']; clickPicksPoint?: boolean;
   /** The last pane widens over the columns the grid has no pane for. */
   span?: number; onSwap: (from: string, to: string) => void;
   /** A short note in this pane (what was just put in it, or the arrangement it belongs to), with an undo or a keep. */

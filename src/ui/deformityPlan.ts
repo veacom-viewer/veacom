@@ -206,6 +206,32 @@ export function putBackSuggestion(film: FilmPlans, planId: string, name: Landmar
   return withPlan(film, { ...plan, suggested: { ...suggested, points: { ...suggested.points, [name]: points.map((p, i) => i === index ? point : p) } } });
 }
 
+/**
+ * Restores a cancelled non-suggestion drag without clobbering an Undo or another edit that happened while the drag was
+ * held, and without losing a plan switch that cancelled the drag:
+ * - For a calibration marker drag, restores `beforeFilm.marker` only if `current.marker` still matches `lastWrittenFilm`.
+ * - For a plan edit drag, restores only `planId` via `withPlan` (preserving `current.active` and other plans) only if
+ *   `current`'s plan entry for `planId` still matches the plan object written by this drag.
+ */
+export function cancelDragRestore(
+  current: FilmPlans,
+  planId: string,
+  beforeFilm: FilmPlans,
+  lastWrittenFilm: FilmPlans | undefined,
+  markerOnly: boolean,
+): FilmPlans {
+  if (!lastWrittenFilm) return current;
+  if (markerOnly) {
+    if (current.marker !== lastWrittenFilm.marker) return current;
+    return current.marker === beforeFilm.marker ? current : { ...current, marker: beforeFilm.marker };
+  }
+  const beforePlan = beforeFilm.plans.find(item => item.id === planId);
+  const lastWrittenPlan = lastWrittenFilm.plans.find(item => item.id === planId);
+  const currentPlan = current.plans.find(item => item.id === planId);
+  if (!beforePlan || !lastWrittenPlan || !currentPlan || currentPlan !== lastWrittenPlan) return current;
+  return withPlan(current, beforePlan);
+}
+
 /** The suggestions taken off the active plan; landmarks already accepted stay. */
 export function clearSuggestions(film: FilmPlans): FilmPlans {
   const plan = activePlan(film);

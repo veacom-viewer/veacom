@@ -13,6 +13,7 @@ export interface VolumePlan {
   widening: VolumePixelType[];
   chunkable: boolean;
   maxBytes: number;
+  cacheLimit?: number;
 }
 
 export type VolumeChunkResult =

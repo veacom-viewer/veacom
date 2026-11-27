@@ -113,10 +113,12 @@ describe('chunked browser volume assembly', () => {
 
   it('stops cleanly when cancelled between chunks and enforces the maxBytes limit', async () => {
     let stop = false;
+    const decodedRanges: Array<[number, number]> = [];
     await assert.rejects(
       assembleVolumeChunks(planFor(4, 2, ['int16', 'float32']), {
         chunkFrames: 2,
         decodeChunk: (start, count, pixelType) => {
+          decodedRanges.push([start, count]);
           return { status: 'ok', bytes: encodeChunk(Array(count * 2).fill(start), pixelType), pixelType, components: 1 };
         },
         cancelled: () => stop,
@@ -124,6 +126,7 @@ describe('chunked browser volume assembly', () => {
       }),
       /job\.cancelled/,
     );
+    assert.deepEqual(decodedRanges, [[0, 2]]);
 
     await assert.rejects(
       assembleVolumeChunks(planFor(10, 10, ['int16', 'float32'], 100), {

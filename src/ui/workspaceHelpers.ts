@@ -1,7 +1,7 @@
 import { measurementTools } from '../domain/measurementRecovery';
-import { dot, getPlaneFrame, isProjection, scale, sliceAtWorld, sliceCount, sub } from '../imaging/geometry';
+import { add, cross, dot, getPlaneFrame, isProjection, scale, sliceAtWorld, sliceCount, sub } from '../imaging/geometry';
 import { nearestTouchpadSpeed, TOUCHPAD_SPEED } from '../imaging/interaction';
-import { facesSame, levelSlice, shareFrame, type Pane } from '../imaging/linking';
+import { coveredSlice, facesSame, levelSlice, shareFrame, type Pane } from '../imaging/linking';
 import { openingSlice } from '../imaging/paging';
 import { petLook } from '../imaging/quantity';
 import { withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from '../imaging/radiograph';
@@ -255,14 +255,54 @@ export function readKeptArrangements(): Kept {
   try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
 }
 
-/** Projects the three-plane MPR crosshair along the normal of any plane whose slice changed without changing tilt. */
+/**
+ * Projects the three-plane MPR crosshair onto the displayed planes of `crosshairSeriesId`.
+ * When `snapAll` is false (paging, Undo/Redo, restoring views), projects along the normal of any plane whose
+ * slice changed without changing tilt so rotating an oblique plane keeps its pivot.
+ * When `snapAll` is true (a crosshair click/drag in MPR), snaps onto every displayed MPR plane covering the point
+ * (solving the exact three-plane intersection when all three planes cover it) so the lines always meet at it.
+ */
 export function projectMprCrosshair(
   before: readonly Slot[],
   after: readonly Slot[],
   crosshair: Vec3,
   crosshairSeriesId: string | null,
   volumes: { get(id: string): Volume | undefined },
+  snapAll = false,
 ): Vec3 {
+  if (snapAll) {
+    const planes: Array<{ center: Vec3; normal: Vec3 }> = [];
+    for (const slot of after) {
+      const volume = slot.seriesId ? volumes.get(slot.seriesId) : undefined;
+      if (!volume || slot.seriesId !== crosshairSeriesId || isProjection(volume.series, slot.view)) continue;
+      const covered = coveredSlice({ series: volume.series, view: slot.view }, crosshair);
+      if (covered === null || covered !== Math.round(slot.view.slice)) continue;
+      const { center, normal } = getPlaneFrame(volume.series, slot.view);
+      planes.push({ center, normal: scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal))) });
+    }
+    if (planes.length === 3) {
+      const [p0, p1, p2] = planes;
+      const c12 = cross(p1.normal, p2.normal);
+      const det = dot(p0.normal, c12);
+      if (Math.abs(det) > 1e-6) {
+        const d0 = dot(p0.normal, p0.center);
+        const d1 = dot(p1.normal, p1.center);
+        const d2 = dot(p2.normal, p2.center);
+        const c20 = cross(p2.normal, p0.normal);
+        const c01 = cross(p0.normal, p1.normal);
+        const solved = scale(add(add(scale(c12, d0), scale(c20, d1)), scale(c01, d2)), 1 / det);
+        if (Math.hypot(...sub(solved, crosshair)) > 1e-9) return solved;
+        return crosshair;
+      }
+    }
+    let point = crosshair;
+    for (const { center, normal } of planes) {
+      const delta = dot(sub(point, center), normal);
+      if (Math.abs(delta) > 1e-9) point = sub(point, scale(normal, delta));
+    }
+    return point;
+  }
+
   let point = crosshair;
   for (const slot of after) {
     const was = before.find(item => item.id === slot.id)?.view;

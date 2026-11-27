@@ -537,8 +537,9 @@ export function Viewport(props: ViewportProps) {
       if (!sameView(liveView.current, next)) { liveView.current = next; queue(); }
     }
     if (previous.volume !== props.volume || previous.fusion !== props.fusion) {
-      const sourceChanged = !sameImageSource(previous.volume.series, props.volume.series)
+      const fusionChanged = Boolean(previous.fusion) !== Boolean(props.fusion)
         || Boolean(previous.fusion && props.fusion && !sameImageSource(previous.fusion.volume.series, props.fusion.volume.series));
+      const sourceChanged = !sameImageSource(previous.volume.series, props.volume.series) || fusionChanged;
       if (sourceChanged && canvas.current) {
         // Clear previous-patient pixels immediately so a failed or deferred draw can never show them under new labels.
         clearCanvas(canvas.current);
@@ -795,9 +796,11 @@ export function Viewport(props: ViewportProps) {
       const held = turn.planes.find(item => item.id === turn.id);
       const degrees = held ? snappedTurn(turn.frame, turn.mapping, held.series, held.view, turn.turned, step, held.transform) : null;
       if (degrees !== null) {
-        for (const reference of turn.planes) {
-          latest.current.onRotateReference?.(reference.id, turnPlane(turn.mapping, reference.series, reference.view, degrees, reference.transform));
-        }
+        const rotations = turn.planes.map(reference => ({
+          id: reference.id,
+          oblique: turnPlane(turn.mapping, reference.series, reference.view, degrees, reference.transform),
+        }));
+        latest.current.onRotateReference?.(rotations);
       }
       return;
     }

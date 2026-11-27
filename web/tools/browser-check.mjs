@@ -108,6 +108,8 @@ async function checkPagingDuringVolumeLoad() {
     order.push('volume');
     return res;
   });
+  // Let bridge.ts's setTimeout(dispatch) post the volume request so the Worker is actively assembling it first.
+  await new Promise(resolve => setTimeout(resolve, 0));
   const framePromise = bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision, index: 50 }).then(res => {
     order.push('frame');
     return res;

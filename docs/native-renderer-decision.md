@@ -37,8 +37,8 @@ Measure(sourceRevision, roiLps, exactSamplingMethod)
 EditMask(maskRevision, operationInPatientSpace)
 FrameReady(viewportId, frameId, sourceRevision, viewRevision,
            surfaceLease, dimensions, format, colorSpace, coverage, displayLevel)
-Pick(frameId, viewportPixel)
-ReleaseFrame(surfaceLease)
+Pick(viewportId, frameId, viewportPixel)
+ReleaseFrame(viewportId, surfaceLease)
 ```
 
 Separate GPU-completed, delivered-to-compositor and screen-observed events. They measure different things. Human input, tests and future agents should use the same validated command path; choosing Rust alone is not formal verification.
@@ -67,6 +67,6 @@ The current source-paging patch, chunked assessment worker and cache fixes are w
 ## Progress status (26 November 2026)
 
 - **Bricked 3D textures and bounded 3D display levels (WebGL2):** `src/imaging/volumeBricks.ts`, `src/imaging/sliceRenderer.ts`, and `src/components/VolumeView.tsx` remove the 2048-slice cliff for MPR, oblique planes, thick slabs, PET fusion, and 3D volume rendering while preserving untouched full-resolution arrays for quantitative measurements, picking, burring, and STL export. Whole-volume rotating projections on oversized stacks continue to fail visibly rather than truncating.
-- **Unified residency coordination:** `src/domain/residencyManager.ts` coordinates `cpu-volumes`, `source-frames`, `gpu-slices`, and `gpu-3d` pools under one global working-set budget with pin protection and pressure-triggered eviction.
-- **Typed Engine-Presenter protocol contract:** `native/src/presenter.rs` defines the zero-dependency command/event types and bounded 2- or 3-surface `SurfaceLeasePool` with stale-frame disposal, multi-consumer lease release, separate completion/delivery/observation milestones, and immutable frame binding for `Pick`.
+- **Unified residency coordination:** `src/domain/residencyManager.ts` coordinates `cpu-volumes`, `source-frames`, `gpu-slices`, and `gpu-3d` pools under separate CPU and GPU domain budgets (so GPU uploads never evict cached CPU volumes) with pin protection and cross-domain pressure-triggered eviction.
+- **Typed Engine-Presenter protocol contract:** `native/src/presenter.rs` defines the zero-dependency command/event types (scoping `Pick` and `ReleaseFrame` to `viewportId`) and bounded 2- or 3-surface `SurfaceLeasePool` with in-order publishing during continuous drags, late out-of-order stale disposal, multi-consumer lease release, separate completion/delivery/observation milestones, and immutable frame binding for `Pick`.
 - **Pending:** Delivery Gates 1 through 4 remain open and require native GPU presentation qualification on real macOS (IOSurface) and Windows (D3D12 shared handle) hardware before adopting a native presenter backend.

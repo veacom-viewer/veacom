@@ -215,7 +215,11 @@ async function run(build, study, counter) {
       // pressed here once the study has opened, as a reader asks for it.
       const needsToggle = !await page.locator('[data-testid="tool-fusion"][aria-pressed="true"]').count();
       if (needsToggle) {
-        await page.evaluate(() => { window.__fusionClicked = performance.now(); });
+        await page.evaluate(() => {
+          window.__fusionClicked = 0;
+          const button = document.querySelector('[data-testid="tool-fusion"]');
+          button?.addEventListener('click', () => { window.__fusionClicked = performance.now(); }, { once: true, capture: true });
+        });
         await page.getByTestId('tool-fusion').click();
       } else {
         await page.evaluate(() => { window.__fusionClicked = window.__openStarted; });

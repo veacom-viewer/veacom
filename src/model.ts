@@ -303,8 +303,8 @@ export interface ViewportProps {
   onCyclePlane?: () => void;
   /** Ctrl + drag on a fused image sets the PET's scale: the top of it and its opacity. */
   onFusionAdjust?: (next: { upperSuv: number; opacity: number }) => void;
-  /** In the three-plane MPR: a handle on another pane's line was dragged; that pane's plane turns to `oblique`. */
-  onRotateReference?: (id: string, oblique: [number, number]) => void;
+  /** In the three-plane MPR: a handle on another pane's line was dragged; the rotated panes turn together around the crosshair. */
+  onRotateReference?: (rotations: ReadonlyArray<{ id: string; oblique: [number, number] }>) => void;
   /** Shown in the accessible name when several panes are open, so they can be told apart. */
   paneNumber?: number;
   /** The pane's series, or its fused overlay, is placed by an alignment (imaging/registration.ts): its corner says so. */

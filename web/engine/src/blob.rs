@@ -342,6 +342,27 @@ pub fn release() {
     }
 }
 
+/// Gives back the memory of only the listed files held whole, leaving any other preloaded files intact.
+#[cfg_attr(
+    not(feature = "threads"),
+    allow(dead_code, reason = "only the threaded build calls it")
+)]
+pub fn release_paths(paths: &[&Path]) {
+    let wanted: Vec<Arc<BlobSource>> = {
+        let sources = sources();
+        paths
+            .iter()
+            .filter_map(|path| sources.by_path.get(*path).cloned())
+            .collect()
+    };
+    for source in wanted {
+        *source
+            .whole
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
+}
+
 /// Reads made from the Blobs since `clear`: how many, the bytes they returned, the milliseconds they took.
 pub fn stats() -> (u64, u64, f64) {
     STATS.with_borrow(|stats| (stats.reads, stats.bytes, stats.ms))

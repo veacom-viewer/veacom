@@ -302,7 +302,21 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       trace = await startTrace(devtools);
       await sleep(200);
       await mark('bench:mpr:start');
-      await js(`(() => { const button = document.querySelector(${JSON.stringify(mpr.open)}); if (!button) throw new Error('MPR control not found'); button.click(); return 0; })()`, true);
+      await js(`new Promise((resolve, reject) => {
+        const button = document.querySelector(${JSON.stringify(mpr.open)});
+        if (!button) { reject(new Error('MPR control not found')); return; }
+        const opensMenu = ${JSON.stringify(Boolean(mpr.menuItem))} && button.getAttribute('aria-haspopup') === 'menu';
+        button.click();
+        if (!opensMenu) { resolve(0); return; }
+        const deadline = performance.now() + 5000;
+        function clickItem() {
+          const item = document.querySelector(${JSON.stringify(mpr.menuItem ?? '')});
+          if (item) { item.click(); resolve(0); }
+          else if (performance.now() > deadline) reject(new Error('MPR menu item not found'));
+          else requestAnimationFrame(clickItem);
+        }
+        requestAnimationFrame(clickItem);
+      })`, true);
       await js(`new Promise((resolve, reject) => {
         const deadline = performance.now() + 30000;
         function check() {
@@ -326,7 +340,9 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       await sleep(1000);
       await mark('bench:mpr:settled');
       ({ marks, frames } = readTrace(await trace.stop(), decode));
-      line.mpr = mprMetrics(marks, frames, MAIN, 30, 1);
+      const mprResult = mprMetrics(marks, frames, MAIN, 30, 1);
+      if (mprResult.error) throw new Error(mprResult.error);
+      line.mpr = mprResult;
     }
 
     line.endMB = memoryMB(processes());

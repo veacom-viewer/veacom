@@ -74,24 +74,69 @@ describe('workspaceHelpers', () => {
     assert.equal(defaultView(frameOwned).windowWidth, 1);
   });
 
-  it('projects MPR crosshair onto paged planes without drifting unrelated axes', () => {
+  it('projects MPR crosshair onto paged planes, restored slices, and crosshair clicks without drifting tilted pivots', () => {
     const volume = makeVolume(ctSeries('ct-mpr', 30));
     const volumes = new Map<string, Volume>([[volume.series.id, volume]]);
     const axial = { ...defaultView(volume.series), mode: 'mpr' as const, plane: 'axial' as const, slice: 10 };
+    const coronal = { ...defaultView(volume.series), mode: 'mpr' as const, plane: 'coronal' as const, slice: 30 };
     const sagittal = { ...defaultView(volume.series), mode: 'mpr' as const, plane: 'sagittal' as const, slice: 32 };
     const before: Slot[] = [
       { id: 's1', seriesId: volume.series.id, view: axial },
-      { id: 's2', seriesId: volume.series.id, view: sagittal },
+      { id: 's2', seriesId: volume.series.id, view: coronal },
+      { id: 's3', seriesId: volume.series.id, view: sagittal },
     ];
     const after: Slot[] = [
       { id: 's1', seriesId: volume.series.id, view: { ...axial, slice: 15 } },
-      { id: 's2', seriesId: volume.series.id, view: sagittal },
+      { id: 's2', seriesId: volume.series.id, view: coronal },
+      { id: 's3', seriesId: volume.series.id, view: sagittal },
     ];
-    const startPoint = getPlaneFrame(volume.series, axial).center;
+    const startPoint: [number, number, number] = [32, 30, 20];
     const projected = projectMprCrosshair(before, after, startPoint, volume.series.id, volumes);
     assert.equal(projected[0], startPoint[0]);
     assert.equal(projected[1], startPoint[1]);
     assert.equal(projected[2], getPlaneFrame(volume.series, after[0].view).center[2]);
+
+    // Undo restoring slice 15 -> 10 moves crosshair back to slice 10.
+    const undone = projectMprCrosshair(after, before, projected, volume.series.id, volumes);
+    assert.equal(undone[2], getPlaneFrame(volume.series, before[0].view).center[2]);
+
+    // Rotating a plane (tilt changed) must leave the crosshair pivot untouched.
+    const rotated: Slot[] = [
+      { id: 's1', seriesId: volume.series.id, view: { ...axial, slice: 12, oblique: [15, 0] } },
+      before[1],
+      before[2],
+    ];
+    assert.equal(projectMprCrosshair(before, rotated, startPoint, volume.series.id, volumes), startPoint);
+
+    // Clicking between integer slices with snapAll=true snaps onto all three displayed MPR planes.
+    const expectedX = getPlaneFrame(volume.series, sagittal).center[0];
+    const expectedY = getPlaneFrame(volume.series, coronal).center[1];
+    const expectedZ = getPlaneFrame(volume.series, axial).center[2];
+    const offSliceClick: [number, number, number] = [expectedX + 0.4, expectedY + 0.3, expectedZ + 0.4];
+    const snapped = projectMprCrosshair(before, before, offSliceClick, volume.series.id, volumes, true);
+    assert(Math.abs(snapped[0] - expectedX) < 1e-6);
+    assert(Math.abs(snapped[1] - expectedY) < 1e-6);
+    assert(Math.abs(snapped[2] - expectedZ) < 1e-6);
+
+    // Oblique three-plane intersection: snapped point lies on all three displayed planes simultaneously.
+    const tiltedCoronal = { ...coronal, oblique: [20, 0] as [number, number] };
+    const tiltedSlice = sliceAtWorld(volume.series, tiltedCoronal, [expectedX, expectedY, expectedZ]);
+    const obliqueSlots: Slot[] = [
+      before[0],
+      { id: 's2', seriesId: volume.series.id, view: { ...tiltedCoronal, slice: tiltedSlice } },
+      before[2],
+    ];
+    const obliqueSnapped = projectMprCrosshair(obliqueSlots, obliqueSlots, offSliceClick, volume.series.id, volumes, true);
+    for (const slot of obliqueSlots) {
+      const frame = getPlaneFrame(volume.series, slot.view);
+      const dist = Math.abs(
+        (obliqueSnapped[0] - frame.center[0]) * frame.normal[0]
+        + (obliqueSnapped[1] - frame.center[1]) * frame.normal[1]
+        + (obliqueSnapped[2] - frame.center[2]) * frame.normal[2],
+      ) / Math.hypot(...frame.normal);
+      assert(dist < 1e-6, `snapped point off ${slot.view.plane} plane by ${dist}`);
+    }
+
     // Unchanged tilt helper check.
     assert.equal(sameTilt(axial, after[0].view), true);
     assert.equal(sameTilt(axial, { ...axial, oblique: [5, 0] }), false);

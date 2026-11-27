@@ -3671,12 +3671,15 @@ fn catalogue(
             // Manual window changes start from the LUT's own range rather than a modality default.
             (info.window_center, info.window_width) =
                 crate::modality_lut::voi_window(&info.voi_luts[index as usize]);
+            info.voi_function = None;
         }
         if let Some(first) = info.frame_metadata.first() {
             info.window_center = first.window_center.unwrap_or(info.window_center);
             if let Some(width) = first.window_width {
                 info.window_width = width;
                 info.voi_function = first.voi_function;
+            } else {
+                info.voi_function = None;
             }
             info.padding_range = first.padding_range.filter(|range| {
                 info.frame_metadata
@@ -3776,6 +3779,7 @@ fn catalogue(
             if let Some((center, width)) = pixel_window(source, middle) {
                 source.info.window_center = center;
                 source.info.window_width = width;
+                source.info.voi_function = None;
                 source.info.window_from_pixels = true;
             }
         },
@@ -10217,5 +10221,34 @@ mod tests {
             serde_json::to_value(&source.info).unwrap()["voiFunction"],
             "LINEAR_EXACT"
         );
+    }
+
+    #[test]
+    fn split_phases_clears_voi_function_when_phase_uses_pixel_window() {
+        // Phase 0 stores a SIGMOID window; phase 1 stores no window and falls back to a pixel-derived window.
+        // split_phases clones the Series struct from the base group, so phase 1 must clear voi_function.
+        let slices = multiphase(2, 2, |obj, phase| {
+            obj.put_str(Tag(0x0020, 0x0100), VR::IS, (phase + 1).to_string());
+            if phase == 0 {
+                obj.put(ds(Tag(0x0028, 0x1050), "100"));
+                obj.put(ds(Tag(0x0028, 0x1051), "200"));
+                obj.put_str(Tag(0x0028, 0x1056), VR::CS, "SIGMOID");
+            } else {
+                obj.put(DataElement::new(
+                    Tag(0x7fe0, 0x0010),
+                    VR::OW,
+                    PrimitiveValue::U16(vec![100, 300, 500, 900].into()),
+                ));
+            }
+        });
+        let dir = write_slices(slices);
+        let imported = import_dir(&dir);
+        let ordered = phase_order(&imported);
+        assert_eq!(ordered.len(), 2);
+        assert_eq!(ordered[0].info.voi_function, Some("SIGMOID"));
+        assert_eq!(ordered[0].info.window_center, 100.0);
+        assert_eq!(ordered[0].info.window_width, 200.0);
+        assert!(ordered[1].info.window_from_pixels);
+        assert_eq!(ordered[1].info.voi_function, None);
     }
 }

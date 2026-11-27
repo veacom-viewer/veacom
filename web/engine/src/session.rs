@@ -89,6 +89,7 @@ pub struct VolumePlan {
     pub widening: Vec<&'static str>,
     pub chunkable: bool,
     pub max_bytes: usize,
+    pub cache_limit: usize,
 }
 
 pub struct Session {
@@ -291,6 +292,7 @@ impl Session {
             widening: decode::volume_widening_order(&series).to_vec(),
             chunkable: decode::is_single_file_per_frame(&series),
             max_bytes: decode::MAX_DECODED_VOLUME_BYTES,
+            cache_limit: self.cache.limit,
         })
     }
 
@@ -307,6 +309,53 @@ impl Session {
         let series = self.source(id)?;
         check_revision(&series, revision)?;
         Ok(series)
+    }
+
+    /// Populates `Session::cache` from a chunk-assembled volume when it fits the cache budget, so whole-volume
+    /// sampling and repeat volume requests reuse the decoded pixels without decoding a second time.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "only the browser Worker calls cacheVolume")
+    )]
+    pub fn cache_volume_with(
+        &mut self,
+        id: &str,
+        revision: Option<u64>,
+        pixel_type: &str,
+        byte_len: usize,
+        fill: impl FnOnce(&mut [u8]) -> Result<()>,
+    ) -> Result<bool> {
+        let series = self.source(id)?;
+        check_revision(&series, revision)?;
+        let frame_samples = decode::frame_sample_count(&series)?;
+        let total_samples = frame_samples
+            .checked_mul(series.frames.len())
+            .context("Volume dimensions overflow")?;
+        let sample_bytes = match pixel_type {
+            "uint8" => 1usize,
+            "int16" | "uint16" => 2,
+            "float32" => 4,
+            "float64" => 8,
+            _ => anyhow::bail!("Unsupported cached pixel type {pixel_type}"),
+        };
+        let expected_bytes = total_samples
+            .checked_mul(sample_bytes)
+            .context("Volume byte size overflow")?;
+        anyhow::ensure!(
+            byte_len == expected_bytes,
+            "Cached volume byte length ({byte_len}) does not match expected size ({expected_bytes})"
+        );
+        if expected_bytes > self.cache.limit {
+            return Ok(false);
+        }
+        // Evict older cached volumes before allocating so WASM linear memory does not hold both at once.
+        self.cache.remove(id);
+        self.cache.make_room(expected_bytes);
+        let mut buffer = PixelBuffer::zeroed(pixel_type, total_samples)
+            .context("Unsupported cached pixel type")?;
+        fill(buffer.bytes_mut())?;
+        self.cache.put(id.to_owned(), Arc::new(buffer));
+        Ok(true)
     }
 
     /// The whole series decoded, from the cache when it is there. `revision`: the import the request was made for.
@@ -496,4 +545,178 @@ fn read_tree(root: &Path) -> Result<Vec<NamedFile>> {
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Session;
+    use std::sync::Arc;
+    use veacom_core::{
+        geometry::{self, FrameGeometry},
+        model::{Frame, FrameMetadata, PhaseHints, Series, SourceSeries},
+        source_file::SourceFile,
+        window::{self, Window},
+    };
+
+    fn synthetic_series(id: &str, revision: u64) -> Arc<SourceSeries> {
+        let info = Series {
+            id: id.to_owned(),
+            catalog_revision: revision,
+            source_revision: revision,
+            uid: format!("1.2.3.{id}"),
+            study_uid: "1.2.3".to_owned(),
+            patient_name: "Synthetic^Cache".to_owned(),
+            patient_id: "SYNTH".to_owned(),
+            study_date: "20260101".to_owned(),
+            description: "Synthetic CT".to_owned(),
+            modality: "CT".to_owned(),
+            series_number: 1,
+            dimensions: [2, 2, 2],
+            spacing: [1.0, 1.0, 1.0],
+            origin: [0.0, 0.0, 0.0],
+            direction: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            window_center: 40.0,
+            window_width: 400.0,
+            value_unit: "HU".to_owned(),
+            can_reconstruct: true,
+            spacing_known: true,
+            orientation_known: true,
+            pixel_type: "int16".to_owned(),
+            components: 1,
+            photometric_interpretation: "MONOCHROME2".to_owned(),
+            ..Default::default()
+        };
+        let path =
+            std::env::temp_dir().join(format!("veacom-cache-test-{}-{id}.dcm", std::process::id()));
+        // Minimal Part 10 DICOM header (preamble + DICM + Group Length + Transfer Syntax UID 1.2.840.10008.1.2.1).
+        let mut header = vec![0u8; 128];
+        header.extend_from_slice(b"DICM");
+        header.extend_from_slice(&[0x02, 0x00, 0x00, 0x00, b'U', b'L', 4, 0, 28, 0, 0, 0]);
+        header.extend_from_slice(&[0x02, 0x00, 0x10, 0x00, b'U', b'I', 20, 0]);
+        header.extend_from_slice(b"1.2.840.10008.1.2.1\0");
+        std::fs::write(&path, &header).expect("write temp header");
+        let (missing, _, _) = SourceFile::dicom(&path).expect("index temp header");
+        let _ = std::fs::remove_file(&path);
+        let frame = |z: usize| Frame {
+            source: missing.clone(),
+            index: 0,
+            cine: None,
+            sop_uid: format!("1.2.3.{id}.{z}"),
+            instance_number: (z + 1) as i32,
+            geometry: FrameGeometry {
+                position: Some([0.0, 0.0, z as f64]),
+                orientation: Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+                pixel_spacing: Some([1.0, 1.0]),
+                slice_thickness: Some(1.0),
+            },
+            slope: 1.0,
+            intercept: 0.0,
+            activity: None,
+            ordinary_image: false,
+            jpeg_component_threads: 0,
+            voi_lut: None,
+            segmentation: None,
+            metadata: FrameMetadata {
+                origin: [0.0, 0.0, z as f64],
+                direction: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                spacing: [1.0, 1.0, 1.0],
+                position_known: true,
+                orientation_known: true,
+                spacing_known: true,
+                instance_number: Some((z + 1) as i32),
+                sop_instance_uid: format!("1.2.3.{id}.{z}"),
+                source_frame_number: None,
+                window_center: None,
+                window_width: None,
+                padding_range: None,
+                padding_is_nan: false,
+                segment_number: None,
+                referenced_sop_instance_uid: String::new(),
+                referenced_frame_number: None,
+                voi_lut: None,
+                voi_function: None,
+                nm: None,
+                projection: None,
+            },
+            phase_hints: PhaseHints::default(),
+        };
+        Arc::new(SourceSeries {
+            info,
+            frames: vec![frame(0), frame(1)],
+            geometry: geometry::assemble(&[]),
+            documents: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn cache_volume_with_populates_session_cache_and_prevents_second_decode() {
+        let mut session = Session::default();
+        let series = synthetic_series("ct-cached", 3);
+        session
+            .sources
+            .insert("ct-cached".to_owned(), series.clone());
+
+        let plan = session.volume_plan("ct-cached", Some(3)).expect("plan");
+        assert!(!plan.cached);
+        assert_eq!(plan.cache_limit, 256 * 1024 * 1024);
+
+        let samples: [i16; 8] = [-100, -50, 0, 50, 100, 150, 200, 250];
+        let raw: Vec<u8> = samples.iter().flat_map(|v| v.to_le_bytes()).collect();
+
+        // Wrong revision and wrong length must be rejected.
+        assert!(
+            session
+                .cache_volume_with("ct-cached", Some(2), "int16", raw.len(), |_| Ok(()))
+                .is_err()
+        );
+        assert!(
+            session
+                .cache_volume_with("ct-cached", Some(3), "int16", raw.len() - 2, |_| Ok(()))
+                .is_err()
+        );
+
+        // Valid chunk-assembled buffer enters Session::cache.
+        let cached = session
+            .cache_volume_with("ct-cached", Some(3), "int16", raw.len(), |dst| {
+                dst.copy_from_slice(&raw);
+                Ok(())
+            })
+            .expect("cache volume");
+        assert!(cached);
+        assert!(session.has_volume("ct-cached"));
+        assert!(
+            session
+                .volume_plan("ct-cached", Some(3))
+                .expect("plan2")
+                .cached
+        );
+
+        // Subsequent volume() and whole-volume window sample succeed from Session::cache without touching disk.
+        let pixels = session.volume("ct-cached", Some(3)).expect("cached volume");
+        let pixels2 = session
+            .volume("ct-cached", Some(3))
+            .expect("cached volume 2");
+        assert!(Arc::ptr_eq(&pixels, &pixels2));
+        let win = window::calculate(
+            &series,
+            &pixels,
+            &Window {
+                frame: None,
+                plane: None,
+                automatic: false,
+            },
+        )
+        .expect("whole-volume window");
+        assert_eq!(win["windowCenter"], 75.0);
+        assert_eq!(win["windowWidth"], 350.0);
+
+        // Oversized volume returns Ok(false) without caching.
+        session.cache.limit = 8;
+        let skipped = session
+            .cache_volume_with("ct-cached", Some(3), "int16", raw.len(), |_| {
+                panic!("fill must not run when exceeding cache limit")
+            })
+            .expect("skip oversize");
+        assert!(!skipped);
+    }
 }

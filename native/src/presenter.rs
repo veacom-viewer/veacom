@@ -13,7 +13,11 @@ pub struct SurfaceLeaseId(pub u64);
 
 /// Target slice or reconstructed plane requested for a viewport.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum ViewTarget {
     /// Acquired DICOM frame identified by stable engine frame ID.
     SourceFrame { frame_id: String },
@@ -72,7 +76,11 @@ pub enum ExactSamplingMethod {
 
 /// Surgery mask editing operation expressed in patient LPS millimeters.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum MaskOperation {
     CarveSphere {
         center_lps: [f64; 3],
@@ -100,7 +108,11 @@ pub struct SetViewCommand {
 
 /// Typed commands crossing from the UI shell to the imaging engine.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Command {
     OpenStudy {
         paths: Vec<String>,
@@ -117,10 +129,12 @@ pub enum Command {
         operation_in_patient_space: MaskOperation,
     },
     Pick {
+        viewport_id: String,
         frame_id: u64,
         viewport_pixel: [f64; 2],
     },
     ReleaseFrame {
+        viewport_id: String,
         surface_lease: SurfaceLeaseId,
     },
 }
@@ -171,7 +185,11 @@ pub enum DropReason {
 
 /// Typed events emitted from the imaging engine to the presenter and UI shell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum Event {
     FrameReady {
         viewport_id: String,
@@ -191,6 +209,7 @@ pub enum Event {
         reason: DropReason,
     },
     PickResult {
+        viewport_id: String,
         frame_id: u64,
         source_revision: u64,
         view_revision: u64,
@@ -247,7 +266,7 @@ pub struct SurfaceLeasePool {
     next_frame_id: u64,
     next_lease_id: u64,
     latest_requested_view: u64,
-    latest_published_view: u64,
+    latest_published_view: Option<u64>,
     published: HashMap<u64, PublishedFrame>,
     lease_to_slot: HashMap<SurfaceLeaseId, usize>,
 }
@@ -264,7 +283,7 @@ impl SurfaceLeasePool {
             next_frame_id: 1,
             next_lease_id: 1,
             latest_requested_view: 0,
-            latest_published_view: 0,
+            latest_published_view: None,
             published: HashMap::new(),
             lease_to_slot: HashMap::new(),
         })
@@ -323,8 +342,9 @@ impl SurfaceLeasePool {
 
     /// Marks producer GPU completion for `slot_index`.
     ///
-    /// If a newer `view_revision` has already been requested or published, the completed surface is
-    /// discarded immediately and returned to `Free` with `Event::FrameDropped(Superseded)`.
+    /// Frames that complete in order publish even while a newer revision is still rendering so continuous
+    /// drags never starve. If an equal or newer `view_revision` has already been published, the stale
+    /// completed surface is discarded immediately and returned to `Free` with `Event::FrameDropped(Superseded)`.
     #[allow(
         clippy::too_many_arguments,
         reason = "explicit presentation metadata avoids a throwaway wrapper struct"
@@ -347,7 +367,9 @@ impl SurfaceLeasePool {
             return None;
         };
 
-        if view_revision < self.latest_requested_view || view_revision < self.latest_published_view
+        if self
+            .latest_published_view
+            .is_some_and(|published| view_revision <= published)
         {
             self.slots[slot_index] = SlotState::Free;
             return Some(Event::FrameDropped {
@@ -361,7 +383,7 @@ impl SurfaceLeasePool {
         self.next_frame_id += 1;
         let lease_id = SurfaceLeaseId(self.next_lease_id);
         self.next_lease_id += 1;
-        self.latest_published_view = view_revision;
+        self.latest_published_view = Some(view_revision);
 
         self.slots[slot_index] = SlotState::Leased {
             frame_id,
@@ -521,6 +543,44 @@ mod tests {
         let evt_json = serde_json::to_string(&evt).expect("serialize event");
         let evt_decoded: Event = serde_json::from_str(&evt_json).expect("deserialize event");
         assert_eq!(evt_decoded, evt);
+
+        let pick_cmd = Command::Pick {
+            viewport_id: "vp-1".to_string(),
+            frame_id: 9,
+            viewport_pixel: [120.5, 64.25],
+        };
+        let pick_json = serde_json::to_string(&pick_cmd).expect("serialize pick");
+        assert!(pick_json.contains("\"viewportId\":\"vp-1\""));
+        assert_eq!(
+            serde_json::from_str::<Command>(&pick_json).expect("deserialize pick"),
+            pick_cmd
+        );
+
+        let release_cmd = Command::ReleaseFrame {
+            viewport_id: "vp-1".to_string(),
+            surface_lease: SurfaceLeaseId(3),
+        };
+        let release_json = serde_json::to_string(&release_cmd).expect("serialize release");
+        assert!(release_json.contains("\"viewportId\":\"vp-1\""));
+        assert_eq!(
+            serde_json::from_str::<Command>(&release_json).expect("deserialize release"),
+            release_cmd
+        );
+
+        let pick_evt = Event::PickResult {
+            viewport_id: "vp-1".to_string(),
+            frame_id: 9,
+            source_revision: 7,
+            view_revision: 42,
+            patient_lps: Some([10.0, 20.0, 30.0]),
+            coverage: Coverage::Complete,
+        };
+        let pick_evt_json = serde_json::to_string(&pick_evt).expect("serialize pick result");
+        assert!(pick_evt_json.contains("\"viewportId\":\"vp-1\""));
+        assert_eq!(
+            serde_json::from_str::<Event>(&pick_evt_json).expect("deserialize pick result"),
+            pick_evt
+        );
     }
 
     #[test]
@@ -546,8 +606,9 @@ mod tests {
             }
         );
 
-        // Slot 0 finishes for revision 10, but revision 12 was already requested -> superseded!
-        let dropped = pool
+        // Slot 0 finishes for revision 10 in order while revision 11 is still rendering: it must publish
+        // instead of starving the display during continuous interaction.
+        let published10 = pool
             .complete_gpu_render(
                 slot0,
                 [512, 512],
@@ -557,18 +618,22 @@ mod tests {
                 DisplayLevel::Full,
                 1000,
             )
-            .expect("drop event");
-        assert_eq!(
-            dropped,
-            Event::FrameDropped {
-                viewport_id: "vp-1".to_string(),
-                view_revision: 10,
-                reason: DropReason::Superseded,
+            .expect("publish rev 10");
+        let lease10 = match published10 {
+            Event::FrameReady {
+                view_revision,
+                surface_lease,
+                ..
+            } => {
+                assert_eq!(view_revision, 10);
+                surface_lease
             }
-        );
+            other => panic!("expected FrameReady for rev 10, got {other:?}"),
+        };
+        assert!(pool.release_frame(lease10));
         assert_eq!(pool.free_slots(), 1);
 
-        // Render and publish revision 12 on the freed slot.
+        // Render and publish revision 12 on the freed slot before slot 1 (revision 11) finishes.
         let slot_new = pool.begin_render(2, 12).expect("reused freed slot");
         let ready = pool
             .complete_gpu_render(
@@ -619,7 +684,7 @@ mod tests {
         assert_eq!(pool.free_slots(), 1);
         assert!(pool.frame_for_pick(frame_id).is_none());
 
-        // Stale slot1 (revision 11) finishes late -> superseded and freed cleanly.
+        // Stale slot1 (revision 11) finishes after revision 12 was published -> superseded and freed cleanly.
         let late = pool
             .complete_gpu_render(
                 slot1,
@@ -640,5 +705,40 @@ mod tests {
             }
         );
         assert_eq!(pool.free_slots(), 2);
+    }
+
+    #[test]
+    fn continuous_drag_publishes_in_order_frames_without_starvation() {
+        let mut pool = SurfaceLeasePool::new("vp-drag", 2).expect("2-slot pool");
+        let mut inflight = pool.begin_render(1, 1).expect("rev 1");
+        let mut published_revisions = Vec::new();
+
+        for rev in 2..=6 {
+            let next_slot = pool.begin_render(1, rev).expect("pipelined next rev");
+            let event = pool
+                .complete_gpu_render(
+                    inflight,
+                    [256, 256],
+                    PixelFormat::Bgra8Unorm,
+                    ColorSpace::Srgb,
+                    Coverage::Complete,
+                    DisplayLevel::Full,
+                    rev * 1000,
+                )
+                .expect("completed event");
+            match event {
+                Event::FrameReady {
+                    view_revision,
+                    surface_lease,
+                    ..
+                } => {
+                    published_revisions.push(view_revision);
+                    assert!(pool.release_frame(surface_lease));
+                }
+                other => panic!("expected in-order FrameReady during drag, got {other:?}"),
+            }
+            inflight = next_slot;
+        }
+        assert_eq!(published_revisions, vec![1, 2, 3, 4, 5]);
     }
 }

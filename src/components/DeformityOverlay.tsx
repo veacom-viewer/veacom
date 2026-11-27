@@ -21,8 +21,8 @@ import {
 import { toImage, toPlane } from '../imaging/deformity/measure';
 import { activeCutIndex, deformity, filmKey, useDeformity, type FilmPlans } from '../ui/deformityStore';
 import {
-  addFragmentVertex, deleteFragmentVertex, dragContinues, fragmentViews, fromUnchecked, moveHandle, movedView,
-  pixelToScreen, place, planView, putBackSuggestion, rotatedOsteotomy, selectOsteotomy, settleMoved,
+  addFragmentVertex, cancelDragRestore, deleteFragmentVertex, dragContinues, fragmentViews, fromUnchecked, moveHandle,
+  movedView, pixelToScreen, place, planView, putBackSuggestion, rotatedOsteotomy, selectOsteotomy, settleMoved,
   translatedOsteotomy, updateOsteotomy, worldToPixel, type DragContext, type Handle, type PlanView,
 } from '../ui/deformityPlan';
 import { useTranslation } from '../i18n/react';
@@ -48,22 +48,23 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
 type ActiveDrag =
   | (DragContext & {
       mode: 'handle'; handle: Handle; moved: boolean; start: [number, number];
-      from?: Point; beforeFilm?: FilmPlans; inverseParent?: Rigid; gesture: GestureHandle;
+      from?: Point; beforeFilm?: FilmPlans; lastWrittenFilm?: FilmPlans; inverseParent?: Rigid; gesture: GestureHandle;
     })
   | (DragContext & {
       mode: 'rotate'; cutIndex: number; moved: boolean; start: [number, number];
-      beforeFilm: FilmPlans; centerPlane: Point; initialSigned: number; fallbackDirection: Osteotomy['direction'];
-      valgusSign: number; lastAngleRad: number; accumulatedRad: number; gesture: GestureHandle;
+      beforeFilm: FilmPlans; lastWrittenFilm?: FilmPlans; centerPlane: Point; initialSigned: number;
+      fallbackDirection: Osteotomy['direction']; valgusSign: number; lastAngleRad: number; accumulatedRad: number;
+      gesture: GestureHandle;
     })
   | (DragContext & {
       mode: 'translate'; cutIndex: number; moved: boolean; start: [number, number];
-      beforeFilm: FilmPlans; lastPlane: Point; accumulatedDelta: Point; initialLateral: number; initialDistal: number;
-      axisDisplay: Point; lateralDisplay: Point; gesture: GestureHandle;
+      beforeFilm: FilmPlans; lastWrittenFilm?: FilmPlans; lastPlane: Point; accumulatedDelta: Point;
+      initialLateral: number; initialDistal: number; axisDisplay: Point; lateralDisplay: Point; gesture: GestureHandle;
     });
 
 /** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step, when the reader let
  * it go on the plan it was taken from. A cancelled gesture, or one ended by a switch of plan, puts the suggestion back
- * where the model put it, or restores the pre-drag plan state for non-suggestion drags. */
+ * where the model put it, or restores the pre-drag state of the dragged plan (or marker) if nothing else changed it. */
 function finish(held: ActiveDrag, settle: boolean) {
   if (held.mode === 'handle' && held.moved && held.handle.kind === 'suggestion') {
     const handle = held.handle, from = held.from;
@@ -71,7 +72,8 @@ function finish(held: ActiveDrag, settle: boolean) {
       : from ? putBackSuggestion(current, held.plan, handle.name, handle.index, from) : current, false);
   } else if (!settle && held.moved && held.beforeFilm) {
     const before = held.beforeFilm;
-    deformity.change(held.key, current => current.active === held.plan ? before : current, false);
+    const markerOnly = held.mode === 'handle' && held.handle.kind === 'marker';
+    deformity.change(held.key, current => cancelDragRestore(current, held.plan, before, held.lastWrittenFilm, markerOnly), false);
   }
   held.gesture.end({ result: settle && held.moved ? 'ok' : 'cancel' });
 }
@@ -317,6 +319,19 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     };
   };
 
+  const applyDragChange = (held: ActiveDrag, update: (current: FilmPlans) => FilmPlans) => {
+    let wrote: FilmPlans | undefined;
+    deformity.change(held.key, current => {
+      const next = update(current);
+      if (next !== current) wrote = next;
+      return next;
+    }, !held.moved);
+    if (wrote) {
+      held.lastWrittenFilm = wrote;
+      held.moved = true;
+    }
+  };
+
   const follow = (event: ReactPointerEvent<SVGElement>) => {
     const held = drag.current;
     if (!held) return;
@@ -330,8 +345,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     const rawPoint = pixelAt(local(event));
     if (held.mode === 'handle') {
       const point = held.inverseParent ? moved(held.inverseParent, rawPoint, plan.mm) : rawPoint;
-      deformity.change(held.key, current => moveHandle(current, held.handle, point), !held.moved);
-      held.moved = true;
+      applyDragChange(held, current => moveHandle(current, held.handle, point));
       return;
     }
     if (held.mode === 'rotate') {
@@ -347,8 +361,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       const deltaDeg = held.accumulatedRad * 180 / Math.PI;
       const snap = event.shiftKey ? 1 : 0;
       const patch = rotatedOsteotomy(held.initialSigned, deltaDeg, held.valgusSign, snap, held.fallbackDirection);
-      deformity.change(held.key, current => updateOsteotomy(current, held.cutIndex, patch), !held.moved);
-      held.moved = true;
+      applyDragChange(held, current => updateOsteotomy(current, held.cutIndex, patch));
       return;
     }
     // Translate moved fragment along its bone's lateral and distal axes.
@@ -358,8 +371,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     held.accumulatedDelta = add(held.accumulatedDelta, scale(step, event.altKey ? 0.25 : 1));
     const snap = event.shiftKey ? 1 : 0;
     const patch = translatedOsteotomy(held.initialLateral, held.initialDistal, held.accumulatedDelta, held.axisDisplay, held.lateralDisplay, snap);
-    deformity.change(held.key, current => updateOsteotomy(current, held.cutIndex, patch), !held.moved);
-    held.moved = true;
+    applyDragChange(held, current => updateOsteotomy(current, held.cutIndex, patch));
   };
 
   const release = (event: ReactPointerEvent<SVGElement>) => {
@@ -587,7 +599,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
             {gaugeTicks.map(([t1, t2], idx) => <line key={idx} x1={t1[0]} y1={t1[1]} x2={t2[0]} y2={t2[1]} stroke={COLOUR.guide} strokeWidth={1.1} />)}
             {/* Place bone width beside the hinge (opposite the opening HUD chip) so labels never collide. */}
             <text x={hxS - outDir[0] * 12} y={hyS + 4} textAnchor={outDir[0] >= 0 ? 'end' : 'start'} fill={COLOUR.guide} fontSize={11} fontWeight={600} stroke="#000" strokeWidth={2.5} paintOrder="stroke">
-              {t('deformity.guideWidth', { width: cutSim.boneWidth.toFixed(0), unit: leg.unit })}
+              {t('deformity.guideWidth', { value: `${cutSim.boneWidth.toFixed(0)} ${leg.unit}` })}
             </text>
           </>}
         </g>;

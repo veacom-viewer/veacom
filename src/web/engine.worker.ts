@@ -178,6 +178,7 @@ console.error = (...args: unknown[]) => { lastError = args.map(String).join(' ')
 
 type QuickRequest = Extract<EngineRequest, { op: 'frame' | 'tags' | 'list' }>;
 let volumeActive = false;
+let volumeWaitingAsync = false;
 let volumeCancelledId = 0;
 const urgentQueue: QuickRequest[] = [];
 
@@ -213,39 +214,15 @@ function drainUrgent(): void {
   while (urgentQueue.length) runUrgent(urgentQueue.shift()!);
 }
 
-interface CachedChunkVolume {
-  seriesId: string;
-  bytes: Uint8Array;
-  pixelType: string;
-  components: number;
-}
-const WORKER_CACHE_LIMIT = 32 * 1024 * 1024;
-const workerVolumeCache = new Map<string, CachedChunkVolume>();
-let workerCacheBytes = 0;
-
-function dropCachedSeries(seriesIds: readonly string[]): void {
-  const drop = new Set(seriesIds);
-  for (const [key, entry] of workerVolumeCache) {
-    if (!drop.has(entry.seriesId)) continue;
-    workerCacheBytes -= entry.bytes.byteLength;
-    workerVolumeCache.delete(key);
+async function runWhileUrgentEnabled<T>(work: () => Promise<T>): Promise<T> {
+  drainUrgent();
+  volumeWaitingAsync = true;
+  try {
+    return await work();
+  } finally {
+    volumeWaitingAsync = false;
+    drainUrgent();
   }
-}
-
-function cacheChunkVolume(key: string, entry: CachedChunkVolume): void {
-  const old = workerVolumeCache.get(key);
-  if (old) {
-    workerCacheBytes -= old.bytes.byteLength;
-    workerVolumeCache.delete(key);
-  }
-  if (entry.bytes.byteLength > WORKER_CACHE_LIMIT) return;
-  while (workerCacheBytes + entry.bytes.byteLength > WORKER_CACHE_LIMIT && workerVolumeCache.size > 0) {
-    const [oldestKey, oldest] = workerVolumeCache.entries().next().value!;
-    workerCacheBytes -= oldest.bytes.byteLength;
-    workerVolumeCache.delete(oldestKey);
-  }
-  workerVolumeCache.set(key, entry);
-  workerCacheBytes += entry.bytes.byteLength;
 }
 
 async function answer(data: EngineRequest): Promise<void> {
@@ -260,6 +237,7 @@ async function answer(data: EngineRequest): Promise<void> {
     scope.postMessage({ id: data.id, ok: false, error: message, fatal: true, detail: 'The engine could not load.' });
     if (data.op === 'volume') {
       volumeActive = false;
+      volumeWaitingAsync = false;
       while (urgentQueue.length) {
         const queued = urgentQueue.shift()!;
         scope.postMessage({ id: queued.id, ok: false, error: message, fatal: true, detail: 'The engine could not load.' });
@@ -291,9 +269,7 @@ async function answer(data: EngineRequest): Promise<void> {
             ids.push(id);
             pageFiles.set(id, file);
           });
-          const imported = JSON.parse(engine.importPaths(data.roots)) as { series?: Array<{ id: string }> };
-          if (imported.series?.length) dropCachedSeries(imported.series.map(item => item.id));
-          value = imported;
+          value = JSON.parse(engine.importPaths(data.roots));
         } finally {
           if (ids.length < count) engine.pruneFiles();
           forgetUnlisted();
@@ -307,7 +283,7 @@ async function answer(data: EngineRequest): Promise<void> {
         break;
       }
       case 'list': value = JSON.parse(engine.listSeries()); break;
-      case 'remove': value = JSON.parse(engine.removeSeries(data.ids)); dropCachedSeries(data.ids); forgetUnlisted(); break;
+      case 'remove': value = JSON.parse(engine.removeSeries(data.ids)); forgetUnlisted(); break;
       case 'tags': value = JSON.parse(engine.tags(data.seriesId, data.frame, data.revision)); break;
       case 'sample': value = JSON.parse(engine.sample(data.seriesId, data.revision, data.operation)); break;
       case 'export': {
@@ -320,17 +296,8 @@ async function answer(data: EngineRequest): Promise<void> {
         try {
           drainUrgent();
           const plan = JSON.parse(engine.volumePlan(data.seriesId, data.revision)) as VolumePlan;
-          const cacheKey = `${data.seriesId}\0${data.revision ?? ''}`;
-          const cachedChunk = workerVolumeCache.get(cacheKey);
-          if (cachedChunk) {
-            workerVolumeCache.delete(cacheKey);
-            workerVolumeCache.set(cacheKey, cachedChunk);
-            const copy = cachedChunk.bytes.slice();
-            value = { bytes: copy, pixelType: cachedChunk.pixelType, components: cachedChunk.components };
-            transfer = [copy.buffer];
-          } else if (plan.chunkable && !plan.cached && plan.frames > VOLUME_CHUNK_FRAMES) {
-            if (loaded.threaded) await prepareVolume(loaded.threaded, data.seriesId, data.id);
-            drainUrgent();
+          if (plan.chunkable && !plan.cached && plan.frames > VOLUME_CHUNK_FRAMES) {
+            if (loaded.threaded) await runWhileUrgentEnabled(() => prepareVolume(loaded.threaded!, data.seriesId, data.id));
             engine.beginVolumeProgress(plan.frames);
             try {
               const assembled = await assembleVolumeChunks(plan, {
@@ -338,29 +305,26 @@ async function answer(data: EngineRequest): Promise<void> {
                 decodeChunk: (start, count, pixelType) =>
                   engine.volumeChunk(data.seriesId, start, count, pixelType, data.revision) as VolumeChunkResult,
                 cancelled: () => isVolumeCancelled(data.id),
-                yieldTurn: async () => { await nextTurn(); drainUrgent(); },
+                yieldTurn: () => runWhileUrgentEnabled(nextTurn),
                 onRestart: total => engine.beginVolumeProgress(total),
               });
-              if (assembled.bytes.byteLength <= WORKER_CACHE_LIMIT) {
-                cacheChunkVolume(cacheKey, {
-                  seriesId: data.seriesId,
-                  bytes: assembled.bytes.slice(),
-                  pixelType: assembled.pixelType,
-                  components: assembled.components,
-                });
+              // Store volumes that fit the engine's cache budget so whole-volume sample() and repeat volume()
+              // reuse the decoded pixels without decoding the series a second time.
+              if (plan.cacheLimit && assembled.bytes.byteLength <= plan.cacheLimit) {
+                engine.cacheVolume(data.seriesId, assembled.bytes, assembled.pixelType, data.revision);
               }
               value = assembled; transfer = [assembled.bytes.buffer];
             } finally {
               engine.endVolumeProgress();
             }
           } else {
-            if (loaded.threaded) await prepareVolume(loaded.threaded, data.seriesId, data.id);
-            drainUrgent();
+            if (loaded.threaded) await runWhileUrgentEnabled(() => prepareVolume(loaded.threaded!, data.seriesId, data.id));
             const pixels = engine.volume(data.seriesId, data.revision) as EnginePixels;
             value = pixels; transfer = [pixels.bytes.buffer];
           }
         } finally {
           volumeActive = false;
+          volumeWaitingAsync = false;
           if (volumeCancelledId === data.id) volumeCancelledId = 0;
           drainUrgent();
         }
@@ -389,6 +353,7 @@ scope.onmessage = ({ data }) => {
   }
   if (volumeActive && (data.op === 'frame' || data.op === 'tags' || data.op === 'list')) {
     urgentQueue.push(data);
+    if (volumeWaitingAsync) drainUrgent();
     return;
   }
   if (data.op === 'volume') volumeActive = true;

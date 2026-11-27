@@ -203,9 +203,15 @@ export function createWebBridge(): DesktopBridge {
   let inFlight: number | null = null, inFlightQuick: number | null = null, dispatching = false;
   let helperTimers = new Set<ReturnType<typeof setTimeout>>();
   const QUICK: ReadonlySet<string> = new Set(['frame', 'tags', 'list']);
+  const CATALOG_MUTATION: ReadonlySet<string> = new Set(['import', 'remove']);
   function dispatchQuick(): void {
     if (!worker || inFlightQuick !== null) return;
-    const index = queue.findIndex(item => QUICK.has(item.request.op));
+    let index = -1;
+    for (let i = 0; i < queue.length; i++) {
+      const op = queue[i].request.op;
+      if (CATALOG_MUTATION.has(op)) break;
+      if (QUICK.has(op)) { index = i; break; }
+    }
     if (index < 0) return;
     const [next] = queue.splice(index, 1);
     inFlightQuick = next.id;

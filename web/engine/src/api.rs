@@ -389,6 +389,30 @@ pub fn volume_chunk(
     Ok(object)
 }
 
+/// Stores a chunk-assembled volume in the session cache when it fits the cache budget so whole-volume
+/// sampling (`sample`) and repeat volume loads reuse it without decoding the series again.
+#[wasm_bindgen(js_name = cacheVolume)]
+pub fn cache_volume(
+    id: &str,
+    bytes: &js_sys::Uint8Array,
+    pixel_type: &str,
+    catalog_revision: Option<f64>,
+) -> Result<bool, JsError> {
+    let byte_len = bytes.byte_length() as usize;
+    session(|session| {
+        session.cache_volume_with(
+            id,
+            revision(catalog_revision),
+            pixel_type,
+            byte_len,
+            |dst| {
+                bytes.copy_to(dst);
+                Ok(())
+            },
+        )
+    })
+}
+
 fn decode_chunk_of(
     series: &veacom_core::model::SourceSeries,
     start: usize,
@@ -397,6 +421,20 @@ fn decode_chunk_of(
 ) -> anyhow::Result<decode::ChunkOutcome> {
     #[cfg(feature = "threads")]
     {
+        struct ReleaseChunk<'a> {
+            all: &'a [&'a std::path::Path],
+            done: &'a [&'a std::path::Path],
+            keep_shared: bool,
+        }
+        impl Drop for ReleaseChunk<'_> {
+            fn drop(&mut self) {
+                crate::blob::release_paths(if self.keep_shared {
+                    self.done
+                } else {
+                    self.all
+                });
+            }
+        }
         let end = start
             .checked_add(count)
             .filter(|end| *end <= series.frames.len())
@@ -409,11 +447,34 @@ fn decode_chunk_of(
             return decode::decode_frame_chunk(series, start, count, pixel_type);
         }
         match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
-            Ok(true) => decode::decode_frame_chunk(series, start, count, pixel_type),
+            Ok(true) => {
+                // Files not referenced by later chunks can be freed immediately; multi-frame files stay held until
+                // their last chunk or any error/restart.
+                let done: Vec<&std::path::Path> = paths
+                    .iter()
+                    .copied()
+                    .filter(|path| {
+                        !series.frames[end..]
+                            .iter()
+                            .any(|frame| frame.source.path.as_path() == *path)
+                    })
+                    .collect();
+                let mut guard = ReleaseChunk {
+                    all: &paths,
+                    done: &done,
+                    keep_shared: false,
+                };
+                let outcome = decode::decode_frame_chunk(series, start, count, pixel_type)?;
+                guard.keep_shared = matches!(outcome, decode::ChunkOutcome::Decoded(_));
+                Ok(outcome)
+            }
             Ok(false) => parallel::on_this_thread(|| {
                 decode::decode_frame_chunk(series, start, count, pixel_type)
             }),
-            Err(error) => Err(error),
+            Err(error) => {
+                crate::blob::release_paths(&paths);
+                Err(error)
+            }
         }
     }
     #[cfg(not(feature = "threads"))]

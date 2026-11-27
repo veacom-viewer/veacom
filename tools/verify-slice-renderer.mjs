@@ -385,8 +385,9 @@ function verifyBrickedVolumes(renderer, series, view, calibratedPet) {
     for (const [kind, Ctor] of [['int16', Int16Array], ['float64', Float64Array]]) {
       const plane = 16;
       const data = new Ctor(plane * longDepth).fill(100);
-      data.fill(25, 0, plane * 200);
-      data.fill(200, plane * (longDepth - 200));
+      const edge = Math.ceil(longDepth / 16);
+      data.fill(25, 0, plane * edge);
+      data.fill(200, plane * (longDepth - edge));
       data.fill(220, plane * (mid + 2), plane * (mid + 3));
       const long = {
         data,

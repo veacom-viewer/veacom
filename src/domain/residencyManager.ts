@@ -1,12 +1,18 @@
 export type ResidencyPoolId = 'cpu-volumes' | 'source-frames' | 'gpu-slices' | 'gpu-3d';
+type ResidencyDomain = 'cpu' | 'gpu';
 
 type MemoryPressureLevel = 'normal' | 'moderate' | 'critical';
+
+interface ResidencyBudgets {
+  cpuBudgetBytes?: number;
+  gpuBudgetBytes?: number;
+}
 
 interface ResidencyPool {
   id: ResidencyPoolId;
   /** Soft per-pool budget in bytes. */
   budgetBytes: number;
-  /** Higher priority pools are evicted after lower priority pools under global pressure. */
+  /** Higher priority pools are evicted after lower priority pools within their domain and under global pressure. */
   priority?: number;
   /** Current bytes held by this pool (pinned and unpinned combined). */
   bytes: () => number;
@@ -16,36 +22,48 @@ interface ResidencyPool {
 
 interface PoolSnapshot {
   id: ResidencyPoolId;
+  domain: ResidencyDomain;
   usedBytes: number;
   pinnedBytes: number;
   budgetBytes: number;
 }
 
 interface ResidencySnapshot {
-  globalBudgetBytes: number;
+  cpuBudgetBytes: number;
+  gpuBudgetBytes: number;
+  cpuUsedBytes: number;
+  gpuUsedBytes: number;
   totalUsedBytes: number;
   totalPinnedBytes: number;
   pressureLevel: MemoryPressureLevel;
   pools: PoolSnapshot[];
 }
 
-const DEFAULT_GLOBAL_BUDGET_BYTES = 1536 * 1024 * 1024;
+const DEFAULT_CPU_BUDGET_BYTES = 1536 * 1024 * 1024;
+const DEFAULT_GPU_BUDGET_BYTES = 1024 * 1024 * 1024;
+
+function domainOf(poolId: ResidencyPoolId): ResidencyDomain {
+  return poolId === 'gpu-slices' || poolId === 'gpu-3d' ? 'gpu' : 'cpu';
+}
 
 /**
- * Coordinates CPU volume, source-frame, 2D/MPR GPU, and 3D GPU caches under one global working-set budget.
+ * Coordinates CPU (decoded volumes and source frames) and GPU (2D/MPR slice and 3D volume textures) caches
+ * under separate domain working-set budgets so GPU uploads never evict cached CPU volumes.
  * Pinned entries (currently visible viewports and active operations) are protected from eviction.
  */
 export class ResidencyManager {
   private readonly pools = new Map<ResidencyPoolId, ResidencyPool>();
   private readonly pins = new Map<ResidencyPoolId, Map<string, number>>();
-  private globalBudget: number;
+  private readonly budgets: Record<ResidencyDomain, number>;
   private pressure: MemoryPressureLevel = 'normal';
 
-  constructor(globalBudgetBytes = DEFAULT_GLOBAL_BUDGET_BYTES) {
-    if (!Number.isFinite(globalBudgetBytes) || globalBudgetBytes <= 0) {
-      throw new Error('Global residency budget must be a positive finite number.');
+  constructor(budgets: ResidencyBudgets = {}) {
+    const cpu = budgets.cpuBudgetBytes ?? DEFAULT_CPU_BUDGET_BYTES;
+    const gpu = budgets.gpuBudgetBytes ?? DEFAULT_GPU_BUDGET_BYTES;
+    if (!Number.isFinite(cpu) || cpu <= 0 || !Number.isFinite(gpu) || gpu <= 0) {
+      throw new Error('Residency budgets must be positive finite numbers.');
     }
-    this.globalBudget = globalBudgetBytes;
+    this.budgets = { cpu, gpu };
   }
 
   registerPool(pool: ResidencyPool): () => void {
@@ -89,6 +107,14 @@ export class ResidencyManager {
     return total;
   }
 
+  domainUsedBytes(domain: ResidencyDomain): number {
+    let total = 0;
+    for (const pool of this.pools.values()) {
+      if (domainOf(pool.id) === domain) total += Math.max(0, pool.bytes());
+    }
+    return total;
+  }
+
   totalUsedBytes(): number {
     let total = 0;
     for (const pool of this.pools.values()) total += Math.max(0, pool.bytes());
@@ -96,21 +122,27 @@ export class ResidencyManager {
   }
 
   /**
-   * Frees lower-priority unpinned cache entries until `additionalBytes` fits inside the global budget,
-   * without dropping any pool below its pinned bytes.
+   * Frees lower-priority unpinned cache entries within the requesting pool's own memory domain (CPU or GPU)
+   * until `additionalBytes` fits inside that domain's budget, without dropping any pool below its pinned bytes.
    */
   requestSpace(requestingPool: ResidencyPoolId, additionalBytes: number): { granted: boolean; freedBytes: number } {
     const needed = Math.max(0, additionalBytes);
-    const current = this.totalUsedBytes();
-    if (current + needed <= this.globalBudget) return { granted: true, freedBytes: 0 };
+    const domain = domainOf(requestingPool);
+    const budget = this.budgets[domain];
+    const current = this.domainUsedBytes(domain);
+    if (current + needed <= budget) return { granted: true, freedBytes: 0 };
 
-    let deficit = current + needed - this.globalBudget;
+    let deficit = current + needed - budget;
     let freedBytes = 0;
-    const ordered = [...this.pools.values()].sort((a, b) => {
-      const aSelf = a.id === requestingPool ? 1 : 0;
-      const bSelf = b.id === requestingPool ? 1 : 0;
-      return aSelf - bSelf || (a.priority ?? 0) - (b.priority ?? 0);
-    });
+    const ordered = [...this.pools.values()]
+      .filter(pool => domainOf(pool.id) === domain)
+      .sort((a, b) => {
+        const byPriority = (a.priority ?? 0) - (b.priority ?? 0);
+        if (byPriority !== 0) return byPriority;
+        const aSelf = a.id === requestingPool ? 1 : 0;
+        const bSelf = b.id === requestingPool ? 1 : 0;
+        return aSelf - bSelf;
+      });
 
     for (const pool of ordered) {
       if (deficit <= 0) break;
@@ -125,12 +157,12 @@ export class ResidencyManager {
     }
 
     return {
-      granted: this.totalUsedBytes() + needed <= this.globalBudget,
+      granted: this.domainUsedBytes(domain) + needed <= budget,
       freedBytes,
     };
   }
 
-  /** Responds to OS/renderer memory pressure by trimming unpinned cache entries across all pools. */
+  /** Responds to OS/renderer memory pressure by trimming unpinned cache entries across both CPU and GPU domains. */
   handleMemoryPressure(level: Exclude<MemoryPressureLevel, 'normal'>): number {
     this.pressure = level;
     const ordered = [...this.pools.values()].sort((a, b) => (a.priority ?? 0) - (b.priority ?? 0));
@@ -144,18 +176,21 @@ export class ResidencyManager {
       return freedBytes;
     }
 
-    const goal = Math.floor(this.globalBudget * 0.5);
-    let excess = Math.max(0, this.totalUsedBytes() - goal);
-    for (const pool of ordered) {
-      if (excess <= 0) break;
-      const used = Math.max(0, pool.bytes());
-      const floor = this.pinnedBytes(pool.id);
-      const evictable = Math.max(0, used - floor);
-      if (evictable === 0) continue;
-      const target = Math.max(floor, used - excess);
-      const freed = Math.max(0, pool.evict(target));
-      freedBytes += freed;
-      excess -= freed;
+    for (const domain of ['cpu', 'gpu'] as const) {
+      const goal = Math.floor(this.budgets[domain] * 0.5);
+      let excess = Math.max(0, this.domainUsedBytes(domain) - goal);
+      for (const pool of ordered) {
+        if (excess <= 0) break;
+        if (domainOf(pool.id) !== domain) continue;
+        const used = Math.max(0, pool.bytes());
+        const floor = this.pinnedBytes(pool.id);
+        const evictable = Math.max(0, used - floor);
+        if (evictable === 0) continue;
+        const target = Math.max(floor, used - excess);
+        const freed = Math.max(0, pool.evict(target));
+        freedBytes += freed;
+        excess -= freed;
+      }
     }
     return freedBytes;
   }
@@ -166,18 +201,24 @@ export class ResidencyManager {
 
   snapshot(): ResidencySnapshot {
     const pools: PoolSnapshot[] = [];
-    let totalUsedBytes = 0;
+    let cpuUsedBytes = 0;
+    let gpuUsedBytes = 0;
     let totalPinnedBytes = 0;
     for (const pool of this.pools.values()) {
+      const domain = domainOf(pool.id);
       const usedBytes = Math.max(0, pool.bytes());
       const pinned = this.pinnedBytes(pool.id);
-      totalUsedBytes += usedBytes;
+      if (domain === 'cpu') cpuUsedBytes += usedBytes;
+      else gpuUsedBytes += usedBytes;
       totalPinnedBytes += pinned;
-      pools.push({ id: pool.id, usedBytes, pinnedBytes: pinned, budgetBytes: pool.budgetBytes });
+      pools.push({ id: pool.id, domain, usedBytes, pinnedBytes: pinned, budgetBytes: pool.budgetBytes });
     }
     return {
-      globalBudgetBytes: this.globalBudget,
-      totalUsedBytes,
+      cpuBudgetBytes: this.budgets.cpu,
+      gpuBudgetBytes: this.budgets.gpu,
+      cpuUsedBytes,
+      gpuUsedBytes,
+      totalUsedBytes: cpuUsedBytes + gpuUsedBytes,
       totalPinnedBytes,
       pressureLevel: this.pressure,
       pools,

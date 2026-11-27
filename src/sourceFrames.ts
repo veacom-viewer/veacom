@@ -126,8 +126,8 @@ export class SourceFrameCache {
         if (this.requests.get(request.key) !== request) return;
         if (volume.sourceFrameIndex !== request.index || volume.series.id !== request.series.id) throw new Error(t('engine.differentFrame'));
         this.requests.delete(request.key);
-        if (volume.data.byteLength <= this.byteLimit && this.frameLimit > 0) {
-          residencyManager.requestSpace('source-frames', volume.data.byteLength);
+        if (volume.data.byteLength <= this.byteLimit && this.frameLimit > 0
+          && residencyManager.requestSpace('source-frames', volume.data.byteLength).granted) {
           this.cached.set(request.key, volume); this.bytes += volume.data.byteLength;
           while (this.bytes > this.byteLimit || this.cached.size > this.frameLimit) {
             const oldest = this.cached.entries().next().value!;

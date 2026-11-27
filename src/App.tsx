@@ -24,7 +24,7 @@ import { allowExternalDrop, externalDropEffect } from './ui/fileDrop';
 import { joinedWith, referenceImages } from './ui/referenceImages';
 import { measuredSlice, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine, cineCycle, recordedFps } from './imaging/cine';
-import { acquiredPlane, autoWindow, dot, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice, sub } from './imaging/geometry';
+import { acquiredPlane, autoWindow, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice } from './imaging/geometry';
 import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
 import { caliperNote, remeasureRecords, type SliceNote } from './ui/preopChecklist';
@@ -510,6 +510,24 @@ export default function App() {
     return view === slot.view ? slot : { ...slot, view };
   });
   if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
+  // Keep the three-plane MPR crosshair on the displayed slices across paging, Undo/Redo, view restores, and clicks.
+  const [mprPrev, setMprPrev] = useState<{ isMpr: boolean; slots: Slot[]; crosshair: Vec3 | null }>({
+    isMpr: false,
+    slots: [],
+    crosshair: null,
+  });
+  if (mprPrev.isMpr !== isMpr || mprPrev.slots !== resolvedSlots || mprPrev.crosshair !== crosshair) {
+    let nextCrosshair = crosshair;
+    if (isMpr && mprPrev.isMpr && crosshair) {
+      if (mprPrev.crosshair !== crosshair) {
+        nextCrosshair = projectMprCrosshair(mprPrev.slots, resolvedSlots, crosshair, crosshairSeriesId, displayVolumes, true);
+      } else if (mprPrev.slots !== resolvedSlots) {
+        nextCrosshair = projectMprCrosshair(mprPrev.slots, resolvedSlots, crosshair, crosshairSeriesId, displayVolumes, false);
+      }
+    }
+    setMprPrev({ isMpr, slots: resolvedSlots, crosshair: nextCrosshair });
+    if (nextCrosshair !== crosshair) setCrosshair(nextCrosshair);
+  }
   const volumeForSlot = (slot: Slot) => {
     const volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
     const frame = displaySlotFrames.get(slot.id);
@@ -732,6 +750,14 @@ export default function App() {
     frameRequests.current.clear();
   } });
   const hasWork = Boolean(busy || loadingIds.size || importing || aligning);
+  const [wasWorking, setWasWorking] = useState(false);
+  if (wasWorking !== hasWork) {
+    setWasWorking(hasWork);
+    if (!hasWork) {
+      if (progress !== null) setProgress(null);
+      if (cancelledId !== null) setCancelledId(null);
+    }
+  }
   const shownProgress = hasWork ? progress : null;
   const cancelling = shownProgress !== null && cancelledId !== null && shownProgress.id === cancelledId;
   // Cancel for the job the progress shows: in the strip above the images, or in the status bar while a series decodes.
@@ -1566,72 +1592,66 @@ export default function App() {
     if (before && arranged.current?.slotIds.includes(slotId) && (['plane', 'mode', 'projection', 'inverted', 'palette'] as const).some(key => key in patch && patch[key] !== before[key])) {
       offerKeep.current(slotId);
     }
-    const current = slotsRef.current;
-    const selected = current.find(slot => slot.id === slotId);
-    if (!selected) return;
-    const volume = selected.seriesId ? displayVolumesRef.current.get(selected.seriesId) : undefined;
-    const manualWindow = patch.windowMode === undefined && (patch.windowWidth !== undefined || patch.windowCenter !== undefined);
-    const proposed = { ...selected.view, ...patch, ...(manualWindow ? { windowMode: 'manual' as const } : {}) };
-    // A reconstructed view whose volume is still a preview frame keeps being one (an arranged MIP paged while its PET
-    // loads stays a MIP): only the full volume resolves it.
-    const waiting = volume?.sourceFrameIndex !== undefined && selected.view.mode === 'mpr';
-    let nextView = volume && !waiting ? patchView(volume, selected.view, patch) : proposed;
-    if (volume) {
-      const slice = Math.max(0, Math.min(sliceCount(volume.series, nextView) - 1, Math.round(nextView.slice)));
-      if (slice !== nextView.slice) nextView = { ...nextView, slice };
-    }
-    // A whole-volume MIP turns as it pages: it moves no other pane.
-    const position = volume && !isProjection(volume.series, nextView) && patch.slice !== undefined && settingsRef.current.linked ? getPlaneFrame(volume.series, nextView).center : null;
-    const source: Pane | null = volume ? { series: volume.series, view: nextView } : null, moved = nextView.slice - selected.view.slice;
-    // The three-plane MPR keeps one window in its panes, as VEAcom Next's oblique MPR does; so do panes showing one PET
-    // or gamma camera image (a PET and its MIP, a whole body's two views), with its inversion and palette: one scale.
-    const windowed = patch.windowWidth !== undefined || patch.windowCenter !== undefined, pet = Boolean(volume && isEmission(volume.series));
-    const sharedWindow = windowed && (isMprRef.current || pet), sharedLook = pet && (patch.inverted !== undefined || patch.palette !== undefined);
-    // An arrangement on one SUV scale (the PET follow-up): its other PETs take the same SUV range and look.
-    const arrangement = arranged.current;
-    const sharedPet = arrangement && (sharedWindow || sharedLook) && arrangement.slotIds.includes(slotId) && sharesSuvScale(arrangement.plan)
-      && arrangement.plan.panes.some(pane => pane.series.id === selected.seriesId) ? arrangement : null;
-    // The comparison screen's panes zoom and pan together while linked, each from where it is; CT beside CT also
-    // takes one window (Hounsfield units are one scale).
-    const compared = arrangement?.plan.arrangement.view === 'shared' && settingsRef.current.linked && arrangement.slotIds.includes(slotId)
-      && current.length === arrangement.slotIds.length && current.every(slot => arrangement.slotIds.includes(slot.id)) ? arrangement : null;
-    const zoomed = selected.view.zoom > 0 ? nextView.zoom / selected.view.zoom : 1;
-    const shifted: [number, number] = [nextView.pan[0] - selected.view.pan[0], nextView.pan[1] - selected.view.pan[1]];
-    const framed = zoomed !== 1 || shifted[0] !== 0 || shifted[1] !== 0;
-    const nextSlots = current.map(original => {
-      if (original.id === slotId) return { ...original, view: nextView };
-      if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
-        ...(sharedWindow ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: nextView.windowMode, sharedWindow: nextView.sharedWindow } : {}),
-        ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
-      let slot = original;
-      const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
-      if (sharedPet && volume && other && sharedPet.slotIds.includes(slot.id)
-        && sharedPet.plan.panes.some(pane => pane.series.id === slot.seriesId)) {
-        const window = sharedWindow ? sameRangeWindow(volume.series, nextView, other.series, 'SUV') : null;
-        slot = { ...slot, view: { ...slot.view, ...(window ? { ...window, windowMode: 'manual' as const } : {}),
+    setSlots(current => {
+      const selected = current.find(slot => slot.id === slotId);
+      if (!selected) return current;
+      const volume = selected.seriesId ? displayVolumesRef.current.get(selected.seriesId) : undefined;
+      const manualWindow = patch.windowMode === undefined && (patch.windowWidth !== undefined || patch.windowCenter !== undefined);
+      const proposed = { ...selected.view, ...patch, ...(manualWindow ? { windowMode: 'manual' as const } : {}) };
+      // A reconstructed view whose volume is still a preview frame keeps being one (an arranged MIP paged while its PET
+      // loads stays a MIP): only the full volume resolves it.
+      const waiting = volume?.sourceFrameIndex !== undefined && selected.view.mode === 'mpr';
+      let nextView = volume && !waiting ? patchView(volume, selected.view, patch) : proposed;
+      if (volume) {
+        const slice = Math.max(0, Math.min(sliceCount(volume.series, nextView) - 1, Math.round(nextView.slice)));
+        if (slice !== nextView.slice) nextView = { ...nextView, slice };
+      }
+      // A whole-volume MIP turns as it pages: it moves no other pane.
+      const position = volume && !isProjection(volume.series, nextView) && patch.slice !== undefined && settingsRef.current.linked ? getPlaneFrame(volume.series, nextView).center : null;
+      const source: Pane | null = volume ? { series: volume.series, view: nextView } : null, moved = nextView.slice - selected.view.slice;
+      // The three-plane MPR keeps one window in its panes, as VEAcom Next's oblique MPR does; so do panes showing one PET
+      // or gamma camera image (a PET and its MIP, a whole body's two views), with its inversion and palette: one scale.
+      const windowed = patch.windowWidth !== undefined || patch.windowCenter !== undefined, pet = Boolean(volume && isEmission(volume.series));
+      const sharedWindow = windowed && (isMprRef.current || pet), sharedLook = pet && (patch.inverted !== undefined || patch.palette !== undefined);
+      // An arrangement on one SUV scale (the PET follow-up): its other PETs take the same SUV range and look.
+      const arrangement = arranged.current;
+      const sharedPet = arrangement && (sharedWindow || sharedLook) && arrangement.slotIds.includes(slotId) && sharesSuvScale(arrangement.plan)
+        && arrangement.plan.panes.some(pane => pane.series.id === selected.seriesId) ? arrangement : null;
+      // The comparison screen's panes zoom and pan together while linked, each from where it is; CT beside CT also
+      // takes one window (Hounsfield units are one scale).
+      const compared = arrangement?.plan.arrangement.view === 'shared' && settingsRef.current.linked && arrangement.slotIds.includes(slotId)
+        && current.length === arrangement.slotIds.length && current.every(slot => arrangement.slotIds.includes(slot.id)) ? arrangement : null;
+      const zoomed = selected.view.zoom > 0 ? nextView.zoom / selected.view.zoom : 1;
+      const shifted: [number, number] = [nextView.pan[0] - selected.view.pan[0], nextView.pan[1] - selected.view.pan[1]];
+      const framed = zoomed !== 1 || shifted[0] !== 0 || shifted[1] !== 0;
+      return current.map(original => {
+        if (original.id === slotId) return { ...original, view: nextView };
+        if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
+          ...(sharedWindow ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: nextView.windowMode, sharedWindow: nextView.sharedWindow } : {}),
           ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
-      }
-      if (compared && slot.seriesId && (framed || windowed)) {
-        const oneScale = windowed && volume?.series.modality === 'CT' && other?.series.modality === 'CT';
-        slot = { ...slot, view: { ...slot.view,
-          ...(framed ? { zoom: slot.view.zoom * zoomed, pan: [slot.view.pan[0] + shifted[0], slot.view.pan[1] + shifted[1]] as [number, number] } : {}),
-          ...(oneScale ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: 'manual' as const } : {}) } };
-      }
-      if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
-      const target: Pane = { series: other.series, view: slot.view };
-      // Aligned frames of reference page by position through the alignment; links by hand are for the others.
-      const toTarget = alignedTransform(alignmentsRef.current, volume.series, other.series) ?? undefined;
-      const anchor = toTarget ? null : anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
-      const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
-      return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
+        let slot = original;
+        const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
+        if (sharedPet && volume && other && sharedPet.slotIds.includes(slot.id)
+          && sharedPet.plan.panes.some(pane => pane.series.id === slot.seriesId)) {
+          const window = sharedWindow ? sameRangeWindow(volume.series, nextView, other.series, 'SUV') : null;
+          slot = { ...slot, view: { ...slot.view, ...(window ? { ...window, windowMode: 'manual' as const } : {}),
+            ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
+        }
+        if (compared && slot.seriesId && (framed || windowed)) {
+          const oneScale = windowed && volume?.series.modality === 'CT' && other?.series.modality === 'CT';
+          slot = { ...slot, view: { ...slot.view,
+            ...(framed ? { zoom: slot.view.zoom * zoomed, pan: [slot.view.pan[0] + shifted[0], slot.view.pan[1] + shifted[1]] as [number, number] } : {}),
+            ...(oneScale ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: 'manual' as const } : {}) } };
+        }
+        if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
+        const target: Pane = { series: other.series, view: slot.view };
+        // Aligned frames of reference page by position through the alignment; links by hand are for the others.
+        const toTarget = alignedTransform(alignmentsRef.current, volume.series, other.series) ?? undefined;
+        const anchor = toTarget ? null : anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
+        const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
+        return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
+      });
     });
-    slotsRef.current = nextSlots;
-    setSlots(nextSlots);
-    // In three-plane MPR, paging a plane moves the crosshair along that plane's normal in the same render batch.
-    if (isMprRef.current && crosshairRef.current) {
-      const projected = projectMprCrosshair(current, nextSlots, crosshairRef.current, crosshairSeriesIdRef.current, displayVolumesRef.current);
-      if (projected !== crosshairRef.current) { crosshairRef.current = projected; setCrosshair(projected); }
-    }
   };
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
     const advance = advanceCine(last, now, cineFps);
@@ -1967,17 +1987,10 @@ export default function App() {
   /** The set-up note's Undo: the caliper ended and the panes' views exactly as they were, as undo puts them back (a merge
    * would keep what the set-up added, such as reconstructed planes over acquired slices, or a manual window). */
   const restorePaneViews = (savedViews: ReadonlyArray<{ id: string; seriesId: string | null; view: ViewState }>) => {
-    const current = slotsRef.current;
-    const nextSlots = current.map(slot => {
+    setSlots(current => current.map(slot => {
       const saved = savedViews.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
       return saved ? { ...slot, view: saved.view } : slot;
-    });
-    slotsRef.current = nextSlots;
-    setSlots(nextSlots);
-    if (isMprRef.current && crosshairRef.current) {
-      const projected = projectMprCrosshair(current, nextSlots, crosshairRef.current, crosshairSeriesIdRef.current, displayVolumesRef.current);
-      if (projected !== crosshairRef.current) { crosshairRef.current = projected; setCrosshair(projected); }
-    }
+    }));
   };
   const undoCaliperSetUp = () => {
     const setUp = caliperRef.current?.setUp;
@@ -2041,36 +2054,25 @@ export default function App() {
   };
   const changeCrosshair = (point: Vec3) => {
     const source = slotsRef.current.find(slot => slot.id === activeIdRef.current);
-    const volume = source?.seriesId ? displayVolumesRef.current.get(source.seriesId) : undefined;
-    if (!source || !volume || !settingsRef.current.linked) {
-      setCrosshair(point); setCrosshairSeriesId(source?.seriesId ?? null);
-      return;
-    }
-    let alignedPoint = point;
-    const nextSlots = slotsRef.current.map(slot => {
-      const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
-      // A whole-volume MIP holds the point at every turn: it keeps its turn.
-      if (!other || isProjection(other.series, slot.view)) return slot;
-      const target = { series: other.series, view: slot.view }, here = { series: volume.series, view: source.view };
-      // In a frame of reference of its own, aligned: the same place in the patient, through the alignment.
-      const toTarget = sharePlaneSpace(here, target) ? null : placed(here) && placed(target) ? alignedTransform(alignmentsRef.current, volume.series, other.series) : null;
-      if (!toTarget && !sharePlaneSpace(here, target)) return slot;
-      const targetPoint = toTarget ? applyPoint(toTarget, alignedPoint) : alignedPoint;
-      let slice = coveredSlice(target, targetPoint);
-      if (slice === null && isMpr && slot.seriesId === source.seriesId && !toTarget) {
-        const total = sliceCount(other.series, slot.view);
-        if (total > 0) {
-          slice = Math.max(0, Math.min(total - 1, Math.round(sliceAtWorld(other.series, slot.view, targetPoint))));
-          const { center, normal } = getPlaneFrame(other.series, { ...slot.view, slice });
-          const unit = scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal)));
-          const delta = dot(sub(alignedPoint, center), unit);
-          if (Math.abs(delta) > 1e-9) alignedPoint = sub(alignedPoint, scale(unit, delta));
-        }
-      }
-      return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
+    setCrosshair(point); setCrosshairSeriesId(source?.seriesId ?? null);
+    if (!settingsRef.current.linked) return;
+    setSlots(current => {
+      const active = current.find(slot => slot.id === activeIdRef.current);
+      const volume = active?.seriesId ? displayVolumesRef.current.get(active.seriesId) : undefined;
+      if (!active || !volume) return current;
+      const here = { series: volume.series, view: active.view };
+      return current.map(slot => {
+        const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
+        // A whole-volume MIP holds the point at every turn: it keeps its turn.
+        if (!other || isProjection(other.series, slot.view)) return slot;
+        const target = { series: other.series, view: slot.view };
+        // In a frame of reference of its own, aligned: the same place in the patient, through the alignment.
+        const toTarget = sharePlaneSpace(here, target) ? null : placed(here) && placed(target) ? alignedTransform(alignmentsRef.current, volume.series, other.series) : null;
+        if (!toTarget && !sharePlaneSpace(here, target)) return slot;
+        const slice = coveredSlice(target, toTarget ? applyPoint(toTarget, point) : point);
+        return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
+      });
     });
-    setCrosshair(alignedPoint); setCrosshairSeriesId(source.seriesId ?? null);
-    setSlots(nextSlots);
   };
   /** The PET scanner's look: its colour scale, blending, opacity and top of the scale, and the CT window in the pane. */
   const applyDeviceLook = (pet: Series, slotId: string | null) => {
@@ -2391,15 +2393,31 @@ export default function App() {
   const adjustFusion = (next: { upperSuv: number; opacity: number }) => {
     setFusionUpper(Math.round(next.upperSuv * 10) / 10); setFusionOpacity(Math.round(next.opacity * 100) / 100); setFusionDeviceMode(false);
   };
-  /** A handle dragged in the three-plane MPR: the pane `slotId` turns to `oblique`, still through the crosshair. */
-  const rotatePlane = (slotId: string, oblique: [number, number]) => {
-    const slot = slotsRef.current.find(item => item.id === slotId), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
-    if (!slot || !volume) return;
-    const id = crosshairSeriesIdRef.current, origin = id ? volumesRef.current.get(id) : undefined;
-    const toPane = origin ? transformBetween(alignmentsRef.current, origin.series, volume.series) : null;
-    const pivot = crosshairRef.current && toPane ? mapPoint(toPane, crosshairRef.current) : getPlaneFrame(volume.series, slot.view).center;
-    const next = { ...slot.view, mode: 'mpr' as const, oblique };
-    updateView(slotId, { mode: 'mpr', oblique, slice: sliceAtWorld(volume.series, next, pivot) });
+  /** A handle dragged in the three-plane MPR: the rotated panes turn together around one crosshair pivot. */
+  const rotatePlanes = (rotations: ReadonlyArray<{ id: string; oblique: [number, number] }>) => {
+    if (!rotations.length) return;
+    const byId = new Map(rotations.map(item => [item.id, item.oblique]));
+    const originId = crosshairSeriesIdRef.current, origin = originId ? volumesRef.current.get(originId) : undefined;
+    const baseCrosshair = crosshairRef.current;
+    setSlots(current => {
+      let changed = false;
+      const updated = current.map(slot => {
+        const oblique = byId.get(slot.id);
+        const volume = oblique && slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
+        if (!oblique || !volume) return slot;
+        const toPane = origin ? transformBetween(alignmentsRef.current, origin.series, volume.series) : null;
+        const pivot = baseCrosshair && toPane ? mapPoint(toPane, baseCrosshair) : getPlaneFrame(volume.series, slot.view).center;
+        const proposed = { ...slot.view, mode: 'mpr' as const, oblique };
+        const targetSlice = sliceAtWorld(volume.series, proposed, pivot);
+        const waiting = volume.sourceFrameIndex !== undefined && slot.view.mode === 'mpr';
+        let nextView = waiting ? { ...proposed, slice: targetSlice } : patchView(volume, slot.view, { mode: 'mpr', oblique, slice: targetSlice });
+        const slice = Math.max(0, Math.min(sliceCount(volume.series, nextView) - 1, Math.round(nextView.slice)));
+        if (slice !== nextView.slice) nextView = { ...nextView, slice };
+        changed = true;
+        return { ...slot, view: nextView };
+      });
+      return changed ? updated : current;
+    });
   };
   const resetView = () => {
     const slot = slotsRef.current.find(item => item.id === activeIdRef.current), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
@@ -3242,7 +3260,7 @@ export default function App() {
               alignments={alignments} aligned={volume ? placementOf(alignments, volume.series, fused?.volume.series) : undefined}
               onActivate={activateSlot} onViewChange={updateView} onAnnotationsChange={changeAnnotations} onCrosshairChange={changeCrosshair}
               joined={joinedFor(slot)} onCross={crossJoined} onDropSeries={dropSeries} onClose={closePane} onMaximize={maximizePane}
-              onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlane : undefined} clickPicksPoint={show3d}
+              onRestore={maximized && slots.length === 1 && slot.id === maximized.id && !isMpr ? restoreLayout : undefined} onCyclePlane={cyclePlane} onFusionAdjust={adjustFusion} onRotateReference={isMpr ? rotatePlanes : undefined} clickPicksPoint={show3d}
               toast={paneToast?.slotId === slot.id && paneToast.seriesId === (slot.seriesId ?? '') ? paneToast : undefined} span={index === slots.length - 1 ? gridShape[0] * gridShape[1] - slots.length + 1 : undefined} onSwap={swapPanes}
               caliper={slot.id === activeId && volume ? caliperPane(volume, slot.view, slot.id) : undefined} />;
           })}
