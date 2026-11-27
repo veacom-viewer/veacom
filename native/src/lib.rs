@@ -42,6 +42,7 @@ pub mod palette;
 pub mod parallel;
 pub mod patient;
 pub mod pictures;
+pub mod presenter;
 pub mod progress;
 pub mod projection;
 pub mod random;

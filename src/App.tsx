@@ -32,7 +32,7 @@ import { filmKey, isLongLegFilm, pixelSpacingText, type FilmCalibration, type Fi
 import { deformity, type FilmSelection } from './ui/deformityStore';
 import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
-import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
+import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
 import { patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
 import { SourceFrameCache } from './sourceFrames';
@@ -40,7 +40,8 @@ import { useEngineRecovery } from './useEngineRecovery';
 import { captureViewportCanvas, captureViewportPng } from './export-video';
 import { copyCanvas } from './ui/clipboard';
 import type { ExportDialogProps } from './components/ExportDialog';
-import { trimInactiveVolumes, VolumeIndex } from './domain/volumeCache';
+import { INACTIVE_VOLUME_BUDGET, trimInactiveVolumes, VolumeIndex } from './domain/volumeCache';
+import { residencyManager } from './domain/residencyManager';
 import { createVolumeDecorator } from './domain/decoratedVolumes';
 import { measureWindow } from './imaging/nativeMeasurements';
 import { annotationSourceIndex, distanceMm, quantitativeScale, shownOnView, storedUnit, viewOfAnnotation } from './imaging/annotations';
@@ -888,19 +889,48 @@ export default function App() {
   // serves for the window's life.
   useEffect(() => { deformity.connectUndo(remember); return () => deformity.connectUndo(null); }, []);
 
-  const publishVolumes = (candidate: Map<string, Volume>) => {
+  const pinnedVolumeIds = () => {
     const pinned = new Set([...pending.current.keys(), ...requestedPins.current, ...assessmentPinnedIds.current]);
     // The stack whose reference image a pane shows stays loaded: the reader is one step from it.
     for (const slot of slotsRef.current) { if (slot.seriesId) pinned.add(slot.seriesId); if (slot.stack) pinned.add(slot.stack.id); }
     if (fusionIdRef.current) pinned.add(fusionIdRef.current);
     for (const [id, values] of Object.entries(annotationRef.current)) if (values.length) pinned.add(id);
-    const result = trimInactiveVolumes(candidate, pinned, volumeAccess.current);
+    return pinned;
+  };
+
+  const publishVolumes = (candidate: Map<string, Volume>, inactiveBudget = INACTIVE_VOLUME_BUDGET) => {
+    const pinned = pinnedVolumeIds();
+    const result = trimInactiveVolumes(candidate, pinned, volumeAccess.current, inactiveBudget);
     for (const id of result.evicted) { fullyLoaded.current.delete(id); volumeAccess.current.delete(id); }
+    residencyManager.clearPins('cpu-volumes');
+    for (const [id, volume] of result.volumes) {
+      if (pinned.has(id)) residencyManager.pin('cpu-volumes', id, volume.data.byteLength);
+    }
     if (result.volumes !== volumesRef.current) {
       volumesRef.current = result.volumes;
       setVolumes(indexVolumes(result.volumes));
     }
   };
+
+  useEffect(() => residencyManager.registerPool({
+    id: 'cpu-volumes',
+    budgetBytes: INACTIVE_VOLUME_BUDGET,
+    priority: 3,
+    bytes: () => {
+      let total = 0;
+      for (const volume of volumesRef.current.values()) total += volume.data.byteLength;
+      return total;
+    },
+    evict: targetBytes => {
+      const before = [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0);
+      const pinned = pinnedVolumeIds();
+      let pinnedBytes = 0;
+      for (const [id, volume] of volumesRef.current) if (pinned.has(id)) pinnedBytes += volume.data.byteLength;
+      publishVolumes(volumesRef.current, Math.max(0, targetBytes - pinnedBytes));
+      const after = [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0);
+      return Math.max(0, before - after);
+    },
+  }), []);
 
   const invalidateVolumes = (ids: readonly string[]) => {
     if (!ids.length) return;
@@ -2109,9 +2139,8 @@ export default function App() {
     if (request === undefined) request = ++fusionRequest.current;
     const stillWanted = () => mounted.current && request === fusionRequest.current
       && (alignedRequest === undefined || (slotsRef.current.some(slot => slot.id === slotId && slot.seriesId === ct.id) && Boolean(alignedTransform(alignmentsRef.current, ct, pet))));
-    void acquireVolume(pet).then(volume => {
+    void acquireVolume(pet).then(() => {
       if (!stillWanted()) return;
-      if (sourceFrameOnly(volume)) { say('notice.fusionPetTooLarge', 'info'); return; }
       setFusionId(pet.id);
       if (fusionDeviceModeRef.current && pet.modality === 'PT') applyDeviceLook(pet, slotId);
       else if (fusionDeviceModeRef.current && pet.modality === 'NM') {

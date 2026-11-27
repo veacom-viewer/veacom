@@ -5,7 +5,6 @@ import { facesSame, levelSlice, shareFrame, type Pane } from '../imaging/linking
 import { openingSlice } from '../imaging/paging';
 import { petLook } from '../imaging/quantity';
 import { withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from '../imaging/radiograph';
-import { sourceFrameOnly } from '../imaging/sliceRenderer';
 import { displayWindowWidth, renderedView, usesSourceFrames } from '../imaging/viewState';
 import { KEPT_STORAGE, readKept, type Kept } from '../arrangements';
 import { PET_CT, PET_CT_READING, PET_FOLLOW_UP } from '../arrangements/builtin';
@@ -301,8 +300,7 @@ export const sameDecoration = (a: Decoration, b: Decoration) =>
   a.scale === b.scale && a.films === b.films && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
 
 export function decorateVolume(volume: Volume, { scale, films, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
-  let sourceFramesOnly = false;
-  try { sourceFramesOnly = sourceFrameOnly(volume); } catch { /* The viewport reports an unavailable GPU. */ }
+  const sourceFramesOnly = volume.series.sourceFramesOnly ?? false;
   // A film's ball or ruler outranks the series' known-length scale on that film (radiograph.ts withFilmCalibrations).
   return {
     ...volume,

@@ -63,3 +63,10 @@ If the import path fails qualification, retain the Rust engine and replace only 
 4. **Clinical and surgery parity:** route preserved ROI, assessment, interpolated VOI, burr, STL and exports through authoritative exact-data operations. Compare against independent CPU geometry/pixel oracles and the original workflows. Capture the same scenes and use the same screen-observed benchmark on the same machine before claiming improvement.
 
 The current source-paging patch, chunked assessment worker and cache fixes are worthwhile. They do not deliver out-of-core MPR/3D, unify clinical ownership, or remove the whole-volume upload transition. Removing a synchronization call can move the wait; it is not evidence that the work disappeared. The native design is complete only when these delivery gates pass.
+
+## Progress status (26 November 2026)
+
+- **Bricked 3D textures and bounded 3D display levels (WebGL2):** `src/imaging/volumeBricks.ts`, `src/imaging/sliceRenderer.ts`, and `src/components/VolumeView.tsx` remove the 2048-slice cliff for MPR, oblique planes, thick slabs, PET fusion, and 3D volume rendering while preserving untouched full-resolution arrays for quantitative measurements, picking, burring, and STL export. Whole-volume rotating projections on oversized stacks continue to fail visibly rather than truncating.
+- **Unified residency coordination:** `src/domain/residencyManager.ts` coordinates `cpu-volumes`, `source-frames`, `gpu-slices`, and `gpu-3d` pools under one global working-set budget with pin protection and pressure-triggered eviction.
+- **Typed Engine-Presenter protocol contract:** `native/src/presenter.rs` defines the zero-dependency command/event types and bounded 2- or 3-surface `SurfaceLeasePool` with stale-frame disposal, multi-consumer lease release, separate completion/delivery/observation milestones, and immutable frame binding for `Pick`.
+- **Pending:** Delivery Gates 1 through 4 remain open and require native GPU presentation qualification on real macOS (IOSurface) and Windows (D3D12 shared handle) hardware before adopting a native presenter backend.

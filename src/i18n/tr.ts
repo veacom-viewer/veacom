@@ -186,7 +186,6 @@ export const tr: Record<keyof typeof en, string> = {
   'notice.fusionNoCt': 'Bu çalışmada füzyon için uygun BT serisi yok.',
   'notice.fusionNoFrame': 'Bu serilerden birinin hastadaki yeri bilinmiyor; füzyon için çakıştırılamaz.',
   'notice.fusionOtherPatient': 'Bu seriler farklı hastalara ait; füzyon yapılmaz.',
-  'notice.fusionPetTooLarge': 'Bu PET serisi GPU hacim sınırını aşıyor. Özgün PET kesitleri görüntülenebilir; füzyon kullanılamıyor.',
 
   'status.connecting': 'Görüntüleme motoruna bağlanılıyor…',
   'status.reading': 'DICOM çalışmaları okunuyor…',
@@ -1573,6 +1572,7 @@ export const tr: Record<keyof typeof en, string> = {
   'view3d.minimumSamples': 'Her eksende en az iki örnek içeren tam bir 3D hacim gerekir.',
   'view3d.invalidGeometry': 'Hacmin aralığı ya da yönü geçersiz.',
   'view3d.gpuLimit': 'Bu GPU eksen başına en çok {limit} vokselli hacimleri gösterebilir. 3D için seriyi kırpın ya da bölün.',
+  'view3d.displayDownsampled': 'Görünüm düzeyi {level} (seçim, frez ve STL tam çözünürlük kullanır)',
   'view3d.shaderError': 'GPU hacim gölgelendiricisi derlenemedi: {message}',
   'view3d.unknownShaderError': 'Bilinmeyen gölgelendirici hatası',
   'view3d.float64Range': 'Bu hacimde 32 bit GPU gösterim aralığı dışında değerler var. Özgün 64 bit değerler korunur.',
