@@ -926,11 +926,14 @@ class SharedSliceRenderer {
     const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
     let limit = this.textureLimit;
     if (cachedFrame) {
-      const petMaxTexels = petBricks !== null
-        ? petBricks.reduce((best, brick) => Math.max(best, brick.region.size[0] * brick.region.size[1] * brick.region.size[2]), 1)
-        : fusion?.volume.data.length ?? 0;
-      const petPaddingDepth = petBricks !== null ? Math.min(this.info.max3DTextureSize, fusion?.volume.series.dimensions[2] ?? 0) : (fusion?.volume.series.dimensions[2] ?? 0);
-      const overlayBytes = fusion && petKind ? petMaxTexels * bytesPerTexel(petKind) + petPaddingDepth * 16 : 0;
+      let overlayBytes = 0;
+      if (fusion && petKind) {
+        const petMaxTexels = petBricks !== null
+          ? petBricks.reduce((best, brick) => Math.max(best, brick.region.size[0] * brick.region.size[1] * brick.region.size[2]), 1)
+          : fusion.volume.data.length;
+        const petPaddingDepth = petBricks !== null ? Math.min(this.info.max3DTextureSize, fusion.volume.series.dimensions[2]) : fusion.volume.series.dimensions[2];
+        overlayBytes = petMaxTexels * bytesPerTexel(petKind) + petPaddingDepth * 16;
+      }
       const tileBytes = (reducedOnly ? 0 : bytesPerTexel(mainKind)) + (reducedOnly ? 4 : 8);
       // A raw validity mask and a reduced tile must fit alongside the fused volume, even on very large films.
       const available = Math.max(0, TEXTURE_BUDGET - overlayBytes - 32);

@@ -20,7 +20,7 @@ export type VolumeChunkResult =
   | { status: 'typeDoesNotFit' }
   | { status: 'float64Required' };
 
-export interface AssembledVolume {
+interface AssembledVolume {
   bytes: Uint8Array;
   pixelType: VolumePixelType;
   components: number;
@@ -28,7 +28,7 @@ export interface AssembledVolume {
 
 export const VOLUME_CHUNK_FRAMES = 32;
 
-export function bytesPerSample(pixelType: VolumePixelType): number {
+function bytesPerSample(pixelType: VolumePixelType): number {
   switch (pixelType) {
     case 'uint8': return 1;
     case 'int16':
@@ -70,7 +70,7 @@ function typedView(buffer: ArrayBuffer, pixelType: VolumePixelType, length: numb
  * Losslessly widens already-decoded prefix samples from `from` to `to` without re-decoding earlier chunks.
  * Returns null if `int16 -> uint16` encounters a negative sample (caller should advance to float32).
  */
-export function widenDecodedPrefix(
+function widenDecodedPrefix(
   current: Uint8Array,
   from: VolumePixelType,
   to: VolumePixelType,

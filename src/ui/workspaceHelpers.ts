@@ -54,13 +54,13 @@ export type Settings = {
   cineFps: number;
 };
 
-export const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
+const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
 export type MenuId =
   | 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle'
   | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation'
   | 'language' | 'fusion' | null;
 export type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'alignment' | 'workspace' | 'units' | 'mouse';
-export const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'alignment', 'workspace', 'units', 'mouse'];
+const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'alignment', 'workspace', 'units', 'mouse'];
 export const SECTION_STORAGE = 'veacom:inspector-sections';
 
 export function readOpenSections(): Set<DisplaySection> {
@@ -289,7 +289,7 @@ export function windowClass(volume: Volume | undefined, view: ViewState, autoWin
 }
 
 /** How a volume is shown: its calibration, units and SUV, and for a PET the blood glucose typed for its study. */
-export type Decoration = {
+type Decoration = {
   scale: number | undefined;
   films: FilmCalibrations | undefined;
   units: Settings['measurementUnits'];

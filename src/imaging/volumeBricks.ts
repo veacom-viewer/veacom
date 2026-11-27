@@ -12,7 +12,7 @@ export interface VolumeBrick {
   region: PlaneTexture;
 }
 
-export interface DisplayVolumeLevel {
+interface DisplayVolumeLevel {
   stride: Vec3;
   dimensions: Vec3;
   downsampled: boolean;

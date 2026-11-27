@@ -1,8 +1,8 @@
 export type ResidencyPoolId = 'cpu-volumes' | 'source-frames' | 'gpu-slices' | 'gpu-3d';
 
-export type MemoryPressureLevel = 'normal' | 'moderate' | 'critical';
+type MemoryPressureLevel = 'normal' | 'moderate' | 'critical';
 
-export interface ResidencyPool {
+interface ResidencyPool {
   id: ResidencyPoolId;
   /** Soft per-pool budget in bytes. */
   budgetBytes: number;
@@ -14,14 +14,14 @@ export interface ResidencyPool {
   evict: (targetBytes: number) => number;
 }
 
-export interface PoolSnapshot {
+interface PoolSnapshot {
   id: ResidencyPoolId;
   usedBytes: number;
   pinnedBytes: number;
   budgetBytes: number;
 }
 
-export interface ResidencySnapshot {
+interface ResidencySnapshot {
   globalBudgetBytes: number;
   totalUsedBytes: number;
   totalPinnedBytes: number;
@@ -29,7 +29,7 @@ export interface ResidencySnapshot {
   pools: PoolSnapshot[];
 }
 
-export const DEFAULT_GLOBAL_BUDGET_BYTES = 1536 * 1024 * 1024;
+const DEFAULT_GLOBAL_BUDGET_BYTES = 1536 * 1024 * 1024;
 
 /**
  * Coordinates CPU volume, source-frame, 2D/MPR GPU, and 3D GPU caches under one global working-set budget.
@@ -46,17 +46,6 @@ export class ResidencyManager {
       throw new Error('Global residency budget must be a positive finite number.');
     }
     this.globalBudget = globalBudgetBytes;
-  }
-
-  get globalBudgetBytes(): number {
-    return this.globalBudget;
-  }
-
-  setGlobalBudget(bytes: number): void {
-    if (!Number.isFinite(bytes) || bytes <= 0) {
-      throw new Error('Global residency budget must be a positive finite number.');
-    }
-    this.globalBudget = bytes;
   }
 
   registerPool(pool: ResidencyPool): () => void {
@@ -79,10 +68,6 @@ export class ResidencyManager {
       this.pins.set(poolId, entries);
     }
     entries.set(key, Math.max(0, bytes));
-  }
-
-  unpin(poolId: ResidencyPoolId, key: string): void {
-    this.pins.get(poolId)?.delete(key);
   }
 
   clearPins(poolId: ResidencyPoolId): void {
