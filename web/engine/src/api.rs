@@ -344,10 +344,12 @@ pub fn begin_volume_progress(total: usize) {
     progress::begin("decode", total);
 }
 
-/// Ends the engine progress record for a chunked volume decode.
+/// Ends the engine progress record for a chunked volume decode and releases any held helper fallback files.
 #[wasm_bindgen(js_name = endVolumeProgress)]
 pub fn end_volume_progress() {
     progress::finish();
+    #[cfg(feature = "threads")]
+    crate::blob::release();
 }
 
 /// Decodes frames `start..start + count` of a single-file-per-frame series into `pixelType`.
@@ -406,15 +408,13 @@ fn decode_chunk_of(
         if crate::blob::on_helpers(&paths) {
             return decode::decode_frame_chunk(series, start, count, pixel_type);
         }
-        let outcome = match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
+        match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
             Ok(true) => decode::decode_frame_chunk(series, start, count, pixel_type),
             Ok(false) => parallel::on_this_thread(|| {
                 decode::decode_frame_chunk(series, start, count, pixel_type)
             }),
             Err(error) => Err(error),
-        };
-        crate::blob::release();
-        outcome
+        }
     }
     #[cfg(not(feature = "threads"))]
     {
