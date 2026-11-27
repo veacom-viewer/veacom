@@ -6,6 +6,8 @@ import type { FusionSettings, PixelArray, Series, Vec3, ViewState, VoiLut, Volum
 import { isProjection, multiply, screenMapping, screenToWorld, sourceFrameSeries, sub, worldToIndex, worldToIndexMatrix } from './geometry';
 import { reduceFrame, reducedTile } from './frameReduction';
 import { planePixels, planeTexture, type PlaneTexture } from './planeTexture';
+import { needsBricking, planSliceBricks, type VolumeBrick } from './volumeBricks';
+import { residencyManager } from '../domain/residencyManager';
 import { LocalizedError, t } from '../i18n';
 import { isSoftwareRenderer } from './rendererInfo';
 
@@ -78,17 +80,24 @@ function samplerType(kind: TextureKind, dimension: TextureDimension): string {
 
 function scalarSampling(prefix: 'image' | 'pet', sampler: string, dimensions: string, floating: boolean, dimension: TextureDimension): string {
   // Integer texture fetches are converted per sample in the shader, preserving compact GPU storage.
-  const mainVolume = prefix === 'image' && dimension === '3d';
-  const voxel = `
-${mainVolume ? 'uniform highp ivec3 imageTextureStart;' : ''}
+  const voxel = dimension === '2d' ? `
+uniform vec3 uFramePadding;
+uniform bool ${prefix}HasPadding;
+float ${prefix}Voxel(ivec3 p) {
+  p=clamp(p,ivec3(0),ivec3(${dimensions})-1);
+  float value=float(texelFetch(${sampler}, p.xy, 0).r);
+  if (${prefix}HasPadding && uFramePadding.x>0.5 && value>=uFramePadding.y && value<=uFramePadding.z) return uintBitsToFloat(0x7fc00000u);
+  return value;
+}` : `
+uniform highp ivec3 ${prefix}TextureStart;
 uniform sampler2D ${prefix}Padding;
 uniform bool ${prefix}HasPadding;
 float ${prefix}Voxel(ivec3 p) {
   p=clamp(p,ivec3(0),ivec3(${dimensions})-1);
-  ${mainVolume ? 'p-=imageTextureStart;' : ''}
-  float value=float(texelFetch(${sampler}, ${dimension === '2d' ? 'p.xy' : 'p'}, 0).r);
+  p=clamp(p-${prefix}TextureStart,ivec3(0),textureSize(${sampler},0)-1);
+  float value=float(texelFetch(${sampler}, p, 0).r);
   if (${prefix}HasPadding) {
-    vec3 padding=texelFetch(${prefix}Padding,ivec2(${dimension === '2d' ? '0' : 'p.z'},0),0).rgb;
+    vec3 padding=texelFetch(${prefix}Padding,ivec2(p.z,0),0).rgb;
     if (padding.x>0.5&&value>=padding.y&&value<=padding.z) return uintBitsToFloat(0x7fc00000u);
   }
   return value;
@@ -201,7 +210,6 @@ vec3 colourPixel(vec2 q) {
 }`;
   return `
 uniform bool uStoredPixels;
-uniform vec3 uFramePadding;
 float imagePixel(vec2 q) {
   if (uStoredPixels) return imageVoxel(ivec3(floor(q+0.5),0.0));
   ${corners}
@@ -242,7 +250,7 @@ uniform vec3 uIndexRight;
 uniform vec3 uIndexDown;
 uniform float uScreenHeight;
 ${retained ? 'uniform highp sampler2D uWindowSamples; uniform int uSamplePass; uniform ivec2 uSampleShift; uniform vec3 uSampleOrigin;' : ''}
-${dimension === '2d' ? 'uniform vec3 uFull;\nuniform vec4 uTile;\nuniform vec2 uTileOrigin;' : ''}
+${dimension === '2d' ? 'uniform vec3 uFull;\nuniform vec4 uTile;\nuniform vec2 uTileOrigin;' : 'uniform vec3 uBrickMin;\nuniform vec3 uBrickMax;\nuniform bool uBrickClip;'}
 ${color || dimension !== '3d' ? '' : 'uniform int uSlabMode;\nuniform int uSlabHalf;\nuniform vec3 uSlabStep;'}
 ${color ? '' : 'uniform vec2 uWindow;\nuniform bool uInvert;\nuniform int uBasePalette;\nuniform int uVoiFunction;\nuniform bool uVoi;\nuniform usampler2D uVoiLut;\nuniform float uVoiFirst;\nuniform int uVoiCount;\nuniform float uVoiMax;'}
 ${pet ? `uniform ${samplerType(pet, '3d')} uPet;
@@ -254,7 +262,11 @@ uniform float uSuvFactor;
 uniform float uPetOpacity;
 uniform float uPetUpper;
 uniform int uPalette;
-uniform int uPetBlend;` : ''}
+uniform int uPetBlend;
+uniform vec3 uPetBrickMin;
+uniform vec3 uPetBrickMax;
+uniform bool uPetBrickClip;
+uniform bool uPetDrawOutside;` : ''}
 out vec4 outColor;
 bool outside(vec3 p,vec3 size) { return any(lessThan(p,vec3(-0.5))) || any(greaterThan(p,size-vec3(0.5))); }
 // Padding and missing values are NaN. Test the exponent bits, not GLSL's isnan or isinf: on Windows, ANGLE's
@@ -304,7 +316,8 @@ void main() {
   vec2 framePixel=p.xy;
   if (outside(p,uFull)) { outColor=vec4(0.0,0.0,0.0,${retained ? 'uSamplePass==1 ? 0.0 : 1.0' : '1.0'}); return; }
   ${plain ? '' : `if (p.x<uTile.x||p.x>=uTile.z||p.y<uTile.y||p.y>=uTile.w) discard;
-  p.xy-=uTileOrigin;`}` : 'if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }'}
+  p.xy-=uTileOrigin;`}` : `if (outside(p,uDimensions)) { outColor=vec4(0.0,0.0,0.0,1.0); return; }
+  if (uBrickClip && (any(lessThan(p,uBrickMin)) || any(greaterThanEqual(p,uBrickMax)))) discard;`}
   ${color ? `
   ivec3 sourcePixel=clamp(ivec3(floor(p+vec3(0.5))),ivec3(0),ivec3(uDimensions)-1);
   outColor=vec4(${filtered ? 'frameAverage(framePixel).rgb' : dimension === '2d' ? 'colourPixel(p.xy)' : 'texelFetch(uImage,sourcePixel,0).rgb'},1.0);
@@ -337,7 +350,12 @@ void main() {
   vec3 rgb=${plain ? 'vec3(grey)' : 'uBasePalette<0 ? vec3(grey) : palette(grey,uBasePalette)'};
   ${pet ? `
   vec3 q=uPetIndexTopLeft+uPetIndexRight*gl_FragCoord.x+uPetIndexDown*(uScreenHeight-gl_FragCoord.y);
-  if (!outside(q,uPetDimensions)) {
+  bool petOutside=outside(q,uPetDimensions);
+  if (uPetBrickClip) {
+    if (petOutside) { if (!uPetDrawOutside) discard; }
+    else if (any(lessThan(q,uPetBrickMin)) || any(greaterThanEqual(q,uPetBrickMax))) discard;
+  }
+  if (!petOutside) {
     float sampled=petLinear(q);
     ${filtered ? 'sampled=petPlane(q,sampled);' : ''}
     if (!nonFinite(sampled)) {
@@ -424,6 +442,13 @@ class SharedSliceRenderer {
       window.dispatchEvent(new Event('veacom-gpu-restored'));
     });
     this.info = readRendererInfo(gl);
+    residencyManager.registerPool({
+      id: 'gpu-slices',
+      budgetBytes: TEXTURE_BUDGET,
+      priority: 2,
+      bytes: () => this.textureBytes(),
+      evict: targetBytes => this.evictTo(targetBytes),
+    });
   }
   private startProgram(main: TextureKind, dimension: TextureDimension, pet?: TextureKind, projection = false, sampling: Sampling = 'native'): Program {
     const key = `${main}:${dimension}:${pet ?? 'none'}${projection ? ':projection' : ''}:${sampling}`;
@@ -508,8 +533,26 @@ class SharedSliceRenderer {
   private dropTexture(key: string, cached: CachedTexture): void {
     this.gl.deleteTexture(cached.texture); if (cached.padding) this.gl.deleteTexture(cached.padding); this.textures.delete(key);
   }
+  private textureBytes(): number {
+    let total = 0;
+    for (const cached of this.textures.values()) total += cached.bytes;
+    return total;
+  }
+  private evictTo(targetBytes: number, protectedKeys = new Set<string>()): number {
+    const before = this.textureBytes();
+    let total = before;
+    const goal = Math.max(0, targetBytes);
+    const candidates = [...this.textures.entries()].sort((a, b) => Number(this.visible.has(a[1].owner)) - Number(this.visible.has(b[1].owner)) || a[1].touched - b[1].touched);
+    for (const [key, cached] of candidates) {
+      if (total <= goal) break;
+      if (protectedKeys.has(key) || this.visible.has(cached.owner)) continue;
+      this.dropTexture(key, cached); total -= cached.bytes;
+    }
+    return before - total;
+  }
   private prune(requiredBytes = 0, protectedKeys = new Set<string>()): void {
-    let total = [...this.textures.values()].reduce((sum, value) => sum + value.bytes, 0);
+    if (requiredBytes > 0) residencyManager.requestSpace('gpu-slices', requiredBytes);
+    let total = this.textureBytes();
     const candidates = [...this.textures.entries()].sort((a, b) => Number(this.visible.has(a[1].owner)) - Number(this.visible.has(b[1].owner)) || a[1].touched - b[1].touched);
     for (const [key, cached] of candidates) {
       if (protectedKeys.has(key)) continue;
@@ -547,7 +590,7 @@ class SharedSliceRenderer {
   }
   private sourceFrame(volume: Volume, view: ViewState): number | undefined {
     const source = view.mode === 'source' || volume.sourceFrameIndex !== undefined || volume.series.sourceFramesOnly
-      || !volume.series.canReconstruct || volume.series.components === 3 || (view.mode !== 'mpr' && sourceFrameOnly(volume, this.info.max3DTextureSize));
+      || !volume.series.canReconstruct || volume.series.components === 3;
     if (!source) return undefined;
     if (!Number.isFinite(view.slice)) throw new Error('Invalid source frame index.');
     return Math.max(0, Math.min(volume.series.dimensions[2] - 1, Math.round(view.slice)));
@@ -567,6 +610,15 @@ class SharedSliceRenderer {
       const { mainKind, sourceFrame, petKind } = this.configuration(volume, view, fusion);
       this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
     }
+  }
+  /** Drops any cached per-canvas window sample texture when a viewport unmounts or resets. */
+  releaseTarget(target: HTMLCanvasElement): void {
+    const id = this.identities.get(target);
+    if (id !== undefined) {
+      const key = 'window:' + id, old = this.textures.get(key);
+      if (old) this.dropTexture(key, old);
+    }
+    this.sampleViews.delete(target);
   }
   private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile, region?: PlaneTexture): string {
     const gl = this.gl, series = volume.series;
@@ -590,17 +642,21 @@ class SharedSliceRenderer {
       const byteCount = texels * bytesPerTexel(kind);
       this.prune(byteCount + d * 16, protectedKeys);
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
-      let displayData = region ? planePixels(sourceData, series.dimensions, region) : sourceData;
+      let displayData: PixelArray = sourceData;
       if (sourceData instanceof Float64Array) {
-        const depth = sourceFrame === undefined ? series.dimensions[2] : 1;
         const copy = new Float32Array(texels);
+        const startX = region ? region.start[0] : (tiled?.x ?? 0);
+        const startY = region ? region.start[1] : (tiled?.y ?? 0);
+        const startZ = region ? region.start[2] : 0;
         let output = 0;
-        for (let frame = 0; frame < depth; frame++) {
-          const range = series.frameMetadata?.[sourceFrame ?? frame]?.paddingRange ?? series.paddingRange;
+        for (let frame = 0; frame < d; frame++) {
+          const actualFrame = sourceFrame ?? (startZ + frame);
+          const srcFrame = sourceFrame !== undefined ? 0 : (startZ + frame);
+          const range = series.frameMetadata?.[actualFrame]?.paddingRange ?? series.paddingRange;
           if (range && !range.every(Number.isFinite)) throw new Error('Invalid pixel padding range.');
           const low = range ? Math.min(...range) : NaN, high = range ? Math.max(...range) : NaN;
           for (let row = 0; row < tileHeight; row++) {
-            const start = frame * frameLength + (row + (tiled?.y ?? 0)) * series.dimensions[0] + (tiled?.x ?? 0);
+            const start = srcFrame * frameLength + (row + startY) * series.dimensions[0] + startX;
             for (let i = start; i < start + tileWidth; i++) {
               const value = sourceData[i];
               const padding = value >= low && value <= high;
@@ -611,6 +667,8 @@ class SharedSliceRenderer {
           }
         }
         displayData = copy;
+      } else if (region) {
+        displayData = planePixels(sourceData, series.dimensions, region);
       }
       const texture = gl.createTexture();
       gl.bindTexture(target, texture); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -643,22 +701,29 @@ class SharedSliceRenderer {
           const high = kind === 'float32' ? Math.max(...range) : Math.floor(Math.max(...range));
           if (low <= high) data.set([1, low, high, 0], i * 4);
         }
-        if (sourceFrame !== undefined) frameRange = data.slice(0, 3);
-        padding = gl.createTexture();
-        gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
-        if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
+        if (sourceFrame !== undefined) {
+          frameRange = data.slice(0, 3);
+        } else {
+          padding = gl.createTexture();
+          gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
+          if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
+        }
       }
       cached = { owner, texture, padding, frameRange, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
       this.textures.set(key, cached);
     } else gl.bindTexture(target, cached.texture);
     if (kind !== 'rgb8') {
       const prefix = unit === 0 ? 'image' : 'pet';
-      gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, cached.padding ?? this.blankPadding());
-      gl.uniform1i(this.uniform(`${prefix}Padding`), unit + 2); gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(!!cached.padding));
-      if (sourceFrame !== undefined) gl.uniform3fv(this.uniform('uFramePadding'), cached.frameRange ?? [0, 0, 0]);
+      if (sourceFrame !== undefined) {
+        gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(Boolean(cached.frameRange && cached.frameRange[0] > 0.5)));
+        gl.uniform3fv(this.uniform('uFramePadding'), cached.frameRange ?? [0, 0, 0]);
+      } else {
+        gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, cached.padding ?? this.blankPadding());
+        gl.uniform1i(this.uniform(`${prefix}Padding`), unit + 2); gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(!!cached.padding));
+      }
     }
     cached.touched = performance.now();
     return key;
@@ -792,15 +857,17 @@ class SharedSliceRenderer {
   }
   private configuration(volume: Volume, view: ViewState, fusion?: FusionSettings | null) {
     if (this.lost || this.gl.isContextLost()) throw new Error(t('gpu.contextLost'));
-    const frameOnly = sourceFrameOnly(volume, this.info.max3DTextureSize);
     if (volume.sourceFrameIndex !== undefined && (view.mode === 'mpr' || fusion)) throw new Error(t('gpu.completeVolume'));
-    if ((frameOnly || volume.series.sourceFramesOnly) && (view.mode === 'mpr' || (view.mode !== 'source' && (view.plane !== 'axial' || view.oblique?.some(n => n !== 0))))) {
+    if (volume.series.sourceFramesOnly && (view.mode === 'mpr' || (view.mode !== 'source' && (view.plane !== 'axial' || view.oblique?.some(n => n !== 0))))) {
       throw new Error(t('gpu.mprLimit', { limit: this.info.max3DTextureSize }));
     }
-    if (fusion && (fusion.volume.sourceFrameIndex !== undefined || sourceFrameOnly(fusion.volume, this.info.max3DTextureSize))) {
+    if (fusion && fusion.volume.sourceFrameIndex !== undefined) {
       throw new Error(t('gpu.fusionLimit', { limit: this.info.max3DTextureSize }));
     }
     const sourceFrame = this.sourceFrame(volume, view);
+    if (sourceFrame === undefined && isProjection(volume.series, view) && needsBricking(volume.series.dimensions, this.info.max3DTextureSize)) {
+      throw new Error(t('gpu.mprLimit', { limit: this.info.max3DTextureSize }));
+    }
     const mainKind = textureKind(volume);
     if (mainKind === 'rgb8') {
       if (view.mode === 'mpr' || (view.mode !== 'source' && (view.plane !== 'axial' || view.oblique?.some(n => n !== 0)))) throw new Error(t('gpu.colorMpr'));
@@ -823,6 +890,7 @@ class SharedSliceRenderer {
     const right = sub(screenToWorld(mapping, x + 1 / ratio, y), topLeft), down = sub(screenToWorld(mapping, x, y + 1 / ratio), topLeft);
     const imageSeries = sourceFrame === undefined ? volume.series : sourceFrameSeries(volume.series, sourceFrame);
     const matrix = worldToIndexMatrix(imageSeries), indexRight = multiply(matrix, right), indexDown = multiply(matrix, down);
+    const topLeftIndex = worldToIndex(imageSeries, topLeft);
     const [nx, ny] = volume.series.dimensions;
     const footprintX = Math.max(1, Math.hypot(indexRight[0], indexDown[0]));
     const footprintY = Math.max(1, Math.hypot(indexRight[1], indexDown[1]));
@@ -838,9 +906,23 @@ class SharedSliceRenderer {
     const cachedFrame = reduced && (grid[0] < nx || grid[1] < ny);
     const reducedOnly = cachedFrame && (mainKind === 'rgb8' || (mainKind !== 'float32' && !imageSeries.paddingRange));
     const projection = sourceFrame === undefined && isProjection(volume.series, view);
+    const slab = sourceFrame === undefined && mainKind !== 'rgb8'
+      ? (usesSourceFrames(volume.series, view) ? slabSampling(volume.series, { ...view, slab: undefined }) : slabSampling(volume.series, view))
+      : undefined;
+    let mainBricks: VolumeBrick[] | null = null;
+    if (sourceFrame === undefined && needsBricking(volume.series.dimensions, this.info.max3DTextureSize)) {
+      mainBricks = planSliceBricks(volume.series.dimensions, topLeftIndex, indexRight, indexDown, w, h, this.info.max3DTextureSize, slab?.step, slab?.mode ? slab.half : 0);
+      if (mainBricks === null) throw new LocalizedError('gpu.mprLimit', { limit: this.info.max3DTextureSize });
+    }
     const petMatrix = fusion && worldToIndexMatrix(fusion.volume.series), transform = fusion?.transform;
     const petRight = petMatrix && multiply(petMatrix, transform ? applyVector(transform, right) : right);
     const petDown = petMatrix && multiply(petMatrix, transform ? applyVector(transform, down) : down);
+    const petOriginWorld = fusion ? (transform ? applyPoint(transform, topLeft) : topLeft) : undefined;
+    let petBricks: VolumeBrick[] | null = null;
+    if (fusion && petKind && needsBricking(fusion.volume.series.dimensions, this.info.max3DTextureSize)) {
+      petBricks = planSliceBricks(fusion.volume.series.dimensions, worldToIndex(fusion.volume.series, petOriginWorld!), petRight!, petDown!, w, h, this.info.max3DTextureSize);
+      if (petBricks === null) throw new LocalizedError('gpu.fusionLimit', { limit: this.info.max3DTextureSize });
+    }
     // Thin reconstructions integrate in their own plane. Bound work per output pixel at extreme zoom-out.
     const samples = (step: Vec3) => Math.min(8, Math.max(1, Math.ceil(Math.hypot(...step) - 1e-5)));
     const mprX = samples(indexRight), mprY = samples(indexDown);
@@ -848,7 +930,14 @@ class SharedSliceRenderer {
     const filtered = reduced || (sourceFrame === undefined && !projection && ((!view.slab && (mprX > 1 || mprY > 1)) || petX > 1 || petY > 1));
     let limit = this.textureLimit;
     if (cachedFrame) {
-      const overlayBytes = fusion && petKind ? fusion.volume.data.length * bytesPerTexel(petKind) + fusion.volume.series.dimensions[2] * 16 : 0;
+      let overlayBytes = 0;
+      if (fusion && petKind) {
+        const petMaxTexels = petBricks !== null
+          ? petBricks.reduce((best, brick) => Math.max(best, brick.region.size[0] * brick.region.size[1] * brick.region.size[2]), 1)
+          : fusion.volume.data.length;
+        const petPaddingDepth = petBricks !== null ? Math.min(this.info.max3DTextureSize, fusion.volume.series.dimensions[2]) : fusion.volume.series.dimensions[2];
+        overlayBytes = petMaxTexels * bytesPerTexel(petKind) + petPaddingDepth * 16;
+      }
       const tileBytes = (reducedOnly ? 0 : bytesPerTexel(mainKind)) + (reducedOnly ? 4 : 8);
       // A raw validity mask and a reduced tile must fit alongside the fused volume, even on very large films.
       const available = Math.max(0, TEXTURE_BUDGET - overlayBytes - 32);
@@ -862,7 +951,7 @@ class SharedSliceRenderer {
     const footprint: [number, number] = [Math.min(grid[0], Math.max(1, footprintX * grid[0] / nx)), Math.min(grid[1], Math.max(1, footprintY * grid[1] / ny))];
     // On the CPU, the letterbox around a frame shown at full size or larger is cleared too, not shaded.
     const unreduced = sourceFrame !== undefined && !reduced && this.info.software && tiles.length === 1;
-    const origin = plain || unreduced ? worldToIndex(imageSeries, topLeft).map(Math.fround) as Vec3 : undefined;
+    const origin = plain || unreduced ? topLeftIndex.map(Math.fround) as Vec3 : undefined;
     const clip = origin ? sourceClip(origin, indexRight, indexDown, nx, ny, w, h) : undefined;
     const sample = plain && origin ? this.planSamples(target, this.textureKey(volume, mainKind, sourceFrame),
       origin, indexRight, indexDown, grid, footprint,
@@ -878,22 +967,39 @@ class SharedSliceRenderer {
     this.finishProgram(program);
     this.current = program;
     gl.viewport(0, 0, w, h); gl.useProgram(this.current.program);
-    const region = sourceFrame === undefined && view.mode === 'mpr' && !view.slab && !fusion && !projection && !view.oblique?.some(v => v !== 0)
+    const region = sourceFrame === undefined && mainBricks === null && view.mode === 'mpr' && !view.slab && !fusion && !projection && !view.oblique?.some(v => v !== 0)
       && mainKind !== 'float32' && volume.data.byteLength >= 32 * 1024 * 1024 && !this.textures.has(this.textureKey(volume, mainKind))
-      ? planeTexture(volume.series.dimensions, worldToIndex(imageSeries, topLeft), indexRight, indexDown, w, h) : undefined;
-    let sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, undefined, tiles[0], region);
-    const pinned = new Set(reducedOnly ? [] : [sourceKey]);
+      ? planeTexture(volume.series.dimensions, topLeftIndex, indexRight, indexDown, w, h) : undefined;
+    const pinned = new Set<string>();
+    let sourceKey = '';
+    if (sourceFrame === undefined) {
+      if (mainBricks === null) {
+        sourceKey = this.bind(volume, 0, mainKind, undefined, pinned, undefined, region);
+        pinned.add(sourceKey);
+        gl.uniform3i(this.uniform('imageTextureStart'), region?.start[0] ?? 0, region?.start[1] ?? 0, region?.start[2] ?? 0);
+        gl.uniform1i(this.uniform('uBrickClip'), 0);
+      }
+    } else {
+      sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, pinned, tiles[0]);
+      if (!reducedOnly) pinned.add(sourceKey);
+    }
     gl.uniform1i(this.uniform('uImage'), 0);
-    if (sourceFrame === undefined) gl.uniform3i(this.uniform('imageTextureStart'), region?.start[0] ?? 0, region?.start[1] ?? 0, region?.start[2] ?? 0);
-    if (fusion && petKind) { pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned)); gl.uniform1i(this.uniform('uPet'), 1); }
+    if (fusion && petKind) {
+      gl.uniform1i(this.uniform('uPet'), 1);
+      if (petBricks === null) {
+        pinned.add(this.bind(fusion.volume, 1, petKind, undefined, pinned));
+        gl.uniform3i(this.uniform('petTextureStart'), 0, 0, 0);
+        gl.uniform1i(this.uniform('uPetBrickClip'), 0);
+        gl.uniform1i(this.uniform('uPetDrawOutside'), 1);
+      }
+    }
     this.indexMapping('u', imageSeries, topLeft, indexRight, indexDown);
     if (reduced) gl.uniform2fv(this.uniform('uFootprint'), footprint);
     else if (sourceFrame !== undefined) gl.uniform1i(this.uniform('uStoredPixels'), Number(storedPixels));
     if (filtered && sourceFrame === undefined) gl.uniform2i(this.uniform('imageGrid'), mprX, mprY);
     gl.uniform1f(this.uniform('uScreenHeight'), h);
     gl.uniform3fv(this.uniform('uDimensions'), sourceFrame === undefined ? volume.series.dimensions : [volume.series.dimensions[0], volume.series.dimensions[1], 1]);
-    if (sourceFrame === undefined && mainKind !== 'rgb8') {
-      const slab = usesSourceFrames(volume.series, view) ? slabSampling(volume.series, { ...view, slab: undefined }) : slabSampling(volume.series, view);
+    if (slab) {
       gl.uniform1i(this.uniform('uSlabMode'), slab.mode); gl.uniform1i(this.uniform('uSlabHalf'), slab.half); gl.uniform3fv(this.uniform('uSlabStep'), slab.step);
     }
     if (mainKind !== 'rgb8') {
@@ -915,7 +1021,7 @@ class SharedSliceRenderer {
     if (fusion) {
       gl.uniform3fv(this.uniform('uPetDimensions'), fusion.volume.series.dimensions);
       // An overlay aligned from a frame of its own is read where the pane's points lie in its coordinates.
-      this.indexMapping('uPet', fusion.volume.series, transform ? applyPoint(transform, topLeft) : topLeft, petRight!, petDown!);
+      this.indexMapping('uPet', fusion.volume.series, petOriginWorld!, petRight!, petDown!);
       if (filtered) gl.uniform2i(this.uniform('petGrid'), petX, petY);
       // A PET without SUV is scaled by its own high activity (src/imaging/fusion.ts).
       gl.uniform1f(this.uniform('uSuvFactor'), petScale(fusion.volume));
@@ -924,12 +1030,49 @@ class SharedSliceRenderer {
       gl.uniform1f(this.uniform('uPetUpper'), fusion.upperSuv);
       gl.uniform1i(this.uniform('uPalette'), ['hot', 'ge', 'rainbow', 'hot_metal', 'red_yellow'].indexOf(fusion.palette));
     }
-    if (sourceFrame === undefined) gl.drawArrays(gl.TRIANGLES, 0, 3);
-    else {
+    const petPasses = petBricks === null ? null
+      : petBricks.length > 0
+        ? petBricks.map((brick, index) => ({ region: brick.region, clipMin: brick.clipMin, clipMax: brick.clipMax, drawOutside: index === 0 }))
+        : [{ region: { start: [0, 0, 0] as Vec3, size: [1, 1, 1] as Vec3 }, clipMin: [1e9, 1e9, 1e9] as Vec3, clipMax: [-1e9, -1e9, -1e9] as Vec3, drawOutside: true }];
+    const drawWithPet = (draw: () => void) => {
+      if (!fusion || !petKind || !petPasses) { draw(); return; }
+      let petKey: string | undefined;
+      for (const pass of petPasses) {
+        if (petKey) pinned.delete(petKey);
+        petKey = this.bind(fusion.volume, 1, petKind, undefined, pinned, undefined, pass.region);
+        pinned.add(petKey);
+        gl.uniform3i(this.uniform('petTextureStart'), pass.region.start[0], pass.region.start[1], pass.region.start[2]);
+        gl.uniform3fv(this.uniform('uPetBrickMin'), pass.clipMin);
+        gl.uniform3fv(this.uniform('uPetBrickMax'), pass.clipMax);
+        gl.uniform1i(this.uniform('uPetBrickClip'), 1);
+        gl.uniform1i(this.uniform('uPetDrawOutside'), Number(pass.drawOutside));
+        draw();
+      }
+      if (petKey) pinned.delete(petKey);
+    };
+    if (sourceFrame === undefined) {
+      if (mainBricks === null) {
+        if (petPasses && petPasses.length > 1) { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+        drawWithPet(() => gl.drawArrays(gl.TRIANGLES, 0, 3));
+      } else {
+        gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+        let brickKey: string | undefined;
+        for (const brick of mainBricks) {
+          if (brickKey) pinned.delete(brickKey);
+          brickKey = this.bind(volume, 0, mainKind, undefined, pinned, undefined, brick.region);
+          pinned.add(brickKey);
+          gl.uniform3i(this.uniform('imageTextureStart'), brick.region.start[0], brick.region.start[1], brick.region.start[2]);
+          gl.uniform3fv(this.uniform('uBrickMin'), brick.clipMin);
+          gl.uniform3fv(this.uniform('uBrickMax'), brick.clipMax);
+          gl.uniform1i(this.uniform('uBrickClip'), 1);
+          drawWithPet(() => gl.drawArrays(gl.TRIANGLES, 0, 3));
+        }
+      }
+    } else {
       // Every pixel of the frame lies in one tile's part; the screen outside the frame is black in each draw.
       const [fullWidth, fullHeight] = volume.series.dimensions;
       gl.uniform3fv(this.uniform('uFull'), [fullWidth, fullHeight, 1]);
-      if (tiles.length > 1) { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
+      if (tiles.length > 1 || (petPasses && petPasses.length > 1)) { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); }
       let reductionKey: string | undefined;
       tiles.forEach((tile, index) => {
         if (reductionKey) pinned.delete(reductionKey);
@@ -951,7 +1094,7 @@ class SharedSliceRenderer {
           gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT);
           gl.enable(gl.SCISSOR_TEST); gl.scissor(...clip);
         }
-        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        drawWithPet(() => gl.drawArrays(gl.TRIANGLES, 0, 3));
         if (clip) gl.disable(gl.SCISSOR_TEST);
       });
     }
@@ -960,6 +1103,7 @@ class SharedSliceRenderer {
     if (surfaceWidth === w && surfaceHeight === h) context.drawImage(this.canvas, 0, 0);
     else context.drawImage(this.canvas, 0, surfaceHeight - h, w, h, 0, 0, w, h);
     target.dataset.textureTarget = sourceFrame === undefined ? 'TEXTURE_3D' : 'TEXTURE_2D';
+    if (mainBricks !== null || petBricks !== null) target.dataset.bricked = 'true'; else delete target.dataset.bricked;
     if (sourceFrame === undefined) delete target.dataset.sourceFrame; else target.dataset.sourceFrame = String(sourceFrame);
     this.prune(0, pinned);
     return performance.now() - start;
@@ -981,5 +1125,5 @@ export function prepareSourceProgram(source: Volume | Series): Promise<void> {
 }
 
 export function sourceFrameOnly(volume: Volume, maxTextureSize = sliceRenderer().info.max3DTextureSize): boolean {
-  return volume.series.dimensions.some(dimension => dimension > maxTextureSize);
+  return needsBricking(volume.series.dimensions, maxTextureSize);
 }

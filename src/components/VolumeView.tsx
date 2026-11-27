@@ -11,6 +11,8 @@ import {
   pickSurface, restoreCarve, annotationToVoiKey, buildVoiMaskAsync, buildVisibleRegionMaskAsync, interpolateVoiOutline,
   type CropBounds, type VoiSelection, type VoiKey,
 } from '../imaging/volume3d';
+import { buildDisplayVolume, downsampleLabelSubbox, fullToDisplayCoord, syncDisplayMaskBox } from '../imaging/volumeBricks';
+import { residencyManager } from '../domain/residencyManager';
 import { X } from './icons';
 import { errorMessage } from '../i18n';
 import { useTranslation } from '../i18n/react';
@@ -385,6 +387,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
   const [depth, setDepth] = useState<number | null>(null);
   const [marker, setMarker] = useState<Marker>({ x: 0, y: 0, visible: false, outsideCrop: false });
   const [rendererName, setRendererName] = useState<string | null>(null);
+  const [displayLevel, setDisplayLevel] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState('');
@@ -406,8 +409,10 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
     let geometry: THREE.PlaneGeometry | null = null;
     let labelTexture: THREE.Data3DTexture | null = null;
     let removeEvents = () => {};
-    delete canvas.dataset.renderer; delete canvas.dataset.renderBackend; delete canvas.dataset.displayPrecision;
-    setRendererName(null);
+    let unregisterResidency = () => {};
+    let gpuBytes = 0;
+    delete canvas.dataset.renderer; delete canvas.dataset.renderBackend; delete canvas.dataset.displayPrecision; delete canvas.dataset.displayLevel;
+    setRendererName(null); setDisplayLevel(null);
     setError(null); setStatus(''); setDepth(null); setUndoCount(0); setRemovedCount(0); setExporting(false); setSelectionLabel('');
     setMode('orbit'); setFine(false); setDiameter(2); setMarker({ x: 0, y: 0, visible: false, outsideCrop: false });
     function initializeScene(canvas: HTMLCanvasElement, host: HTMLDivElement) {
@@ -424,7 +429,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false, powerPreference: 'high-performance' });
       const gl = renderer.getContext() as WebGL2RenderingContext;
       const maxTexture = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number;
-      if (dimensions.some(n => n > maxTexture)) throw new Error(t('view3d.gpuLimit', { limit: maxTexture }));
+      if (!Number.isInteger(maxTexture) || maxTexture < 2) throw new Error(t('view3d.gpuLimit', { limit: maxTexture }));
       const debugInfo = gl.getExtension('WEBGL_debug_renderer_info');
       const reportedRenderer = String(debugInfo ? gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
       setRendererName(reportedRenderer);
@@ -439,18 +444,33 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       const isFloat = volume.data instanceof Float32Array || isDouble;
       const isSigned = volume.data instanceof Int16Array;
       const linear = isFloat && !!gl.getExtension('OES_texture_float_linear');
-      let displayPixels = volume.data;
       if (isDouble) {
-        const copy = new Float32Array(volume.data.length);
-        for (let i = 0; i < copy.length; i++) {
+        for (let i = 0; i < volume.data.length; i++) {
           const value = volume.data[i];
-          copy[i] = Number.isFinite(value) && mask[i] !== 3 ? value : NaN;
-          if (mask[i] !== 3 && Number.isFinite(value) && !Number.isFinite(copy[i])) throw new Error(t('view3d.float64Range'));
+          if (mask[i] !== 3 && Number.isFinite(value) && !Number.isFinite(Math.fround(value))) throw new Error(t('view3d.float64Range'));
         }
-        displayPixels = copy;
       }
+      const display = buildDisplayVolume(volume, mask, maxTexture);
+      const displayDims = display.dimensions;
+      const [kx, ky, kz]: Vec3 = [
+        displayDims[0] / dimensions[0],
+        displayDims[1] / dimensions[1],
+        displayDims[2] / dimensions[2],
+      ];
+      gpuBytes = display.data.byteLength + display.mask.byteLength;
+      residencyManager.requestSpace('gpu-3d', gpuBytes);
+      unregisterResidency = residencyManager.registerPool({
+        id: 'gpu-3d',
+        budgetBytes: gpuBytes,
+        priority: 4,
+        bytes: () => gpuBytes,
+        evict: () => 0,
+      });
+      residencyManager.pin('gpu-3d', volume.series.id, gpuBytes);
       canvas.dataset.displayPrecision = isDouble ? 'float32-display-float64-source' : volume.data.constructor.name;
-      scalarTexture = new THREE.Data3DTexture(displayPixels, ...dimensions);
+      canvas.dataset.displayLevel = display.stride.join('x');
+      setDisplayLevel(display.downsampled ? display.stride.join('×') : null);
+      scalarTexture = new THREE.Data3DTexture(display.data, ...displayDims);
       scalarTexture.format = isFloat ? THREE.RedFormat : THREE.RedIntegerFormat;
       scalarTexture.type = isFloat ? THREE.FloatType : isSigned ? THREE.ShortType : volume.data instanceof Uint16Array ? THREE.UnsignedShortType : THREE.UnsignedByteType;
       scalarTexture.internalFormat = isFloat ? 'R32F' : isSigned ? 'R16I' : volume.data instanceof Uint16Array ? 'R16UI' : 'R8UI';
@@ -458,19 +478,29 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       scalarTexture.magFilter = scalarTexture.minFilter;
       scalarTexture.unpackAlignment = 1;
       scalarTexture.needsUpdate = true;
-      maskTexture = new THREE.Data3DTexture(mask, ...dimensions);
+      maskTexture = new THREE.Data3DTexture(display.mask, ...displayDims);
       maskTexture.format = THREE.RedFormat;
       maskTexture.type = THREE.UnsignedByteType;
       maskTexture.minFilter = THREE.NearestFilter;
       maskTexture.magFilter = THREE.NearestFilter;
       maskTexture.unpackAlignment = 1;
       maskTexture.needsUpdate = true;
-      // An unbound source lets Three upload a box from the existing CPU mask,
+      // An unbound source lets Three upload a box from the existing display mask,
       // without copying the mask or sending the full volume after every touch.
-      maskUploadSource = new THREE.Data3DTexture(mask, ...dimensions);
+      maskUploadSource = new THREE.Data3DTexture(display.mask, ...displayDims);
       const center = new THREE.Vector3(...indexToPatient(volume.series, dimensions.map(n => (n - 1) / 2) as Vec3));
       const affine = affineFor(volume, center);
       if (Math.abs(affine.determinant()) < 1e-12) throw new Error(t('view3d.singular'));
+      const worldToIndex = affine.clone().invert();
+      if (display.downsampled) {
+        const fullToDisplay = new THREE.Matrix4().set(
+          kx, 0, 0, 0.5 * (kx - 1),
+          0, ky, 0, 0.5 * (ky - 1),
+          0, 0, kz, 0.5 * (kz - 1),
+          0, 0, 0, 1,
+        );
+        worldToIndex.multiplyMatrices(fullToDisplay, worldToIndex.clone());
+      }
       let radius = 1;
       for (let corner = 0; corner < 8; corner += 1) {
         const index = dimensions.map((n, axis) => (corner & (1 << axis)) ? n - 0.5 : -0.5) as Vec3;
@@ -485,22 +515,26 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       setRange(volume.series.modality === 'CT' ? [Math.min(-1000, scalarMin), Math.max(1000, Math.min(3000, scalarMax))] : [scalarMin, scalarMax]);
       const initialThreshold = volume.series.modality === 'CT' ? Math.min(scalarMax, 300) : scalarMin + (scalarMax - scalarMin) * 0.3;
       setThreshold(initialThreshold);
+      const displaySpacing = Math.min(volume.series.spacing[0] / kx, volume.series.spacing[1] / ky, volume.series.spacing[2] / kz);
       const uniforms = {
         uVolume: { value: scalarTexture }, uMask: { value: maskTexture },
-        uDimensions: { value: new THREE.Vector3(...dimensions) },
+        uDimensions: { value: new THREE.Vector3(...displayDims) },
         uCropMin: { value: new THREE.Vector3() }, uCropMax: { value: new THREE.Vector3() },
         uInverseViewProjection: { value: new THREE.Matrix4() },
-        uWorldToIndex: { value: affine.clone().invert() },
+        uWorldToIndex: { value: worldToIndex },
         uCameraPosition: { value: new THREE.Vector3() },
         uThreshold: { value: initialThreshold }, uRamp: { value: 150 },
-        uStep: { value: Math.min(...volume.series.spacing) }, uIndexStep: { value: 1 }, uLinear: { value: linear }, uHasPadding: { value: hasPadding },
+        uStep: { value: displaySpacing }, uIndexStep: { value: 1 }, uLinear: { value: linear }, uHasPadding: { value: hasPadding },
         uLabels: { value: null as THREE.Data3DTexture | null }, uHasLabels: { value: false },
         uLabelMin: { value: new THREE.Vector3() }, uLabelSize: { value: new THREE.Vector3(1, 1, 1) },
         uLabelColors: { value: Array.from({ length: MAX_SEGMENT_COLORS }, () => new THREE.Vector3()) },
       };
       function showSegmentations(texture: SegmentationTexture | null) {
         labelTexture?.dispose();
-        labelTexture = new THREE.Data3DTexture(texture?.labels ?? new Uint8Array(1), ...(texture?.size ?? [1, 1, 1]));
+        const displayLabels = texture && display.downsampled
+          ? downsampleLabelSubbox(texture.labels, texture.min, texture.size, dimensions, displayDims)
+          : texture;
+        labelTexture = new THREE.Data3DTexture(displayLabels?.labels ?? new Uint8Array(1), ...(displayLabels?.size ?? [1, 1, 1]));
         labelTexture.format = THREE.RedFormat;
         labelTexture.type = THREE.UnsignedByteType;
         labelTexture.minFilter = THREE.NearestFilter;
@@ -509,8 +543,8 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
         labelTexture.needsUpdate = true;
         uniforms.uLabels.value = labelTexture;
         uniforms.uHasLabels.value = Boolean(texture);
-        uniforms.uLabelMin.value.set(...(texture?.min ?? [0, 0, 0]));
-        uniforms.uLabelSize.value.set(...(texture?.size ?? [1, 1, 1]));
+        uniforms.uLabelMin.value.set(...(displayLabels?.min ?? [0, 0, 0]));
+        uniforms.uLabelSize.value.set(...(displayLabels?.size ?? [1, 1, 1]));
         texture?.colors.slice(0, MAX_SEGMENT_COLORS - 1).forEach((rgb, index) => uniforms.uLabelColors.value[index + 1].set(rgb[0] / 255, rgb[1] / 255, rgb[2] / 255));
       }
       const scalarSampler = isFloat ? 'sampler3D' : isSigned ? 'isampler3D' : 'usampler3D';
@@ -566,12 +600,20 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
           camera.aspect = width / height; camera.updateProjectionMatrix();
         }
         updateCamera();
-        uniforms.uCropMin.value.set(...session.crop.min.map(n => n - 0.5) as Vec3);
-        uniforms.uCropMax.value.set(...session.crop.max.map(n => n + 0.5) as Vec3);
+        uniforms.uCropMin.value.set(
+          fullToDisplayCoord(session.crop.min[0] - 0.5, dimensions[0], displayDims[0]),
+          fullToDisplayCoord(session.crop.min[1] - 0.5, dimensions[1], displayDims[1]),
+          fullToDisplayCoord(session.crop.min[2] - 0.5, dimensions[2], displayDims[2]),
+        );
+        uniforms.uCropMax.value.set(
+          fullToDisplayCoord(session.crop.max[0] + 0.5, dimensions[0], displayDims[0]),
+          fullToDisplayCoord(session.crop.max[1] + 0.5, dimensions[1], displayDims[1]),
+          fullToDisplayCoord(session.crop.max[2] + 0.5, dimensions[2], displayDims[2]),
+        );
         uniforms.uThreshold.value = session.threshold;
         uniforms.uRamp.value = session.ramp;
         uniforms.uIndexStep.value = interactive ? 1.5 : session.fine ? 0.5 : 1;
-        uniforms.uStep.value = Math.min(...volume.series.spacing) * uniforms.uIndexStep.value;
+        uniforms.uStep.value = displaySpacing * uniforms.uIndexStep.value;
         renderer.render(scene, camera);
         updateMarker(width, height);
         // The end of the "open 3D" task in usage timings: the first frame of the volume is on screen.
@@ -606,6 +648,14 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
           max.x = Math.max(max.x, x); max.y = Math.max(max.y, y); max.z = Math.max(max.z, z);
         }
         if (max.x < 0) return;
+        if (display.downsampled) {
+          const box = syncDisplayMaskBox(mask, dimensions, display.mask, displayDims,
+            [min.x, min.y, min.z], [max.x, max.y, max.z]);
+          const destMin = new THREE.Vector3(...box.min);
+          renderer!.copyTextureToTexture(maskUploadSource!, maskTexture!,
+            new THREE.Box3(destMin, new THREE.Vector3(...box.max).addScalar(1)), destMin);
+          return;
+        }
         renderer!.copyTextureToTexture(maskUploadSource!, maskTexture!, new THREE.Box3(min, max.addScalar(1)), min);
       }
 
@@ -629,11 +679,19 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
         restore() {
           if (exportRef.current) return;
           for (let i = 0; i < mask.length; i++) if (mask[i] === 1) mask[i] = 0;
+          if (display.downsampled) {
+            syncDisplayMaskBox(mask, dimensions, display.mask, displayDims,
+              [0, 0, 0], [dimensions[0] - 1, dimensions[1] - 1, dimensions[2] - 1]);
+          }
           history.length = 0; historyBytes = 0; removed = 0; stroke = null; strokeDepth = null; strokeBytes = 0;
           maskTexture!.needsUpdate = true; setUndoCount(0); setRemovedCount(0); setDepth(null); requestRender();
         },
         applySelection(selectionMask, selectedBounds) {
           for (let i = 0; i < mask.length; i++) if (mask[i] !== 3) mask[i] = selectionMask?.[i] ? 2 : 0;
+          if (display.downsampled) {
+            syncDisplayMaskBox(mask, dimensions, display.mask, displayDims,
+              [0, 0, 0], [dimensions[0] - 1, dimensions[1] - 1, dimensions[2] - 1]);
+          }
           history.length = 0; historyBytes = 0; removed = 0; stroke = null; strokeDepth = null; strokeBytes = 0;
           session.crop = selectedBounds; setCrop(selectedBounds);
           maskTexture!.needsUpdate = true; setUndoCount(0); setRemovedCount(0); setDepth(null); requestRender();
@@ -773,7 +831,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
     return () => {
       exportRef.current?.abort(); exportRef.current = null;
       drawing.disposed = true; sessionRef.current = null; cancelAnimationFrame(drawing.requestId); clearTimeout(drawing.settledTimer);
-      observer?.disconnect(); removeEvents();
+      observer?.disconnect(); removeEvents(); unregisterResidency();
       scalarTexture?.dispose(); maskTexture?.dispose(); maskUploadSource?.dispose(); labelTexture?.dispose(); material?.dispose(); geometry?.dispose(); renderer?.dispose();
     };
   }, [volume]);
@@ -958,6 +1016,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       </div>}
       <div role="status" className="v3d-status">
         <span data-tooltip={rendererName || undefined} tabIndex={rendererName ? 0 : undefined}>{status || (rendererName ? '' : t('view3d.initializing'))}</span>
+        {displayLevel && <span data-display-level={displayLevel}>{t('view3d.displayDownsampled', { level: displayLevel })}</span>}
         {!!selectionLabel && <span>{selectionLabel}</span>}
         <span style={{ marginLeft: 'auto' }} data-testid="volume-removed" data-removed-voxels={removedCount}>{t('view3d.removed', { count: removedCount.toLocaleString() })}</span>
       </div>

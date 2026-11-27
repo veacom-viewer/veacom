@@ -11,6 +11,7 @@ import { usage } from '../usage/tracker';
 import { referenceImages } from '../ui/referenceImages';
 import { foldSearch, patientKey, searchText, sequenceGuess, shownGuess, sortStudySeries, studyKey } from '../ui/seriesNames';
 import { phaseLabel } from '../ui/overlayCorners';
+import { SERIES_LIST_DRAG } from '../ui/workspaceHelpers';
 import { Glyph } from './Glyph';
 import { Menu, MenuDivider, MenuHeading, MenuItem } from './Toolbar';
 import './SeriesBrowser.css';
@@ -40,7 +41,7 @@ export interface WaitingSeries { index: number; info: PlannedSeries; preview?: S
 interface SeriesActions { select: (series: Series) => void; remove: (ids: string[]) => void; open: (card: WaitingSeries) => void }
 
 /** A drag of several picked cards carries their ids here, in the order they were picked. */
-export const SERIES_LIST_DRAG = 'application/x-veacom-series-list';
+export { SERIES_LIST_DRAG };
 /** VEAcom 1.x (Qt) started a drag after ten pixels; the window starts one after a few. */
 const CLICK_SLOP_PX = 10;
 

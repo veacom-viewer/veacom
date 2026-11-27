@@ -5,7 +5,7 @@ import type { Series, ViewState } from '../src/model';
 import { screenMapping, sourceFrameSeries, worldToScreen } from '../src/imaging/geometry';
 import { deformity, filmKey, withPlan, type FilmPlans } from '../src/ui/deformityStore';
 import {
-  acceptSuggestions, addCoraCut, addFragmentVertex, clearSuggestions, deleteFragmentVertex, dragContinues,
+  acceptSuggestions, addCoraCut, addFragmentVertex, cancelDragRestore, clearSuggestions, deleteFragmentVertex, dragContinues,
   fragmentViews, fromUnchecked, imageSideOnScreen, LEG_AXIS, MEASURED_FROM, movedView, moveHandle, nextLandmark,
   pixelToWorld, place, planView, putBackSuggestion, removeOsteotomy, resetCutFragment, resetCutShifts,
   rotatedOsteotomy, selectOsteotomy, settleMoved, translatedOsteotomy, updateOsteotomy, withSuggestions, worldToPixel,
@@ -143,6 +143,36 @@ describe('placing and moving landmarks', () => {
     assert.deepEqual(deformity.get().films[key]?.plans[0].points.kneeCentre, [[203, 502]]);
     deformity.restore(before);
     assert.deepEqual(deformity.get().films[key]?.plans[0].points.kneeCentre, [[200, 500]]);
+  });
+
+  it('restores a cancelled drag on the dragged plan across a plan switch without clobbering Undo', () => {
+    const both = deformity.ensure(series, 0, ['R', 'L']);
+    const [planA, planB] = both.plans;
+    const key = filmKey(series, 0);
+    const placed = place(both, { film: key, kind: 'landmark', name: 'kneeCentre' }, [200, 500], frame).film;
+    const handle = { kind: 'landmark' as const, name: 'kneeCentre' as const, index: 0 };
+    const dragged = moveHandle(placed, handle, [240, 520]);
+
+    // Switching active plan from A -> B mid-drag must still revert plan A while keeping active === B and plan B intact.
+    const switchedToB: FilmPlans = { ...dragged, active: planB.id };
+    const restoredAfterSwitch = cancelDragRestore(switchedToB, planA.id, placed, dragged, false);
+    assert.equal(restoredAfterSwitch.active, planB.id);
+    assert.deepEqual(restoredAfterSwitch.plans.find(p => p.id === planA.id)?.points.kneeCentre, [[200, 500]]);
+    assert.equal(restoredAfterSwitch.plans.find(p => p.id === planB.id), planB);
+
+    // If Undo already replaced plan A while the drag was still held, pointercancel must preserve the undone state.
+    const undoneToEarlier = withPlan(placed, { ...placed.plans[0], points: {} });
+    const afterCancel = cancelDragRestore(undoneToEarlier, planA.id, placed, dragged, false);
+    assert.equal(afterCancel, undoneToEarlier);
+
+    // Marker drags restore only marker when unchanged externally, and preserve Undo otherwise.
+    const withMarker = place(placed, { film: key, kind: 'ruler' }, [10, 10], frame).film;
+    const markerDragged = moveHandle(withMarker, { kind: 'marker', index: 0 }, [30, 40]);
+    const markerRestored = cancelDragRestore({ ...markerDragged, active: planB.id }, planA.id, withMarker, markerDragged, true);
+    assert.equal(markerRestored.active, planB.id);
+    assert.deepEqual(markerRestored.marker?.points, [[10, 10]]);
+    const markerUndone: FilmPlans = { ...markerDragged, marker: null };
+    assert.equal(cancelDragRestore(markerUndone, planA.id, withMarker, markerDragged, true), markerUndone);
   });
 });
 
@@ -549,7 +579,7 @@ describe('multi-level osteotomies, backward-compatible files and direct canvas g
     femoralCondyleMedial: [[190, 510]], femoralCondyleLateral: [[130, 514]],
     tibialPlateauMedial: [[190, 520]], tibialPlateauLateral: [[130, 520]],
     tibialShaftProximal: [[165, 620]], tibialShaftDistal: [[175, 780]],
-    plafondMedial: [[210, 908]], plafondLateral: [[170, 898]],
+    plafondMedial: [[210, 898]], plafondLateral: [[170, 908]],
     ankleCentre: [[190, 895]],
   });
 
@@ -650,10 +680,13 @@ describe('multi-level osteotomies, backward-compatible files and direct canvas g
     assert.deepEqual(translatedOsteotomy(0, 0, [-3.6, 5.4], [0, 1], [-1, 0], 1), { shiftLateral: 4, shiftDistal: 5 });
     assert.deepEqual(translatedOsteotomy(190, 0, [-50, 0], [0, 1], [-1, 0], 0), { shiftLateral: 200, shiftDistal: 0 });
 
-    // Plan actions: CORA preset, multi-cut select/remove, shift reset, vertex insert/delete/reset.
+    // Plan actions: CORA preset refuses off-bone CORA and places in-bone CORA, multi-cut select/remove, shift reset, vertex insert/delete/reset.
     let current = plannedLeg();
-    const coraBefore = planView(current, frame).cora.tibia;
-    assert.ok(coraBefore && coraBefore.magnitude >= 1.5);
+    const corasBefore = planView(current, frame).cora;
+    assert.ok(corasBefore.femur && corasBefore.femur.level < 0);
+    assert.equal(addCoraCut(current, 'femur', frame).plans[0].osteotomies.length, 0);
+    const coraBefore = corasBefore.tibia;
+    assert.ok(coraBefore && coraBefore.magnitude >= 1.5 && coraBefore.level >= 0 && coraBefore.level <= 1);
     current = addCoraCut(current, 'tibia', frame);
     assert.equal(current.plans[0].osteotomies.length, 1);
     assert.equal(current.plans[0].osteotomies[0].bone, 'tibia');

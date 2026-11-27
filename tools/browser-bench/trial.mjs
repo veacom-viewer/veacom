@@ -9,7 +9,7 @@ import { once } from 'node:events';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
-import { navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
+import { mprMetrics, navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from './lib/metrics.mjs';
 import { openingTrace, readPicture, readTrace, startTrace } from './lib/trace.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -35,11 +35,11 @@ const processes = () => app.getAppMetrics().filter(metric => metric.type !== 'Br
 const memoryMB = metrics => Math.round(metrics.reduce((total, m) => total + (m.memory.privateBytes ?? m.memory.workingSetSize), 0) / 1024);
 
 /** What the window shows now: the main marker, in window coordinates. */
-async function look(win) {
+async function look(win, minShare = MAIN) {
   const image = await win.webContents.capturePage();
   const { width, height } = image.getSize(), scale = width / win.getContentBounds().width;
   const picture = readPicture({ width, height, pixels: image.toBitmap() });
-  return picture.index === null || picture.unit < MAIN * width ? null
+  return picture.index === null || picture.unit < minShare * width ? null
     : { index: picture.index, x: (picture.x + picture.bandWidth / 2) / scale, y: (picture.y + 2 * picture.unit) / scale, unit: picture.unit / scale, top: picture.y / scale };
 }
 
@@ -294,6 +294,55 @@ async function trial({ viewer, served, study, round, order, outDir, machine, idl
       ({ marks, frames } = readTrace(await trace.stop(), decode));
       line.wl = windowLevelMetrics(marks, frames, MAIN);
       if (process.env.BENCH_DEBUG) line.wlFrames = frames.map(f => [Math.round(f.ts - marks['bench:wl:start']), f.index, f.unit && +f.unit.toFixed(1), f.grey && +f.grey.toFixed(1)]);
+    }
+
+    if (SCENARIOS.has('mpr') && !viewer.adapter.mpr) line.mpr = { unavailable: 'this viewer has no MPR bench hook' };
+    else if (SCENARIOS.has('mpr')) {
+      const mpr = viewer.adapter.mpr;
+      trace = await startTrace(devtools);
+      await sleep(200);
+      await mark('bench:mpr:start');
+      await js(`new Promise((resolve, reject) => {
+        const button = document.querySelector(${JSON.stringify(mpr.open)});
+        if (!button) { reject(new Error('MPR control not found')); return; }
+        const opensMenu = ${JSON.stringify(Boolean(mpr.menuItem))} && button.getAttribute('aria-haspopup') === 'menu';
+        button.click();
+        if (!opensMenu) { resolve(0); return; }
+        const deadline = performance.now() + 5000;
+        function clickItem() {
+          const item = document.querySelector(${JSON.stringify(mpr.menuItem ?? '')});
+          if (item) { item.click(); resolve(0); }
+          else if (performance.now() > deadline) reject(new Error('MPR menu item not found'));
+          else requestAnimationFrame(clickItem);
+        }
+        requestAnimationFrame(clickItem);
+      })`, true);
+      await js(`new Promise((resolve, reject) => {
+        const deadline = performance.now() + 30000;
+        function check() {
+          if (document.querySelectorAll(${JSON.stringify(mpr.ready)}).length >= ${mpr.panes}) {
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve(0)));
+          } else if (performance.now() > deadline) {
+            reject(new Error('MPR panes did not appear in 30 s.'));
+          } else requestAnimationFrame(check);
+        }
+        requestAnimationFrame(check);
+      })`);
+      const mprAt = await look(win, MAIN * 0.4);
+      if (mprAt) {
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: Math.round(mprAt.x), y: Math.round(mprAt.y) });
+        await sleep(200);
+        const towards = study.slices - 1 - mprAt.index >= mprAt.index ? 1 : -1;
+        await mark('bench:mpr:pageStart');
+        await notches(win, mprAt, towards, 30, 30);
+        await mark('bench:mpr:pageEnd');
+      }
+      await sleep(1000);
+      await mark('bench:mpr:settled');
+      ({ marks, frames } = readTrace(await trace.stop(), decode));
+      const mprResult = mprMetrics(marks, frames, MAIN, 30, 1);
+      if (mprResult.error) throw new Error(mprResult.error);
+      line.mpr = mprResult;
     }
 
     line.endMB = memoryMB(processes());

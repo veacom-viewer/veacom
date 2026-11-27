@@ -94,6 +94,36 @@ async function openStudy() {
   };
 }
 
+/** In the page: re-imports the study fresh, starts a full volume decode, and immediately requests an individual
+ * source frame. Chunked volume assembly must yield so the interactive frame finishes before the full volume. */
+async function checkPagingDuringVolumeLoad() {
+  const names = await (await fetch('/__study/files.json')).json();
+  const files = await Promise.all(names.map(async name => new File([await (await fetch(`/__study/${name}`)).arrayBuffer()], name.split('/').pop())));
+  const bridge = window.veacom;
+  const imported = await bridge.importSelected(await bridge.importFiles(files));
+  const [series] = imported.series;
+  const { generation } = await bridge.getCoreState();
+  const order = [];
+  const volumePromise = bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision }).then(res => {
+    order.push('volume');
+    return res;
+  });
+  // Let bridge.ts's setTimeout(dispatch) post the volume request so the Worker is actively assembling it first.
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const framePromise = bridge.fetchPixels({ seriesId: series.id, generation, revision: series.catalogRevision, index: 50 }).then(res => {
+    order.push('frame');
+    return res;
+  });
+  const [frame, volume] = await Promise.all([framePromise, volumePromise]);
+  return {
+    frameIndex: frame.headers.get('X-Source-Frame-Index'),
+    frameBytes: Number(frame.headers.get('Content-Length')),
+    volumeBytes: Number(volume.headers.get('Content-Length')),
+    frameFinishedBeforeVolume: order[0] === 'frame',
+    order,
+  };
+}
+
 /** In the page: makes a PNG, a JPEG and a BMP of one size and colour, opens them together, and asks for each frame's
  * samples. Returns their length, type and components, or the error. */
 async function openPictures() {
@@ -852,6 +882,7 @@ try {
       await checkPatientDrop(browser, page.url(), true);
       await checkMeasurementTabs(browser, page.url());
       const opened = await page.evaluate(openStudy);
+      const preempted = await page.evaluate(checkPagingDuringVolumeLoad);
       const check = (ok, what) => { if (!ok) failures.push(`${mode}: ${what}`); };
       check(started.isolated === isolated, `crossOriginIsolated is ${started.isolated}`);
       check(started.threads === started.expected, `the engine runs on ${started.threads} threads, expected ${started.expected}`);
@@ -861,6 +892,8 @@ try {
       check(opened.dimensions.join('x') === `${columns}x${rows}x${slices}`, `dimensions ${opened.dimensions.join('x')}`);
       check(opened.frame.index === '0' && opened.frame.bytes === columns * rows * 2, `slice ${JSON.stringify(opened.frame)}`);
       check(opened.volume === columns * rows * slices * 2, `series of ${opened.volume} bytes`);
+      check(preempted.frameIndex === '50' && preempted.frameBytes === columns * rows * 2 && preempted.volumeBytes === columns * rows * slices * 2 && preempted.frameFinishedBeforeVolume,
+        `paging during volume load: ${JSON.stringify(preempted)}`);
       assert.deepEqual(opened.volumeHash, sourceVolumeHash, 'The decoded CT volume must match all 100 original pixel arrays.');
       check(opened.state.status === 'ready' && opened.state.restartCount === 0, `engine ${JSON.stringify(opened.state)}`);
       const workerFile = readdirSync(path.join(publicFolder, 'assets')).find(name => /^suggest\.worker-.*\.js$/.test(name));

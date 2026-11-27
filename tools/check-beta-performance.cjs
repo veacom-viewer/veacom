@@ -213,12 +213,23 @@ async function run(build, study, counter) {
     } else if (study === 'pet') {
       // Beta 2 fuses a PET/CT as it opens. The candidate opens it on its first image and fuses it when Fusion is pressed:
       // pressed here once the study has opened, as a reader asks for it.
-      if (!await page.locator('[data-testid="tool-fusion"][aria-pressed="true"]').count()) await page.getByTestId('tool-fusion').click();
+      const needsToggle = !await page.locator('[data-testid="tool-fusion"][aria-pressed="true"]').count();
+      if (needsToggle) {
+        await page.evaluate(() => {
+          window.__fusionClicked = 0;
+          const button = document.querySelector('[data-testid="tool-fusion"]');
+          button?.addEventListener('click', () => { window.__fusionClicked = performance.now(); }, { once: true, capture: true });
+        });
+        await page.getByTestId('tool-fusion').click();
+      } else {
+        await page.evaluate(() => { window.__fusionClicked = window.__openStarted; });
+      }
       await page.waitForFunction(() => {
         const s = window.__VEACOM_TEST__.state();
         return window.__fusedDraw && s.fusionId && s.pendingLoads === 0 && [...document.querySelectorAll('[data-testid="viewport-cell"]')].every(c => c.dataset.volumeComplete === 'true');
       });
       row.fusionMs = await page.evaluate(() => window.__fusedDraw - window.__openStarted);
+      row.fusionToggleMs = await page.evaluate(() => Math.max(0, window.__fusedDraw - window.__fusionClicked));
       const state = await page.evaluate(() => {
         const s = window.__VEACOM_TEST__.state();
         const overlay = s.series.find(x => x.id === s.fusionId);
@@ -281,13 +292,13 @@ async function main() {
     const rows = report.samples.filter(row => row.study === study);
     if (!rows.length) continue;
     const metrics = study === 'ct-1000' ? ['firstMs','mprMs'] : study === 'video' ? ['exportMs','videoBytes']
-      : study === 'pet' ? ['firstMs','fusionMs','rendererRssMiB'] : ['firstMs'];
+      : study === 'pet' ? ['firstMs','fusionMs','fusionToggleMs','rendererRssMiB'] : ['firstMs'];
     for (const metric of metrics) {
       const paired = rows.map(row => ({ base: row.base[metric], head: row.head[metric] }));
       const comparison = compareRounds(paired, { threshold: .15, minMs: metric === 'videoBytes' ? 1 : 20, seed: 4109 });
       report.comparisons.push({ study, metric, ...comparison });
       // Beta 2's PET fusion starts as the study opens and the candidate's when Fusion is pressed: shown, not judged.
-      const judged = !(study === 'pet' && metric === 'fusionMs');
+      const judged = !(study === 'pet' && (metric === 'fusionMs' || metric === 'fusionToggleMs'));
       if (judged && comparison.verdict === 'slower') report.failures.push(study+' '+metric+' regressed');
       if (metric === 'videoBytes' && comparison.change > -.25) report.failures.push('MP4 size reduction below 25%');
     }

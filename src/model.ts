@@ -103,6 +103,7 @@ export interface Series {
   /** Row-major matrix, columns are the image i, j, k directions in patient LPS. */
   direction: number[];
   windowCenter: number; windowWidth: number; valueUnit: string;
+  voiFunction?: VoiFunction;
   /** The file stores no window; the core measured this one from the pixels. */
   windowFromPixels?: boolean;
   segmentation?: Segmentation;
@@ -302,8 +303,8 @@ export interface ViewportProps {
   onCyclePlane?: () => void;
   /** Ctrl + drag on a fused image sets the PET's scale: the top of it and its opacity. */
   onFusionAdjust?: (next: { upperSuv: number; opacity: number }) => void;
-  /** In the three-plane MPR: a handle on another pane's line was dragged; that pane's plane turns to `oblique`. */
-  onRotateReference?: (id: string, oblique: [number, number]) => void;
+  /** In the three-plane MPR: a handle on another pane's line was dragged; the rotated panes turn together around the crosshair. */
+  onRotateReference?: (rotations: ReadonlyArray<{ id: string; oblique: [number, number] }>) => void;
   /** Shown in the accessible name when several panes are open, so they can be told apart. */
   paneNumber?: number;
   /** The pane's series, or its fused overlay, is placed by an alignment (imaging/registration.ts): its corner says so. */
@@ -438,6 +439,8 @@ export interface DesktopBridge {
   importFiles: (files: File[]) => Promise<string[]>;
   /** Browser file selections made before the reader mounted, in drop order. Taken once. */
   takePendingFileDrops?: () => Array<() => Promise<string[]>>;
+  /** Releases a captured browser drop that the reader rejected (for example while capturing). */
+  discardPendingDrop?: () => void;
   openExternal: (url: string) => Promise<void>;
   saveFile: (suggestedName: string, data: ArrayBuffer | string) => Promise<string | null>;
   /** One of the landmark model's graphs for the deformity kit's suggestions (docs/landmark-model.md), fetched the first

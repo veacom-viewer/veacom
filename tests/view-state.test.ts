@@ -125,4 +125,24 @@ describe('window curves (VOI LUT Function)', () => {
     assert.equal(patchView(curvedVolume, manual, { slice: 2 }).voiFunction, undefined);
     assert.equal(resolveView(curvedVolume, { ...initial, mode: 'mpr', plane: 'coronal' }).voiFunction, undefined);
   });
+
+  it('inherits series-level voiFunction and subunit width when a frame has no per-frame window', () => {
+    const inherited: Series = {
+      ...series,
+      windowCenter: 0.5,
+      windowWidth: 0.25,
+      voiFunction: 'LINEAR_EXACT',
+      frameMetadata: [
+        { origin: [0, 0, 0], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1], spacing: [1, 1, 2], windowCenter: 0.5, windowWidth: 0.25, voiFunction: 'LINEAR_EXACT' },
+        { origin: [0, 0, 2], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1], spacing: [1, 1, 2] },
+        { origin: [0, 0, 4], direction: [1, 0, 0, 0, 1, 0, 0, 0, 1], spacing: [1, 1, 2], windowCenter: 100, windowWidth: 200 },
+      ],
+    };
+    const inheritedVolume: Volume = { series: inherited, data: new Int16Array(12) };
+    // Frame 1 has no per-frame window: falls back to series window and keeps series voiFunction + subunit width.
+    assertFields(resolveView(inheritedVolume, { ...initial, slice: 1 }), { windowCenter: 0.5, windowWidth: 0.25, voiFunction: 'LINEAR_EXACT' });
+    // Frame 2 defines its own LINEAR window without voiFunction: does not inherit the series curve.
+    assertFields(resolveView(inheritedVolume, { ...initial, slice: 2 }), { windowCenter: 100, windowWidth: 200 });
+    assert.equal(resolveView(inheritedVolume, { ...initial, slice: 2 }).voiFunction, undefined);
+  });
 });

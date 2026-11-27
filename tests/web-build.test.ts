@@ -13,7 +13,7 @@ import { zipStored } from '../src/web/zip';
 import { readStoredZip } from './storedZip';
 
 const desktop = createRequire(import.meta.url)('../electron/mp4.cjs');
-const { readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
+const { HEAD_BYTES, MAX_PREFETCH_BYTES, readHeads } = createRequire(import.meta.url)('../web/file-heads.js');
 
 it('bounds the total bytes read ahead and preserves file indices when reads are skipped', async () => {
   const file = new File([new Uint8Array(64 * 1024)], 'slice.dcm');
@@ -26,11 +26,17 @@ it('bounds the total bytes read ahead and preserves file indices when reads are 
     assert.equal(heads.length, 1101);
     assert.equal(heads[0], undefined);
     assert.equal(largeReads, 0);
-    assert.equal(heads[1024]?.length, 64 * 1024);
+    assert.equal(heads[1024]?.length, HEAD_BYTES);
     assert.equal(heads[1025], undefined);
-    assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), 64 * 1024 * 1024);
+    assert.equal(heads.reduce((total, head) => total + (head?.length ?? 0), 0), MAX_PREFETCH_BYTES);
   }
   assert.deepEqual(batches, Array.from({ length: Math.ceil(files.length / 16) }, (_, i) => i * 16));
+  const seen: number[] = [];
+  const released: (Uint8Array | undefined)[] = await readHeads(files, undefined, (_index: number, head: Uint8Array | undefined) => {
+    if (head) seen.push(head.length);
+  });
+  assert.equal(seen.length, 1024);
+  assert.equal(released.every(head => head === undefined), true);
 });
 
 it('returns the exact prefix for each source across batches, empty files and a file changed on disk', async () => {
@@ -40,14 +46,14 @@ it('returns the exact prefix for each source across batches, empty files and a f
     await writeFile(changedPath, 'old');
     const changed = await openAsBlob(changedPath);
     await writeFile(changedPath, 'new and longer');
-    const bytes = Array.from({ length: 270 }, (_, index) => new Uint8Array(index % 23 === 0 ? 65541 : index).fill(index % 251));
+    const bytes = Array.from({ length: 270 }, (_, index) => new Uint8Array(index % 23 === 0 ? HEAD_BYTES + 5 : index).fill(index % 251));
     const files = bytes.map(data => ({ file: new Blob([data]) }));
     files[17] = { file: changed };
     files[64] = { file: new Blob() };
     const heads: (Uint8Array | undefined)[] = await readHeads(files);
     assert.equal(heads.length, files.length);
     for (const [index, expected] of bytes.entries()) {
-      assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, 65536), String(index));
+      assert.deepEqual(heads[index], index === 17 || index === 64 ? undefined : expected.subarray(0, HEAD_BYTES), String(index));
     }
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

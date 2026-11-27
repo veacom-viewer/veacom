@@ -1,4 +1,5 @@
 import { loadSourceFrame } from './api';
+import { residencyManager } from './domain/residencyManager';
 import type { Series, Volume } from './model';
 import { t } from './i18n';
 
@@ -26,10 +27,34 @@ export class SourceFrameCache {
   private byteLimit: number;
   private frameLimit: number;
   private concurrency: number;
+  private unregisterResidency: () => void;
 
   constructor(loader: Loader = loadSourceFrame, byteLimit = 64 * 1024 * 1024, frameLimit = 48, concurrency = 2) {
     if (byteLimit < 0 || frameLimit < 0 || !Number.isInteger(concurrency) || concurrency < 1) throw new Error('Invalid source frame cache limits.');
     this.loader = loader; this.byteLimit = byteLimit; this.frameLimit = frameLimit; this.concurrency = concurrency;
+    this.unregisterResidency = residencyManager.registerPool({
+      id: 'source-frames',
+      budgetBytes: byteLimit,
+      priority: 1,
+      bytes: () => this.bytes,
+      evict: targetBytes => this.trimTo(targetBytes),
+    });
+  }
+
+  get byteLength(): number {
+    return this.bytes;
+  }
+
+  /** Evicts oldest cached source frames until total bytes are at most `targetBytes`. */
+  trimTo(targetBytes: number): number {
+    const goal = Math.max(0, targetBytes);
+    const before = this.bytes;
+    while (this.bytes > goal && this.cached.size > 0) {
+      const oldest = this.cached.entries().next().value!;
+      this.bytes -= oldest[1].data.byteLength;
+      this.cached.delete(oldest[0]);
+    }
+    return before - this.bytes;
   }
 
   get(series: Series, index: number, signal?: AbortSignal): Promise<Volume> {
@@ -82,7 +107,7 @@ export class SourceFrameCache {
     for (const request of this.requests.values()) this.cancel(request);
   }
 
-  dispose(): void { this.disposed = true; this.clear(); }
+  dispose(): void { this.disposed = true; this.unregisterResidency(); this.clear(); }
 
   private cancel(request: Request): void {
     if (this.requests.get(request.key) !== request) return;
@@ -101,7 +126,8 @@ export class SourceFrameCache {
         if (this.requests.get(request.key) !== request) return;
         if (volume.sourceFrameIndex !== request.index || volume.series.id !== request.series.id) throw new Error(t('engine.differentFrame'));
         this.requests.delete(request.key);
-        if (volume.data.byteLength <= this.byteLimit && this.frameLimit > 0) {
+        if (volume.data.byteLength <= this.byteLimit && this.frameLimit > 0
+          && residencyManager.requestSpace('source-frames', volume.data.byteLength).granted) {
           this.cached.set(request.key, volume); this.bytes += volume.data.byteLength;
           while (this.bytes > this.byteLimit || this.cached.size > this.frameLimit) {
             const oldest = this.cached.entries().next().value!;

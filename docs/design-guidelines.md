@@ -48,7 +48,7 @@ These come from aviation human factors, where interfaces are designed for tired 
   - When studies of two different patients are on screen together, a warning says so.
   - A prior study shows its date.
 - **Never silently change clinical data.** Pixels are only ever displayed, never altered. Every measurement remembers the image it was made on. Any change of calibration or scale is announced.
-- **The image is shown as DICOM defines it.** Use the modality and VOI LUTs and the stored window. No sharpening, smoothing or contrast curve is applied to make it prettier.
+- **The image is shown as DICOM defines it.** Use the modality and VOI LUTs and the stored window. Resample only as needed to fit or magnify on screen (area averaging when minified, bilinear or trilinear interpolation when magnified or reconstructed); never alter stored pixel values or apply cosmetic sharpening, denoising or contrast curves.
 - **Show uncertainty next to the number.** If a value is approximate, interpolated, or depends on missing metadata, the caveat sits beside the value, not in a log or a tooltip alone.
 - **Fail visibly, never wrongly.** When VEAcom cannot compute something correctly, it shows "unavailable" and the reason, never a plausible-looking guess.
 - **Nothing is lost.** What the reader creates (measurements, notes, layouts) survives a crash, an update or a closed window.

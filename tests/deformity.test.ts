@@ -8,7 +8,7 @@ import {
 import { lateralOnImage, measureLeg, type LegInput } from '../src/imaging/deformity/measure';
 import { coraNeeds, coras, malalignmentTest } from '../src/imaging/deformity/analysis';
 import {
-  coraCut, fragmentFor, insertFragmentVertex, MAX_FRAGMENT_POINTS, moved, movedLandmarks, paleyRule,
+  coraCut, coraPlaceable, fragmentFor, insertFragmentVertex, MAX_FRAGMENT_POINTS, moved, movedLandmarks, paleyRule,
   removeFragmentVertex, rotationHandlePoint, simplifyFragment, simulate, simulateMany, solveAngle,
   solveAngleMany, sortOsteotomies, type Osteotomy,
 } from '../src/imaging/deformity/osteotomy';
@@ -598,6 +598,53 @@ describe('multi-level osteotomies, joint solvers, polygon editing and CORA prese
     // Handle must stay well clear of the moved knee centre.
     const distToKnee = Math.hypot(handle[0] - sim.leg.knee![0], handle[1] - sim.leg.knee![1]);
     assert.ok(distToKnee >= 35, `Expected handle at least 35 mm from knee, got ${distToKnee.toFixed(1)}`);
+  });
+
+  it('never moves femoral landmarks with an oblique tibial cut and respects parent-cut containment', () => {
+    const input = straight(), before = measureLeg(input);
+    // Steeply oblique medial-to-lateral HTO whose infinite line rises above the lateral femoral condyle at x = -20.
+    const obliqueHto = mkCut(input, 'tibia', [[20, 480], [-20, 420]], { degrees: 12, direction: 'valgus' });
+    const sim = simulateMany(input, before, [obliqueHto])!;
+    // Every femoral landmark stays untouched by a tibial osteotomy.
+    assert.deepEqual(sim.points.femoralCondyleLateral, input.points.femoralCondyleLateral);
+    assert.deepEqual(sim.points.femoralCondyleMedial, input.points.femoralCondyleMedial);
+    assert.deepEqual(sim.points.greaterTrochanterTip, input.points.greaterTrochanterTip);
+    assert.deepEqual(sim.points.femoralShaftDistal, input.points.femoralShaftDistal);
+    // The ankle still moves distally with the HTO.
+    assert.notDeepEqual(sim.leg.ankle, before.ankle);
+  });
+
+  it('rejects off-bone, out-of-frame, or >45° CORAs in coraPlaceable and coraCut', () => {
+    const input = straight(), before = measureLeg(input);
+    const valid = {
+      bone: 'tibia' as const, point: [0, 520] as Point, level: 0.3, magnitude: 8.75,
+      bisector: [1, 0] as Point, proximal: { from: [0, 400] as Point, direction: [0, 1] as Point },
+      distal: { from: [0, 800] as Point, direction: [0, -1] as Point },
+    };
+    assert.equal(coraPlaceable(valid), true);
+    assert.equal(coraPlaceable(valid, [500, 1000]), true);
+    assert.equal(coraPlaceable({ ...valid, level: -0.2 }), false);
+    assert.equal(coraPlaceable({ ...valid, level: 1.3 }), false);
+    assert.equal(coraPlaceable({ ...valid, magnitude: 52 }), false);
+    assert.equal(coraPlaceable({ ...valid, point: [-50, 520] }, [500, 1000]), false);
+    assert.equal(coraCut({ ...valid, level: 1.5 }, before, input, 'opening'), null);
+    assert.equal(coraCut({ ...valid, magnitude: 50 }, before, input, 'opening'), null);
+    assert.equal(coraCut({ ...valid, point: [999, 520] }, before, input, 'opening', [500, 1000]), null);
+  });
+
+  it('recovers native fragment coordinates when inverting totalMotion after tracing in simulated view', () => {
+    const input = straight(), before = measureLeg(input);
+    const dfo = mkCut(input, 'femur', [[20, 320], [-20, 320]], { degrees: 7, direction: 'varus', shiftLateral: 4 });
+    const hto = mkCut(input, 'tibia', [[20, 500], [-20, 500]], { degrees: 10, direction: 'valgus', lengthen: 5 });
+    const sim = simulateMany(input, before, [dfo, hto])!;
+    const tibSim = sim.cuts[1];
+    const nativeOutline: Point[] = [[30, 500], [-30, 500], [-25, 820], [25, 820]];
+    const tracedOnMoved = nativeOutline.map(p => moved(tibSim.totalMotion, p, input.mmPerPixel));
+    const recovered = tracedOnMoved.map(p => moved(invertRigid(tibSim.totalMotion), p, input.mmPerPixel));
+    nativeOutline.forEach((want, i) => {
+      assertClose(recovered[i][0], want[0], 9);
+      assertClose(recovered[i][1], want[1], 9);
+    });
   });
 });
 

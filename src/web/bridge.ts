@@ -197,19 +197,39 @@ export function createWebBridge(): DesktopBridge {
   const releaseWhenDrained = () => { if (releaseWhenIdle && !pending.size) setTimeout(() => { if (releaseWhenIdle) releaseMemory(); }); };
 
   // Requests wait here and go to the engine one at a time, as it works through them in order. A slice for the screen
-  // (or a series' tags, or the list) goes ahead of whole series waiting before it: a series of 400 CT slices takes
-  // seconds to decode, a slice milliseconds, and the first image should not wait for the series.
+  // (or a series' tags, or the list) goes ahead of whole series waiting before it, and can preempt a chunked volume
+  // decode already in flight so interactive slice paging does not stall behind a multi-second volume load.
   let queue: { id: number; request: Request }[] = [];
-  let inFlight: number | null = null, dispatching = false;
+  let inFlight: number | null = null, inFlightQuick: number | null = null, dispatching = false;
+  let helperTimers = new Set<ReturnType<typeof setTimeout>>();
   const QUICK: ReadonlySet<string> = new Set(['frame', 'tags', 'list']);
+  const CATALOG_MUTATION: ReadonlySet<string> = new Set(['import', 'remove']);
+  function dispatchQuick(): void {
+    if (!worker || inFlightQuick !== null) return;
+    let index = -1;
+    for (let i = 0; i < queue.length; i++) {
+      const op = queue[i].request.op;
+      if (CATALOG_MUTATION.has(op)) break;
+      if (QUICK.has(op)) { index = i; break; }
+    }
+    if (index < 0) return;
+    const [next] = queue.splice(index, 1);
+    inFlightQuick = next.id;
+    worker.postMessage({ id: next.id, ...next.request });
+  }
   function dispatch(): void {
     dispatching = false;
-    if (!worker || inFlight !== null || !queue.length) return;
-    const first = queue.findIndex(item => item.request.op !== 'volume');
-    const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
-    inFlight = next.id;
-    const source = next.request.op === 'import' ? next.request.files : undefined;
-    worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
+    if (!worker || !queue.length) return;
+    if (inFlight === null && inFlightQuick === null) {
+      const first = queue.findIndex(item => item.request.op !== 'volume');
+      const [next] = queue.splice(first > 0 && QUICK.has(queue[first].request.op) ? first : 0, 1);
+      inFlight = next.id;
+      const source = next.request.op === 'import' ? next.request.files : undefined;
+      worker.postMessage({ id: next.id, ...next.request }, source && !Array.isArray(source) ? [source.port] : []);
+      if (next.request.op === 'volume') dispatchQuick();
+      return;
+    }
+    if (inFlight !== null && pending.get(inFlight)?.op === 'volume') dispatchQuick();
   }
   // Requests made together (a series and its first slice) are sorted before the first one goes out.
   const dispatchSoon = () => { if (!dispatching) { dispatching = true; setTimeout(dispatch); } };
@@ -218,9 +238,11 @@ export function createWebBridge(): DesktopBridge {
   function stop(): void {
     worker?.terminate();
     worker = undefined;
+    for (const timer of helperTimers) clearTimeout(timer);
+    helperTimers.clear();
     for (const helper of helpers) helper.terminate();
     helpers = [];
-    queue = []; inFlight = null;
+    queue = []; inFlight = null; inFlightQuick = null;
     openSeries.clear(); clearTimeout(cancelTimer); cancelTimer = undefined; shared = null; setCancel(0);
     progress = { running: false, stage: '', completed: 0, total: 0, cancelled: false };
   }
@@ -236,10 +258,11 @@ export function createWebBridge(): DesktopBridge {
         return;
       }
       if (data.type === 'helpers') { startHelpers(own, data); return; }
-      if (data.id !== inFlight) return;
+      if (data.id !== inFlight && data.id !== inFlightQuick) return;
       const request = pending.get(data.id);
       if (!request) return;
-      inFlight = null;
+      if (data.id === inFlight) inFlight = null;
+      else inFlightQuick = null;
       pending.delete(data.id);
       releaseWhenDrained();
       if (request.cancelled) { clearTimeout(cancelTimer); cancelTimer = undefined; setCancel(0); }
@@ -276,6 +299,7 @@ export function createWebBridge(): DesktopBridge {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      helperTimers.delete(timer);
       // Not started: the engine runs on one thread instead, without these.
       if (error) { for (const helper of started) helper.terminate(); helpers = helpers.filter(helper => !started.includes(helper)); }
       request.port.postMessage(error ? { ok: false, error } : { ok: true });
@@ -283,6 +307,7 @@ export function createWebBridge(): DesktopBridge {
     };
     const stopped = (error: string) => { if (!settled) settle(error); else if (engine === worker) crashed(); };
     const timer = setTimeout(() => settle('the threads did not start in time'), HELPER_START_MS);
+    helperTimers.add(timer);
     const watch = (helper: Worker, files?: MessagePort) => {
       started.push(helper); helpers.push(helper);
       helper.onmessage = ({ data }) => {
@@ -463,6 +488,7 @@ export function createWebBridge(): DesktopBridge {
     }),
     importFiles: files => droppedPaths(files, drops.takeLatest()),
     takePendingFileDrops: () => drops.takePending().map(drop => () => droppedPaths(drop.files, drop)),
+    discardPendingDrop: () => { drops.takeLatest(); },
     async importSelected(capabilities) {
       const chosen = capabilities.map(token => selections.get(token));
       if (!chosen.length || chosen.some(selection => !selection)) throw new Error('This file selection is invalid or expired. Choose it again.');
@@ -504,8 +530,9 @@ export function createWebBridge(): DesktopBridge {
       const mine = [...new Set(ids)].filter(id => openSeries.has(id));
       if (!mine.length) return { removed: 0 };
       const result = await call<{ removed: number; remaining: number }>({ op: 'remove', ids: mine });
+      if (requestGeneration !== generation) return result;
       for (const id of mine) openSeries.delete(id);
-      if (result.remaining === 0 && requestGeneration === generation) releaseMemory();
+      if (result.remaining === 0) releaseMemory();
       return result;
     },
     getPixels: () => Promise.reject(new Error('The browser build hands pixels over with fetchPixels.')),

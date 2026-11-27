@@ -26,10 +26,11 @@ Each slice carries its index in a band of black and white cells (`lib/marker.mjs
 | Open | page load; first image after the drop and which slice it was; loading done (the window's processes quiet for 2 s); CPU seconds; peak and settled memory of all the window's processes, GPU included; every request sent after the drop |
 | Paging | slices per notch and direction (from single notches); then 30, 60 and 120 notches a second for one second each: distinct slices drawn per second, notches kept, longest stall, and how long the picture kept moving after the last notch |
 | Window/level | a 1.5 s drag with the viewer's window/level button: redraws per second, and how long the picture kept changing after the drag stopped |
+| MPR | switching to three-plane MPR (`--scenarios open,paging,wl,mpr`): time until the layout visibly splits on screen, followed by 30 axial wheel notches at 30/s (slices drawn per second and lag after the last notch) |
 
 With `--from-navigation --viewers veacom,bluelight`, the trace starts before navigation. After page load, the harness drops the folder on the first animation frame that shows an enabled opening control. On BlueLight it also waits for the folder drop handler. It measures navigation to that observation, to handoff and to the first captured main-pane image for each trial. Both viewers must open on slice zero. A different opening slice fails the trial. The GPU query runs after the image. The browser process and profile are fresh each time. The local server and operating system file cache can be warm. The default open test waits for the page to settle before handoff.
 
-MPR and 3D are planned next.
+3D volume rendering is planned next.
 
 ## Fair conditions
 
@@ -64,5 +65,5 @@ node tools/browser-bench/bench.mjs report tools/browser-bench/results/<run>
 
 - `--studies ct-300,ct-1000`: generated on first use into `~/.cache/veacom-bench/studies` and checked against their manifests before every run.
 - `--base <dist-web>`: adds a second VEAcom build as `veacom-base`, for an A/B of two versions on the same machine.
-- `--rates 30,60,120` and `--scenarios open,paging,wl`: what to run.
+- `--rates 30,60,120` and `--scenarios open,paging,wl` (add `,mpr` for three-plane MPR): what to run.
 - Results go to `tools/browser-bench/results/<time>/`, which git ignores: `run.json` (machine and options), `results.jsonl` (one line per trial), `shots/` (the first image and the last screen of every trial, for checking) and `report.html`.

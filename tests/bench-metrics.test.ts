@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 // @ts-expect-error The bench's plain JavaScript modules have no type declarations.
-import { navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from '../tools/browser-bench/lib/metrics.mjs';
+import { mprMetrics, navigationMetrics, openMetrics, pagingMetrics, perNotch, windowLevelMetrics } from '../tools/browser-bench/lib/metrics.mjs';
 // @ts-expect-error The bench's plain JavaScript modules have no type declarations.
 import { compare, median, summarize } from '../tools/browser-bench/lib/stats.mjs';
 
-type Frame = { ts: number; index: number | null; unit: number; width: number; grey?: number | null };
-const frame = (ts: number, index: number | null, unit = 9, grey: number | null = 150): Frame => ({ ts, index, unit, width: 500, grey });
+type Frame = { ts: number; index: number | null; unit: number; width: number; grey?: number | null; x?: number; y?: number };
+const frame = (ts: number, index: number | null, unit = 9, grey: number | null = 150, x = 100, y = 100): Frame => ({ ts, index, unit, width: 500, grey, x, y });
 const MAIN = 0.0035;
 
 describe('bench metrics', () => {
@@ -55,6 +55,28 @@ describe('bench metrics', () => {
     const marks = { 'bench:wl:start': 0, 'bench:wl:end': 1000, 'bench:wl:settled': 2000 };
     const frames = [frame(-10, 5, 9, 150), frame(16, 5, 9, 150.3), frame(19, 5, 9, 150.3), frame(500, 5, 9, 151), frame(1200, 5, 9, 152)];
     assert.deepEqual(windowLevelMetrics(marks, frames, MAIN), { dragMs: 1000, updatesPerS: 2, settleMs: 200, changed: true });
+  });
+
+  it('measures MPR layout switch time and axial paging responsiveness inside 3-plane MPR', () => {
+    const marks = { 'bench:mpr:start': 100, 'bench:mpr:pageStart': 500, 'bench:mpr:pageEnd': 1500, 'bench:mpr:settled': 2500 };
+    const frames = [
+      frame(50, 10, 10, 150, 100, 100),
+      // Switching to 3-plane MPR shrinks the axial marker from 10 px to 5 px cells at t=260 ms.
+      frame(260, 10, 5, 150, 40, 40),
+      frame(700, 11, 5, 150, 40, 40),
+      frame(1100, 12, 5, 150, 40, 40),
+      frame(1700, 13, 5, 150, 40, 40),
+    ];
+    const result = mprMetrics(marks, frames, MAIN, 3, 1);
+    assert.equal(result.switched, true);
+    assert.equal(result.switchMs, 160);
+    assert.equal(result.paging.advanced, 3);
+    assert.equal(result.paging.slicesPerS, 2);
+    assert.equal(result.paging.lagMs, 200);
+
+    const unchanged = mprMetrics({ 'bench:mpr:start': 100, 'bench:mpr:settled': 500 }, [frame(50, 10, 10), frame(300, 10, 10)], MAIN);
+    assert.equal(unchanged.switched, false);
+    assert.equal(unchanged.switchMs, null);
   });
 });
 

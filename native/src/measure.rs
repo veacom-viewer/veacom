@@ -678,6 +678,7 @@ mod tests {
             direction: geometry.direction,
             window_center: 100.0,
             window_width: 200.0,
+            voi_function: None,
             window_from_pixels: false,
             value_unit: "HU".into(),
             suv_factor: Some(0.5),

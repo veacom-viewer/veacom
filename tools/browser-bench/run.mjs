@@ -101,7 +101,8 @@ try {
       fs.appendFileSync(path.join(outDir, 'results.jsonl'), `${JSON.stringify(line)}\n`);
       console.log(`${line.viewer} ${study.name} r${round}${line.warmup ? ' (warm-up)' : ''}: first image ${line.firstImageMs ?? '–'} ms, done ${line.doneMs ?? '–'} ms`
         + `${line.paging?.rates ? `, paging ${Object.entries(line.paging.rates).map(([r, m]) => `${r}/s→${m.slicesPerS ?? '?'}/s kept ${m.kept ?? '?'} lag ${m.lagMs ?? '?'} ms`).join('; ')}` : ''}`
-        + `${line.wl?.updatesPerS !== undefined ? `, W/L ${line.wl.updatesPerS}/s` : ''}${line.error ? ` ERROR ${line.error.split('\n')[0]}` : ''}`);
+        + `${line.wl?.updatesPerS !== undefined ? `, W/L ${line.wl.updatesPerS}/s` : ''}`
+        + `${line.mpr?.switchMs !== undefined ? `, MPR ${line.mpr.switchMs ?? '–'} ms` : ''}${line.error ? ` ERROR ${line.error.split('\n')[0]}` : ''}`);
     }
   }
 } finally {

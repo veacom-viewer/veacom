@@ -29,7 +29,7 @@ export function lineAngle(frame: PlaneFrame, mapping: ScreenMapping, series: Ser
 }
 
 /** Turn the reference about the viewing pane's screen normal, expressed in the reference's own coordinates. */
-function turnRegistered(mapping: ScreenMapping, series: Series, view: ViewState, transform: Matrix, degrees: number): [number, number] {
+export function turnPlane(mapping: ScreenMapping, series: Series, view: ViewState, degrees: number, transform: Matrix = IDENTITY): [number, number] {
   const axis = applyVector(invert(transform), cross(mapping.right, mapping.down));
   const plain = planeAxes(series, { ...view, mode: 'mpr', oblique: undefined });
   const tilted = planeAxes(series, { ...view, mode: 'mpr' });
@@ -43,6 +43,22 @@ function turnRegistered(mapping: ScreenMapping, series: Series, view: ViewState,
   return [rounded(across), rounded(alongDown)];
 }
 
+/** Rotation in degrees for `turn` screen radians, optionally snapped in `step`-degree increments from where this
+ * plane's untilted line would lie. Computing the snapped delta once for the held handle keeps every linked MPR plane
+ * turning by the same angle so planes remain square even when the viewing pane is doubly tilted. */
+export function snappedTurn(frame: PlaneFrame, mapping: ScreenMapping, series: Series, view: ViewState, turn: number, step = 0, transform: Matrix = IDENTITY): number | null {
+  const start: [number, number] = [...(view.oblique ?? [0, 0])];
+  const base = lineAngle(frame, mapping, series, view, start, transform);
+  if (base === null) return null;
+  let degrees = turn * 180 / Math.PI;
+  if (step > 0) {
+    const plain = lineAngle(frame, mapping, series, view, [0, 0], transform);
+    const offset = plain === null ? 0 : foldLine(base - plain) * 180 / Math.PI;
+    degrees = Math.round((offset + degrees) / step) * step - offset;
+  }
+  return degrees;
+}
+
 /** A drag that turns the plane seen as a line by `turn` screen radians from where its line was at the press (the
  * pointer's turn about the crosshair, counted on through whole turns, so the plane follows the pointer all the way
  * round with no stop or jump). The plane turns about the normal of the pane it is seen in, whatever that pane's own
@@ -50,14 +66,6 @@ function turnRegistered(mapping: ScreenMapping, series: Series, view: ViewState,
  * goes in steps of that size from where the untilted plane's line would be (Shift 5°, Ctrl 10°), so it lands exactly
  * back on 0. */
 export function turnedOblique(frame: PlaneFrame, mapping: ScreenMapping, series: Series, view: ViewState, turn: number, step = 0, transform: Matrix = IDENTITY): [number, number] {
-  const start: [number, number] = [...(view.oblique ?? [0, 0])];
-  const base = lineAngle(frame, mapping, series, view, start, transform);
-  if (base === null) return start;
-  let degrees = turn * 180 / Math.PI;
-  if (step > 0) {
-    const plain = lineAngle(frame, mapping, series, view, [0, 0], transform);
-    const offset = plain === null ? 0 : foldLine(base - plain) * 180 / Math.PI;
-    degrees = Math.round((offset + degrees) / step) * step - offset;
-  }
-  return turnRegistered(mapping, series, view, transform, degrees);
+  const degrees = snappedTurn(frame, mapping, series, view, turn, step, transform);
+  return degrees === null ? [...(view.oblique ?? [0, 0])] : turnPlane(mapping, series, view, degrees, transform);
 }

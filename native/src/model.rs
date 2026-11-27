@@ -393,6 +393,9 @@ pub struct Series {
     pub direction: [f64; 9],
     pub window_center: f64,
     pub window_width: f64,
+    /// VOI LUT Function (PS3.3 C.11.2.1.3) carried by the series default window when it is not LINEAR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voi_function: Option<&'static str>,
     /// No frame stores a window, so the core measured one from the pixels.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub window_from_pixels: bool,
@@ -565,6 +568,17 @@ impl PixelBuffer {
             Self::F64(_) => "float64",
         }
     }
+    /// Allocates a zero-initialized `PixelBuffer` of `samples` elements for a validated pixel type name.
+    pub fn zeroed(type_name: &str, samples: usize) -> Option<Self> {
+        Some(match type_name {
+            "int16" => Self::I16(vec![0; samples]),
+            "uint16" => Self::U16(vec![0; samples]),
+            "uint8" => Self::U8(vec![0; samples]),
+            "float32" => Self::F32(vec![0.0; samples]),
+            "float64" => Self::F64(vec![0.0; samples]),
+            _ => return None,
+        })
+    }
     /// The samples' bytes as they lie in memory, without a copy: little-endian, as the pixel routes send them (main.rs
     /// builds for little-endian targets only).
     pub fn bytes(&self) -> &[u8] {
@@ -574,6 +588,17 @@ impl PixelBuffer {
             Self::U8(v) => v,
             Self::F32(v) => bytes_of(v),
             Self::F64(v) => bytes_of(v),
+        }
+    }
+    /// Mutable byte view of the underlying samples for direct little-endian population without an intermediate copy.
+    #[cfg(target_endian = "little")]
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        match self {
+            Self::I16(v) => bytes_mut_of(v),
+            Self::U16(v) => bytes_mut_of(v),
+            Self::U8(v) => v,
+            Self::F32(v) => bytes_mut_of(v),
+            Self::F64(v) => bytes_mut_of(v),
         }
     }
 }
@@ -590,6 +615,18 @@ fn bytes_of<T: Plain>(values: &[T]) -> &[u8] {
     // the byte slice covers exactly the values' memory and borrows it for as long as they are borrowed.
     unsafe {
         std::slice::from_raw_parts(values.as_ptr().cast::<u8>(), std::mem::size_of_val(values))
+    }
+}
+
+#[cfg(target_endian = "little")]
+fn bytes_mut_of<T: Plain>(values: &mut [T]) -> &mut [u8] {
+    // SAFETY: `Plain` types are primitive numbers where every bit pattern is valid, without padding, and u8 needs no
+    // alignment; the mutable byte slice covers exactly `values` exclusively for the duration of the mutable borrow.
+    unsafe {
+        std::slice::from_raw_parts_mut(
+            values.as_mut_ptr().cast::<u8>(),
+            std::mem::size_of_val(values),
+        )
     }
 }
 
@@ -627,5 +664,13 @@ mod tests {
             [(-0.5f64).to_le_bytes(), f64::NAN.to_le_bytes()].concat()
         );
         assert!(PixelBuffer::F64(Vec::new()).bytes().is_empty());
+
+        let mut i16_buf = PixelBuffer::zeroed("int16", 2).expect("int16");
+        i16_buf
+            .bytes_mut()
+            .copy_from_slice(&[0xfe, 0xff, 0x02, 0x01]);
+        assert_eq!(i16_buf.value(0), -2.0);
+        assert_eq!(i16_buf.value(1), 0x0102 as f64);
+        assert!(PixelBuffer::zeroed("unknown", 1).is_none());
     }
 }

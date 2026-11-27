@@ -251,8 +251,8 @@ pub fn progress() -> String {
     progress::snapshot().to_string()
 }
 
-/// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold the
-/// file's first 64 KiB, read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
+/// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold an
+/// initial byte prefix read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
 #[wasm_bindgen(js_name = addFile)]
 pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
     crate::blob::add(path, file, head)
@@ -328,6 +328,159 @@ pub fn volume(id: &str, catalog_revision: Option<f64>) -> Result<js_sys::Object,
     let volume = decode_volume_of(id, revision(catalog_revision)).map_err(error)?;
     let components = session(|session| Ok(session.source(id)?.info.components))?;
     pixel_object(&volume, components)
+}
+
+/// Describes whether a series can be decoded chunk by chunk in JS without growing WASM linear memory by the full volume.
+#[wasm_bindgen(js_name = volumePlan)]
+pub fn volume_plan(id: &str, catalog_revision: Option<f64>) -> Result<String, JsError> {
+    json(session(|session| {
+        session.volume_plan(id, revision(catalog_revision))
+    })?)
+}
+
+/// Starts the engine progress record for a chunked volume decode driven by the Worker.
+#[wasm_bindgen(js_name = beginVolumeProgress)]
+pub fn begin_volume_progress(total: usize) {
+    progress::begin("decode", total);
+}
+
+/// Ends the engine progress record for a chunked volume decode and releases any held helper fallback files.
+#[wasm_bindgen(js_name = endVolumeProgress)]
+pub fn end_volume_progress() {
+    progress::finish();
+    #[cfg(feature = "threads")]
+    crate::blob::release();
+}
+
+/// Decodes frames `start..start + count` of a single-file-per-frame series into `pixelType`.
+/// Returns `{status: "ok", bytes, pixelType, components}`, `{status: "typeDoesNotFit"}`, or `{status: "float64Required"}`.
+#[wasm_bindgen(js_name = volumeChunk)]
+pub fn volume_chunk(
+    id: &str,
+    start: usize,
+    count: usize,
+    pixel_type: &str,
+    catalog_revision: Option<f64>,
+) -> Result<js_sys::Object, JsError> {
+    let series = SESSION
+        .with_borrow(|session| session.volume_chunk_source(id, revision(catalog_revision)))
+        .map_err(error)?;
+    let outcome = decode_chunk_of(&series, start, count, pixel_type).map_err(error)?;
+    let object = js_sys::Object::new();
+    let set = |key: &str, value: JsValue| {
+        js_sys::Reflect::set(&object, &key.into(), &value)
+            .map(|_| ())
+            .map_err(|_| JsError::new("chunk response"))
+    };
+    match outcome {
+        decode::ChunkOutcome::Decoded(pixels) => {
+            set("status", "ok".into())?;
+            set("bytes", js_sys::Uint8Array::from(pixels.bytes()).into())?;
+            set("pixelType", pixels.type_name().into())?;
+            set("components", series.info.components.into())?;
+        }
+        decode::ChunkOutcome::TypeDoesNotFit => {
+            set("status", "typeDoesNotFit".into())?;
+        }
+        decode::ChunkOutcome::Float64Required => {
+            set("status", "float64Required".into())?;
+        }
+    }
+    Ok(object)
+}
+
+/// Stores a chunk-assembled volume in the session cache when it fits the cache budget so whole-volume
+/// sampling (`sample`) and repeat volume loads reuse it without decoding the series again.
+#[wasm_bindgen(js_name = cacheVolume)]
+pub fn cache_volume(
+    id: &str,
+    bytes: &js_sys::Uint8Array,
+    pixel_type: &str,
+    catalog_revision: Option<f64>,
+) -> Result<bool, JsError> {
+    let byte_len = bytes.byte_length() as usize;
+    session(|session| {
+        session.cache_volume_with(
+            id,
+            revision(catalog_revision),
+            pixel_type,
+            byte_len,
+            |dst| {
+                bytes.copy_to(dst);
+                Ok(())
+            },
+        )
+    })
+}
+
+fn decode_chunk_of(
+    series: &veacom_core::model::SourceSeries,
+    start: usize,
+    count: usize,
+    pixel_type: &str,
+) -> anyhow::Result<decode::ChunkOutcome> {
+    #[cfg(feature = "threads")]
+    {
+        struct ReleaseChunk<'a> {
+            all: &'a [&'a std::path::Path],
+            done: &'a [&'a std::path::Path],
+            keep_shared: bool,
+        }
+        impl Drop for ReleaseChunk<'_> {
+            fn drop(&mut self) {
+                crate::blob::release_paths(if self.keep_shared {
+                    self.done
+                } else {
+                    self.all
+                });
+            }
+        }
+        let end = start
+            .checked_add(count)
+            .filter(|end| *end <= series.frames.len())
+            .ok_or_else(|| anyhow::anyhow!("Chunk range is outside this series"))?;
+        let paths: Vec<&std::path::Path> = series.frames[start..end]
+            .iter()
+            .map(|frame| frame.source.path.as_path())
+            .collect();
+        if crate::blob::on_helpers(&paths) {
+            return decode::decode_frame_chunk(series, start, count, pixel_type);
+        }
+        match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
+            Ok(true) => {
+                // Files not referenced by later chunks can be freed immediately; multi-frame files stay held until
+                // their last chunk or any error/restart.
+                let done: Vec<&std::path::Path> = paths
+                    .iter()
+                    .copied()
+                    .filter(|path| {
+                        !series.frames[end..]
+                            .iter()
+                            .any(|frame| frame.source.path.as_path() == *path)
+                    })
+                    .collect();
+                let mut guard = ReleaseChunk {
+                    all: &paths,
+                    done: &done,
+                    keep_shared: false,
+                };
+                let outcome = decode::decode_frame_chunk(series, start, count, pixel_type)?;
+                guard.keep_shared = matches!(outcome, decode::ChunkOutcome::Decoded(_));
+                Ok(outcome)
+            }
+            Ok(false) => parallel::on_this_thread(|| {
+                decode::decode_frame_chunk(series, start, count, pixel_type)
+            }),
+            Err(error) => {
+                crate::blob::release_paths(&paths);
+                Err(error)
+            }
+        }
+    }
+    #[cfg(not(feature = "threads"))]
+    {
+        parallel::on_this_thread(|| decode::decode_frame_chunk(series, start, count, pixel_type))
+    }
 }
 
 /// One source frame: `{bytes, pixelType, components, index, sopInstanceUid, sourceFrameNumber}`, the last two telling
@@ -484,6 +637,7 @@ pub fn render_frame(series: usize, frame: usize) -> Result<Vec<u8>, JsError> {
         let info = session.source(&id)?.info.clone();
         let pixels = session.frame(&id, frame, None)?.pixels;
         let metadata = info.frame_metadata.get(frame);
+        let frame_has_window = metadata.and_then(|f| f.window_width).is_some();
         Ok(crate::view::window_rgba(
             &pixels,
             info.components as usize,
@@ -493,7 +647,11 @@ pub fn render_frame(series: usize, frame: usize) -> Result<Vec<u8>, JsError> {
             metadata
                 .and_then(|f| f.window_width)
                 .unwrap_or(info.window_width),
-            metadata.and_then(|f| f.voi_function),
+            if frame_has_window {
+                metadata.and_then(|f| f.voi_function)
+            } else {
+                metadata.and_then(|f| f.voi_function).or(info.voi_function)
+            },
             info.photometric_interpretation == "MONOCHROME1",
         ))
     })

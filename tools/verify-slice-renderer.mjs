@@ -140,11 +140,9 @@ export function verifySliceRenderer() {
           && frameUploads.every(upload => upload.target === '2d' && upload.dimensions.join(',') === '2,2' && upload.bytes === expectedBytes)
           && data.slice(0, 4).every(value => value === 25) && data.slice(-4).every(value => value === 200),
         uploads: frameUploads });
-      rejects(`${kind}: long-stack MPR refused`, () => renderer.render(canvas, long, { ...view, plane: 'coronal' }), t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
-      rejects(`${kind}: long-stack oblique refused`, () => renderer.render(canvas, long, { ...view, oblique: [5, 0] }), t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
-      rejects(`${kind}: long-stack volume fusion refused`, () => renderer.render(canvas, long, view, { volume: displacedPet, opacity: 1, upperSuv: 4, palette: 'hot' }), t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
-      const longPet = { ...long, series: { ...long.series, ...calibratedPet } };
-      rejects(`${kind}: oversized PET fusion refused`, () => renderer.render(canvas, scalar, view, { volume: longPet, opacity: 1, upperSuv: 4, palette: 'hot' }), t('gpu.fusionLimit', { limit: renderer.info.max3DTextureSize }));
+      rejects(`${kind}: long-stack rotating MIP projection refused`,
+        () => renderer.render(canvas, long, { ...view, mode: 'mpr', projection: 'mip' }),
+        t('gpu.mprLimit', { limit: renderer.info.max3DTextureSize }));
     }
 
     for (const [kind, Ctor] of [['float32', Float32Array], ['float64', Float64Array]]) {
@@ -239,7 +237,7 @@ export function verifySliceRenderer() {
   }
   const uploadCheck = { name: 'GPU uploads keep compact buffers, permit only intentional Float64 display conversion, and use exact texture formats',
     passed: uploads.length > 0 && uploads.every(u => (u.originalBuffer || u.sourceFrameView || u.convertedFloat64) && u.correctFormat), uploads };
-  results.push(uploadCheck, verifyPlaneTextures(renderer, series, view), verifySoftwareWindow(renderer, series, view));
+  results.push(uploadCheck, verifyPlaneTextures(renderer, series, view), verifySoftwareWindow(renderer, series, view), verifyBrickedVolumes(renderer, series, view, calibratedPet));
   return { passed: results.every(r => r.passed), renderer: renderer.info,
     checks: results.length, failures: results.filter(r => !r.passed), results };
 }
@@ -358,6 +356,99 @@ function verifySoftwareWindow(renderer, series, view) {
           && Math.abs(c.centre - grey(300, 150, 800)) <= 1), supported, cases, failedStorage };
   } finally {
     renderer.info.software = software;
+    renderer.setVisibleViews([]);
+  }
+}
+
+/** Verify bricked 3D MPR, oblique, thick-slab, and fusion rendering when a volume exceeds max3DTextureSize. */
+function verifyBrickedVolumes(renderer, series, view, calibratedPet) {
+  const gl = renderer.gl, limit = renderer.info.max3DTextureSize, longDepth = limit + 1;
+  const mid = Math.floor(longDepth / 2);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 64;
+  const pixel = (x, y) => [...canvas.getContext('2d').getImageData(x, y, 1, 1).data];
+  const near = (actual, expected) => actual.every((v, i) => Math.abs(v - expected[i]) <= 2);
+  const original = gl.texImage3D, uploads = [];
+  gl.texImage3D = function (...args) { uploads.push(args.slice(3, 6)); return original.apply(this, args); };
+  const cases = [];
+  renderer.setVisibleViews([]);
+  try {
+    const baseWindow = { ...view, mode: 'mpr', windowCenter: 128, windowWidth: 256 };
+    const normalMain = {
+      data: new Int16Array(32).fill(128),
+      series: { ...series, id: 'brick-normal-main', pixelType: 'int16', dimensions: [4, 4, 2], spacing: [512, 512, 1] },
+    };
+    const normalPet = {
+      data: new Float32Array(32).fill(2),
+      series: { ...series, ...calibratedPet, id: 'brick-normal-pet', pixelType: 'float32', dimensions: [4, 4, 2], spacing: [512, 512, 1] },
+    };
+    for (const [kind, Ctor] of [['int16', Int16Array], ['float64', Float64Array]]) {
+      const plane = 16;
+      const data = new Ctor(plane * longDepth).fill(100);
+      const edge = Math.ceil(longDepth / 16);
+      data.fill(25, 0, plane * edge);
+      data.fill(200, plane * (longDepth - edge));
+      data.fill(220, plane * (mid + 2), plane * (mid + 3));
+      const long = {
+        data,
+        series: { ...series, id: `brick-${kind}`, pixelType: kind, dimensions: [4, 4, longDepth], spacing: [512, 512, 1] },
+      };
+
+      const coronalStart = uploads.length;
+      renderer.render(canvas, long, { ...baseWindow, plane: 'coronal', slice: 0 });
+      const coronalUploads = uploads.slice(coronalStart);
+      const top = pixel(32, 2), center = pixel(32, 32), bottom = pixel(32, 61);
+      cases.push({
+        name: `${kind}: bricked coronal MPR spans full oversized depth`,
+        passed: canvas.dataset.bricked === 'true' && coronalUploads.length >= 2
+          && near(top, [200, 200, 200, 255]) && near(center, [100, 100, 100, 255]) && near(bottom, [25, 25, 25, 255]),
+        top, center, bottom, coronalUploads,
+      });
+
+      renderer.render(canvas, long, { ...baseWindow, plane: 'axial', slice: mid - 20, oblique: [5, 0] });
+      const oblique = pixel(32, 32);
+      cases.push({
+        name: `${kind}: bricked oblique MPR`,
+        passed: canvas.dataset.bricked === 'true' && near(oblique, [100, 100, 100, 255]),
+        oblique,
+      });
+
+      renderer.render(canvas, long, { ...baseWindow, plane: 'axial', slice: mid, slab: { mode: 'mip', thickness: 10 } });
+      const slab = pixel(32, 32);
+      cases.push({
+        name: `${kind}: bricked thick-slab MIP`,
+        passed: canvas.dataset.bricked === 'true' && near(slab, [220, 220, 220, 255]),
+        slab,
+      });
+
+      renderer.render(canvas, long, { ...baseWindow, plane: 'axial', slice: 0 }, { volume: normalPet, opacity: 1, upperSuv: 4, palette: 'hot' });
+      const fusedMain = pixel(32, 32);
+      cases.push({
+        name: `${kind}: bricked oversized main volume fuses with PET`,
+        passed: canvas.dataset.bricked === 'true' && near(fusedMain, [255, 153, 0, 255]),
+        fusedMain,
+      });
+
+      const longPet = {
+        data: new Ctor(plane * longDepth).fill(2),
+        series: { ...series, ...calibratedPet, id: `brick-pet-${kind}`, pixelType: kind, dimensions: [4, 4, longDepth], spacing: [512, 512, 1] },
+      };
+      renderer.render(canvas, normalMain, { ...baseWindow, plane: 'axial', slice: 0 }, { volume: longPet, opacity: 1, upperSuv: 4, palette: 'hot' });
+      const fusedPet = pixel(32, 32);
+      cases.push({
+        name: `${kind}: normal main volume fuses with bricked oversized PET`,
+        passed: canvas.dataset.bricked === 'true' && near(fusedPet, [255, 153, 0, 255]),
+        fusedPet,
+      });
+    }
+    const withinLimit = uploads.length > 0 && uploads.every(d => d[0] <= limit && d[1] <= limit && d[2] <= limit);
+    return {
+      name: 'Bricked 3D textures render oversized MPR, oblique, thick-slab, and fusion within GPU limits',
+      passed: withinLimit && gl.getError() === gl.NO_ERROR && cases.every(c => c.passed),
+      limit, uploadCount: uploads.length, withinLimit, cases,
+    };
+  } finally {
+    gl.texImage3D = original;
     renderer.setVisibleViews([]);
   }
 }

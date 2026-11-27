@@ -84,6 +84,18 @@ describe('renderer translation', () => {
     assert.ok(keys.length > 10);
     for (const key of keys) assert.equal(isMessageKey(key), true, key);
   });
+
+  it('matches placeholders in DeformityOverlay t() calls including deformity.guideWidth', async () => {
+    assert.equal(translate('en', 'deformity.guideWidth', { value: '52 mm' }), 'w 52 mm');
+    assert.equal(translate('tr', 'deformity.guideWidth', { value: '52 mm' }), 'g 52 mm');
+    const source = await readFile(new URL('../src/components/DeformityOverlay.tsx', import.meta.url), 'utf8');
+    for (const match of source.matchAll(/t\('([\w.]+)',\s*\{([^}]+)\}\)/g)) {
+      const key = match[1];
+      const expected = placeholders((en as Record<string, string>)[key] ?? '');
+      const supplied = [...match[2].matchAll(/(\w+)\s*:/g)].map(item => item[1]).sort();
+      assert.deepEqual(supplied, expected, `DeformityOverlay placeholder mismatch for ${key}`);
+    }
+  });
 });
 
 const series = (overrides: Partial<Series> = {}): Series => ({
