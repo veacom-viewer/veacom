@@ -74,6 +74,23 @@ pub struct FramePixels {
     pub metadata: FrameMetadata,
 }
 
+/// Metadata a browser Worker needs to assemble a single-file-per-frame series chunk by chunk.
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only serialized in wasm32 api.rs")
+)]
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VolumePlan {
+    pub cached: bool,
+    pub frames: usize,
+    pub frame_samples: usize,
+    pub components: u8,
+    pub widening: Vec<&'static str>,
+    pub chunkable: bool,
+    pub max_bytes: usize,
+}
+
 pub struct Session {
     sources: BTreeMap<String, Arc<SourceSeries>>,
     catalog_bytes: BTreeMap<String, usize>,
@@ -254,12 +271,42 @@ impl Session {
     }
 
     /// Whether the series' decoded volume is in the cache.
-    #[cfg_attr(
-        not(feature = "threads"),
-        allow(dead_code, reason = "only the threaded build calls it")
-    )]
     pub fn has_volume(&self, id: &str) -> bool {
         self.cache.entries.iter().any(|(key, _)| key == id)
+    }
+
+    /// Describes how a browser Worker can decode a volume chunk by chunk without a full-volume WASM allocation.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "only the browser Worker calls volumePlan")
+    )]
+    pub fn volume_plan(&self, id: &str, revision: Option<u64>) -> Result<VolumePlan> {
+        let series = self.source(id)?;
+        check_revision(&series, revision)?;
+        Ok(VolumePlan {
+            cached: self.has_volume(id),
+            frames: series.frames.len(),
+            frame_samples: decode::frame_sample_count(&series)?,
+            components: series.info.components,
+            widening: decode::volume_widening_order(&series).to_vec(),
+            chunkable: decode::is_single_file_per_frame(&series),
+            max_bytes: decode::MAX_DECODED_VOLUME_BYTES,
+        })
+    }
+
+    /// Validates series existence and catalog revision before decoding a frame chunk.
+    #[cfg_attr(
+        not(target_arch = "wasm32"),
+        allow(dead_code, reason = "only the browser Worker calls volumeChunk")
+    )]
+    pub fn volume_chunk_source(
+        &self,
+        id: &str,
+        revision: Option<u64>,
+    ) -> Result<Arc<SourceSeries>> {
+        let series = self.source(id)?;
+        check_revision(&series, revision)?;
+        Ok(series)
     }
 
     /// The whole series decoded, from the cache when it is there. `revision`: the import the request was made for.

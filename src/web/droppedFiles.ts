@@ -36,19 +36,38 @@ export async function droppedFileGroups(files: File[], drop: CapturedDrop | null
   return files.map(file => [{ path: file.name, file }]);
 }
 
+const MAX_ACQUIRE_GROUPS = 4;
+
 /** Each group can reach the engine while the browser is still acquiring Files in another group. */
 export function importFileSources(sources: FileSource[]): ImportFiles {
   if (sources.every((source): source is SelectedFile => 'file' in source)) return sources;
   const { port1, port2 } = new MessageChannel();
-  const groups: Promise<void>[] = [];
-  for (let offset = 0; offset < sources.length; offset += HEAD_GROUP_SIZE) {
-    groups.push(Promise.all(sources.slice(offset, offset + HEAD_GROUP_SIZE).map(acquire)).then(files => {
-      port1.postMessage({ offset, files });
-    }));
-  }
-  void Promise.all(groups).catch(error => {
-    port1.postMessage({ error: error instanceof Error ? error.message : String(error) });
-  }).finally(() => port1.close());
+  let nextOffset = 0;
+  let stopped = false;
+  let failed: string | undefined;
+  const isDone = () => stopped || failed !== undefined;
+  port1.onmessage = () => { stopped = true; };
+  const worker = async (): Promise<void> => {
+    while (!isDone() && nextOffset < sources.length) {
+      const offset = nextOffset;
+      nextOffset += HEAD_GROUP_SIZE;
+      const batch = sources.slice(offset, offset + HEAD_GROUP_SIZE);
+      try {
+        const files = await Promise.all(batch.map(acquire));
+        if (isDone()) return;
+        port1.postMessage({ offset, files });
+      } catch (error) {
+        if (!isDone()) {
+          failed = error instanceof Error ? error.message : String(error);
+          port1.postMessage({ error: failed });
+        }
+        return;
+      }
+    }
+  };
+  const groupCount = Math.ceil(sources.length / HEAD_GROUP_SIZE);
+  const runners = Array.from({ length: Math.min(MAX_ACQUIRE_GROUPS, groupCount) }, () => worker());
+  void Promise.all(runners).finally(() => port1.close());
   return { port: port2, count: sources.length };
 }
 
@@ -78,5 +97,8 @@ export async function readImportFiles(source: ImportFiles, onFile?: (file: Selec
       if (error) throw error;
     }, register);
     return { files, heads };
-  } finally { port.close(); }
+  } finally {
+    try { port.postMessage({ stop: true }); } catch { /* Port may already be closed. */ }
+    port.close();
+  }
 }

@@ -93,14 +93,14 @@ fn sources() -> std::sync::MutexGuard<'static, Sources> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: its first 64 KiB, if read already.
+/// Lists a dropped or chosen file at `path` (such as `/in/Study/1.dcm`). `head`: an initial byte prefix, if read already.
 /// Returns the number the file is known by, for `unheld` and `hold_read`.
 pub fn add(path: &str, blob: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
     let id = NEXT.fetch_add(1, Ordering::Relaxed);
     let length = blob.size() as u64;
-    // Kept only when it is exactly the file's first piece.
+    // Keep any non-empty file prefix up to the first piece; reads past `head.len()` fall through to `piece()`.
     let head = head
-        .filter(|head| head.len() as u64 == length.min(piece_size(length)))
+        .filter(|head| !head.is_empty() && head.len() as u64 <= length.min(piece_size(length)))
         .map(Arc::new);
     BLOBS.with_borrow_mut(|blobs| blobs.insert(id, blob));
     let source = Arc::new(BlobSource {
@@ -438,7 +438,9 @@ impl Source for BlobSource {
         let mut done = 0;
         while done < output.len() {
             let position = offset + done as u64;
-            if let (0, Some(head)) = (position / size, &head) {
+            if let Some(head) = &head
+                && position < head.len() as u64
+            {
                 let start = position as usize;
                 let count = (output.len() - done).min(head.len() - start);
                 output[done..done + count].copy_from_slice(&head[start..start + count]);

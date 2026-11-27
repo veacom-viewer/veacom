@@ -79,16 +79,24 @@ function samplerType(kind: TextureKind, dimension: TextureDimension): string {
 function scalarSampling(prefix: 'image' | 'pet', sampler: string, dimensions: string, floating: boolean, dimension: TextureDimension): string {
   // Integer texture fetches are converted per sample in the shader, preserving compact GPU storage.
   const mainVolume = prefix === 'image' && dimension === '3d';
-  const voxel = `
+  const voxel = dimension === '2d' ? `
+uniform vec3 uFramePadding;
+uniform bool ${prefix}HasPadding;
+float ${prefix}Voxel(ivec3 p) {
+  p=clamp(p,ivec3(0),ivec3(${dimensions})-1);
+  float value=float(texelFetch(${sampler}, p.xy, 0).r);
+  if (${prefix}HasPadding && uFramePadding.x>0.5 && value>=uFramePadding.y && value<=uFramePadding.z) return uintBitsToFloat(0x7fc00000u);
+  return value;
+}` : `
 ${mainVolume ? 'uniform highp ivec3 imageTextureStart;' : ''}
 uniform sampler2D ${prefix}Padding;
 uniform bool ${prefix}HasPadding;
 float ${prefix}Voxel(ivec3 p) {
   p=clamp(p,ivec3(0),ivec3(${dimensions})-1);
   ${mainVolume ? 'p-=imageTextureStart;' : ''}
-  float value=float(texelFetch(${sampler}, ${dimension === '2d' ? 'p.xy' : 'p'}, 0).r);
+  float value=float(texelFetch(${sampler}, p, 0).r);
   if (${prefix}HasPadding) {
-    vec3 padding=texelFetch(${prefix}Padding,ivec2(${dimension === '2d' ? '0' : 'p.z'},0),0).rgb;
+    vec3 padding=texelFetch(${prefix}Padding,ivec2(p.z,0),0).rgb;
     if (padding.x>0.5&&value>=padding.y&&value<=padding.z) return uintBitsToFloat(0x7fc00000u);
   }
   return value;
@@ -201,7 +209,6 @@ vec3 colourPixel(vec2 q) {
 }`;
   return `
 uniform bool uStoredPixels;
-uniform vec3 uFramePadding;
 float imagePixel(vec2 q) {
   if (uStoredPixels) return imageVoxel(ivec3(floor(q+0.5),0.0));
   ${corners}
@@ -652,22 +659,29 @@ class SharedSliceRenderer {
           const high = kind === 'float32' ? Math.max(...range) : Math.floor(Math.max(...range));
           if (low <= high) data.set([1, low, high, 0], i * 4);
         }
-        if (sourceFrame !== undefined) frameRange = data.slice(0, 3);
-        padding = gl.createTexture();
-        gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
-        if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
+        if (sourceFrame !== undefined) {
+          frameRange = data.slice(0, 3);
+        } else {
+          padding = gl.createTexture();
+          gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
+          if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
+        }
       }
       cached = { owner, texture, padding, frameRange, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
       this.textures.set(key, cached);
     } else gl.bindTexture(target, cached.texture);
     if (kind !== 'rgb8') {
       const prefix = unit === 0 ? 'image' : 'pet';
-      gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, cached.padding ?? this.blankPadding());
-      gl.uniform1i(this.uniform(`${prefix}Padding`), unit + 2); gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(!!cached.padding));
-      if (sourceFrame !== undefined) gl.uniform3fv(this.uniform('uFramePadding'), cached.frameRange ?? [0, 0, 0]);
+      if (sourceFrame !== undefined) {
+        gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(Boolean(cached.frameRange && cached.frameRange[0] > 0.5)));
+        gl.uniform3fv(this.uniform('uFramePadding'), cached.frameRange ?? [0, 0, 0]);
+      } else {
+        gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, cached.padding ?? this.blankPadding());
+        gl.uniform1i(this.uniform(`${prefix}Padding`), unit + 2); gl.uniform1i(this.uniform(`${prefix}HasPadding`), Number(!!cached.padding));
+      }
     }
     cached.touched = performance.now();
     return key;

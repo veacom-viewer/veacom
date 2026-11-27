@@ -138,3 +138,21 @@ it('propagates a directory reading error without returning a partial selection',
   }) } as FileSystemDirectoryEntry;
   await assert.rejects(droppedFileGroups(files, { files, entries: [denied] }), { name: 'NotReadableError' });
 });
+
+it('bounds concurrent file acquisitions on large directory drops', async () => {
+  let active = 0, peak = 0;
+  const sources = Array.from({ length: 160 }, (_, i) => ({
+    path: `study/${i}.dcm`,
+    entry: {
+      file: (send: FileCallback) => {
+        active++;
+        if (active > peak) peak = active;
+        setImmediate(() => { active--; send(new File([Uint8Array.of(i % 251)], `${i}.dcm`)); });
+      },
+    } as FileSystemFileEntry,
+  }));
+  const { files, heads } = await readImportFiles(importFileSources(sources));
+  assert.equal(files.length, 160);
+  assert.equal(heads[159]?.[0], 159);
+  assert(peak <= 64, `expected peak concurrent entry.file() calls <= 64, got ${peak}`);
+});

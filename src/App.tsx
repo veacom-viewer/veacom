@@ -1,39 +1,40 @@
 import { studyKey } from './domain/patient';
 import { lazy, Suspense, useEffect, useEffectEvent, useLayoutEffect, useReducer, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
+import type { CSSProperties } from 'react';
 import {
-  ChevronRight, Circle, CircleHelp, Columns3, Contrast, Crosshair, FileArchive, Files, FlipHorizontal2,
-  FlipVertical2, FolderOpen, Globe, Hexagon, Languages, Layers, Link2, List, LoaderCircle, Maximize2, MessageSquare, Minimize2,
-  GripVertical, Move, MoveUpRight, PanelRightClose, PanelRightOpen, Pause, Pipette, Play, Plus, Radius, Redo2, RotateCcw, RotateCcwSquare, RotateCwSquare,
-  Ruler, ScanText, Stethoscope, SlidersHorizontal, Spline, Square, Tag, Trash2, TriangleRight, Type, Undo2, Upload, X, ZoomIn,
+  CircleHelp, Columns3, Contrast, Crosshair, FileArchive, Files, FlipHorizontal2,
+  FlipVertical2, FolderOpen, Languages, Layers, Link2, List, LoaderCircle, MessageSquare,
+  Move, PanelRightClose, PanelRightOpen, Pause, Play, Plus, Redo2, RotateCcw, RotateCcwSquare, RotateCwSquare,
+  Ruler, ScanText, Stethoscope, SlidersHorizontal, Tag, Trash2, Undo2, Upload, X, ZoomIn,
 } from './components/icons';
 import { ASSESSMENT_AVAILABLE } from './domain/clinical';
 import { bridgeCan, importEarly, importPaths, listSeries, loadVolume, getProgress, cancelOperation, prioritiseImport, removeSeries, type CoreProgress, type EarlyImport, registerSeries } from './api';
-import { PICK_MEASUREMENT, Viewport } from './components/Viewport';
+import { PICK_MEASUREMENT } from './components/Viewport';
+import { ViewportCell } from './components/ViewportCell';
+import { AnnotationSummary, MEASURE_ICONS, measureIcon, PanelSection, WindowInput } from './components/WorkspaceControls';
 import { PetAcquisitionPanel } from './components/PetAcquisitionPanel';
 import { panelPet } from './imaging/petAcquisition';
-import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, SERIES_LIST_DRAG, thumbnailFrame, useSeriesFilters, type WaitingSeries } from './components/SeriesBrowser';
-import { SliceBar } from './components/SliceBar';
-import { nearestTouchpadSpeed, TOUCHPAD_SPEED, TOUCHPAD_SPEEDS } from './imaging/interaction';
+import { adoptThumbnail, forgetThumbnail, hasThumbnail, keepThumbnail, SeriesBrowser, SeriesMenuItems, thumbnailFrame, useSeriesFilters, type WaitingSeries } from './components/SeriesBrowser';
+import { TOUCHPAD_SPEEDS } from './imaging/interaction';
 import { Inspector } from './components/Inspector';
 import { CineSpeed } from './components/CineSpeed';
 import { holdsFrame } from './ui/discPictures';
 import { carryAnnotations, holdingIn } from './ui/earlySeries';
 import { allowExternalDrop, externalDropEffect } from './ui/fileDrop';
 import { joinedWith, referenceImages } from './ui/referenceImages';
-import { measuredSlice, openingSlice, pageStep, pagesBackwards, pagingPlace, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
+import { measuredSlice, openingSlice, pageStep, pagesBackwards, placeInSequence, shownSlice, stackSliceAt } from './imaging/paging';
 import { advanceCine, cineCycle, recordedFps } from './imaging/cine';
-import { acquiredPlane, autoWindow, dot, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, projectionAngle, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice, sub } from './imaging/geometry';
+import { acquiredPlane, autoWindow, dot, fullRangeWindow, getPlaneFrame, indexToWorld, isProjection, planeAxes, reconstructedWindow, scale, sliceAtWorld, sliceCount, sourceFrameSeries, stepSlice, sub } from './imaging/geometry';
 import { CALIPERS, caliperMmScale, caliperName, caliperRefusal, caliperResult, onCaliperPlane, planeView, showsPlane, snapCaliper } from './imaging/calipers';
 import { caliperRecorded, keepCaliper, keepChecklist, keptChecklist } from './ui/checklistStore';
-import { caliperNote, remeasureRecords, type Side, type SliceNote } from './ui/preopChecklist';
-import { filmKey, isLongLegFilm, pixelSpacingText, withFilmCalibrations, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
+import { caliperNote, remeasureRecords, type SliceNote } from './ui/preopChecklist';
+import { filmKey, isLongLegFilm, pixelSpacingText, type FilmCalibration, type FilmCalibrations } from './imaging/radiograph';
 import { deformity, type FilmSelection } from './ui/deformityStore';
 import { labelQueue, useLabelQueue } from './ui/labelQueue';
 import { labelVolume, maskFrames, segmentationApplies, segmentationCenter } from './imaging/segmentation';
 import { clearSliceTextureCache, prepareSourceProgram, sliceRenderer, sourceFrameOnly, type RendererInfo } from './imaging/sliceRenderer';
 import { isSoftwareWebglStatus } from './imaging/rendererInfo';
-import { displayWindowWidth, patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
+import { patchView, renderedView, resolveView, usesSourceFrames } from './imaging/viewState';
 import { SourceFrameCache } from './sourceFrames';
 import { useEngineRecovery } from './useEngineRecovery';
 import { captureViewportCanvas, captureViewportPng } from './export-video';
@@ -49,15 +50,14 @@ import { clearEditedScores } from './imaging/deauvilleReading';
 import { SphereDetails } from './components/SphereDetails';
 import { usePetRecords, usePetStudies } from './imaging/usePetStudies';
 import { useMeasurementRecovery } from './imaging/useMeasurementRecovery';
-import { calibrationEditId, measurementTools, type CalibrationEdit } from './domain/measurementRecovery';
+import { calibrationEditId, type CalibrationEdit } from './domain/measurementRecovery';
 import { WarningBox } from './components/WarningBox';
 import { compared, comparisonFlags, comparisonKey, comparisonText, keptCompared, type PetPrior } from './imaging/petComparison';
 import { nameLesions } from './imaging/lesions';
 import { LesionTable } from './components/LesionTable';
 import { PetReportCopy } from './components/PetReportCopy';
 import { priorLesions } from './imaging/priorLesions';
-import { useAnnotationSummary } from './imaging/useAnnotationSummary';
-import type { Annotation, CaliperKind, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, VoiFunction, Volume, WheelAction } from './model';
+import type { Annotation, CaliperKind, FusionSettings, Joined, Plane, SegmentationOverlay, Series, SuvNormalization, Tool, Vec3, ViewportProps, ViewState, Volume, WheelAction } from './model';
 import { chooseLocale, errorMessage, LOCALES, t, type MessageKey, type MessageParams } from './i18n';
 import { useTranslation } from './i18n/react';
 import { warningTexts } from './i18n/core';
@@ -68,21 +68,29 @@ import { usage, type Surface, type UsageSnapshot } from './usage/tracker';
 import { installUsageListeners } from './usage/actions';
 import { TooltipLayer } from './components/Tooltip';
 import { modifierKey, presetFor, PRESETS } from './ui/presets';
-import { anchorFor, coveredSlice, facesSame, inStep, levelSlice, linkedSlice, pairKey, patientMatch, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane, placed } from './imaging/linking';
+import { anchorFor, coveredSlice, facesSame, inStep, linkedSlice, pairKey, patientMatch, placed, samePatient, shareFrame, sharePlaneSpace, type Anchor, type Pane } from './imaging/linking';
 import { contrastPair, DEVICE_LOOKS, deviceMaker, fusesAsOverlay, fusesOver, isEmission, mrPartner, overlayFor, SPECT_LOOK, studyOverlay } from './imaging/fusion';
-import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, readKept, withKept, type Kept, type KeptVariant, type Plan, alignmentPair } from './arrangements';
-import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS, PET_CT, PET_CT_READING, PET_FOLLOW_UP } from './arrangements/builtin';
+import { activeStudyContext, comparableSeries, deriveKept, findRole, KEPT_STORAGE, match, matchComparison, matchOnOpen, paneView, sharesSuvScale, withKept, type Kept, type KeptVariant, type Plan, alignmentPair } from './arrangements';
+import { BUILTIN_ARRANGEMENTS, COMPARE_WITH_LATER, COMPARE_WITH_PRIOR, FUSION, NUCLEAR_MEDICINE_SCREENS } from './arrangements/builtin';
 import { bestCounterpart } from './arrangements/counterpart';
 import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, automatic, crosshairIn, currentAlignment, frameOf, mapPoint, movement, nudged, nudgeStep, placementOf, transformBetween, withAlignment, withoutAlignment, type Alignment, type Nudge } from './imaging/registration';
 import { applyPoint, IDENTITY } from './imaging/rigid';
 import { AlignmentSection } from './components/AlignmentSection';
-import { petLook, quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
+import { quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
 import { sequenceGuess, seriesName, shownGuess, sortStudySeries } from './ui/seriesNames';
-import { dicomDate, general } from './ui/overlayCorners';
+import { dicomDate } from './ui/overlayCorners';
 import { withFound, withImported } from './ui/seriesOrder';
+import {
+  atPlaceOf, besideView, BUTTON_ACTIONS, clockText, decorateVolume, DEFAULT_VIEW, defaultView, EMPTY_ANNOTATIONS, EMPTY_REFERENCES,
+  isTool, kebab, makeSlot, MEASURE_TOOLS, PALETTE_SWATCHES, PET_LAYOUTS, projectMprCrosshair, readKeptArrangements,
+  readOpenSections, readSettings, sameDecoration, samePoints, SECTION_STORAGE, shownPlane,
+  sourceFrameForView, STAGES, TOOL_KEYS, WHEEL_ACTIONS, windowClass,
+  type CaliperRequest, type DisplaySection, type Graphics, type MenuId, type MouseButton, type Notice, type Panel,
+  type PanePlan, type PaneToast, type Settings, type Slot, type Snapshot,
+} from './ui/workspaceHelpers';
 // Tokens first: component rules in styles.css must win over the shared ones at equal specificity.
 import './theme.css';
 import './styles.css';
@@ -97,98 +105,7 @@ const AssessmentPanel = lazy(() => import('./components/AssessmentPanel').then(m
 const DeformityPanel = lazy(() => import('./components/DeformityPanel').then(module => ({ default: module.DeformityPanel })));
 const LabelQueue = lazy(() => import('./components/LabelQueue').then(module => ({ default: module.LabelQueue })));
 
-type Panel = 'measurements' | 'display' | 'tags' | null;
-/** `unfused`: this pane never shows the fusion (the plain CT beside the fused one); a new series or the fusion button in it clears it. */
-type Slot = { id: string; seriesId: string | null; view: ViewState; unfused?: boolean;
-  /** While the pane shows a stack's reference image it paged to: the stack, and the view the pane had on it, for the
-   * way back. */
-  stack?: { id: string; view: ViewState } };
-type MouseButton = 'left' | 'middle' | 'right';
-type Settings = { linked: boolean; panel: Panel; showCrosshair: boolean; showReferences: boolean;
-  showOverlay: boolean; hidePatientData: boolean; hideMeasurements: boolean; showScale: boolean;
-  /** The value under the pointer is written on the image: off unless the reader asks for it. */ showPointerValue: boolean;
-  mouseBindings: Partial<Record<MouseButton, Tool>>; wheelAction: WheelAction;
-  /** How fast a touchpad pages slices; a mouse wheel always pages one a notch (src/imaging/interaction.ts). */ touchpadSpeed: number;
-  reverseWheel: boolean; measurementUnits: 'auto' | 'px';
-  /** The SUV PET values are given in: body weight, lean body mass (SUL) or body surface area. */ suvNormalization: SuvNormalization;
-  /** Single-character shortcuts (W, S, L, 0, M, +, −…) can be turned off (WCAG 2.1.4). */ singleKeys: boolean;
-  /** Cine speed, frames a second: a whole number from 1; while a series plays, at most its slice count. */ cineFps: number };
-const SUV_NORMALIZATIONS: readonly SuvNormalization[] = ['bw', 'lbm', 'bsa'];
-type Menu = 'import' | 'measure' | 'layout' | 'preset' | 'mouse' | 'mouse-left' | 'mouse-middle' | 'mouse-right' | 'mouse-wheel' | 'slab' | 'series' | 'mpr' | 'overlay' | 'orientation' | 'language' | 'fusion' | null;
-type DisplaySection = 'window' | 'color' | 'orientation' | 'oblique' | 'alignment' | 'workspace' | 'units' | 'mouse';
-const DISPLAY_SECTIONS: readonly DisplaySection[] = ['window', 'color', 'orientation', 'oblique', 'alignment', 'workspace', 'units', 'mouse'];
-const SECTION_STORAGE = 'veacom:inspector-sections';
-function readOpenSections(): Set<DisplaySection> {
-  try {
-    const stored = JSON.parse(localStorage.getItem(SECTION_STORAGE) ?? 'null');
-    if (Array.isArray(stored)) return new Set(stored.filter((id): id is DisplaySection => DISPLAY_SECTIONS.includes(id)));
-  } catch { /* Storage may be disabled by the host. */ }
-  return new Set(['window', 'color', 'orientation', 'alignment']);
-}
-type Snapshot = { slots: Slot[]; annotations: Record<string, Annotation[]>; plans: ReturnType<typeof deformity.snapshot>;
-  calibration?: FilmSelection & { value: FilmCalibration | null } };
-// A notice built from a message key is shown in the current language, and the key is its test hook.
-type Notice = { message: string; kind: 'error' | 'info'; key?: MessageKey; params?: MessageParams; code?: string;
-  /** Engine warnings, translated again when the language changes. */
-  warnings?: { warnings: string[]; warningNotes?: unknown };
-  /** Confirmations that need no decision clear themselves after a few seconds. */
-  transient?: boolean; action?: { label: MessageKey; run: () => void } };
-/** How images are drawn: `software` when WebGL runs on the CPU because no usable graphics driver is available. */
-type Graphics = { renderer: string; software: boolean; webgl?: string };
-
-const EMPTY_ANNOTATIONS: Annotation[] = [];
-const samePoints = (a: readonly Vec3[], b: readonly Vec3[]) => a.length === b.length && a.every((point, i) => point.every((value, axis) => value === b[i][axis]));
-const EMPTY_REFERENCES: { id: string; series: Series; view: ViewState }[] = [];
-const TOOLS: readonly Tool[] = ['scroll', 'window', 'pan', 'zoom', 'rotate', 'none', 'length', 'angle', 'cobb', 'rectangle', 'ellipse', 'polygon', 'polyline', 'probe', 'arrow', 'text', 'crosshair', 'sphere'];
-const WHEEL_ACTIONS: readonly WheelAction[] = ['scroll', 'zoom', 'rotate', 'none'];
-/** What each mouse button can be given, as in VEAcom Next: the navigation tools, rotation, the crosshair or nothing. */
-const BUTTON_ACTIONS: readonly Tool[] = ['scroll', 'window', 'pan', 'zoom', 'rotate', 'crosshair', 'none'];
-const isTool = (value: unknown): value is Tool => typeof value === 'string' && (TOOLS as readonly string[]).includes(value);
-const MEASURE_TOOLS: readonly Tool[] = measurementTools;
-// Keyboard shortcuts handled in the window keydown handler below; shown in tooltips and menus.
-const TOOL_KEYS: Partial<Record<Tool, string>> = { scroll: 'S', window: 'W', pan: 'P', zoom: 'Z', length: 'L', angle: 'A', ellipse: 'E', rectangle: 'R', crosshair: 'C', text: 'T', sphere: 'V' };
-const MEASURE_ICONS: Partial<Record<Tool, typeof Ruler>> = { length: Ruler, angle: TriangleRight, cobb: Radius, rectangle: Square, ellipse: Circle, polygon: Hexagon, polyline: Spline, sphere: Globe, probe: Pipette, arrow: MoveUpRight, text: Type };
-/** A measurement's icon; on the toolbar a region gets a small "ROI" tag, so it is not taken for the layout button. */
-const ROI_TOOLS: ReadonlySet<Tool> = new Set(['rectangle', 'ellipse', 'polygon']);
-const measureIcon = (tool: Tool, size = 18, tagged = false) => { const Icon = MEASURE_ICONS[tool] ?? Ruler; return tagged && ROI_TOOLS.has(tool) ? <span className="tool-icon-tagged"><Icon size={size} /><span className="tool-icon-tag">ROI</span></span> : <Icon size={size} />; };
-/** softTissue → soft-tissue: action ids and window classes are kebab-case. */
-const kebab = (value: string) => value.replace(/([a-z0-9])([A-Z])/g, '$1-$2').toLowerCase();
-// The engine reports progress by stage name; unknown stages are shown as reported.
-const STAGES: Partial<Record<string, MessageKey>> = { import: 'progressStage.import', indexing: 'progressStage.indexing', decode: 'progressStage.decode', 'queued decode': 'progressStage.queuedDecode' };
-/** A duration as m:ss, or h:mm:ss from an hour on. */
-function clockText(ms: number) {
-  const seconds = Math.max(0, Math.round(ms / 1000)), hours = Math.floor(seconds / 3600), minutes = Math.floor(seconds / 60) % 60;
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return hours ? `${hours}:${pad(minutes)}:${pad(seconds % 60)}` : `${minutes}:${pad(seconds % 60)}`;
-}
-const DEFAULT_VIEW: ViewState = { mode: 'source', windowMode: 'dicom', plane: 'axial', slice: 0, windowCenter: 40, windowWidth: 400, zoom: 1, pan: [0, 0], rotation: 0, flipX: false, flipY: false, inverted: false };
-const makeSlot = (): Slot => ({ id: crypto.randomUUID(), seriesId: null, view: { ...DEFAULT_VIEW, pan: [0, 0] } });
-/** The plane a pane shows, as its centre and normal; none for a projection or an empty pane. */
-const shownPlane = (volume: Volume | undefined, view: ViewState) => {
-  if (!volume || isProjection(volume.series, view)) return null;
-  const { center, normal } = getPlaneFrame(volume.series, view);
-  return { center, normal };
-};
-/** Two views of one plane, tilted alike: they differ at most in the slice shown, and in how it is shown. */
-const sameTilt = (a: ViewState, b: ViewState) => a.plane === b.plane && (a.mode ?? 'mpr') === (b.mode ?? 'mpr') && a.projection === b.projection
-  && (a.oblique?.[0] ?? 0) === (b.oblique?.[0] ?? 0) && (a.oblique?.[1] ?? 0) === (b.oblique?.[1] ?? 0);
-/** The series a list drag carries: several picked cards in the order picked, else the one dragged. */
-function draggedSeries(data: DataTransfer): string[] {
-  try {
-    const list: unknown = JSON.parse(data.getData(SERIES_LIST_DRAG) || 'null');
-    if (Array.isArray(list) && list.length && list.every(id => typeof id === 'string')) return list;
-  } catch { /* a single series */ }
-  const id = data.getData('application/x-veacom-series');
-  return id ? [id] : [];
-}
 const errorText = errorMessage;
-
-function sourceFrameForView(series: Series, view: ViewState): number {
-  if (usesSourceFrames(series, view)) return Math.round(view.slice);
-  // Metadata and frame export use the acquired slice nearest the displayed plane's centre.
-  try { return sliceAtWorld(series, { ...view, mode: 'source', plane: 'axial', oblique: undefined }, getPlaneFrame(series, view).center); }
-  catch { return 0; }
-}
 
 async function writeUsageConsent(value: 'granted' | 'denied') {
   const status = await window.veacom?.usageConsent?.(value);
@@ -221,282 +138,6 @@ function focusSoon(...selectors: string[]) {
   });
 }
 const focusImage = () => focusSoon('.viewport-cell.is-active [data-testid="dicom-viewport"]', '.viewport-cell.is-active', '[data-testid="tool-open"]');
-
-function readSettings(): Settings {
-  const defaults: Settings = { linked: true, panel: null, showCrosshair: true, showReferences: true,
-    showOverlay: true, hidePatientData: false, hideMeasurements: false, showScale: false, showPointerValue: false,
-    mouseBindings: { middle: 'pan', right: 'zoom' }, wheelAction: 'scroll', touchpadSpeed: TOUCHPAD_SPEED.default, reverseWheel: false, measurementUnits: 'auto',
-    suvNormalization: 'bw', singleKeys: true, cineFps: 10 };
-  try {
-    const stored = JSON.parse(localStorage.getItem('veacom:workspace:v2') ?? 'null');
-    if (!stored || typeof stored !== 'object') return defaults;
-    return {
-      linked: typeof stored.linked === 'boolean' ? stored.linked : defaults.linked,
-      panel: ['measurements', 'display', 'tags', null].includes(stored.panel) ? stored.panel : defaults.panel,
-      showCrosshair: stored.showCrosshair !== false,
-      showReferences: stored.showReferences !== false,
-      showOverlay: stored.showOverlay !== false, hidePatientData: stored.hidePatientData === true, hideMeasurements: stored.hideMeasurements === true, showScale: stored.showScale === true, showPointerValue: stored.showPointerValue === true,
-      mouseBindings: Object.fromEntries((['left', 'middle', 'right'] as const).flatMap(button => {
-        const binding = stored.mouseBindings?.[button] ?? defaults.mouseBindings[button];
-        return isTool(binding) ? [[button, binding]] : [];
-      })),
-      wheelAction: WHEEL_ACTIONS.includes(stored.wheelAction) ? stored.wheelAction : defaults.wheelAction,
-      // A wheelSensitivity saved by earlier versions is not carried over: it scaled the mouse wheel as well, against a slower touchpad.
-      touchpadSpeed: nearestTouchpadSpeed(stored.touchpadSpeed),
-      reverseWheel: stored.reverseWheel === true,
-      measurementUnits: stored.measurementUnits === 'px' ? 'px' : 'auto',
-      suvNormalization: SUV_NORMALIZATIONS.includes(stored.suvNormalization) ? stored.suvNormalization : defaults.suvNormalization,
-      singleKeys: stored.singleKeys !== false,
-      cineFps: Number.isInteger(stored.cineFps) && stored.cineFps >= 1 && stored.cineFps <= 100_000 ? stored.cineFps : defaults.cineFps,
-    };
-  } catch { return defaults; }
-}
-
-/** A series opens as VEAcom 1.x opens it: axial at the top, coronal at the front, sagittal in the middle. A PET opens as
- * PET is read: inverted grey, at SUV 0–5 when it has SUV (imaging/quantity.ts). */
-function defaultView(series: Series): ViewState {
-  const slice = openingSlice(series), frame = series.frameMetadata?.[slice];
-  const curve = frame?.windowWidth !== undefined ? frame.voiFunction : frame?.voiFunction ?? series.voiFunction;
-  return { ...DEFAULT_VIEW, pan: [0, 0], slice, windowCenter: frame?.windowCenter ?? series.windowCenter,
-    windowWidth: displayWindowWidth(frame?.windowWidth ?? series.windowWidth, curve), ...petLook(series) };
-}
-/** How a series opens beside a pane of another study in the comparison screen: in the same kind of view (where that
- * pane shows a reconstructed plane, with its tilt and slab, or a turning MIP, so does this one), level with it (by
- * position where the two share a frame of reference, else as far through its own stack), at its zoom and pan, and,
- * for CT beside CT, in its window: Hounsfield units are one scale, an MR's values are not. */
-function besideView(item: Series, base: ViewState, beside: Pane): ViewState {
-  const theirs = beside.view, reconstructed = !usesSourceFrames(beside.series, theirs) && !usesSourceFrames(item, { mode: 'mpr' });
-  const like: ViewState = reconstructed ? { ...base, mode: 'mpr', plane: theirs.plane, oblique: theirs.oblique ? [...theirs.oblique] : undefined, slab: theirs.slab, projection: theirs.projection } : base;
-  const target: Pane = { series: item, view: like };
-  // A MIP's slice is its turn, the same for both; a plane's is its place in the patient.
-  const slice = like.projection ? theirs.slice
-    : shareFrame(item, beside.series) ? sliceAtWorld(item, like, getPlaneFrame(beside.series, theirs).center)
-      : facesSame(target, beside) ? levelSlice(beside, target) : reconstructed ? Math.floor(sliceCount(item, like) / 2) : base.slice;
-  const oneScale = item.modality === 'CT' && beside.series.modality === 'CT';
-  return { ...like, slice, zoom: theirs.zoom, pan: [...theirs.pan],
-    ...(oneScale ? { windowCenter: theirs.windowCenter, windowWidth: theirs.windowWidth, windowMode: 'manual' as const } : {}) };
-}
-/** `view` of `item` at the place the pane `from` shows, where the two lie in one frame of reference (two series of
- * one study): a series that takes another's pane stays where the reader was. Otherwise `view` as it is. */
-function atPlaceOf(item: Series, view: ViewState, from: Pane | undefined): ViewState {
-  if (!from || view.projection || !shareFrame(item, from.series) || isProjection(from.series, from.view)) return view;
-  return { ...view, slice: sliceAtWorld(item, view, getPlaneFrame(from.series, from.view).center) };
-}
-/** The arrangements VEAcom applies, with the reader's kept ones in place of its own. */
-const PET_LAYOUTS = [
-  [PET_CT, 'layout-pet-fused', 'arrangement.petCt.fused'],
-  [PET_CT_READING, 'layout-pet-reading', 'arrangement.petCt.reading'],
-  [PET_FOLLOW_UP, 'layout-pet-follow-up', 'arrangement.petFollowUp'],
-] as const;
-function readKeptArrangements(): Kept {
-  try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
-}
-
-/** Projects the three-plane MPR crosshair along the normal of any plane whose slice changed without changing tilt. */
-function projectMprCrosshair(
-  before: readonly Slot[],
-  after: readonly Slot[],
-  crosshair: Vec3,
-  crosshairSeriesId: string | null,
-  volumes: { get(id: string): Volume | undefined },
-): Vec3 {
-  let point = crosshair;
-  for (const slot of after) {
-    const was = before.find(item => item.id === slot.id)?.view;
-    const volume = slot.seriesId ? volumes.get(slot.seriesId) : undefined;
-    if (!was || !volume || slot.seriesId !== crosshairSeriesId || was.slice === slot.view.slice || !sameTilt(was, slot.view)) continue;
-    const { center, normal } = getPlaneFrame(volume.series, slot.view);
-    const unit = scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal)));
-    const delta = dot(sub(point, center), unit);
-    if (Math.abs(delta) > 1e-9) point = sub(point, scale(unit, delta));
-  }
-  return point;
-}
-
-function WindowInput({ kind, value, curve, disabled, change }: { kind: 'width' | 'level'; value: number; curve?: VoiFunction; disabled: boolean; change: (value: number) => void }) {
-  const { t } = useTranslation();
-  const [draft, setDraft] = useState<string | null>(null);
-  const label = t(kind === 'width' ? 'inspector.windowWidth' : 'inspector.windowLevel');
-  return <label>{label}<input data-action={kind === 'width' ? 'window-width-input' : 'window-level-input'} aria-label={label} type="number" step="any"
-    min={kind === 'width' ? (curve ? 0 : 1) : undefined} disabled={disabled} value={draft ?? general(value)}
-    onBlur={() => setDraft(null)} onChange={event => {
-      const field = event.currentTarget, next = field.valueAsNumber;
-      setDraft(field.value);
-      if (Number.isFinite(next) && (kind === 'level' || displayWindowWidth(next, curve) === next)) change(next);
-    }} /></label>;
-}
-
-function windowClass(volume: Volume | undefined, view: ViewState, autoWindows: Map<string, string>, slotId: string): string {
-  if (!volume) return 'none';
-  if (volume.series.components === 3) return 'rgb';
-  const shown = renderedView(volume, view);
-  if (shown.voiLut !== undefined) return 'voi-lut';
-  if (view.windowMode !== 'manual') return 'stored';
-  const width = Math.round(shown.windowWidth), center = Math.round(shown.windowCenter);
-  const preset = PRESETS.find(item => item.width === width && item.center === center);
-  if (preset) return kebab(preset.key);
-  return autoWindows.get(slotId) === `${width}/${center}` ? 'auto' : 'manual';
-}
-
-/** How a volume is shown: its calibration, units and SUV, and for a PET the blood glucose typed for its study. */
-type Decoration = { scale: number | undefined; films: FilmCalibrations | undefined; units: Settings['measurementUnits']; suvNormalization: SuvNormalization; glucose: number | undefined };
-const sameDecoration = (a: Decoration, b: Decoration) => a.scale === b.scale && a.films === b.films && a.units === b.units && a.suvNormalization === b.suvNormalization && a.glucose === b.glucose;
-function decorateVolume(volume: Volume, { scale, films, units: measurementUnits, suvNormalization, glucose }: Decoration): Volume {
-  let sourceFramesOnly = false;
-  try { sourceFramesOnly = sourceFrameOnly(volume); } catch { /* The viewport reports an unavailable GPU. */ }
-  // A film's ball or ruler outranks the series' known-length scale on that film (radiograph.ts withFilmCalibrations).
-  return { ...volume, series: withFilmCalibrations({ ...volume.series, sourceFramesOnly, measurementScale: scale, measurementUnits, suvNormalization, typedGlucose: glucose }, films) };
-}
-
-// `testId` gives the scripted desktop checks (tools/*.cjs) a hook that does not depend on the language.
-
-/** One collapsible group in the display panel (accordion pattern: heading + button + region). */
-function PanelSection({ id, title, open, onToggle, children }: { id: DisplaySection; title: string; open: boolean; onToggle: (id: DisplaySection) => void; children: ReactNode }) {
-  return <section className={`panel-section${open ? ' is-open' : ''}`} data-section={id}>
-    <h3 className="panel-section-title"><button type="button" aria-expanded={open} aria-controls={`section-${id}`} id={`section-${id}-toggle`} onClick={() => onToggle(id)}>
-      <ChevronRight size={14} className="section-chevron" aria-hidden="true" /><span>{title}</span></button></h3>
-    <div className="panel-section-body" id={`section-${id}`} role="region" aria-labelledby={`section-${id}-toggle`} hidden={!open}>{children}</div>
-  </section>;
-}
-
-/** The colour scales' look, for the quick menu's swatches. */
-const PALETTE_SWATCHES = { gray: 'linear-gradient(90deg, #000, #fff)', hot: 'linear-gradient(90deg, #000, #c30, #fc3, #fff)', ge: 'linear-gradient(90deg, #000, #239, #c3c, #f93, #fff)', rainbow: 'linear-gradient(90deg, #00f, #0ff, #0f0, #ff0, #f00)' } as const;
-/** A pane dragged by its grip onto another: the two swap places. */
-const PANE_DRAG = 'application/x-veacom-pane';
-
-/** A CLOSE caliper asked for from the checklist; `setUp`: the pane it turned to its plane or bone window, what that pane
- * says about it with Undo, and every pane's view before (a linked pane can move with it). */
-type CaliperRequest = { kind: CaliperKind; item: string; side: Side; study: string;
-  setUp?: { slotId: string; text: string; views: Array<{ id: string; seriesId: string | null; view: ViewState }> } };
-/** A note in one pane: the DWI/ADC partner or an arrangement put there (Undo), or an offer to keep an arrangement as
- * rearranged. A sticky one stays until the reader's next action instead of a few seconds. It is about the series the
- * pane shows (`seriesId`, empty for a pane that shows none) and goes when the pane shows another. */
-type PaneToast = { slotId: string; seriesId: string; text: string; sticky?: boolean; alignment?: Alignment;
-  onUndo?: () => void; undoAction?: 'pair' | 'arrangement' | 'alignment' | 'checklist-show'; onKeep?: () => void; keepAction?: 'keep' | 'keep-plain';
-  /** The comparison's offer to open a series' counterpart in this pane. */
-  onOpen?: () => void };
-
-/** Where a pane is set up to show a plane (calipers.planeView), and what it needs there; or why it cannot be. */
-type PanePlan = { slotId: string; setUp: { patch: Partial<ViewState>; plane: boolean; window: boolean } | null } | { blocked: MessageKey };
-
-function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, joined, onCross, alignments, aligned,
-  onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
-  slot: Slot; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
-  annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
-  interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
-  /** Frames of reference aligned (imaging/registration.ts): another pane's plane in an aligned frame is drawn here too. */
-  alignments: readonly Alignment[];
-  /** This pane shows a series, or a fused overlay, placed by an alignment: said in its corner. */
-  aligned?: 'automatic' | 'adjusted';
-  /** The stack and its reference image this pane pages as one sequence, and the way to the place of it that the
-   * other of the two holds. */
-  joined: Joined | null; onCross: (id: string, place: number) => void;
-  onActivate: (id: string) => void; onViewChange: (id: string, patch: Partial<ViewState>) => void;
-  onAnnotationsChange: (seriesId: string, annotations: Annotation[]) => void;
-  onRotateReference?: (id: string, oblique: [number, number]) => void; clickPicksPoint?: boolean;
-  /** The last pane widens over the columns the grid has no pane for. */
-  span?: number; onSwap: (from: string, to: string) => void;
-  /** A short note in this pane (what was just put in it, or the arrangement it belongs to), with an undo or a keep. */
-  toast?: PaneToast;
-  onFusionAdjust: (next: { upperSuv: number; opacity: number }) => void;
-  onCrosshairChange: (point: Vec3) => void; onDropSeries: (slotId: string, seriesIds: string[]) => void;
-  onClose: (id: string) => void; onMaximize: (id: string) => void; onCyclePlane: (id: string) => void;
-  /** Set while this pane is maximized: back to the layout it came from. */
-  onRestore?: () => void;
-  /** A CLOSE caliper under way here: what to click next. */
-  caliper?: ViewportProps['caliper'];
-}) {
-  const { t } = useTranslation();
-  const activate = () => onActivate(slot.id);
-  const update = (patch: Partial<ViewState>) => onViewChange(slot.id, patch);
-  const annotate = (next: Annotation[]) => { if (slot.seriesId) onAnnotationsChange(slot.seriesId, next); };
-  const cyclePlane = () => onCyclePlane(slot.id);
-  const cross = (place: number) => onCross(slot.id, place);
-  const [dragging, setDragging] = useState(false);
-  const referencePlanes = volume && interaction.showReferences ? references.flatMap(item => {
-    const here = { series: volume.series, view: renderedView(volume, slot.view) };
-    if (item.id === slot.id) return [];
-    if (sharePlaneSpace(item, here)) return [item];
-    // A plane in a frame of reference of its own, aligned to this one: drawn where the alignment puts it.
-    const transform = placed(item) && placed(here) ? alignedTransform(alignments, item.series, volume.series) : null;
-    return transform ? [{ ...item, transform }] : [];
-  }) : [];
-  const requestedView = volume ? resolveView(volume, slot.view) : slot.view;
-  const displayView = volume ? renderedView(volume, slot.view) : slot.view;
-  const count = volume ? sliceCount(volume.series, requestedView) : metadata?.dimensions[2] ?? 1;
-  // The bar and the counter go in paging order: an axial stack from the top down (see paging.ts). A stack and its
-  // reference image are one sequence in both (`joined`).
-  const atSlice = Math.min(requestedView.slice, count - 1);
-  const at = volume ? placeInSequence(volume.series, requestedView, atSlice, count, joined) : { place: atSlice, total: count };
-  const shown = volume ? shownSlice(volume.series, displayView, Math.min(displayView.slice, count - 1), count, joined) : { number: atSlice + 1, total: count };
-  /** The slice bar moved to a place: a slice of this series, or the place the other of a stack and its reference image holds. */
-  const toPlace = (place: number) => {
-    if (!volume) return;
-    if (!joined) update({ slice: pagingPlace(volume.series, requestedView, place, count) });
-    else if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) cross(place);
-    else if (!joined.lead) update({ slice: stackSliceAt(volume.series, requestedView, place, count, joined) });
-  };
-  // A whole-volume MIP pages through its turns: the bar and the counter give its angle.
-  const projected = Boolean(volume && isProjection(volume.series, displayView));
-  const windowText = volume && displayView.voiLut === undefined ? suvWindowText(volume.series, displayView) : null;
-  return <section className={`viewport-cell ${active ? 'is-active' : ''} ${dragging ? 'is-drop-target' : ''}`} style={span && span > 1 ? { gridColumn: `span ${span}` } : undefined}
-    data-testid="viewport-cell" data-series-id={slot.seriesId ?? ''} data-volume-complete={Boolean(volume && volume.sourceFrameIndex === undefined && !loading && !loadError)}
-    onPointerDown={activate} onFocusCapture={activate} onDragOver={event => { if (event.dataTransfer.types.includes('application/x-veacom-series') || event.dataTransfer.types.includes(PANE_DRAG)) { event.preventDefault(); setDragging(true); } }}
-    onDragLeave={() => setDragging(false)} onDrop={event => {
-      event.preventDefault(); setDragging(false);
-      const pane = event.dataTransfer.getData(PANE_DRAG);
-      if (pane) { if (pane !== slot.id) onSwap(pane, slot.id); return; }
-      const ids = draggedSeries(event.dataTransfer); if (ids.length) onDropSeries(slot.id, ids);
-    }}>
-    {/* Pane chrome is interface, not image: the exporter skips it (the overlay SVG carries every image label). */}
-    <header className="viewport-header" data-export-exclude>
-      <span className="viewport-plane" data-export-label>{projected ? t('planeTag.mip') : volume && usesSourceFrames(volume.series, displayView) ? t('planeTag.source') : displayView.oblique?.some(Boolean) ? t('planeTag.oblique') : t(`planeTag.${displayView.plane}` as const)}</span>
-      <span className="viewport-series" data-export-label title={metadata?.description ? seriesName(metadata) : undefined}>{metadata?.description ? seriesName(metadata) : t('viewport.empty')}</span>
-      {linked && volume && <Link2 size={12} className="subtle-icon" />}
-      <button type="button" aria-label={`${t('viewport.close')} · ${index + 1}`} data-tooltip={t('viewport.close')} data-testid="viewport-close" onClick={() => onClose(slot.id)}><X size={15} /></button>
-      {paneCount > 1 && <button type="button" draggable aria-label={`${t('viewport.move')} · ${index + 1}`} data-tooltip={t('viewport.move')} data-testid="viewport-move" className="viewport-grip"
-        onDragStart={event => { event.dataTransfer.setData(PANE_DRAG, slot.id); event.dataTransfer.effectAllowed = 'move'; }}><GripVertical size={15} /></button>}
-      {onRestore ? <button type="button" aria-label={t('viewport.restore')} data-tooltip={t('viewport.restore')} data-testid="viewport-restore" onClick={onRestore}><Minimize2 size={14} /></button>
-        : <button type="button" aria-label={`${t('viewport.maximize')} · ${index + 1}`} data-tooltip={t('viewport.maximize')} data-testid="viewport-maximize" onClick={() => onMaximize(slot.id)}><Maximize2 size={14} /></button>}
-    </header>
-    <div className="viewport-content">
-      {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
-        crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
-        onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
-        showPointerValue={interaction.showPointerValue}
-        mouseBindings={interaction.mouseBindings} wheelAction={interaction.wheelAction} touchpadSpeed={interaction.touchpadSpeed} reverseWheel={interaction.reverseWheel}
-        showOverlay={interaction.showOverlay} showScale={interaction.showScale} hidePatientData={interaction.hidePatientData} hideMeasurements={interaction.hideMeasurements} segmentations={segmentations} onCyclePlane={cyclePlane} joined={joined} onCross={cross} aligned={aligned} caliper={caliper} />
-        : <div className="empty-viewport" data-export-exclude>{loading ? <LoaderCircle size={22} /> : <Layers size={24} strokeWidth={1.4} />}
-          <span>{loading ? t('viewport.opening') : metadata?.dimensions[2] === 0 ? t('series.noImages') : t('viewport.selectOrDrag')}</span></div>}
-      {toast && <div className="pane-toast" role="status" data-export-exclude><span>{toast.text}</span>
-        {toast.onUndo && (toast.undoAction === 'arrangement' ? <button type="button" data-action="arrangement-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
-          : toast.undoAction === 'alignment' ? <button type="button" data-action="alignment-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
-          : toast.undoAction === 'checklist-show' ? <button type="button" data-action="checklist-show-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>
-          : <button type="button" data-action="pair-undo" onClick={toast.onUndo}>{t('pair.undo')}</button>)}
-        {toast.onKeep && (toast.keepAction === 'keep-plain' ? <button type="button" data-action="arrangement-keep-plain" onClick={toast.onKeep}>{t('arrangement.keep')}</button>
-          : <button type="button" data-action="arrangement-keep" onClick={toast.onKeep}>{t('arrangement.keep')}</button>)}
-        {toast.onOpen && <button type="button" data-action="compare-open" onClick={toast.onOpen}>{t('compare.open')}</button>}</div>}
-      {loadError && <div className="viewport-error" role="status" data-export-exclude>{volume ? t('viewport.previewOnly') : ''}{loadError}</div>}
-    </div>
-    {volume && <footer className="viewport-footer" data-export-exclude>
-      <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shown.number} / {shown.total}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
-      <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${shownSlice(volume.series, requestedView, atSlice, count, joined).number} / ${at.total}`}
-        label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
-        onPosition={toPlace} touchpadSpeed={interaction.touchpadSpeed} />
-      <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${general(displayView.windowWidth)} · L ${general(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
-      <span className="zoom-indicator">{Math.round(displayView.zoom * 100)}%</span>
-    </footer>}
-  </section>;
-}
-
-function AnnotationSummary({ annotation, volume }: { annotation: Annotation; volume?: Volume }) {
-  const { t } = useTranslation();
-  const summary = useAnnotationSummary(annotation, volume);
-  // The main value leads; further statistics wrap as whole items ("σ 295.4" never splits). A note wraps as text.
-  const parts = (summary || t(`tool.${annotation.type}` as const)).split(' · ');
-  if (parts.length === 1) return <span className="stat-primary">{parts[0]}</span>;
-  return <>{parts.map((part, index) => <span key={index} className={index ? 'stat' : 'stat-primary'}>{part}</span>)}</>;
-}
 
 // Listen while the image grid is mounted, including after leaving the welcome screen.
 function useViewportGrid() {
@@ -652,7 +293,7 @@ export default function App() {
     if (toolRef.current === item) { setTool(navigationTool.current); return; }
     setTool(item);
   };
-  const [menu, setMenu] = useState<Menu>(null);
+  const [menu, setMenu] = useState<MenuId>(null);
   const [crosshair, setCrosshair] = useState<Vec3 | null>(null);
   const crosshairRef = useRef(crosshair);
   const [crosshairSeriesId, setCrosshairSeriesId] = useState<string | null>(null);
@@ -1387,12 +1028,12 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
+    // Link for the catalog's pixel type while pixels decode. The decoded array still selects the actual program.
+    if (!cached && item.dimensions[2] >= 1) void prepareSourceProgram(item);
     // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
     const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
     if (!cached && item.dimensions[2] > 1) {
       const preview = frameCache.get(item, openingSlice(item));
-      // Link for the catalog's pixel type while the frame is read. The decoded array still selects the actual program.
-      void prepareSourceProgram(item);
       void preview.then(async volume => {
         if (!previewWanted()) return;
         await prepareSourceProgram(volume);
@@ -1850,11 +1491,12 @@ export default function App() {
     const openSelection = async (select: () => Promise<string[]>, previous?: Promise<void>) => {
       try {
         const [paths] = await Promise.all([select(), previous]);
+        if (!mounted.current) return;
         if (!paths.length) { say('notice.dropNoPaths', 'info'); return; }
         await onImport(paths, 'drop');
       } catch (error) {
         await previous;
-        setNotice({ message: errorText(error), kind: 'error' });
+        if (mounted.current) setNotice({ message: errorText(error), kind: 'error' });
       }
     };
     const accept = (select: () => Promise<string[]>) => {
@@ -1868,9 +1510,10 @@ export default function App() {
       if (effect === 'none') return;
       const files = Array.from(event.dataTransfer?.files ?? []);
       if (!files.length) return;
-      if (capturingRef.current) { say('notice.waitForCapture', 'info'); return; }
       const bridge = window.veacom;
+      if (capturingRef.current) { bridge?.discardPendingDrop?.(); say('notice.waitForCapture', 'info'); return; }
       if (!bridge?.importFiles) {
+        bridge?.discardPendingDrop?.();
         say('notice.dropNeedsDesktop', 'info');
         return;
       }
@@ -3239,7 +2882,7 @@ export default function App() {
     endMpr.current = restoreBeforeMpr;
   });
 
-  const toggleMenu = (next: Exclude<Menu, null>) => setMenu(current => current === next ? null : next);
+  const toggleMenu = (next: Exclude<MenuId, null>) => setMenu(current => current === next ? null : next);
   const closeMenu = () => setMenu(null);
   const act = (fn: () => void) => { fn(); setMenu(null); };
   /** MPR > Thick slab, as in VEAcom Next: on acquired slices it goes to the same place in the reconstructed volume;

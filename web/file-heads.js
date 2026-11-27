@@ -1,11 +1,12 @@
 // @ts-check
-const HEAD_BYTES = 64 * 1024;
+// 16 KiB covers typical DICOM headers (native/src/source_file.rs reads an initial 8 KiB prefix) while cutting
+// prefetch memory 4x. Files with larger private headers fall through to on-demand piece reads in web/engine/src/blob.rs.
+export const HEAD_BYTES = 16 * 1024;
 export const HEAD_GROUP_SIZE = 16;
 const FILES_PER_WAVE = 256;
-// The heads of 1024 files: a PET/CT is often 500 to 1000. The engine reads the head of every file beyond this one by one
-// while it lists them, about 0.7 ms each; these are read several at once, and dropped once the listing ends.
-const MAX_PREFETCH_BYTES = 64 * 1024 * 1024;
-// Larger files use 1 MiB pieces in web/engine/src/blob.rs and discard a 64 KiB head.
+// The heads of 1,024 files (16 MiB total): a PET/CT is often 500 to 1,000 slices. Files beyond this are read on demand.
+export const MAX_PREFETCH_BYTES = 16 * 1024 * 1024;
+// Larger files use 1 MiB pieces in web/engine/src/blob.rs and are read on demand.
 const LARGE_FILE_BYTES = 16 * 1024 * 1024;
 
 /** @param {{ index: number, part: Blob }[]} group @param {(Uint8Array | undefined)[]} result */
@@ -56,11 +57,21 @@ export async function readHeads(files, waitForFiles, onHead) {
         for (const [i, pending] of reads.entries()) {
           await pending;
           const from = start + i * HEAD_GROUP_SIZE;
-          for (let index = from; index < Math.min(end, from + HEAD_GROUP_SIZE); index++) registerEarly(index, result[index]);
+          for (let index = from; index < Math.min(end, from + HEAD_GROUP_SIZE); index++) {
+            const head = result[index];
+            result[index] = undefined;
+            registerEarly(index, head);
+          }
         }
       }
     } finally { await Promise.all(reads); }
   }
-  if (onHead && !registerEarly) result.forEach((head, index) => onHead(index, head));
+  if (onHead && !registerEarly) {
+    for (let index = 0; index < result.length; index++) {
+      const head = result[index];
+      result[index] = undefined;
+      onHead(index, head);
+    }
+  }
   return result;
 }

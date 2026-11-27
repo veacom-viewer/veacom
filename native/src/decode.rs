@@ -9,11 +9,12 @@ use std::{
 };
 
 /// In WebAssembly everything shares 4 GB, so a decoded volume may take a quarter of it there.
-const MAX_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") {
+pub const MAX_DECODED_VOLUME_BYTES: usize = if cfg!(target_arch = "wasm32") {
     1024 * 1024 * 1024
 } else {
     2 * 1024 * 1024 * 1024
 };
+const MAX_VOLUME_BYTES: usize = MAX_DECODED_VOLUME_BYTES;
 const VOLUME_LIMIT: &str = if cfg!(target_arch = "wasm32") {
     "1 GiB"
 } else {
@@ -1054,6 +1055,139 @@ pub fn least_volume_bytes(source: &SourceSeries) -> Option<usize> {
         .checked_mul(sample)
 }
 
+/// Outcome of decoding a bounded slice range into a candidate pixel type.
+pub enum ChunkOutcome {
+    Decoded(PixelBuffer),
+    TypeDoesNotFit,
+    Float64Required,
+}
+
+/// Samples per frame (columns * rows * components), validated against the frame limit.
+pub fn frame_sample_count(source: &SourceSeries) -> Result<usize> {
+    frame_samples(source)
+}
+
+/// Candidate pixel types in the exact widening order `decode_volume` tries.
+pub fn volume_widening_order(source: &SourceSeries) -> &'static [&'static str] {
+    if may_fit_integers(source) {
+        return &["int16", "uint16", "float32", "float64"];
+    }
+    match source.info.pixel_type.as_str() {
+        "int16" => &["int16", "float32", "float64"],
+        "uint16" => &["uint16", "float32", "float64"],
+        "uint8" => &["uint8", "float32", "float64"],
+        _ => &["float32", "float64"],
+    }
+}
+
+/// Whether each frame of `source` lives in its own distinct DICOM file (eligible for chunked assembly).
+pub fn is_single_file_per_frame(source: &SourceSeries) -> bool {
+    if source.frames.len() <= 1
+        || source.frames.len() != source.info.dimensions[2]
+        || source.frames.iter().any(|frame| frame.ordinary_image)
+    {
+        return false;
+    }
+    let mut seen = std::collections::HashSet::with_capacity(source.frames.len());
+    source
+        .frames
+        .iter()
+        .all(|frame| seen.insert(frame.source.path.as_path()))
+}
+
+fn chunk_as<T: Sample>(source: &SourceSeries, start: usize, count: usize) -> Result<Vec<T>> {
+    crate::progress::check()?;
+    anyhow::ensure!(
+        count > 0
+            && start
+                .checked_add(count)
+                .is_some_and(|end| end <= source.frames.len()),
+        "Chunk range is outside this series"
+    );
+    let per_frame = frame_samples(source)?;
+    let total = per_frame
+        .checked_mul(count)
+        .context("Chunk dimensions overflow")?;
+    if total
+        .checked_mul(std::mem::size_of::<T>())
+        .is_none_or(|n| n > MAX_VOLUME_BYTES)
+    {
+        bail!("Volume exceeds the {VOLUME_LIMIT} decoded output limit");
+    }
+    let mut output: Vec<T> = Vec::new();
+    output.try_reserve_exact(total).map_err(|_| {
+        coded!(
+            "decode.noMemory",
+            "Not enough memory for the decoded volume"
+        )
+    })?;
+    let slice_frames = &source.frames[start..start + count];
+    let space = &mut output.spare_capacity_mut()[..total];
+    let written: Vec<AtomicBool> = (0..count).map(|_| AtomicBool::new(false)).collect();
+    let workers = frame_workers(
+        crate::parallel::available(2).min(8),
+        slice_frames
+            .iter()
+            .map(|frame| frame.jpeg_component_threads),
+    )
+    .min((1024 * 1024 * 1024 / (per_frame * 24)).max(1));
+    crate::parallel::try_for_each(
+        "frame-decode",
+        workers,
+        space.chunks_mut(per_frame).enumerate(),
+        |(offset, target)| -> Result<()> {
+            crate::progress::check()?;
+            let frame = &slice_frames[offset];
+            let mut direct = |object: &dicom_object::DefaultDicomObject,
+                              decoded: &DecodedPixelData<'_>| {
+                write_scalar_frame(source, object, decoded, 0, frame, target)
+            };
+            let values = frame_values_or(source, frame, crate::progress::check, &mut direct)?;
+            if let Some(values) = values {
+                copy_values(target, values)?;
+            }
+            written[offset].store(true, Ordering::Relaxed);
+            crate::progress::step()?;
+            Ok(())
+        },
+    )?;
+    crate::progress::check()?;
+    anyhow::ensure!(
+        written.iter().all(|frame| frame.load(Ordering::Relaxed)),
+        "A frame of the chunk was not decoded"
+    );
+    // Safety: `total` values were reserved and every frame's `per_frame` slice was initialized before its flag was set.
+    unsafe { output.set_len(total) };
+    Ok(output)
+}
+
+/// Decodes frames `start..start + count` of a single-file-per-frame series into `pixel_type` without allocating a full volume.
+pub fn decode_frame_chunk(
+    source: &SourceSeries,
+    start: usize,
+    count: usize,
+    pixel_type: &str,
+) -> Result<ChunkOutcome> {
+    let result = match pixel_type {
+        "int16" => chunk_as::<i16>(source, start, count).map(PixelBuffer::I16),
+        "uint16" => chunk_as::<u16>(source, start, count).map(PixelBuffer::U16),
+        "uint8" => chunk_as::<u8>(source, start, count).map(PixelBuffer::U8),
+        "float32" => chunk_as::<f32>(source, start, count).map(PixelBuffer::F32),
+        "float64" => chunk_as::<f64>(source, start, count).map(PixelBuffer::F64),
+        other => bail!("Unsupported chunk pixel type: {other}"),
+    };
+    match result {
+        Ok(pixels) => Ok(ChunkOutcome::Decoded(pixels)),
+        Err(error) if error.downcast_ref::<TypeDoesNotFit>().is_some() => {
+            Ok(ChunkOutcome::TypeDoesNotFit)
+        }
+        Err(error) if error.downcast_ref::<Float64Required>().is_some() => {
+            Ok(ChunkOutcome::Float64Required)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn decode_volume(source: &SourceSeries) -> Result<PixelBuffer> {
     anyhow::ensure!(!source.frames.is_empty(), "This series has no image frames");
     match decode_volume_compact(source) {
@@ -2032,5 +2166,60 @@ mod tests {
                 .collect::<Vec<_>>(),
             [-8., -6.]
         );
+    }
+    #[test]
+    fn chunked_decode_matches_decode_volume_and_signals_widening() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let mut paths = Vec::new();
+        for index in 0..4u16 {
+            let path = dir.path().join(format!("slice_{index}.dcm"));
+            // Slice 0-1 fit int16, slice 2 overflows int16 into uint16, slice 3 stays positive.
+            let samples = if index == 2 {
+                [40000u16, 40001u16]
+            } else {
+                [index * 10, index * 10 + 1]
+            };
+            fixture(&path, &samples, false, 16, 1., 0., "MONOCHROME2");
+            let mut object = dicom_object::open_file(&path).unwrap();
+            object.put_str(
+                Tag(0x0020, 0x000e),
+                VR::UI,
+                "1.2.826.0.1.3680043.10.543.900.1",
+            );
+            object.put_str(
+                Tag(0x0008, 0x0018),
+                VR::UI,
+                format!("1.2.826.0.1.3680043.10.543.900.1.{index}"),
+            );
+            object.put_str(Tag(0x0020, 0x0032), VR::DS, format!("0\\0\\{}", index * 2));
+            object.write_to_file(&path).unwrap();
+            paths.push(path.to_string_lossy().into_owned());
+        }
+        let imported = crate::ingest::import(&paths).unwrap();
+        let source = &imported.sources[0];
+        assert!(is_single_file_per_frame(source));
+        assert_eq!(frame_sample_count(source).unwrap(), 2);
+        let full = decode_volume(source).unwrap();
+        assert_eq!(full.type_name(), "uint16");
+
+        // Chunk 0..2 fits int16, while chunk 2..4 signals TypeDoesNotFit under int16.
+        assert!(matches!(
+            decode_frame_chunk(source, 0, 2, "int16").unwrap(),
+            ChunkOutcome::Decoded(PixelBuffer::I16(_))
+        ));
+        assert!(matches!(
+            decode_frame_chunk(source, 2, 2, "int16").unwrap(),
+            ChunkOutcome::TypeDoesNotFit
+        ));
+        // Assembling in uint16 produces bit-identical bytes to decode_volume.
+        let mut assembled = Vec::new();
+        for (start, count) in [(0, 2), (2, 2)] {
+            match decode_frame_chunk(source, start, count, "uint16").unwrap() {
+                ChunkOutcome::Decoded(pixels) => assembled.extend_from_slice(pixels.bytes()),
+                ChunkOutcome::TypeDoesNotFit => panic!("unexpected TypeDoesNotFit"),
+                ChunkOutcome::Float64Required => panic!("unexpected Float64Required"),
+            }
+        }
+        assert_eq!(assembled, full.bytes());
     }
 }

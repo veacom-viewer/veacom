@@ -439,6 +439,8 @@ export interface DesktopBridge {
   importFiles: (files: File[]) => Promise<string[]>;
   /** Browser file selections made before the reader mounted, in drop order. Taken once. */
   takePendingFileDrops?: () => Array<() => Promise<string[]>>;
+  /** Releases a captured browser drop that the reader rejected (for example while capturing). */
+  discardPendingDrop?: () => void;
   openExternal: (url: string) => Promise<void>;
   saveFile: (suggestedName: string, data: ArrayBuffer | string) => Promise<string | null>;
   /** One of the landmark model's graphs for the deformity kit's suggestions (docs/landmark-model.md), fetched the first

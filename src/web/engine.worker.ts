@@ -11,6 +11,7 @@
 
 import { readImportFiles, type ImportFiles } from './droppedFiles';
 import type { HelperFiles } from './engine.helper';
+import { assembleVolumeChunks, VOLUME_CHUNK_FRAMES, type VolumeChunkResult, type VolumePlan } from './volumeAssembly';
 
 type Engine = typeof import('../../web/engine/pkg/veacom_web_engine.js');
 type ThreadedEngine = typeof import('../../web/engine/pkg-threads/veacom_web_engine.js');
@@ -175,6 +176,58 @@ let lastError = '';
 const consoleError = console.error.bind(console);
 console.error = (...args: unknown[]) => { lastError = args.map(String).join(' ').slice(0, 4000); consoleError(...args); };
 
+type QuickRequest = Extract<EngineRequest, { op: 'frame' | 'tags' | 'list' }>;
+let volumeActive = false;
+let volumeCancelledId = 0;
+const urgentQueue: QuickRequest[] = [];
+
+function nextTurn(): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, 0));
+}
+
+function isVolumeCancelled(requestId: number): boolean {
+  return volumeCancelledId === requestId || (cancelFlag !== undefined && (Atomics.load(cancelFlag, 0) >>> 0) === requestId);
+}
+
+/** Serves a quick read-only request (`frame`, `tags`, `list`) between volume chunks without resetting the active volume's request id or progress. */
+function runUrgent(data: QuickRequest): void {
+  try {
+    let value: unknown, transfer: Transferable[] = [];
+    switch (data.op) {
+      case 'list': value = JSON.parse(engine.listSeries()); break;
+      case 'tags': value = JSON.parse(engine.tags(data.seriesId, data.frame, data.revision)); break;
+      case 'frame': {
+        const pixels = engine.frame(data.seriesId, data.index, data.revision) as EnginePixels;
+        value = pixels; transfer = [pixels.bytes.buffer];
+        break;
+      }
+    }
+    scope.postMessage({ id: data.id, ok: true, value }, transfer);
+  } catch (error) {
+    const fatal = !(error instanceof Error && error.constructor === Error);
+    scope.postMessage({ id: data.id, ok: false, error: error instanceof Error ? error.message : String(error), fatal, detail: fatal ? lastError : undefined });
+  }
+}
+
+function drainUrgent(): void {
+  while (urgentQueue.length) runUrgent(urgentQueue.shift()!);
+}
+
+async function waitForHelperFiles(requestId: number): Promise<void> {
+  if (!waiting.size) return;
+  const stopped = new Promise<void>(resolve => {
+    preparingVolume = { id: requestId, stop: resolve };
+  });
+  try {
+    await Promise.race([Promise.all(Array.from(waiting.values(), batch => batch.shared)), stopped]);
+  } finally {
+    if (preparingVolume?.id === requestId) preparingVolume = undefined;
+  }
+  if (isVolumeCancelled(requestId)) {
+    throw new Error(JSON.stringify({ note: { code: 'job.cancelled', text: 'Operation cancelled' } }));
+  }
+}
+
 async function answer(data: EngineRequest): Promise<void> {
   let loaded: Awaited<typeof ready>;
   try {
@@ -183,7 +236,15 @@ async function answer(data: EngineRequest): Promise<void> {
     // The engine did not load (its module could not be fetched or compiled): nothing here can answer any request. The
     // page treats this as a crash, so it replaces this Worker and stops trying after a few attempts. wasm-bindgen
     // reports a failed fetch as a plain Error, which below would read as one of the engine's own answers.
-    scope.postMessage({ id: data.id, ok: false, error: error instanceof Error ? error.message : String(error), fatal: true, detail: 'The engine could not load.' });
+    const message = error instanceof Error ? error.message : String(error);
+    scope.postMessage({ id: data.id, ok: false, error: message, fatal: true, detail: 'The engine could not load.' });
+    if (data.op === 'volume') {
+      volumeActive = false;
+      while (urgentQueue.length) {
+        const queued = urgentQueue.shift()!;
+        scope.postMessage({ id: queued.id, ok: false, error: message, fatal: true, detail: 'The engine could not load.' });
+      }
+    }
     return;
   }
   try {
@@ -233,12 +294,42 @@ async function answer(data: EngineRequest): Promise<void> {
         transfer = exported.files.map(file => file.bytes.buffer);
         break;
       }
-      case 'volume':
-      case 'frame': {
-        if (data.op === 'volume' && loaded.threaded) {
-          await prepareVolume(loaded.threaded, data.seriesId, data.id);
+      case 'volume': {
+        try {
+          drainUrgent();
+          const plan = JSON.parse(engine.volumePlan(data.seriesId, data.revision)) as VolumePlan;
+          if (plan.chunkable && !plan.cached && plan.frames > VOLUME_CHUNK_FRAMES) {
+            if (loaded.threaded) await waitForHelperFiles(data.id);
+            drainUrgent();
+            engine.beginVolumeProgress(plan.frames);
+            try {
+              const assembled = await assembleVolumeChunks(plan, {
+                chunkFrames: VOLUME_CHUNK_FRAMES,
+                decodeChunk: (start, count, pixelType) =>
+                  engine.volumeChunk(data.seriesId, start, count, pixelType, data.revision) as VolumeChunkResult,
+                cancelled: () => isVolumeCancelled(data.id),
+                yieldTurn: async () => { await nextTurn(); drainUrgent(); },
+                onRestart: total => engine.beginVolumeProgress(total),
+              });
+              value = assembled; transfer = [assembled.bytes.buffer];
+            } finally {
+              engine.endVolumeProgress();
+            }
+          } else {
+            if (loaded.threaded) await prepareVolume(loaded.threaded, data.seriesId, data.id);
+            drainUrgent();
+            const pixels = engine.volume(data.seriesId, data.revision) as EnginePixels;
+            value = pixels; transfer = [pixels.bytes.buffer];
+          }
+        } finally {
+          volumeActive = false;
+          if (volumeCancelledId === data.id) volumeCancelledId = 0;
+          drainUrgent();
         }
-        const pixels =(data.op === 'volume' ? engine.volume(data.seriesId, data.revision) : engine.frame(data.seriesId, data.index, data.revision)) as EnginePixels;
+        break;
+      }
+      case 'frame': {
+        const pixels = engine.frame(data.seriesId, data.index, data.revision) as EnginePixels;
         value = pixels; transfer = [pixels.bytes.buffer];
         break;
       }
@@ -254,6 +345,14 @@ async function answer(data: EngineRequest): Promise<void> {
 
 scope.onmessage = ({ data }) => {
   if ('cancelVolume' in data) {
+    volumeCancelledId = data.cancelVolume;
     if (preparingVolume?.id === data.cancelVolume) preparingVolume.stop();
-  } else { void answer(data); }
+    return;
+  }
+  if (volumeActive && (data.op === 'frame' || data.op === 'tags' || data.op === 'list')) {
+    urgentQueue.push(data);
+    return;
+  }
+  if (data.op === 'volume') volumeActive = true;
+  void answer(data);
 };

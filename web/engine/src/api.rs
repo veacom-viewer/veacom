@@ -251,8 +251,8 @@ pub fn progress() -> String {
     progress::snapshot().to_string()
 }
 
-/// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold the
-/// file's first 64 KiB, read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
+/// Lists a user's file (from a drop or a file chooser) at a path such as `/in/1/Study/1.dcm`. `head` may hold an
+/// initial byte prefix read by the page beforehand. Returns the number the file is known by (`volumeFiles`).
 #[wasm_bindgen(js_name = addFile)]
 pub fn add_file(path: &str, file: web_sys::Blob, head: Option<Vec<u8>>) -> u32 {
     crate::blob::add(path, file, head)
@@ -328,6 +328,98 @@ pub fn volume(id: &str, catalog_revision: Option<f64>) -> Result<js_sys::Object,
     let volume = decode_volume_of(id, revision(catalog_revision)).map_err(error)?;
     let components = session(|session| Ok(session.source(id)?.info.components))?;
     pixel_object(&volume, components)
+}
+
+/// Describes whether a series can be decoded chunk by chunk in JS without growing WASM linear memory by the full volume.
+#[wasm_bindgen(js_name = volumePlan)]
+pub fn volume_plan(id: &str, catalog_revision: Option<f64>) -> Result<String, JsError> {
+    json(session(|session| {
+        session.volume_plan(id, revision(catalog_revision))
+    })?)
+}
+
+/// Starts the engine progress record for a chunked volume decode driven by the Worker.
+#[wasm_bindgen(js_name = beginVolumeProgress)]
+pub fn begin_volume_progress(total: usize) {
+    progress::begin("decode", total);
+}
+
+/// Ends the engine progress record for a chunked volume decode.
+#[wasm_bindgen(js_name = endVolumeProgress)]
+pub fn end_volume_progress() {
+    progress::finish();
+}
+
+/// Decodes frames `start..start + count` of a single-file-per-frame series into `pixelType`.
+/// Returns `{status: "ok", bytes, pixelType, components}`, `{status: "typeDoesNotFit"}`, or `{status: "float64Required"}`.
+#[wasm_bindgen(js_name = volumeChunk)]
+pub fn volume_chunk(
+    id: &str,
+    start: usize,
+    count: usize,
+    pixel_type: &str,
+    catalog_revision: Option<f64>,
+) -> Result<js_sys::Object, JsError> {
+    let series = SESSION
+        .with_borrow(|session| session.volume_chunk_source(id, revision(catalog_revision)))
+        .map_err(error)?;
+    let outcome = decode_chunk_of(&series, start, count, pixel_type).map_err(error)?;
+    let object = js_sys::Object::new();
+    let set = |key: &str, value: JsValue| {
+        js_sys::Reflect::set(&object, &key.into(), &value)
+            .map(|_| ())
+            .map_err(|_| JsError::new("chunk response"))
+    };
+    match outcome {
+        decode::ChunkOutcome::Decoded(pixels) => {
+            set("status", "ok".into())?;
+            set("bytes", js_sys::Uint8Array::from(pixels.bytes()).into())?;
+            set("pixelType", pixels.type_name().into())?;
+            set("components", series.info.components.into())?;
+        }
+        decode::ChunkOutcome::TypeDoesNotFit => {
+            set("status", "typeDoesNotFit".into())?;
+        }
+        decode::ChunkOutcome::Float64Required => {
+            set("status", "float64Required".into())?;
+        }
+    }
+    Ok(object)
+}
+
+fn decode_chunk_of(
+    series: &veacom_core::model::SourceSeries,
+    start: usize,
+    count: usize,
+    pixel_type: &str,
+) -> anyhow::Result<decode::ChunkOutcome> {
+    #[cfg(feature = "threads")]
+    {
+        let end = start
+            .checked_add(count)
+            .filter(|end| *end <= series.frames.len())
+            .ok_or_else(|| anyhow::anyhow!("Chunk range is outside this series"))?;
+        let paths: Vec<&std::path::Path> = series.frames[start..end]
+            .iter()
+            .map(|frame| frame.source.path.as_path())
+            .collect();
+        if crate::blob::on_helpers(&paths) {
+            return decode::decode_frame_chunk(series, start, count, pixel_type);
+        }
+        let outcome = match crate::blob::hold(&paths, HOLD_LIMIT.load(Ordering::Relaxed)) {
+            Ok(true) => decode::decode_frame_chunk(series, start, count, pixel_type),
+            Ok(false) => parallel::on_this_thread(|| {
+                decode::decode_frame_chunk(series, start, count, pixel_type)
+            }),
+            Err(error) => Err(error),
+        };
+        crate::blob::release();
+        outcome
+    }
+    #[cfg(not(feature = "threads"))]
+    {
+        parallel::on_this_thread(|| decode::decode_frame_chunk(series, start, count, pixel_type))
+    }
 }
 
 /// One source frame: `{bytes, pixelType, components, index, sopInstanceUid, sourceFrameNumber}`, the last two telling
