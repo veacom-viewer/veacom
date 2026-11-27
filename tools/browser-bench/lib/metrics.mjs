@@ -92,6 +92,33 @@ export function windowLevelMetrics(marks, frames, minShare) {
   };
 }
 
+/**
+ * MPR: entering three-plane MPR at `bench:mpr:start` shrinks or repositions the axial pane's marker on screen.
+ * When `bench:mpr:pageStart` and `bench:mpr:pageEnd` are present, also measures axial paging responsiveness inside MPR.
+ */
+export function mprMetrics(marks, frames, minShare, notches = 30, step = 1) {
+  const start = marks['bench:mpr:start'], until = marks['bench:mpr:settled'];
+  if (start === undefined || until === undefined) throw new Error('The run has no mpr marks.');
+  const before = mainFrames(frames, minShare).filter(f => f.ts <= start).at(-1);
+  if (!before) return { error: 'no main slice was read before switching to MPR' };
+  const mprShare = minShare * 0.4;
+  const shown = mainFrames(frames, mprShare);
+  const switched = shown.find(f => f.ts > start && f.ts <= until && (
+    f.unit <= before.unit * 0.85
+    || (before.x != null && f.x != null && (Math.abs(f.x - before.x) > before.unit || Math.abs(f.y - before.y) > before.unit))
+  ));
+  const result = { switchMs: switched ? round(switched.ts - start) : null, switched: Boolean(switched) };
+  const pageStart = marks['bench:mpr:pageStart'], pageEnd = marks['bench:mpr:pageEnd'];
+  if (pageStart !== undefined && pageEnd !== undefined) {
+    result.paging = pagingMetrics({
+      'bench:mprPage:start': pageStart,
+      'bench:mprPage:end': pageEnd,
+      'bench:mprPage:settled': until,
+    }, frames, mprShare, 'mprPage', notches, step);
+  }
+  return result;
+}
+
 function round(value, digits = 0) {
   const scale = 10 ** digits;
   return Math.round(value * scale) / scale;

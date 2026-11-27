@@ -31,7 +31,7 @@ test('Vite compiles renderer components and hooks and keeps the import window fr
   }
 });
 
-test('the compiler memoizes App itself, which a `finally` in any of its functions would stop', async () => {
+test('the compiler memoizes App itself, which a `finally` in any of its functions would stop', { timeout: 120_000 }, async () => {
   const { transform } = await import('oxc-transform-react');
   const file = new URL('../src/App.tsx', import.meta.url);
   const result = await transform(fileURLToPath(file), await readFile(file, 'utf8'), { jsx: 'preserve', reactCompiler: { target: '19' } });

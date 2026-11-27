@@ -46,6 +46,9 @@ const METRICS = [
   ]),
   ['wlRate', 'Window/level: redraws per second of drag', '/s', l => l.wl?.updatesPerS, false],
   ['wlSettle', 'Window/level: settles after release', 'ms', l => l.wl?.settleMs, true],
+  ['mprSwitchMs', 'MPR: switch to 3-plane view', 'ms', l => l.mpr?.switchMs, true],
+  ['mprPageRate', 'MPR: axial paging slices drawn per second', '/s', l => l.mpr?.paging?.slicesPerS, false],
+  ['mprPageLag', 'MPR: axial paging still moving after last notch', 'ms', l => l.mpr?.paging?.lagMs, true],
 ];
 function pct(value) { return Number.isFinite(value) ? value * 100 : undefined; }
 
