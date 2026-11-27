@@ -3,7 +3,7 @@
 // every value against its normal range with what its millimetres stand for, runs Paley's malalignment test, finds the
 // CORA, and simulates single- or multi-level osteotomies that the pane measures again live as fragments move. Plans
 // live in memory (deformityStore.ts); the reader saves one as a file, or a report as a picture.
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { ViewState, Volume } from '../model';
 import { sourceFrameSeries } from '../imaging/geometry';
@@ -12,7 +12,7 @@ import { CONTOUR_MAXIMUM, CONTOUR_MINIMUM, isContour, LANDMARK_TEXT, LANDMARKS, 
 import type { Missing, Side, Value } from '../imaging/deformity/measure';
 import { NORMALS, type ValueKey } from '../imaging/deformity/normals';
 import { fitCircle, distance } from '../imaging/deformity/plane';
-import { MAX_OSTEOTOMIES, solveAngleMany, type Osteotomy, type Target } from '../imaging/deformity/osteotomy';
+import { coraPlaceable, MAX_OSTEOTOMIES, solveAngleMany, type Osteotomy, type Target } from '../imaging/deformity/osteotomy';
 import { coraNeeds } from '../imaging/deformity/analysis';
 import { UNCHECKED } from '../imaging/deformity/suggest';
 import { activeCutIndex, activePlan, deformity, filmKey, newPlan, useDeformity, type FilmPlans, type Marker } from '../ui/deformityStore';
@@ -125,7 +125,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   useEffect(() => () => suggestRun.current?.abort(), []);
   // The film the pane shows now, for a run that ends after the reader paged or calibrated.
   const shownFilm = useRef({ key: '', frame: null as ReturnType<typeof sourceFrameSeries> | null });
-  useLayoutEffect(() => {
+  useEffect(() => {
     return () => { operationGeneration.current++; };
   }, [frame, film, hidePatientData, locale]);
   useEffect(() => { deformity.setOpen(true); return () => deformity.setOpen(false); }, []);
@@ -135,13 +135,14 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
   }, [series.id, series.uid, series.frameMetadata, frameIndex, projection?.laterality, Boolean(film)]);
   // Esc stops placing points or lassoing wherever focus is (the pane included); the next Esc in the panel closes it.
   const placing = state.placing?.film === key ? state.placing : null;
+  const hasPlacing = Boolean(placing);
   useEffect(() => {
-    if (!placing) return;
+    if (!hasPlacing) return;
     const stop = (event: globalThis.KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); deformity.setPlacing(null); } };
     window.addEventListener('keydown', stop, true);
     return () => window.removeEventListener('keydown', stop, true);
-  }, [placing]);
-  useLayoutEffect(() => { shownFilm.current = { key, frame }; });
+  }, [hasPlacing]);
+  useEffect(() => { shownFilm.current = { key, frame }; }, [key, frame]);
   if (!film) return <section className="deformity-panel" data-testid="deformity-panel" aria-label={t('deformity.title')} />;
   const view = planView(film, frame), plan = view.plan, leg = view.leg, tag = calibrationTag(frame, 'auto');
   const cuts = plan.osteotomies;
@@ -160,10 +161,10 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
     const solved = solveAngleMany(view.input, leg, cuts, selectedCut, target);
     if (solved) changeOsteotomy(solved); else setStatus(t('deformity.solveFailed'));
   };
-  const canPlaceCut = (targetBone: Osteotomy['bone']) => cuts.length < MAX_OSTEOTOMIES && Boolean(leg.ankle && (targetBone === 'tibia' ? leg.knee : leg.hip));
+  const canPlaceCut = (targetBone: Osteotomy['bone']) => cuts.length < MAX_OSTEOTOMIES && Boolean(leg.ankle && leg.knee && (targetBone === 'tibia' || leg.hip));
   const canPlaceAtCora = (targetBone: Osteotomy['bone']) => {
     const cora = view.cora[targetBone];
-    return Boolean(cora && cora.magnitude >= 1.5 && canPlaceCut(targetBone));
+    return Boolean(cora && cora.magnitude >= 1.5 && coraPlaceable(cora, [frame.dimensions[0], frame.dimensions[1]]) && canPlaceCut(targetBone));
   };
   const placeAtCora = (targetBone: Osteotomy['bone']) => {
     deformity.setPlacing(null);
@@ -363,6 +364,15 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             cutRule && unchecked.has(CORA_KEY[o.bone]) ? t('deformity.uncheckedShort') : undefined,
           ]);
           cutRows.push([wedgeLabel, `${cutSim.wedgeHeight.toFixed(1)} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`]);
+          if (o.shiftLateral !== 0 || o.shiftDistal !== 0 || o.lengthen !== 0) {
+            const shiftLabel = multi ? t('deformity.report.shiftNumber', { number: orderIdx + 1 }) : t('deformity.report.shift');
+            const shiftParts = [
+              o.shiftLateral !== 0 ? `${t('deformity.shiftLateral')} ${o.shiftLateral > 0 ? '+' : ''}${o.shiftLateral.toFixed(1)}` : '',
+              o.shiftDistal !== 0 ? `${t('deformity.shiftDistal')} ${o.shiftDistal > 0 ? '+' : ''}${o.shiftDistal.toFixed(1)}` : '',
+              o.lengthen !== 0 ? `${t('deformity.lengthen')} ${o.lengthen > 0 ? '+' : ''}${o.lengthen.toFixed(1)}` : '',
+            ].filter(Boolean).join(' · ');
+            cutRows.push([shiftLabel, `${shiftParts} ${leg.unit}${leg.unit === 'mm' && tag ? ` · ${tag}` : ''}`]);
+          }
         });
         if (multi && view.simulation.lengthChange !== null) {
           const delta = view.simulation.lengthChange;
@@ -418,12 +428,16 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
           onClick={() => { deformity.setPlacing(null); deformity.setEditCutout(false); change(current => ({ ...current, active: item.id })); }}>{planName(film, item.id, t)}</button>)}
         {/* Another plan of the same leg, to compare corrections. */}
         <button type="button" className="icon-button" data-action="deformity-plan-add" disabled={film.plans.length >= MAX_PLANS} aria-label={t('deformity.addPlan')} data-tooltip={t('deformity.addPlan')}
-          onClick={() => { const next = newPlan(plan.side); change(current => ({ ...current, plans: [...current.plans, next], active: next.id })); }}><Plus size={15} /></button>
+          onClick={() => { deformity.setPlacing(null); deformity.setEditCutout(false); const next = newPlan(plan.side); change(current => ({ ...current, plans: [...current.plans, next], active: next.id })); }}><Plus size={15} /></button>
       </div>
-      {film.plans.length > 1 && <div className="deformity-actions"><button type="button" className="text-button" data-action="deformity-plan-delete" onClick={() => change(current => {
-        const plans = current.plans.filter(item => item.id !== plan.id);
-        return { ...current, plans, active: plans[0].id };
-      })}>{t('deformity.deletePlan')}</button></div>}
+      {film.plans.length > 1 && <div className="deformity-actions"><button type="button" className="text-button" data-action="deformity-plan-delete" onClick={() => {
+        deformity.setPlacing(null);
+        deformity.setEditCutout(false);
+        change(current => {
+          const plans = current.plans.filter(item => item.id !== plan.id);
+          return { ...current, plans, active: plans[0].id };
+        });
+      }}>{t('deformity.deletePlan')}</button></div>}
       {otherSide && <p className="deformity-caution" role="note">{t('deformity.sideMismatch', { side: sideText(frame) })}</p>}
 
       <h3>{t('deformity.calibration')}</h3>
@@ -549,13 +563,13 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             onClick={() => placeAtCora(bone)}>{t('deformity.placeAtCora')}</button>}
         </div>
         {placing?.kind === 'cut' && <p className="deformity-hint" role="status">{t('deformity.cutHint')}</p>}
-        {(!leg.ankle || !leg.knee) && <p className="deformity-missing">{t('deformity.needsLandmarks')}</p>}
+        {!canPlaceCut(bone) && cuts.length < MAX_OSTEOTOMIES && <p className="deformity-missing">{t('deformity.needsLandmarks')}</p>}
       </div> : <div className="deformity-osteotomy" data-testid="deformity-osteotomy">
         {cuts.length > 1 && <div className="deformity-cuts" role="tablist" aria-label={t('deformity.cutSummary')}>
           {orderedIndices.map((idx, orderPos) => {
             const cut = cuts[idx];
             return <button key={cut.id ?? idx} type="button" role="tab" data-action="deformity-cut-select" data-cut-index={idx}
-              aria-selected={idx === selectedCut} onClick={() => { deformity.setPlacing(null); change(current => selectOsteotomy(current, idx)); }}>
+              aria-selected={idx === selectedCut} onClick={() => { deformity.setPlacing(null); deformity.change(key, current => selectOsteotomy(current, idx), false); }}>
               {t('deformity.cutTab', { number: orderPos + 1, bone: t(`deformity.bone.${cut.bone}` as MessageKey), angle: cut.degrees.toFixed(1) })}
             </button>;
           })}
@@ -623,7 +637,7 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
             return <tr key={o.id ?? cutSim.index} data-cut-index={cutSim.index} className={cutSim.index === selectedCut ? 'is-selected' : ''}>
               <th scope="row">{`${orderPos + 1}. ${t(`deformity.bone.${o.bone}` as MessageKey)}`}</th>
               <td>{`${o.degrees.toFixed(1)}° ${t(o.direction === 'valgus' ? 'deformity.valgus' : 'deformity.varus')}`}</td>
-              <td>{`${cutSim.wedgeHeight.toFixed(1)} ${leg.unit}${cutRule ? ` · R${cutRule.rule}` : ''}`}</td>
+              <td>{`${cutSim.wedgeHeight.toFixed(1)} ${leg.unit}${cutRule ? ` · ${t('deformity.ruleShort', { rule: cutRule.rule })}` : ''}`}</td>
             </tr>;
           })}</tbody>
         </table>}

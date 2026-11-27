@@ -103,6 +103,7 @@ export interface Series {
   /** Row-major matrix, columns are the image i, j, k directions in patient LPS. */
   direction: number[];
   windowCenter: number; windowWidth: number; valueUnit: string;
+  voiFunction?: VoiFunction;
   /** The file stores no window; the core measured this one from the pixels. */
   windowFromPixels?: boolean;
   segmentation?: Segmentation;

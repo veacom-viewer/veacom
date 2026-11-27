@@ -25,7 +25,7 @@ import { presetFor } from '../ui/presets';
 import { hitAnnotation, leaderLine, movedHandle, screenPaths, type AnnotationPart, type HitTarget } from '../ui/annotationEdit';
 import { draggedFusion, petHasSuv } from '../imaging/fusion';
 import { frameThrough } from '../imaging/registration';
-import { lineAngle, obliqueAngle, turnedOblique } from '../imaging/oblique';
+import { lineAngle, obliqueAngle, snappedTurn, turnPlane } from '../imaging/oblique';
 import type { PlaneFrame } from '../imaging/geometry';
 import { overlayKeepOut, placeLabelBeside, shapeBox, shapeKeepOut, type Box } from '../ui/labelPlacement';
 import { maskTransform, overlayShapes, planeOutlines, segmentationApplies } from '../imaging/segmentation';
@@ -259,8 +259,17 @@ function paneRaster(bounds: DOMRect) {
     x: left / ratio - bounds.left, y: top / ratio - bounds.top };
 }
 
-function imageSource(series: Series) {
-  return [patientKey(series), series.id, series.uid, series.engineGeneration, series.sourceRevision ?? series.catalogRevision];
+function sameImageSource(a: Series, b: Series): boolean {
+  return patientKey(a) === patientKey(b) && a.id === b.id && a.uid === b.uid
+    && a.engineGeneration === b.engineGeneration
+    && (a.sourceRevision ?? a.catalogRevision) === (b.sourceRevision ?? b.catalogRevision);
+}
+
+function clearCanvas(canvas: HTMLCanvasElement): void {
+  delete canvas.dataset.seriesId;
+  delete canvas.dataset.sourceFrame;
+  delete canvas.dataset.slice;
+  canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
 }
 
 let firstDrawMarked = false;
@@ -528,13 +537,22 @@ export function Viewport(props: ViewportProps) {
       if (!sameView(liveView.current, next)) { liveView.current = next; queue(); }
     }
     if (previous.volume !== props.volume || previous.fusion !== props.fusion) {
-      queue();
-      // A different source gets a fresh canvas. Present its cached image with its labels in this commit.
-      if (sized.current && canvas.current && !canvas.current.dataset.seriesId) {
-        const displayed = renderedView(props.volume, liveView.current);
-        draw(props, displayed);
-        setOverlayView(displayed);
-        updateReadout();
+      const sourceChanged = !sameImageSource(previous.volume.series, props.volume.series)
+        || Boolean(previous.fusion && props.fusion && !sameImageSource(previous.fusion.volume.series, props.fusion.volume.series));
+      if (sourceChanged && canvas.current) {
+        // Clear previous-patient pixels immediately so a failed or deferred draw can never show them under new labels.
+        clearCanvas(canvas.current);
+        if (sized.current) {
+          renderNeeded.current = true;
+          const displayed = renderedView(props.volume, liveView.current);
+          draw(props, displayed);
+          setOverlayView(displayed);
+          updateReadout();
+        } else {
+          queue();
+        }
+      } else {
+        queue();
       }
     }
     // An undo, deletion or tool change invalidates a drag before its release can overwrite the change; so does another
@@ -633,7 +651,7 @@ export function Viewport(props: ViewportProps) {
     // A handle on another pane's line turns the crosshair about this pane's normal: both other planes turn together, so
     // their lines stay square and never lie on each other. Checked first: a handle is small and exact, and Ctrl held
     // while turning means 10° steps.
-    const mprPress = button === 'left' && props.onRotateReference && props.crosshair && !construction.current.length && !twoClick.current;
+    const mprPress = button === 'left' && props.onRotateReference && props.crosshair && !latest.current.caliper && !construction.current.length && !twoClick.current;
     const handle = mprPress ? handleTargets.find(item => Math.hypot(item.x - start[0], item.y - start[1]) <= 9) : undefined;
     if (handle && mprPivot) {
       // Every plane drawn here turns, its handles shown or not, so the planes stay square to one another.
@@ -774,8 +792,12 @@ export function Viewport(props: ViewportProps) {
       turn.turned += ((angle - turn.last + Math.PI) % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI) - Math.PI;
       turn.last = angle;
       const step = event.shiftKey ? 5 : event.ctrlKey || event.metaKey ? 10 : 0;
-      for (const reference of turn.planes) {
-        latest.current.onRotateReference?.(reference.id, turnedOblique(turn.frame, turn.mapping, reference.series, reference.view, turn.turned, step, reference.transform));
+      const held = turn.planes.find(item => item.id === turn.id);
+      const degrees = held ? snappedTurn(turn.frame, turn.mapping, held.series, held.view, turn.turned, step, held.transform) : null;
+      if (degrees !== null) {
+        for (const reference of turn.planes) {
+          latest.current.onRotateReference?.(reference.id, turnPlane(turn.mapping, reference.series, reference.view, degrees, reference.transform));
+        }
       }
       return;
     }
@@ -1142,7 +1164,7 @@ export function Viewport(props: ViewportProps) {
     onPointerCancel={() => cancelGesture()} onPointerLeave={event => {
       // Leaving the pane drops a pending click-click measurement; moving onto something drawn over it (a tooltip,
       // a notice) does not.
-      if (event.pointerType === 'mouse' && !turning.current) setHeldLine(null);
+      if (event.pointerType === 'mouse' && !turning.current && !sliding.current) setHeldLine(null);
       if (event.pointerType !== 'touch') { hover.current = null; updateReadout(); }
       if (event.pointerType !== 'mouse' || !twoClick.current || drag.current) return;
       const bounds = event.currentTarget.getBoundingClientRect();
@@ -1150,8 +1172,14 @@ export function Viewport(props: ViewportProps) {
     }} onContextMenu={event => event.preventDefault()} onKeyDown={keyDown}
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
-    <canvas key={JSON.stringify([imageSource(props.volume.series), props.fusion && imageSource(props.fusion.volume.series)])}
-      ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    <canvas ref={node => {
+      canvas.current = node;
+      return () => {
+        if (node) {
+          try { sliceRenderer().releaseTarget(node); } catch { /* Renderer may already be unavailable or lost. */ }
+        }
+      };
+    }} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
     {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
     <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>

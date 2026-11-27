@@ -120,7 +120,7 @@ export const deformity = {
   },
   /** What Undo keeps: the plans only (the panel and what a click places are not undone). */
   snapshot: () => state.films,
-  restore(films: DeformityState['films'] | undefined) { if (films && films !== state.films) set({ ...state, films: keepShown(films, state.films), placing: null }); },
+  restore(films: DeformityState['films'] | undefined) { if (films && films !== state.films) set({ ...state, films: keepShown(films, state.films), placing: null, editCutout: false }); },
 };
 
 /** The films Undo or Redo puts back, still marked where a suggestion has been on screen: what the reader saw cannot be

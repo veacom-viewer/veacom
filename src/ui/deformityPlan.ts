@@ -112,12 +112,6 @@ export function fragmentViews(view: PlanView): FragmentLayer[] {
   });
 }
 
-/** The first cut's moved hinge and turn, ready for `movedView`; null without a simulation. */
-export function fragmentView(view: PlanView): { hinge: Point; hingeMoved: Point; degrees: number } | null {
-  const first = fragmentViews(view).at(0);
-  return first ? { hinge: first.hinge, hingeMoved: first.hingeMoved, degrees: first.degrees } : null;
-}
-
 export { sub };
 
 // Edits. Each returns the film as the reader's click or drag leaves it; the store makes it an Undo step.
@@ -234,7 +228,7 @@ export function addCoraCut(film: FilmPlans, bone: 'femur' | 'tibia', series: Ser
   const view = planView(film, series, plan);
   const cora = view.cora[bone];
   if (!cora) return film;
-  const cut = coraCut(cora, view.leg, view.input, wedge);
+  const cut = coraCut(cora, view.leg, view.input, wedge, [series.dimensions[0], series.dimensions[1]]);
   return cut ? appendOsteotomy(film, cut) : film;
 }
 

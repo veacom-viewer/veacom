@@ -35,6 +35,7 @@ const COLOUR = {
   cut: '#ff6b6b', corrected: '#4dff8b', marker: '#e6e8eb', suggested: '#ff8fe0', guide: '#7fd1ff',
 };
 const layerStyle = { position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' } as const;
+const MAX_GUIDE_TICKS = 400;
 interface Props { volume: Volume; view: ViewState; size: [number, number]; mapping: ScreenMapping }
 
 /** The film this pane shows and its plans, when the kit is open and the pane shows one acquired frame. */
@@ -47,35 +48,118 @@ function shown(volume: Volume, view: ViewState, films: Readonly<Record<string, F
 type ActiveDrag =
   | (DragContext & {
       mode: 'handle'; handle: Handle; moved: boolean; start: [number, number];
-      from?: Point; inverseParent?: Rigid; gesture: GestureHandle;
+      from?: Point; beforeFilm?: FilmPlans; inverseParent?: Rigid; gesture: GestureHandle;
     })
   | (DragContext & {
       mode: 'rotate'; cutIndex: number; moved: boolean; start: [number, number];
-      centerPlane: Point; initialSigned: number; fallbackDirection: Osteotomy['direction'];
+      beforeFilm: FilmPlans; centerPlane: Point; initialSigned: number; fallbackDirection: Osteotomy['direction'];
       valgusSign: number; lastAngleRad: number; accumulatedRad: number; gesture: GestureHandle;
     })
   | (DragContext & {
       mode: 'translate'; cutIndex: number; moved: boolean; start: [number, number];
-      lastPlane: Point; accumulatedDelta: Point; initialLateral: number; initialDistal: number;
+      beforeFilm: FilmPlans; lastPlane: Point; accumulatedDelta: Point; initialLateral: number; initialDistal: number;
       axisDisplay: Point; lateralDisplay: Point; gesture: GestureHandle;
     });
 
 /** A drag's end: a suggestion that moved becomes the reader's landmark, in the drag's own Undo step, when the reader let
  * it go on the plan it was taken from. A cancelled gesture, or one ended by a switch of plan, puts the suggestion back
- * where the model put it, so a later Accept never takes a moved point as the model's. */
+ * where the model put it, or restores the pre-drag plan state for non-suggestion drags. */
 function finish(held: ActiveDrag, settle: boolean) {
   if (held.mode === 'handle' && held.moved && held.handle.kind === 'suggestion') {
     const handle = held.handle, from = held.from;
     deformity.change(held.key, current => settle && current.active === held.plan ? settleMoved(current, handle.name, handle.index)
       : from ? putBackSuggestion(current, held.plan, handle.name, handle.index, from) : current, false);
+  } else if (!settle && held.moved && held.beforeFilm) {
+    const before = held.beforeFilm;
+    deformity.change(held.key, current => current.active === held.plan ? before : current, false);
   }
-  held.gesture.end({ result: held.moved ? 'ok' : 'cancel' });
+  held.gesture.end({ result: settle && held.moved ? 'ok' : 'cancel' });
 }
 
 function tracePolygon(context: CanvasRenderingContext2D, corners: readonly [number, number][]) {
   context.beginPath();
   corners.forEach(([x, y], index) => index ? context.lineTo(x, y) : context.moveTo(x, y));
   context.closePath();
+}
+
+function disposeCanvas(off: HTMLCanvasElement | null) {
+  if (!off) return;
+  sliceRenderer().releaseTarget(off);
+  off.width = 0;
+  off.height = 0;
+}
+
+function resizeCanvas(element: HTMLCanvasElement, width: number, height: number) {
+  if (element.width !== width) element.width = width;
+  if (element.height !== height) element.height = height;
+}
+
+function drawPlanLayers(
+  target: HTMLCanvasElement,
+  off: HTMLCanvasElement | null,
+  volume: Volume,
+  view: ViewState,
+  frame: Series,
+  plan: PlanView,
+  active: ReturnType<typeof fragmentViews>,
+  size: [number, number],
+  mapping: ScreenMapping,
+  label: string,
+) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = Math.max(1, Math.round(size[0] * dpr)), height = Math.max(1, Math.round(size[1] * dpr));
+  resizeCanvas(target, width, height);
+  // A context with alpha first: the renderer then draws into it, and only each segment's masked pixels are kept.
+  const context = target.getContext('2d');
+  if (!context) return;
+  try {
+    if (active.length === 1) {
+      const layer = active[0];
+      sliceRenderer().render(target, volume, movedView(frame, view, size, layer.hinge, layer.hingeMoved, layer.degrees));
+      const corners = layer.cut.osteotomy.fragment.map(p => pixelToScreen(frame, mapping, moved(layer.cut.totalMotion, p, plan.mm)));
+      context.save();
+      context.globalCompositeOperation = 'destination-in';
+      context.setTransform(dpr, 0, 0, dpr, 0, 0);
+      tracePolygon(context, corners);
+      context.fill();
+      context.restore();
+    } else if (off) {
+      resizeCanvas(off, width, height);
+      const offContext = off.getContext('2d');
+      if (!offContext) return;
+      context.clearRect(0, 0, width, height);
+      for (let i = 0; i < active.length; i++) {
+        const layer = active[i];
+        sliceRenderer().render(off, volume, movedView(frame, view, size, layer.hinge, layer.hingeMoved, layer.degrees));
+        const corners = layer.cut.osteotomy.fragment.map(p => pixelToScreen(frame, mapping, moved(layer.cut.totalMotion, p, plan.mm)));
+        offContext.save();
+        offContext.globalCompositeOperation = 'destination-in';
+        offContext.setTransform(dpr, 0, 0, dpr, 0, 0);
+        tracePolygon(offContext, corners);
+        offContext.fill();
+        // Subtract more distal moving fragments in this segment's moved frame so proximal segments never double-draw
+        // behind distal ones.
+        offContext.globalCompositeOperation = 'destination-out';
+        for (let j = i + 1; j < active.length; j++) {
+          const distalCorners = active[j].cut.osteotomy.fragment.map(p => pixelToScreen(frame, mapping, moved(layer.cut.totalMotion, p, plan.mm)));
+          tracePolygon(offContext, distalCorners);
+          offContext.fill();
+        }
+        offContext.restore();
+        context.drawImage(off, 0, 0);
+      }
+    }
+    // "Simulated" is drawn on the layer itself, so no copy of the pane (a picture, a video, with or without its
+    // drawings) shows the moved fragments without it.
+    context.save();
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.font = '600 13px Inter, system-ui, sans-serif'; context.textAlign = 'center';
+    context.lineWidth = 3; context.strokeStyle = '#000'; context.fillStyle = COLOUR.corrected;
+    context.strokeText(label, size[0] / 2, 40); context.fillText(label, size[0] / 2, 40);
+    context.restore();
+  } catch {
+    context.clearRect(0, 0, target.width, target.height); // The pane itself reports a renderer failure.
+  }
 }
 
 /** Under the drawing: the place moved fragments left, uniformly dimmed, and each moved bone segment composited cleanly. */
@@ -91,67 +175,31 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
   // Only split into separate composited layers at cuts with non-zero local motion: an unmoved second cut shares its
   // parent segment's exact motion without any antialiasing seam along its boundary.
   const active = layers.filter(item => item.localMoving);
+  const attachCanvas = (node: HTMLCanvasElement | null) => {
+    canvas.current = node;
+    return () => {
+      disposeCanvas(scratch.current);
+      scratch.current = null;
+      if (node) sliceRenderer().releaseTarget(node);
+    };
+  };
   useLayoutEffect(() => {
     const target = canvas.current;
-    if (!target || !found || !plan || !active.length) return;
-    const dpr = window.devicePixelRatio || 1;
-    const width = Math.max(1, Math.round(size[0] * dpr)), height = Math.max(1, Math.round(size[1] * dpr));
-    if (target.width !== width) target.width = width;
-    if (target.height !== height) target.height = height;
-    // A context with alpha first: the renderer then draws into it, and only each segment's masked pixels are kept.
-    const context = target.getContext('2d');
-    if (!context) return;
-    try {
-      if (active.length === 1) {
-        const layer = active[0];
-        sliceRenderer().render(target, volume, movedView(found.frame, view, size, layer.hinge, layer.hingeMoved, layer.degrees));
-        const corners = layer.cut.osteotomy.fragment.map(p => pixelToScreen(found.frame, mapping, moved(layer.cut.totalMotion, p, plan.mm)));
-        context.save();
-        context.globalCompositeOperation = 'destination-in';
-        context.setTransform(dpr, 0, 0, dpr, 0, 0);
-        tracePolygon(context, corners);
-        context.fill();
-        context.restore();
-      } else {
-        const off = scratch.current ?? (scratch.current = document.createElement('canvas'));
-        if (off.width !== width) off.width = width;
-        if (off.height !== height) off.height = height;
-        const offContext = off.getContext('2d');
-        if (!offContext) return;
-        context.clearRect(0, 0, width, height);
-        for (let i = 0; i < active.length; i++) {
-          const layer = active[i];
-          sliceRenderer().render(off, volume, movedView(found.frame, view, size, layer.hinge, layer.hingeMoved, layer.degrees));
-          const corners = layer.cut.osteotomy.fragment.map(p => pixelToScreen(found.frame, mapping, moved(layer.cut.totalMotion, p, plan.mm)));
-          offContext.save();
-          offContext.globalCompositeOperation = 'destination-in';
-          offContext.setTransform(dpr, 0, 0, dpr, 0, 0);
-          tracePolygon(offContext, corners);
-          offContext.fill();
-          // Subtract more distal moving fragments in this segment's moved frame so proximal segments never double-draw
-          // behind distal ones.
-          offContext.globalCompositeOperation = 'destination-out';
-          for (let j = i + 1; j < active.length; j++) {
-            const distalCorners = active[j].cut.osteotomy.fragment.map(p => pixelToScreen(found.frame, mapping, moved(layer.cut.totalMotion, p, plan.mm)));
-            tracePolygon(offContext, distalCorners);
-            offContext.fill();
-          }
-          offContext.restore();
-          context.drawImage(off, 0, 0);
-        }
-      }
-      // "Simulated" is drawn on the layer itself, so no copy of the pane (a picture, a video, with or without its
-      // drawings) shows the moved fragments without it.
-      context.save();
-      context.setTransform(dpr, 0, 0, dpr, 0, 0);
-      context.font = '600 13px Inter, system-ui, sans-serif'; context.textAlign = 'center';
-      context.lineWidth = 3; context.strokeStyle = '#000'; context.fillStyle = COLOUR.corrected;
-      context.strokeText(label, size[0] / 2, 40); context.fillText(label, size[0] / 2, 40);
-      context.restore();
-    } catch {
-      context.clearRect(0, 0, target.width, target.height); // The pane itself reports a renderer failure.
+    if (!target || !found || !plan || !active.length) {
+      disposeCanvas(scratch.current);
+      scratch.current = null;
+      return;
     }
-  });
+    let off: HTMLCanvasElement | null = null;
+    if (active.length <= 1) {
+      disposeCanvas(scratch.current);
+      scratch.current = null;
+    } else {
+      off = scratch.current ?? document.createElement('canvas');
+      scratch.current = off;
+    }
+    drawPlanLayers(target, off, volume, view, found.frame, plan, active, size, mapping, label);
+  }, [volume, view, size[0], size[1], mapping, found, plan, label, active]);
   if (!found || !plan || !active.length) return null;
   const outline = (points: readonly Point[]) => points.map(p => pixelToScreen(found.frame, mapping, p).join(',')).join(' ');
   const firstMoved = active[0].cut.osteotomy.fragment.map(p => moved(active[0].cut.totalMotion, p, plan.mm));
@@ -163,7 +211,7 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
       </g>
       {active.map(layer => <polygon key={`rim-${layer.cut.index}`} points={outline(layer.cut.osteotomy.fragment)} fill="none" stroke={COLOUR.cut} strokeWidth={1} strokeDasharray="4 4" />)}
     </svg>
-    <canvas ref={canvas} style={layerStyle} data-testid="deformity-fragment" data-outline={outline(firstMoved)} data-cut-count={active.length} data-label={label} role="img" aria-label={label} />
+    <canvas ref={attachCanvas} style={layerStyle} data-testid="deformity-fragment" data-outline={outline(firstMoved)} data-cut-count={active.length} data-label={label} role="img" aria-label={label} />
   </>;
 }
 
@@ -171,6 +219,7 @@ export function PlanLayers({ volume, view, size, mapping }: Props) {
 export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const { t } = useTranslation();
   const state = useDeformity();
+  const drawingRef = useRef<SVGGElement>(null);
   const drag = useRef<ActiveDrag | null>(null);
   const [dragKind, setDragKind] = useState<'rotate' | 'translate' | 'hinge' | null>(null);
   const lassoRef = useRef<{ pointer: number; lastScreen: [number, number]; points: Point[]; gesture: GestureHandle } | null>(null);
@@ -200,6 +249,10 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const simByIndex = new Map<number, CutSimulation>((plan.simulation?.cuts ?? []).map(c => [c.index, c]));
   const simOrder = plan.simulation?.cuts ?? [];
 
+  const captureOnDrawing = (event: ReactPointerEvent<SVGElement>) => {
+    (drawingRef.current ?? event.currentTarget).setPointerCapture(event.pointerId);
+  };
+
   const endDrag = (held: ActiveDrag, settle = true) => {
     drag.current = null;
     setDragKind(null);
@@ -209,8 +262,9 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const grab = (handle: Handle) => (event: ReactPointerEvent<SVGElement>) => {
     if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureOnDrawing(event);
     const from = handle.kind === 'suggestion' ? plan.plan.suggested?.points[handle.name]?.[handle.index] : undefined;
+    const beforeFilm = handle.kind === 'suggestion' ? undefined : film;
     let inverseParent: Rigid | undefined;
     if ((handle.kind === 'cut' || handle.kind === 'hinge') && handle.cutIndex !== undefined) {
       const cutIndex = handle.cutIndex;
@@ -221,7 +275,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     }
     drag.current = {
       mode: 'handle', handle, key, plan: film.active, pointer: event.pointerId, moved: false,
-      start: [event.clientX, event.clientY], from, inverseParent,
+      start: [event.clientX, event.clientY], from, beforeFilm, inverseParent,
       gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag'),
     };
   };
@@ -229,7 +283,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const grabRotate = (cutSim: CutSimulation) => (event: ReactPointerEvent<SVGElement>) => {
     if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureOnDrawing(event);
     if (cutSim.index !== selectedCut) deformity.change(key, current => selectOsteotomy(current, cutSim.index), false);
     const startPlane = toPlane(pixelAt(local(event)), plan.mm);
     const centerPlane = toPlane(cutSim.hingeAfter, plan.mm);
@@ -239,7 +293,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     setDragKind('rotate');
     drag.current = {
       mode: 'rotate', cutIndex: cutSim.index, key, plan: film.active, pointer: event.pointerId, moved: false,
-      start: [event.clientX, event.clientY], centerPlane, initialSigned, fallbackDirection: o.direction,
+      start: [event.clientX, event.clientY], beforeFilm: film, centerPlane, initialSigned, fallbackDirection: o.direction,
       valgusSign: cutSim.valgusSign, lastAngleRad, accumulatedRad: 0,
       gesture: usage.begin('deformity-rotate', event.pointerType === 'touch' ? 'touch' : 'drag'),
     };
@@ -248,14 +302,14 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
   const grabTranslate = (cutSim: CutSimulation) => (event: ReactPointerEvent<SVGElement>) => {
     if (event.button !== 0 || placing || drag.current) return;
     event.stopPropagation(); event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    captureOnDrawing(event);
     if (cutSim.index !== selectedCut) deformity.change(key, current => selectOsteotomy(current, cutSim.index), false);
     const startPlane = toPlane(pixelAt(local(event)), plan.mm);
     const o = cutSim.osteotomy;
     setDragKind('translate');
     drag.current = {
       mode: 'translate', cutIndex: cutSim.index, key, plan: film.active, pointer: event.pointerId, moved: false,
-      start: [event.clientX, event.clientY], lastPlane: startPlane, accumulatedDelta: [0, 0],
+      start: [event.clientX, event.clientY], beforeFilm: film, lastPlane: startPlane, accumulatedDelta: [0, 0],
       initialLateral: o.shiftLateral, initialDistal: o.shiftDistal,
       axisDisplay: rotate(cutSim.axis, cutSim.parentMotion.degrees),
       lateralDisplay: rotate(cutSim.lateral, cutSim.parentMotion.degrees),
@@ -282,7 +336,9 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     }
     if (held.mode === 'rotate') {
       const nowPlane = toPlane(rawPoint, plan.mm);
-      const angle = Math.atan2(nowPlane[1] - held.centerPlane[1], nowPlane[0] - held.centerPlane[0]);
+      const dx = nowPlane[0] - held.centerPlane[0], dy = nowPlane[1] - held.centerPlane[1];
+      if (Math.hypot(dx, dy) < 1e-6) return;
+      const angle = Math.atan2(dy, dx);
       let step = angle - held.lastAngleRad;
       while (step > Math.PI) step -= 2 * Math.PI;
       while (step < -Math.PI) step += 2 * Math.PI;
@@ -310,12 +366,13 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     const held = drag.current;
     if (!held || held.pointer !== event.pointerId) return;
     endDrag(held, event.type !== 'pointercancel');
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    const host = drawingRef.current ?? event.currentTarget;
+    if (host.hasPointerCapture(event.pointerId)) host.releasePointerCapture(event.pointerId);
   };
 
   const dragEvents = { onPointerMove: follow, onPointerUp: release, onPointerCancel: release, onLostPointerCapture: release };
   const handleProps = (handle: Handle) => ({
-    onPointerDown: grab(handle), ...dragEvents,
+    onPointerDown: grab(handle),
     style: { pointerEvents: placing ? 'none' : 'all', cursor: 'move' } as const,
   });
 
@@ -332,13 +389,16 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     const cut = cuts.at(cutIndex);
     if (event.button !== 0 || placing || drag.current || !state.editCutout || !cut || cut.fragment.length >= MAX_FRAGMENT_POINTS) return;
     event.stopPropagation(); event.preventDefault();
+    const beforeFilm = film;
     splitEdge(cutIndex, edgeIndex, a, b, event);
-    event.currentTarget.setPointerCapture(event.pointerId);
+    // Capture on the persistent drawing root so inserting the final allowed vertex (which unmounts the edge lines)
+    // cannot drop pointer capture and leave the drag active.
+    captureOnDrawing(event);
     // The newly inserted vertex sits at `edgeIndex + 1`; drag it immediately as part of the same gesture.
     drag.current = {
       mode: 'handle', handle: { kind: 'fragment', cutIndex, index: edgeIndex + 1 },
       key, plan: film.active, pointer: event.pointerId, moved: true,
-      start: [event.clientX, event.clientY],
+      start: [event.clientX, event.clientY], beforeFilm,
       gesture: usage.begin('deformity-handle', event.pointerType === 'touch' ? 'touch' : 'drag'),
     };
   };
@@ -400,7 +460,15 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
       const origin = at([0, 0]), stepX = at([1, 0]);
       const screenPxPerImagePx = Math.max(1e-3, Math.hypot(stepX[0] - origin[0], stepX[1] - origin[1]));
       const tolerancePx = Math.max(1, Math.min(12, 3 / screenPxPerImagePx));
-      const simplified = simplifyFragment(activeLasso.points, tolerancePx);
+      const cutSim = simulating ? simByIndex.get(placing.cutIndex) : undefined;
+      // When tracing while simulation is shown, invert the fragment's displayed rigid motion back to native image space.
+      const nativePoints = cutSim && !isIdentityRigid(cutSim.totalMotion)
+        ? (() => {
+            const inverse = invertRigid(cutSim.totalMotion);
+            return activeLasso.points.map(p => moved(inverse, p, plan.mm));
+          })()
+        : activeLasso.points;
+      const simplified = simplifyFragment(nativePoints, tolerancePx);
       if (simplified) {
         deformity.change(key, current => updateOsteotomy(current, placing.cutIndex, { fragment: simplified }));
         deformity.setPlacing(null);
@@ -454,7 +522,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     const bisectorB = moved(cutSim.parentMotion, add(cora.point, reach(cora.bisector, 40)), plan.mm);
     const opacity = dragKind === 'hinge' ? 0.92 : 0.45;
     const [cx, cy] = at(core);
-    return <g key={`sim-cora-${cutSim.index}`} opacity={opacity} pointerEvents="none">
+    return <g key={`sim-cora-${cutSim.osteotomy.bone}`} opacity={opacity} pointerEvents="none">
       {line(bisectorA, bisectorB, COLOUR.cora, { dash: '3 3', width: dragKind === 'hinge' ? 1.5 : 1 })}
       <circle cx={cx} cy={cy} r={4.5} fill="none" stroke={COLOUR.cora} strokeWidth={1.6} />
     </g>;
@@ -477,7 +545,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
         const tickNormal: Point | null = alongCut ? [-alongCut[1], alongCut[0]] : null;
         const cutTicks: Array<[[number, number], [number, number]]> = [];
         if (mm && alongCut && tickNormal && cutLen >= 5) {
-          for (let d = 5; d < cutLen; d += 5) {
+          for (let d = 5; d < cutLen && cutTicks.length < MAX_GUIDE_TICKS; d += 5) {
             const p = add(aPlane, scale(alongCut, d));
             const tickSize = d % 10 === 0 ? 3.5 : 2;
             const p1 = at(toImage(sub(p, scale(tickNormal, tickSize)), mm));
@@ -502,7 +570,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
         if (showWedgeGauge && mm && wedgeDir) {
           const stepMm = 2;
           const total = cutSim.wedgeHeight;
-          for (let h = stepMm; h < total - 0.5; h += stepMm) {
+          for (let h = stepMm; h < total - 0.5 && gaugeTicks.length < MAX_GUIDE_TICKS; h += stepMm) {
             const frac = h / total;
             const px = g1[0] + (g2[0] - g1[0]) * frac, py = g1[1] + (g2[1] - g1[1]) * frac;
             const len = h % 10 === 0 ? 5 : 3;
@@ -519,7 +587,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
             {gaugeTicks.map(([t1, t2], idx) => <line key={idx} x1={t1[0]} y1={t1[1]} x2={t2[0]} y2={t2[1]} stroke={COLOUR.guide} strokeWidth={1.1} />)}
             {/* Place bone width beside the hinge (opposite the opening HUD chip) so labels never collide. */}
             <text x={hxS - outDir[0] * 12} y={hyS + 4} textAnchor={outDir[0] >= 0 ? 'end' : 'start'} fill={COLOUR.guide} fontSize={11} fontWeight={600} stroke="#000" strokeWidth={2.5} paintOrder="stroke">
-              {`w ${cutSim.boneWidth.toFixed(0)} ${leg.unit}`}
+              {t('deformity.guideWidth', { width: cutSim.boneWidth.toFixed(0), unit: leg.unit })}
             </text>
           </>}
         </g>;
@@ -548,8 +616,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     }
     if (hasShift) {
       const parts = [
-        Math.abs(o.shiftLateral) >= 0.05 ? `${o.shiftLateral > 0 ? '+' : ''}${o.shiftLateral.toFixed(1)} L` : '',
-        Math.abs(o.shiftDistal) >= 0.05 ? `${o.shiftDistal > 0 ? '+' : ''}${o.shiftDistal.toFixed(1)} D` : '',
+        Math.abs(o.shiftLateral) >= 0.05 ? `${o.shiftLateral > 0 ? '+' : ''}${o.shiftLateral.toFixed(1)} ${t('deformity.guideLateralShort')}` : '',
+        Math.abs(o.shiftDistal) >= 0.05 ? `${o.shiftDistal > 0 ? '+' : ''}${o.shiftDistal.toFixed(1)} ${t('deformity.guideDistalShort')}` : '',
         Math.abs(o.lengthen) >= 0.05 ? `${o.lengthen > 0 ? '+' : ''}${o.lengthen.toFixed(1)} +` : '',
       ].filter(Boolean).join(' · ');
       lines.push(`${parts} ${leg.unit}`);
@@ -568,7 +636,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
 
   const marker = film.marker, circle = marker?.method === 'ball' && marker.points.length >= 3 ? fitCircle(marker.points) : null;
   const toPixels = 1 / (plan.mm?.[0] ?? 1);
-  return <g data-testid="deformity-drawing" data-film={key} data-to-screen={JSON.stringify([at([0, 0]), at([1, 0]), at([0, 1])])}>
+  return <g ref={drawingRef} data-testid="deformity-drawing" data-film={key} data-to-screen={JSON.stringify([at([0, 0]), at([1, 0]), at([0, 1])])} {...dragEvents}>
     {placing && placing.kind !== 'lasso' && <rect data-testid="deformity-place" x={0} y={0} width={size[0]} height={size[1]} fill="transparent" style={{ pointerEvents: 'all', cursor: 'crosshair' }} onPointerDown={placeHere} />}
     {placing?.kind === 'lasso' && <rect data-testid="deformity-lasso" x={0} y={0} width={size[0]} height={size[1]} fill="transparent"
       style={{ pointerEvents: 'all', cursor: 'crosshair' }} onPointerDown={lassoDown} onPointerMove={lassoMove} onPointerUp={lassoEnd} onPointerCancel={lassoEnd} onLostPointerCapture={lassoEnd} />}
@@ -586,7 +654,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
         fill="transparent"
         stroke={isSelected && (cuts.length > 1 || dragKind === 'translate') ? COLOUR.corrected : 'none'}
         strokeWidth={1} strokeOpacity={dragKind === 'translate' && isSelected ? 0.75 : 0.35} strokeDasharray="3 3"
-        onPointerDown={grabTranslate(cutSim)} {...dragEvents}
+        onPointerDown={grabTranslate(cutSim)}
         style={{ pointerEvents: 'all', cursor: dragKind === 'translate' ? 'grabbing' : 'grab' }} />;
     })}
     {leg.hip && (() => { const [x, y] = at(leg.hip.centre), edge = at([leg.hip.centre[0] + leg.hip.radius * toPixels, leg.hip.centre[1]]); return <circle data-plan-head cx={x} cy={y} r={Math.hypot(edge[0] - x, edge[1] - y)} fill="none" stroke={COLOUR.landmark} strokeWidth={1.2} />; })()}
@@ -602,7 +670,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
     {line(leg.tibialLine?.[0], leg.tibialLine?.[1], COLOUR.axis, { extend: 0.35, test: 'tibial-joint' })}
     {line(leg.plafondLine?.[0], leg.plafondLine?.[1], COLOUR.axis, { extend: 0.5, test: 'plafond' })}
     {!simulating && coraLines(plan.cora.femur)}{!simulating && coraLines(plan.cora.tibia)}
-    {simulating && simOrder.map(cutSim => simulatedCoraRef(cutSim))}
+    {simulating && simOrder.filter((cutSim, index) => simOrder.findIndex(item => item.osteotomy.bone === cutSim.osteotomy.bone) === index).map(cutSim => simulatedCoraRef(cutSim))}
     {planningGuides()}
     {cuts.map((osteotomy, cutIndex) => {
       const cutSim = simByIndex.get(cutIndex);
@@ -621,8 +689,8 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
           const [x1, y1] = at(a), [x2, y2] = at(b);
           return <line key={`edge-${edgeIndex}`} data-fragment-edge={edgeIndex} x1={x1} y1={y1} x2={x2} y2={y2}
             stroke="transparent" strokeWidth={10}
-            style={{ pointerEvents: placing ? 'none' : 'stroke', cursor: 'copy' }}
-            onPointerDown={onEdgePointerDown(cutIndex, edgeIndex, a, b)} {...dragEvents}
+            style={{ pointerEvents: placing ? 'none' : 'stroke', cursor: state.editCutout ? 'copy' : 'default' }}
+            onPointerDown={onEdgePointerDown(cutIndex, edgeIndex, a, b)}
             onDoubleClick={onEdgeDoubleClick(cutIndex, edgeIndex, a, b)} />;
         })}
         {editablePoly && isSelected && osteotomy.fragment.map((p, index) => {
@@ -664,7 +732,7 @@ export function PlanDrawing({ volume, view, size, mapping }: Props) {
             <path d={`M${a1[0]} ${a1[1]}A${arm} ${arm} 0 0 1 ${a2[0]} ${a2[1]}`} fill="none" stroke="#000" strokeWidth={3.2} opacity={0.55} pointerEvents="none" />
             <path d={`M${a1[0]} ${a1[1]}A${arm} ${arm} 0 0 1 ${a2[0]} ${a2[1]}`} fill="none" stroke={accent} strokeWidth={1.6} opacity={activeSwing ? 1 : 0.75} pointerEvents="none" />
             <g data-rotate-cut={cutIndex} data-testid="deformity-rotate-handle"
-              onPointerDown={grabRotate(cutSim)} {...dragEvents}
+              onPointerDown={grabRotate(cutSim)}
               style={{ pointerEvents: placing ? 'none' : 'all', cursor: activeSwing ? 'grabbing' : 'grab' }}>
               <circle cx={rx} cy={ry} r={15} fill="transparent" />
               <circle cx={rx} cy={ry} r={10} fill="rgba(11, 13, 17, 0.78)" stroke="#000" strokeWidth={3.5} opacity={0.65} />

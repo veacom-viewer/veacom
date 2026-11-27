@@ -535,7 +535,7 @@ describe('multi-level osteotomies, backward-compatible files and direct canvas g
     femoralCondyleMedial: [[190, 510]], femoralCondyleLateral: [[130, 514]],
     tibialPlateauMedial: [[190, 520]], tibialPlateauLateral: [[130, 520]],
     tibialShaftProximal: [[165, 620]], tibialShaftDistal: [[175, 780]],
-    plafondMedial: [[210, 908]], plafondLateral: [[170, 898]],
+    plafondMedial: [[210, 898]], plafondLateral: [[170, 908]],
     ankleCentre: [[190, 895]],
   });
 
@@ -636,10 +636,13 @@ describe('multi-level osteotomies, backward-compatible files and direct canvas g
     assert.deepEqual(translatedOsteotomy(0, 0, [-3.6, 5.4], [0, 1], [-1, 0], 1), { shiftLateral: 4, shiftDistal: 5 });
     assert.deepEqual(translatedOsteotomy(190, 0, [-50, 0], [0, 1], [-1, 0], 0), { shiftLateral: 200, shiftDistal: 0 });
 
-    // Plan actions: CORA preset, multi-cut select/remove, shift reset, vertex insert/delete/reset.
+    // Plan actions: CORA preset refuses off-bone CORA and places in-bone CORA, multi-cut select/remove, shift reset, vertex insert/delete/reset.
     let current = plannedLeg();
-    const coraBefore = planView(current, frame).cora.tibia;
-    assert.ok(coraBefore && coraBefore.magnitude >= 1.5);
+    const corasBefore = planView(current, frame).cora;
+    assert.ok(corasBefore.femur && corasBefore.femur.level < 0);
+    assert.equal(addCoraCut(current, 'femur', frame).plans[0].osteotomies.length, 0);
+    const coraBefore = corasBefore.tibia;
+    assert.ok(coraBefore && coraBefore.magnitude >= 1.5 && coraBefore.level >= 0 && coraBefore.level <= 1);
     current = addCoraCut(current, 'tibia', frame);
     assert.equal(current.plans[0].osteotomies.length, 1);
     assert.equal(current.plans[0].osteotomies[0].bone, 'tibia');

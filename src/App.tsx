@@ -256,8 +256,9 @@ function readSettings(): Settings {
  * PET is read: inverted grey, at SUV 0–5 when it has SUV (imaging/quantity.ts). */
 function defaultView(series: Series): ViewState {
   const slice = openingSlice(series), frame = series.frameMetadata?.[slice];
+  const curve = frame?.windowWidth !== undefined ? frame.voiFunction : frame?.voiFunction ?? series.voiFunction;
   return { ...DEFAULT_VIEW, pan: [0, 0], slice, windowCenter: frame?.windowCenter ?? series.windowCenter,
-    windowWidth: displayWindowWidth(frame?.windowWidth ?? series.windowWidth, frame?.voiFunction), ...petLook(series) };
+    windowWidth: displayWindowWidth(frame?.windowWidth ?? series.windowWidth, curve), ...petLook(series) };
 }
 /** How a series opens beside a pane of another study in the comparison screen: in the same kind of view (where that
  * pane shows a reconstructed plane, with its tilt and slab, or a turning MIP, so does this one), level with it (by
@@ -289,6 +290,27 @@ const PET_LAYOUTS = [
 ] as const;
 function readKeptArrangements(): Kept {
   try { return readKept(localStorage.getItem(KEPT_STORAGE)); } catch { return {}; } // Storage may be disabled by the host.
+}
+
+/** Projects the three-plane MPR crosshair along the normal of any plane whose slice changed without changing tilt. */
+function projectMprCrosshair(
+  before: readonly Slot[],
+  after: readonly Slot[],
+  crosshair: Vec3,
+  crosshairSeriesId: string | null,
+  volumes: { get(id: string): Volume | undefined },
+): Vec3 {
+  let point = crosshair;
+  for (const slot of after) {
+    const was = before.find(item => item.id === slot.id)?.view;
+    const volume = slot.seriesId ? volumes.get(slot.seriesId) : undefined;
+    if (!was || !volume || slot.seriesId !== crosshairSeriesId || was.slice === slot.view.slice || !sameTilt(was, slot.view)) continue;
+    const { center, normal } = getPlaneFrame(volume.series, slot.view);
+    const unit = scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal)));
+    const delta = dot(sub(point, center), unit);
+    if (Math.abs(delta) > 1e-9) point = sub(point, scale(unit, delta));
+  }
+  return point;
 }
 
 function WindowInput({ kind, value, curve, disabled, change }: { kind: 'width' | 'level'; value: number; curve?: VoiFunction; disabled: boolean; change: (value: number) => void }) {
@@ -644,13 +666,6 @@ export default function App() {
   const progressClock = useRef<{ id?: number; stage: string; began: number; stageBegan: number; stageDone: number } | null>(null);
   // The engine job Cancel was pressed for: "Cancelling…" shows while that job is the one in progress, not for the next.
   const [cancelledId, setCancelledId] = useState<number | null>(null);
-  const cancelling = progress !== null && cancelledId !== null && progress.id === cancelledId;
-  // Cancel for the job the progress shows: in the strip above the images, or in the status bar while a series decodes.
-  const cancelProgress = () => {
-    if (!progress) return;
-    setCancelledId(progress.id ?? null);
-    void cancelOperation(progress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); });
-  };
   const [notice, setNotice] = useState<Notice | null>(null);
   /** The two series, of different patients, that the comparison screen shows side by side. Its warning is kept apart
    * from `notice`, which the next message replaces: it stays until the reader dismisses it or one of the two leaves
@@ -1074,17 +1089,25 @@ export default function App() {
     for (const request of frameRequests.current.values()) request.controller.abort();
     frameRequests.current.clear();
   } });
+  const hasWork = Boolean(busy || loadingIds.size || importing || aligning);
+  const shownProgress = hasWork ? progress : null;
+  const cancelling = shownProgress !== null && cancelledId !== null && shownProgress.id === cancelledId;
+  // Cancel for the job the progress shows: in the strip above the images, or in the status bar while a series decodes.
+  const cancelProgress = () => {
+    if (!shownProgress) return;
+    setCancelledId(shownProgress.id ?? null);
+    void cancelOperation(shownProgress.id).catch(error => { setCancelledId(null); setNotice({ message: errorText(error), kind: 'error' }); });
+  };
   // In the status bar, where it does not push the image down: what is being done, how far, how long it has taken and
   // about how long is left. A series loading shows its bar alone, as it comes and goes with every series opened.
-  const progressTimes = progress?.elapsed === undefined ? ''
-    : progress.remaining === undefined ? clockText(progress.elapsed)
-    : t('status.progressTimes', { elapsed: clockText(progress.elapsed), remaining: clockText(progress.remaining) });
+  const progressTimes = shownProgress?.elapsed === undefined ? ''
+    : shownProgress.remaining === undefined ? clockText(shownProgress.elapsed)
+    : t('status.progressTimes', { elapsed: clockText(shownProgress.elapsed), remaining: clockText(shownProgress.remaining) });
   // The stage is the status text then (Taranıyor), and its bar says how far it is: the times beside it are enough.
-  const progressStage = progress && progress.stage !== 'decode' ? stageLabel(progress.stage) : '';
+  const progressStage = shownProgress && shownProgress.stage !== 'decode' ? stageLabel(shownProgress.stage) : '';
   const progressText = progressStage ? progressTimes : '';
-  const hasWork = Boolean(busy || loadingIds.size || importing || aligning);
   useEffect(() => {
-    if (!hasWork) { progressClock.current = null; setProgress(null); setCancelledId(null); return; }
+    if (!hasWork) { progressClock.current = null; return; }
     const pollState = { disposed: false, polling: false };
     // How long the operation shown has run and, once its stage has run a few seconds, what is left of that stage at
     // the pace it has kept so far. A new operation, or a new stage of it, starts its own count.
@@ -1110,7 +1133,11 @@ export default function App() {
     void poll(); const timer = setInterval(() => void poll(), 400);
     return () => { pollState.disposed = true; clearInterval(timer); };
   }, [hasWork]);
-  useEffect(() => { try { localStorage.setItem('veacom:workspace:v2', JSON.stringify(settings)); } catch { /* Storage may be disabled by the host. */ } }, [settings]);
+  const settingsMounted = useRef(false);
+  useEffect(() => {
+    if (!settingsMounted.current) { settingsMounted.current = true; return; }
+    try { localStorage.setItem('veacom:workspace:v2', JSON.stringify(settings)); } catch { /* Storage may be disabled by the host. */ }
+  }, [settings]);
   useEffect(() => {
     if (!notice?.transient) return;
     // A confirmation clears itself, but not while someone is reading or using it (hover or focus).
@@ -1866,65 +1893,72 @@ export default function App() {
     if (before && arranged.current?.slotIds.includes(slotId) && (['plane', 'mode', 'projection', 'inverted', 'palette'] as const).some(key => key in patch && patch[key] !== before[key])) {
       offerKeep.current(slotId);
     }
-    setSlots(current => {
-      const selected = current.find(slot => slot.id === slotId); if (!selected) return current;
-      const volume = selected.seriesId ? displayVolumesRef.current.get(selected.seriesId) : undefined;
-      const manualWindow = patch.windowMode === undefined && (patch.windowWidth !== undefined || patch.windowCenter !== undefined);
-      const proposed = { ...selected.view, ...patch, ...(manualWindow ? { windowMode: 'manual' as const } : {}) };
-      // A reconstructed view whose volume is still a preview frame keeps being one (an arranged MIP paged while its PET
-      // loads stays a MIP): only the full volume resolves it.
-      const waiting = volume?.sourceFrameIndex !== undefined && selected.view.mode === 'mpr';
-      let nextView = volume && !waiting ? patchView(volume, selected.view, patch) : proposed;
-      if (volume) {
-        const slice = Math.max(0, Math.min(sliceCount(volume.series, nextView) - 1, Math.round(nextView.slice)));
-        if (slice !== nextView.slice) nextView = { ...nextView, slice };
-      }
-      // A whole-volume MIP turns as it pages: it moves no other pane.
-      const position = volume && !isProjection(volume.series, nextView) && patch.slice !== undefined && settingsRef.current.linked ? getPlaneFrame(volume.series, nextView).center : null;
-      const source: Pane | null = volume ? { series: volume.series, view: nextView } : null, moved = nextView.slice - selected.view.slice;
-      // The three-plane MPR keeps one window in its panes, as VEAcom Next's oblique MPR does; so do panes showing one PET
-      // or gamma camera image (a PET and its MIP, a whole body's two views), with its inversion and palette: one scale.
-      const windowed = patch.windowWidth !== undefined || patch.windowCenter !== undefined, pet = Boolean(volume && isEmission(volume.series));
-      const sharedWindow = windowed && (isMprRef.current || pet), sharedLook = pet && (patch.inverted !== undefined || patch.palette !== undefined);
-      // An arrangement on one SUV scale (the PET follow-up): its other PETs take the same SUV range and look.
-      const arrangement = arranged.current;
-      const sharedPet = arrangement && (sharedWindow || sharedLook) && arrangement.slotIds.includes(slotId) && sharesSuvScale(arrangement.plan)
-        && arrangement.plan.panes.some(pane => pane.series.id === selected.seriesId) ? arrangement : null;
-      // The comparison screen's panes zoom and pan together while linked, each from where it is; CT beside CT also
-      // takes one window (Hounsfield units are one scale).
-      const compared = arrangement?.plan.arrangement.view === 'shared' && settingsRef.current.linked && arrangement.slotIds.includes(slotId)
-        && current.length === arrangement.slotIds.length && current.every(slot => arrangement.slotIds.includes(slot.id)) ? arrangement : null;
-      const zoomed = selected.view.zoom > 0 ? nextView.zoom / selected.view.zoom : 1;
-      const shifted: [number, number] = [nextView.pan[0] - selected.view.pan[0], nextView.pan[1] - selected.view.pan[1]];
-      const framed = zoomed !== 1 || shifted[0] !== 0 || shifted[1] !== 0;
-      return current.map(original => {
-        if (original.id === slotId) return { ...original, view: nextView };
-        if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
-          ...(sharedWindow ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: nextView.windowMode, sharedWindow: nextView.sharedWindow } : {}),
+    const current = slotsRef.current;
+    const selected = current.find(slot => slot.id === slotId);
+    if (!selected) return;
+    const volume = selected.seriesId ? displayVolumesRef.current.get(selected.seriesId) : undefined;
+    const manualWindow = patch.windowMode === undefined && (patch.windowWidth !== undefined || patch.windowCenter !== undefined);
+    const proposed = { ...selected.view, ...patch, ...(manualWindow ? { windowMode: 'manual' as const } : {}) };
+    // A reconstructed view whose volume is still a preview frame keeps being one (an arranged MIP paged while its PET
+    // loads stays a MIP): only the full volume resolves it.
+    const waiting = volume?.sourceFrameIndex !== undefined && selected.view.mode === 'mpr';
+    let nextView = volume && !waiting ? patchView(volume, selected.view, patch) : proposed;
+    if (volume) {
+      const slice = Math.max(0, Math.min(sliceCount(volume.series, nextView) - 1, Math.round(nextView.slice)));
+      if (slice !== nextView.slice) nextView = { ...nextView, slice };
+    }
+    // A whole-volume MIP turns as it pages: it moves no other pane.
+    const position = volume && !isProjection(volume.series, nextView) && patch.slice !== undefined && settingsRef.current.linked ? getPlaneFrame(volume.series, nextView).center : null;
+    const source: Pane | null = volume ? { series: volume.series, view: nextView } : null, moved = nextView.slice - selected.view.slice;
+    // The three-plane MPR keeps one window in its panes, as VEAcom Next's oblique MPR does; so do panes showing one PET
+    // or gamma camera image (a PET and its MIP, a whole body's two views), with its inversion and palette: one scale.
+    const windowed = patch.windowWidth !== undefined || patch.windowCenter !== undefined, pet = Boolean(volume && isEmission(volume.series));
+    const sharedWindow = windowed && (isMprRef.current || pet), sharedLook = pet && (patch.inverted !== undefined || patch.palette !== undefined);
+    // An arrangement on one SUV scale (the PET follow-up): its other PETs take the same SUV range and look.
+    const arrangement = arranged.current;
+    const sharedPet = arrangement && (sharedWindow || sharedLook) && arrangement.slotIds.includes(slotId) && sharesSuvScale(arrangement.plan)
+      && arrangement.plan.panes.some(pane => pane.series.id === selected.seriesId) ? arrangement : null;
+    // The comparison screen's panes zoom and pan together while linked, each from where it is; CT beside CT also
+    // takes one window (Hounsfield units are one scale).
+    const compared = arrangement?.plan.arrangement.view === 'shared' && settingsRef.current.linked && arrangement.slotIds.includes(slotId)
+      && current.length === arrangement.slotIds.length && current.every(slot => arrangement.slotIds.includes(slot.id)) ? arrangement : null;
+    const zoomed = selected.view.zoom > 0 ? nextView.zoom / selected.view.zoom : 1;
+    const shifted: [number, number] = [nextView.pan[0] - selected.view.pan[0], nextView.pan[1] - selected.view.pan[1]];
+    const framed = zoomed !== 1 || shifted[0] !== 0 || shifted[1] !== 0;
+    const nextSlots = current.map(original => {
+      if (original.id === slotId) return { ...original, view: nextView };
+      if ((sharedWindow || sharedLook) && original.seriesId === selected.seriesId) return { ...original, view: { ...original.view,
+        ...(sharedWindow ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: nextView.windowMode, sharedWindow: nextView.sharedWindow } : {}),
+        ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
+      let slot = original;
+      const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
+      if (sharedPet && volume && other && sharedPet.slotIds.includes(slot.id)
+        && sharedPet.plan.panes.some(pane => pane.series.id === slot.seriesId)) {
+        const window = sharedWindow ? sameRangeWindow(volume.series, nextView, other.series, 'SUV') : null;
+        slot = { ...slot, view: { ...slot.view, ...(window ? { ...window, windowMode: 'manual' as const } : {}),
           ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
-        let slot = original;
-        const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
-        if (sharedPet && volume && other && sharedPet.slotIds.includes(slot.id)
-          && sharedPet.plan.panes.some(pane => pane.series.id === slot.seriesId)) {
-          const window = sharedWindow ? sameRangeWindow(volume.series, nextView, other.series, 'SUV') : null;
-          slot = { ...slot, view: { ...slot.view, ...(window ? { ...window, windowMode: 'manual' as const } : {}),
-            ...(sharedLook ? { inverted: nextView.inverted, palette: nextView.palette } : {}) } };
-        }
-        if (compared && slot.seriesId && (framed || windowed)) {
-          const oneScale = windowed && volume?.series.modality === 'CT' && other?.series.modality === 'CT';
-          slot = { ...slot, view: { ...slot.view,
-            ...(framed ? { zoom: slot.view.zoom * zoomed, pan: [slot.view.pan[0] + shifted[0], slot.view.pan[1] + shifted[1]] as [number, number] } : {}),
-            ...(oneScale ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: 'manual' as const } : {}) } };
-        }
-        if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
-        const target: Pane = { series: other.series, view: slot.view };
-        // Aligned frames of reference page by position through the alignment; links by hand are for the others.
-        const toTarget = alignedTransform(alignmentsRef.current, volume.series, other.series) ?? undefined;
-        const anchor = toTarget ? null : anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
-        const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
-        return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
-      });
+      }
+      if (compared && slot.seriesId && (framed || windowed)) {
+        const oneScale = windowed && volume?.series.modality === 'CT' && other?.series.modality === 'CT';
+        slot = { ...slot, view: { ...slot.view,
+          ...(framed ? { zoom: slot.view.zoom * zoomed, pan: [slot.view.pan[0] + shifted[0], slot.view.pan[1] + shifted[1]] as [number, number] } : {}),
+          ...(oneScale ? { windowWidth: nextView.windowWidth, windowCenter: nextView.windowCenter, windowMode: 'manual' as const } : {}) } };
+      }
+      if (!position || !volume || !other || !source || !selected.seriesId || !slot.seriesId || isProjection(other.series, slot.view)) return slot;
+      const target: Pane = { series: other.series, view: slot.view };
+      // Aligned frames of reference page by position through the alignment; links by hand are for the others.
+      const toTarget = alignedTransform(alignmentsRef.current, volume.series, other.series) ?? undefined;
+      const anchor = toTarget ? null : anchorFor(anchorsRef.current, { id: slotId, seriesId: selected.seriesId }, { id: slot.id, seriesId: slot.seriesId });
+      const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
+      return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
     });
+    slotsRef.current = nextSlots;
+    setSlots(nextSlots);
+    // In three-plane MPR, paging a plane moves the crosshair along that plane's normal in the same render batch.
+    if (isMprRef.current && crosshairRef.current) {
+      const projected = projectMprCrosshair(current, nextSlots, crosshairRef.current, crosshairSeriesIdRef.current, displayVolumesRef.current);
+      if (projected !== crosshairRef.current) { crosshairRef.current = projected; setCrosshair(projected); }
+    }
   };
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
     const advance = advanceCine(last, now, cineFps);
@@ -2259,13 +2293,23 @@ export default function App() {
   };
   /** The set-up note's Undo: the caliper ended and the panes' views exactly as they were, as undo puts them back (a merge
    * would keep what the set-up added, such as reconstructed planes over acquired slices, or a manual window). */
+  const restorePaneViews = (savedViews: ReadonlyArray<{ id: string; seriesId: string | null; view: ViewState }>) => {
+    const current = slotsRef.current;
+    const nextSlots = current.map(slot => {
+      const saved = savedViews.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
+      return saved ? { ...slot, view: saved.view } : slot;
+    });
+    slotsRef.current = nextSlots;
+    setSlots(nextSlots);
+    if (isMprRef.current && crosshairRef.current) {
+      const projected = projectMprCrosshair(current, nextSlots, crosshairRef.current, crosshairSeriesIdRef.current, displayVolumesRef.current);
+      if (projected !== crosshairRef.current) { crosshairRef.current = projected; setCrosshair(projected); }
+    }
+  };
   const undoCaliperSetUp = () => {
     const setUp = caliperRef.current?.setUp;
     stopCaliper();
-    if (setUp) setSlots(current => current.map(slot => {
-      const saved = setUp.views.find(item => item.id === slot.id && item.seriesId === slot.seriesId);
-      return saved ? { ...slot, view: saved.view } : slot;
-    }));
+    if (setUp) restorePaneViews(setUp.views);
     focusImage();
   };
   /** The checklist's Show: a pane set up to show the item called `name` on `plane`, in the bone window (showPlan). A pane
@@ -2299,10 +2343,7 @@ export default function App() {
       : t('checklist.shownWindow', { name });
     setPaneToast({ slotId: slot.id, seriesId: paneSeries, text, undoAction: 'checklist-show', onUndo: () => {
       setPaneToast(null);
-      setSlots(current => current.map(item => {
-        const saved = views.find(view => view.id === item.id && view.seriesId === item.seriesId);
-        return saved ? { ...item, view: saved.view } : item;
-      }));
+      restorePaneViews(views);
     } });
   };
   /** What a caliper under way asks for in a pane: its points in turn, or the plane it needs; and, until its first point,
@@ -2328,9 +2369,12 @@ export default function App() {
   const changeCrosshair = (point: Vec3) => {
     const source = slotsRef.current.find(slot => slot.id === activeIdRef.current);
     const volume = source?.seriesId ? displayVolumesRef.current.get(source.seriesId) : undefined;
-    setCrosshair(point); setCrosshairSeriesId(source?.seriesId ?? null);
-    if (!source || !volume || !settingsRef.current.linked) return;
-    setSlots(current => current.map(slot => {
+    if (!source || !volume || !settingsRef.current.linked) {
+      setCrosshair(point); setCrosshairSeriesId(source?.seriesId ?? null);
+      return;
+    }
+    let alignedPoint = point;
+    const nextSlots = slotsRef.current.map(slot => {
       const other = slot.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
       // A whole-volume MIP holds the point at every turn: it keeps its turn.
       if (!other || isProjection(other.series, slot.view)) return slot;
@@ -2338,9 +2382,22 @@ export default function App() {
       // In a frame of reference of its own, aligned: the same place in the patient, through the alignment.
       const toTarget = sharePlaneSpace(here, target) ? null : placed(here) && placed(target) ? alignedTransform(alignmentsRef.current, volume.series, other.series) : null;
       if (!toTarget && !sharePlaneSpace(here, target)) return slot;
-      const slice = coveredSlice(target, toTarget ? applyPoint(toTarget, point) : point);
+      const targetPoint = toTarget ? applyPoint(toTarget, alignedPoint) : alignedPoint;
+      let slice = coveredSlice(target, targetPoint);
+      if (slice === null && isMpr && slot.seriesId === source.seriesId && !toTarget) {
+        const total = sliceCount(other.series, slot.view);
+        if (total > 0) {
+          slice = Math.max(0, Math.min(total - 1, Math.round(sliceAtWorld(other.series, slot.view, targetPoint))));
+          const { center, normal } = getPlaneFrame(other.series, { ...slot.view, slice });
+          const unit = scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal)));
+          const delta = dot(sub(alignedPoint, center), unit);
+          if (Math.abs(delta) > 1e-9) alignedPoint = sub(alignedPoint, scale(unit, delta));
+        }
+      }
       return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
-    }));
+    });
+    setCrosshair(alignedPoint); setCrosshairSeriesId(source.seriesId ?? null);
+    setSlots(nextSlots);
   };
   /** The PET scanner's look: its colour scale, blending, opacity and top of the scale, and the CT window in the pane. */
   const applyDeviceLook = (pet: Series, slotId: string | null) => {
@@ -2672,24 +2729,6 @@ export default function App() {
     const next = { ...slot.view, mode: 'mpr' as const, oblique };
     updateView(slotId, { mode: 'mpr', oblique, slice: sliceAtWorld(volume.series, next, pivot) });
   };
-  // The three-plane MPR's crosshair stays on the planes it is seen in: a pane paged (its slice changed, its tilt not)
-  // takes it along that pane's normal onto the slice it shows now. The other panes' lines then cross at it, and the next
-  // turn turns about it. A plane turned keeps the crosshair, about which it turned.
-  const mprViews = useRef(new Map<string, ViewState>());
-  const followPagedPlanes = useEffectEvent(() => {
-    const before = mprViews.current;
-    mprViews.current = new Map(isMpr ? slots.map(slot => [slot.id, slot.view] as const) : []);
-    if (!isMpr || !crosshair) return;
-    let point = crosshair;
-    for (const slot of slots) {
-      const was = before.get(slot.id), volume = slot.seriesId ? displayVolumes.get(slot.seriesId) : undefined;
-      if (!was || !volume || slot.seriesId !== crosshairSeriesId || was.slice === slot.view.slice || !sameTilt(was, slot.view)) continue;
-      const { center, normal } = getPlaneFrame(volume.series, slot.view), unit = scale(normal, 1 / Math.max(1e-9, Math.hypot(...normal)));
-      point = sub(point, scale(unit, dot(sub(point, center), unit)));
-    }
-    if (point !== crosshair) setCrosshair(point);
-  });
-  useLayoutEffect(() => { followPagedPlanes(); }, [slots, isMpr]);
   const resetView = () => {
     const slot = slotsRef.current.find(item => item.id === activeIdRef.current), volume = slot?.seriesId ? displayVolumesRef.current.get(slot.seriesId) : undefined;
     if (slot && volume) {
@@ -3089,11 +3128,13 @@ export default function App() {
     };
   });
   const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(activeSlot.id, patch));
+  const runTestImport = useEffectEvent((paths: string[]) => importStudies(paths));
+  const runTestSelectSeries = useEffectEvent((id: string) => { const item = seriesRef.current.find(value => value.id === id); if (item) selectSeries(item); });
   useEffect(() => {
     const harness = {
       state: testState,
-      importPaths: importStudies,
-      selectSeries: (id: string) => { const item = seriesRef.current.find(value => value.id === id); if (item) selectSeries(item); },
+      importPaths: runTestImport,
+      selectSeries: runTestSelectSeries,
       setView: setTestView,
       setTool: (next: Tool) => { if (isTool(next)) setTool(next); },
       /** Usage events recorded in this window, after closing the action still settling (desktop click budgets). */
@@ -3101,7 +3142,7 @@ export default function App() {
     };
     Object.defineProperty(window, '__VEACOM_TEST__', { value: harness, configurable: true });
     return () => { Reflect.deleteProperty(window, '__VEACOM_TEST__'); };
-  }, [importStudies, selectSeries, setTool]);
+  }, []);
 
   // Usage timings: the coarse state each action leaves behind (src/usage/tracker.ts). Facet values are only
   // compared in this window to name what an action changed; of the state, only the classes below are sent.
@@ -3640,7 +3681,7 @@ export default function App() {
         </div>}
         {settings.panel === 'display' && <div className="inspector-panel display-panel" role="tabpanel" id="inspector-panel-display" aria-labelledby="inspector-tab-display" tabIndex={0}>
           <PanelSection id="window" title={t('inspector.windowSection')} open={openSections.has('window')} onToggle={toggleSection}>
-            <div className="field-pair" key={activeImageSeries?.id}>
+            <div className="field-pair" key={`${activeSlot.id}:${activeImageSeries?.id ?? ''}:${Math.round(activeDisplayView.slice)}`}>
               <WindowInput kind="width" value={activeDisplayView.windowWidth} curve={activeDisplayView.voiFunction} disabled={!activeVolume || rgb} change={windowWidth => updateView(activeSlot.id, { windowWidth })} />
               <WindowInput kind="level" value={activeDisplayView.windowCenter} disabled={!activeVolume || rgb} change={windowCenter => updateView(activeSlot.id, { windowCenter })} />
             </div>
@@ -3709,7 +3750,7 @@ export default function App() {
       <div className="status-state"><span className={`status-dot${busy || loadingIds.size || importing || aligning ? ' working' : connectionError ? ' error' : ''}`} aria-hidden="true" />{recovery.status !== 'saved' && <span className="status-export" role={recovery.status === 'failed' ? 'alert' : 'status'}>
         {t(recovery.status === 'restoring' ? 'measurement.restoring' : recovery.status === 'saving' ? 'measurement.saving' : 'measurement.storageFailed')}
         {recovery.status === 'failed' && <button type="button" className="text-button" data-action="retry-measurements" onClick={recovery.retry}>{t('measurement.retry')}</button>}
-      </span>}<span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{progress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(progress.stage)} max={Math.max(1, progress.total)} value={progress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
+      </span>}<span data-testid="status-text" role="status">{progressStage || (busy ? t(busy) : importing ? t('status.reading') : aligning ? t('status.aligning') : loadingIds.size ? t('status.loadingSeries', { count: loadingIds.size }) : connectionError ? t('status.serviceUnavailable') : t('status.ready'))}</span>{paneState && <span data-testid="status-pane-state">{paneState}</span>}{activeVolume?.series.sourceFramesOnly && <span data-tooltip={t('status.sourcePagingHint')} tabIndex={0}>{t('status.sourcePaging')}<span className="sr-only">{t('status.sourcePagingHint')}</span></span>}{activeAlignment && <span data-testid="status-aligned" data-tooltip={t('status.alignedHint')} tabIndex={0}>{` · ${t('status.aligned')}`}<span className="sr-only">{t('status.alignedHint')}</span></span>}{graphics?.software && <span data-testid="software-rendering-status" data-tooltip={t('gpu.softwareHint', { renderer: graphics.renderer })} tabIndex={0}>{t('gpu.softwareStatus')}<span className="sr-only">{t('gpu.softwareHint', { renderer: graphics.renderer })}</span></span>}{shownProgress && <span className="status-export" data-testid="status-progress">{progressText && <span>{progressText}</span>}<progress className="status-export-bar" aria-label={stageLabel(shownProgress.stage)} max={Math.max(1, shownProgress.total)} value={shownProgress.completed} /><button type="button" className="text-button" data-testid="operation-cancel" disabled={cancelling} onClick={cancelProgress}>{cancelling ? t('status.cancelling') : t('common.cancel')}</button></span>}{exportBackground && exportBusy && <span className="status-export" data-testid="status-export"><LoaderCircle size={12} />{exportProgress ? t('status.exportingCount', { done: exportProgress[0], total: exportProgress[1] }) : t('status.exporting')}{exportProgress && <progress className="status-export-bar" max={exportProgress[1]} value={exportProgress[0]} />}<button type="button" className="text-button" data-action="export-cancel" onClick={() => exportCancel.current?.()}>{t('common.cancel')}</button></span>}<span className="status-divider" aria-hidden="true" /><span>{t('status.seriesCount', { count: series.length - references.size })}</span><span className="context-dot" aria-hidden="true">·</span><span>{t('status.imageCount', { count: totalFrames.toLocaleString() })}</span></div>
       <div className="status-play" role="group" aria-label={t('status.cine')}>
         <button type="button" className="status-button" data-testid="status-play" aria-label={t('status.play')} data-tooltip={t('status.play')} aria-pressed={playing} disabled={!canPlay} onClick={() => setPlaying(true)}><Play size={14} /></button>
         <button type="button" className="status-button" data-testid="status-pause" aria-label={t('status.pause')} data-tooltip={t('status.pause')} disabled={!playing} onClick={() => setPlaying(false)}><Pause size={14} /></button>

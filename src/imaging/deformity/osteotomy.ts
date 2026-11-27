@@ -7,7 +7,7 @@ import { CONTOUR_MINIMUM, type LandmarkName } from './landmarks';
 import type { Cora } from './analysis';
 import { type LegInput, type Leg, type Landmarks, measureLeg, toImage, toPlane } from './measure';
 import {
-  acrossAxis, add, applyRigid, bisect, composeRigid, cross, distance, dot, IDENTITY, length, midpoint,
+  acrossAxis, add, applyRigid, bisect, composeRigid, cross, distance, dot, IDENTITY, midpoint,
   polygonArea, type Point, type Rigid, rotate, scale, signedAngle, simplifyClosedPolygon, sub, unit,
 } from './plane';
 
@@ -175,6 +175,11 @@ export interface Simulation {
   lengthChange: number | null;
 }
 
+const FEMORAL_LANDMARKS: ReadonlySet<LandmarkName> = new Set([
+  'femoralHeadContour', 'greaterTrochanterTip', 'femoralShaftProximal',
+  'femoralShaftDistal', 'femoralCondyleMedial', 'femoralCondyleLateral', 'kneeCentre',
+]);
+
 /**
  * Simulates one or more osteotomies on the same leg, composed proximally to distally. Each cut's local rigid motion
  * `M_k` is defined in pre-op bone coordinates and conjugated cleanly by all proximal cuts `T_{k-1}`, giving cumulative
@@ -214,11 +219,21 @@ export function simulateMany(input: LegInput, before: Leg, osteotomies: readonly
   const predicates = cuts.map(cut => distalPredicate(cut.osteotomy.cut, mm, cut.axis));
   const points: Landmarks = {};
   for (const [name, list] of Object.entries(input.points) as Array<[LandmarkName, readonly Point[]]>) {
+    const isFemoral = FEMORAL_LANDMARKS.has(name);
+    // Walk proximally to distally along the limb hierarchy: a tibial cut never moves femoral landmarks, every tibial
+    // landmark rides along with any femoral cut, and within one bone a landmark must be distal to every preceding cut.
     let deepest = -1;
-    for (let k = cuts.length - 1; k >= 0; k--) {
+    for (let k = 0; k < cuts.length; k++) {
+      const cutBone = cuts[k].osteotomy.bone;
+      if (cutBone === 'tibia' && isFemoral) break;
+      if (cutBone === 'femur' && !isFemoral) {
+        deepest = k;
+        continue;
+      }
       const beyond = predicates[k];
       const moves = list.length >= CONTOUR_MINIMUM ? list.every(beyond) : list.some(beyond);
-      if (moves) { deepest = k; break; }
+      if (moves) deepest = k;
+      else break;
     }
     points[name] = deepest >= 0 ? list.map(p => moved(cuts[deepest].totalMotion, p, mm)) : list;
   }
@@ -308,6 +323,15 @@ export function paleyRule(osteotomy: Osteotomy, cora: { point: Point; bisector: 
   return { rule: offset > 5 ? 3 : fromCut > 5 ? 2 : 1, offset, translation };
 }
 
+/** Whether a CORA lies within the bone and within the editable angle range (and film bounds when given). */
+export function coraPlaceable(cora: Cora | null, bounds?: readonly [number, number]): boolean {
+  if (!cora || !(cora.magnitude > 0.05) || cora.magnitude > 45) return false;
+  if (!(cora.level >= 0 && cora.level <= 1)) return false;
+  if (!bounds) return true;
+  const [cols, rows] = bounds;
+  return cora.point[0] >= 0 && cora.point[0] <= cols && cora.point[1] >= 0 && cora.point[1] <= rows;
+}
+
 /**
  * Pre-places a Paley Rule 1 osteotomy right through a bone's CORA along its transverse bisector (perpendicular to the
  * longitudinal deformity bisector), with the hinge on the convex cortex for an opening wedge (or concave cortex for a
@@ -318,10 +342,11 @@ export function coraCut(
   leg: Leg,
   input: Pick<LegInput, 'mmPerPixel' | 'lateral'>,
   wedge: Osteotomy['wedge'] = 'opening',
+  bounds?: readonly [number, number],
 ): Osteotomy | null {
   const mm = input.mmPerPixel;
   const frame = boneFrame(cora.bone, leg, input);
-  if (!frame || !(cora.magnitude > 0.05)) return null;
+  if (!frame || !coraPlaceable(cora, bounds)) return null;
   const u = unit(toPlane(cora.proximal.direction, mm));
   const d = unit(toPlane(cora.distal.direction, mm));
   const bisector = unit(toPlane(cora.bisector, mm));
@@ -329,19 +354,24 @@ export function coraCut(
   // Rotating the distal axis back onto the proximal axis removes the CORA angle.
   const delta = signedAngle(u, d);
   const direction: Osteotomy['direction'] = Math.sign(-delta) * frame.valgusSign >= 0 ? 'valgus' : 'varus';
-  const degrees = Math.min(45, Number(cora.magnitude.toFixed(1)));
-  // Estimate cortex half-width across the bone from the adjacent joint line when available.
+  // Use the exact CORA magnitude for wedge-side geometry before formatting to 0.1° display precision.
+  const exactDegrees = cora.magnitude;
   const jointLine = cora.bone === 'femur' ? leg.femoralLine : leg.tibialLine;
-  const jointWidth = jointLine ? distance(toPlane(jointLine[0], mm), toPlane(jointLine[1], mm)) : null;
-  const rawHalf = jointWidth !== null ? jointWidth * 0.28 : (cora.bone === 'femur' ? 22 : 18);
+  if (!jointLine) return null;
+  const rawHalf = distance(toPlane(jointLine[0], mm), toPlane(jointLine[1], mm)) * 0.28;
   const halfWidth = mm
     ? Math.max(cora.bone === 'femur' ? 18 : 15, Math.min(cora.bone === 'femur' ? 28 : 24, rawHalf))
     : Math.max(12, rawHalf);
   const core = toPlane(cora.point, mm);
   const endA = toImage(add(core, scale(bisector, halfWidth)), mm);
   const endB = toImage(sub(core, scale(bisector, halfWidth)), mm);
+  if (bounds) {
+    const [cols, rows] = bounds;
+    const within = (p: Point) => p[0] >= -cols / 2 && p[0] <= cols * 1.5 && p[1] >= -rows / 2 && p[1] <= rows * 1.5;
+    if (!within(endA) || !within(endB)) return null;
+  }
   // Pick the hinge cortex so the correcting rotation produces the requested wedge type (convex = opening, concave = closing).
-  const motionDeg = (direction === 'valgus' ? 1 : -1) * frame.valgusSign * degrees;
+  const motionDeg = (direction === 'valgus' ? 1 : -1) * frame.valgusSign * exactDegrees;
   const aPlane = toPlane(endA, mm), bPlane = toPlane(endB, mm);
   const turnedA = add(bPlane, rotate(sub(aPlane, bPlane), motionDeg));
   const opensWithBHinge = dot(sub(turnedA, aPlane), frame.axis) > 0;
@@ -350,6 +380,7 @@ export function coraCut(
   const hinge = cut[1];
   const fragment = fragmentFor(cut, cora.bone, leg, mm);
   if (!fragment) return null;
+  const degrees = Number(exactDegrees.toFixed(1));
   return { bone: cora.bone, cut, hinge, wedge, degrees, direction, shiftLateral: 0, shiftDistal: 0, lengthen: 0, fragment };
 }
 
@@ -398,5 +429,3 @@ export function rotationHandlePoint(cut: CutSimulation, leg: Leg, mm: LegInput['
   }
   return toImage(applyRigid(cut.totalMotion, preOp), mm);
 }
-
-export { length };

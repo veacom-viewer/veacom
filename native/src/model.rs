@@ -393,6 +393,9 @@ pub struct Series {
     pub direction: [f64; 9],
     pub window_center: f64,
     pub window_width: f64,
+    /// VOI LUT Function (PS3.3 C.11.2.1.3) carried by the series default window when it is not LINEAR.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub voi_function: Option<&'static str>,
     /// No frame stores a window, so the core measured one from the pixels.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub window_from_pixels: bool,

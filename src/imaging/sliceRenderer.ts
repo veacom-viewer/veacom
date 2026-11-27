@@ -568,6 +568,15 @@ class SharedSliceRenderer {
       this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, sourceFrame === undefined && isProjection(volume.series, view));
     }
   }
+  /** Drops any cached per-canvas window sample texture when a viewport unmounts or resets. */
+  releaseTarget(target: HTMLCanvasElement): void {
+    const id = this.identities.get(target);
+    if (id !== undefined) {
+      const key = 'window:' + id, old = this.textures.get(key);
+      if (old) this.dropTexture(key, old);
+    }
+    this.sampleViews.delete(target);
+  }
   private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile, region?: PlaneTexture): string {
     const gl = this.gl, series = volume.series;
     const sourceData = texturePixels(volume, kind, sourceFrame);

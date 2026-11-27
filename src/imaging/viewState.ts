@@ -14,13 +14,16 @@ export function resolveView(volume: Volume, view: ViewState): ViewState {
   const source = usesSourceFrames(volume.series, view) || (volume.sourceFrameIndex !== undefined && !view.projection);
   const slice = source ? Math.max(0, Math.min(volume.series.dimensions[2] - 1, Math.round(view.slice))) : view.slice;
   let center = view.windowCenter, width = view.windowWidth, voiLut: number | undefined;
+  const frame = volume.series.frameMetadata?.[slice];
+  const frameHasWindow = Number.isFinite(frame?.windowWidth) && frame!.windowWidth! > 0;
   // The displayed frame's window curve shapes manual windows too: dragging changes the centre and width
   // of the same curve rather than jumping to a straight one. Reconstructed planes stay linear.
-  const voiFunction = source && (!view.sharedWindow || view.windowMode === 'dicom') ? volume.series.frameMetadata?.[slice]?.voiFunction : undefined;
+  const voiFunction = source && (!view.sharedWindow || view.windowMode === 'dicom')
+    ? (frameHasWindow ? frame?.voiFunction : frame?.voiFunction ?? volume.series.voiFunction)
+    : undefined;
   if (view.windowMode === 'dicom' && source) {
-    const frame = volume.series.frameMetadata?.[slice];
     center = Number.isFinite(frame?.windowCenter) ? frame!.windowCenter! : volume.series.windowCenter;
-    width = Number.isFinite(frame?.windowWidth) && frame!.windowWidth! > 0 ? frame!.windowWidth! : volume.series.windowWidth;
+    width = frameHasWindow ? frame!.windowWidth! : volume.series.windowWidth;
     if (!Number.isFinite(center)) center = 0;
     // A frame without a window is shown with its own VOI LUT; the window is then the LUT's range, where manual changes start.
     if (frame?.voiLut !== undefined && !Number.isFinite(frame.windowWidth) && volume.series.voiLuts?.[frame.voiLut]) voiLut = frame.voiLut;

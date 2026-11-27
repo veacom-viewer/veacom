@@ -294,8 +294,14 @@ fn laterality_code(obj: &InMemDicomObject, tag: Tag) -> Option<String> {
 }
 
 fn acquisition_metadata(obj: &InMemDicomObject, frame: usize) -> AcquisitionMetadata {
+    // PS3.3 C.8.13.5.1 (MR) and C.8.15.3.1 (CT): Enhanced multi-frame SOP classes carry per-frame FrameType.
     let mut image_type = frame_value(obj, frame, Tag(0x0018, 0x9226), |v| {
         nonempty_text(v, Tag(0x0008, 0x9007))
+    })
+    .or_else(|| {
+        frame_value(obj, frame, Tag(0x0018, 0x9329), |v| {
+            nonempty_text(v, Tag(0x0008, 0x9007))
+        })
     })
     .unwrap_or_else(|| text(obj, Tag(0x0008, 0x0008)));
     image_type.make_ascii_uppercase();
@@ -1838,6 +1844,7 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
         direction: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
         window_center: 127.5,
         window_width: 255.,
+        voi_function: None,
         window_from_pixels: false,
         value_unit: "RGB".into(),
         suv_factor: None,
@@ -2435,6 +2442,7 @@ fn read_frames_budget(
             direction: [1., 0., 0., 0., 1., 0., 0., 0., 1.],
             window_center: window_center.unwrap_or(default_window.0),
             window_width: window_width.unwrap_or(default_window.1),
+            voi_function: window_width.and(voi_function),
             value_unit,
             suv_factor: if suv_usable { suv_factor } else { None },
             sul_factor: suv.and_then(|factors| factors.lbm).filter(|_| suv_usable),
@@ -3666,7 +3674,10 @@ fn catalogue(
         }
         if let Some(first) = info.frame_metadata.first() {
             info.window_center = first.window_center.unwrap_or(info.window_center);
-            info.window_width = first.window_width.unwrap_or(info.window_width);
+            if let Some(width) = first.window_width {
+                info.window_width = width;
+                info.voi_function = first.voi_function;
+            }
             info.padding_range = first.padding_range.filter(|range| {
                 info.frame_metadata
                     .iter()
@@ -10160,5 +10171,51 @@ mod tests {
         let mut names = vec!["img10", "img2", "IMG1", "img02", "a", "img"];
         names.sort_by(|a, b| natural_cmp(a, b));
         assert_eq!(names, ["a", "img", "IMG1", "img2", "img02", "img10"]);
+    }
+
+    #[test]
+    fn enhanced_ct_frame_type_sequence_detects_localizer_and_series_keeps_voi_function() {
+        // Three parallel Enhanced CT localizer frames via CTImageFrameTypeSequence (0018,9329):
+        // must not become a reconstructable stack, and frame 0's VOI function propagates to Series.
+        let mut obj = metadata_object(3);
+        obj.put_str(Tag(0x0008, 0x0060), VR::CS, "CT");
+        let per_frame = |z: &str, with_voi: bool| {
+            let mut ct_frame_type = InMemDicomObject::new_empty();
+            ct_frame_type.put_str(Tag(0x0008, 0x9007), VR::CS, "ORIGINAL\\PRIMARY\\LOCALIZER");
+            let mut item = InMemDicomObject::from_element_iter([
+                sequence(
+                    Tag(0x0020, 0x9113),
+                    vec![InMemDicomObject::from_element_iter([ds(
+                        Tag(0x0020, 0x0032),
+                        z,
+                    )])],
+                ),
+                sequence(Tag(0x0018, 0x9329), vec![ct_frame_type]),
+            ]);
+            if with_voi {
+                let mut frame_voi = InMemDicomObject::new_empty();
+                frame_voi.put(ds(Tag(0x0028, 0x1050), "0.5"));
+                frame_voi.put(ds(Tag(0x0028, 0x1051), "0.25"));
+                frame_voi.put_str(Tag(0x0028, 0x1056), VR::CS, "LINEAR_EXACT");
+                item.put(sequence(Tag(0x0028, 0x9132), vec![frame_voi]));
+            }
+            item
+        };
+        obj.put(sequence(
+            Tag(0x5200, 0x9230),
+            vec![
+                per_frame("0\\0\\0", true),
+                per_frame("0\\0\\2", false),
+                per_frame("0\\0\\4", false),
+            ],
+        ));
+        let (source, _dir) = import_object(obj);
+        assert!(!source.info.can_reconstruct);
+        assert_eq!(source.info.voi_function, Some("LINEAR_EXACT"));
+        assert_eq!(source.info.window_width, 0.25);
+        assert_eq!(
+            serde_json::to_value(&source.info).unwrap()["voiFunction"],
+            "LINEAR_EXACT"
+        );
     }
 }

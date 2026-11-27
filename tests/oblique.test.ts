@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
-import { foldLine, lineAngle, obliqueAngle, turnedOblique } from '../src/imaging/oblique';
+import { foldLine, lineAngle, obliqueAngle, snappedTurn, turnedOblique, turnPlane } from '../src/imaging/oblique';
 import { dot, getPlaneFrame, length, screenMapping } from '../src/imaging/geometry';
 import { compose, rotation, translation } from '../src/imaging/rigid';
 import type { Series, ViewState } from '../src/model';
@@ -93,5 +93,28 @@ describe('oblique MPR handles', () => {
     turnFrom('coronal', 25); square();
     turnFrom('sagittal', -40); square();
     turnFrom('axial', 15); square();
+  });
+
+  it('keeps all three planes orthogonal under Shift (5°) and Ctrl (10°) snapped turns on doubly-tilted panes', () => {
+    const planes = { axial: view('axial'), coronal: view('coronal'), sagittal: view('sagittal') };
+    const snapFrom = (seen: keyof typeof planes, grabbed: keyof typeof planes, degrees: number, stepDegrees: number) => {
+      const pane = planes[seen], frame = getPlaneFrame(series, pane), mapping = screenMapping(series, pane, 400, 400);
+      const delta = snappedTurn(frame, mapping, series, planes[grabbed], degrees * Math.PI / 180, stepDegrees);
+      assert.ok(delta !== null);
+      for (const moved of Object.keys(planes) as Array<keyof typeof planes>) {
+        if (moved === seen) continue;
+        planes[moved] = view(moved, turnPlane(mapping, series, planes[moved], delta));
+      }
+    };
+    const assertOrthogonal = (label: string) => {
+      const normals = Object.values(planes).map(item => getPlaneFrame(series, item).normal);
+      for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) {
+        assert.ok(Math.abs(dot(normals[a], normals[b])) / (length(normals[a]) * length(normals[b])) < 0.004, `${label}: planes ${a} and ${b}`);
+      }
+    };
+    snapFrom('axial', 'coronal', 28, 0); assertOrthogonal('initial axial tilt');
+    snapFrom('coronal', 'sagittal', 23, 5); assertOrthogonal('doubly tilted Shift 5°');
+    snapFrom('sagittal', 'axial', -37, 10); assertOrthogonal('triply tilted Ctrl 10°');
+    snapFrom('axial', 'sagittal', 14, 5); assertOrthogonal('axial Shift 5°');
   });
 });

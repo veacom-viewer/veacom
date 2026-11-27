@@ -58,7 +58,7 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
   context.fillStyle = '#ffffff'; context.fillRect(0, 0, PAGE.width, PAGE.height);
   const font = (size: number, weight = 400) => `${weight} ${size}px Inter, "Segoe UI", system-ui, sans-serif`;
   let y = MARGIN + 40;
-  context.fillStyle = TEXT; context.font = font(60, 600); context.fillText(content.title, MARGIN, y);
+  context.fillStyle = TEXT; context.font = font(60, 600); context.fillText(content.title, MARGIN, y, PAGE.width - 2 * MARGIN);
   y += 56; context.font = font(34); context.fillStyle = MUTED;
   for (const line of content.lines) { context.fillText(line, MARGIN, y, PAGE.width - 2 * MARGIN); y += 46; }
   y += 16;
@@ -70,7 +70,7 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
     const width = picture.canvas.width * scale, height = picture.canvas.height * scale;
     context.fillStyle = '#000'; context.fillRect(MARGIN, pictureY, width, height);
     context.drawImage(picture.canvas, MARGIN, pictureY, width, height);
-    context.fillStyle = MUTED; context.font = font(30, 500); context.fillText(picture.caption, MARGIN, pictureY + height + 40);
+    context.fillStyle = MUTED; context.font = font(30, 500); context.fillText(picture.caption, MARGIN, pictureY + height + 40, box.width);
     pictureY += box.height + 60;
   }
   const left = MARGIN + (content.pictures.length ? pictureWidth + 60 : 0);
@@ -82,7 +82,7 @@ export function drawReport(content: ReportContent): HTMLCanvasElement {
   context.scale(tableScale, tableScale);
   y = 20;
   for (const section of content.sections) {
-    context.fillStyle = TEXT; context.font = font(38, 600); context.fillText(section.title, 0, y); y += RULE_GAP;
+    context.fillStyle = TEXT; context.font = font(38, 600); context.fillText(section.title, 0, y, width); y += RULE_GAP;
     context.strokeStyle = RULE; context.lineWidth = 2; context.beginPath(); context.moveTo(0, y); context.lineTo(width, y); context.stroke();
     y += ROW;
     for (const [label, value, normal, caution] of section.rows) {
