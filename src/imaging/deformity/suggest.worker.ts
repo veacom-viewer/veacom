@@ -6,7 +6,7 @@ import runtimeScript from 'onnxruntime-web/ort-wasm-simd-threaded.mjs?url';
 import runtimeBinary from 'onnxruntime-web/ort-wasm-simd-threaded.wasm?url';
 import type { PixelArray } from '../../model';
 import { ownScript } from '../../web/trusted-types';
-import { CROP_KINDS, STAGE_A, STAGE_B, cropCentre, decodeStageA, readStageB, sampleCrop, stageACanvas, windowed, type Anchors, type ChannelPoint, type Channel, type ImageLeg } from './suggest';
+import { CROP_KINDS, CROP_TYPE_ID, STAGE_A, STAGE_B, cropCentre, decodeStageA, readStageB, sampleCrop, stageACanvas, windowed, type Anchors, type ChannelPoint, type Channel, type ImageLeg } from './suggest';
 
 export interface SuggestRequest {
   id: number;
@@ -40,14 +40,23 @@ async function suggest(request: SuggestRequest): Promise<SuggestReply> {
   const window = lap();
   const coarse = await a.run({ canvas: new ort.Tensor('float32', canvas, [1, 1, STAGE_A.rows, STAGE_A.columns]) });
   const logits = coarse.heatmap_logits;
-  const legs = decodeStageA(logits.data as Float32Array, logits.dims[2], logits.dims[3], scale), anchors = legs[request.leg];
+  const presenceLogits = Object.hasOwn(coarse, 'presence_logits') ? (coarse.presence_logits.data as Float32Array) : undefined;
+  const legs = decodeStageA(logits.data as Float32Array, logits.dims[2], logits.dims[3], scale, presenceLogits), anchors = legs[request.leg];
   const stageA = lap();
   const centres = CROP_KINDS.map(kind => cropCentre(kind, request.leg, anchors, mm)), area = STAGE_B.size * STAGE_B.size;
   const crops = new Float32Array(centres.length * area);
   centres.forEach((centre, index) => crops.set(sampleCrop(film, columns, rows, centre, mm, mirror), index * area));
   const cropTime = lap();
-  const fine = await b.run({ crops: new ort.Tensor('float32', crops, [centres.length, 1, STAGE_B.size, STAGE_B.size]) });
-  const channels = readStageB(fine.coords.data as Float32Array, fine.confidence.data as Float32Array, CROP_KINDS, centres, mm, mirror);
+  const feeds: Record<string, ort.Tensor> = {
+    crops: new ort.Tensor('float32', crops, [centres.length, 1, STAGE_B.size, STAGE_B.size]),
+  };
+  if (b.inputNames.includes('crop_type')) {
+    const cropTypes = BigInt64Array.from(CROP_KINDS, kind => CROP_TYPE_ID[kind]);
+    feeds.crop_type = new ort.Tensor('int64', cropTypes, [centres.length]);
+  }
+  const fine = await b.run(feeds);
+  const sigmaPx = Object.hasOwn(fine, 'sigma_px') ? (fine.sigma_px.data as Float32Array) : undefined;
+  const channels = readStageB(fine.coords.data as Float32Array, fine.confidence.data as Float32Array, CROP_KINDS, centres, mm, mirror, sigmaPx);
   return { id: request.id, ok: true, anchors: legs, channels, threads: ort.env.wasm.numThreads ?? 1, timings: { window, stageA, crops: cropTime, stageB: lap() } };
 }
 

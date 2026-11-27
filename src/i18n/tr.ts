@@ -565,7 +565,7 @@ export const tr: Record<keyof typeof en, string> = {
   'deformity.suggestBlock.side': 'Önce hastanın sağının nerede olduğunu seçin.',
   'deformity.suggestBlock.upright': 'Model grafinin dik, kalçaların üstte olmasını ister.',
   'deformity.suggestBlock.spacing': 'Model grafinin piksel aralığını ya da bir kalibrasyonu ister.',
-  'deformity.suggestBlock.size': 'Grafi modelin 512 × 1408 mm alanından büyük.',
+  'deformity.suggestBlock.size': 'Grafi modelin 576 × 1728 mm alanından büyük.',
   'deformity.suggestBlock.colour': 'Model yalnızca gri tonlu grafileri okur.',
   'deformity.suggestBlock.placed': 'Modelin önerdiği noktaların hepsi işaretli.',
   'deformity.suggestDownloading': 'Model bir kez indiriliyor: {received} / {total} MB',

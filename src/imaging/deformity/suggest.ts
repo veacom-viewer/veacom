@@ -9,9 +9,9 @@
 import { fitCircle, length, type Point, sub } from './plane';
 import { LANDMARKS, type LandmarkName } from './landmarks';
 
-/** Stage A: the whole film at 2 mm per pixel, top left on a 256 × 704 canvas (512 × 1408 mm); 6 heatmaps at stride 2. */
-export const STAGE_A = { rows: 704, columns: 256, mm: 2, stride: 2, window: 3 } as const;
-/** Stage B: 320 × 320 crops at 0.35 mm per pixel (112 mm); heatmap cells of 4 crop pixels. */
+/** Stage A v3: the whole film at 2 mm per pixel, top left on a 288 × 864 canvas (576 × 1728 mm); 6 heatmaps at stride 2. */
+export const STAGE_A = { rows: 864, columns: 288, mm: 2, stride: 2, window: 3 } as const;
+/** Stage B v3: 320 × 320 crops at 0.35 mm per pixel (112 mm); internal stride-2 heatmaps decoded inside the graph. */
 export const STAGE_B = { size: 320, pitch: 0.35, hipLateralMm: 22 } as const;
 
 const CONTOUR = Array.from({ length: 8 }, (_, i) => `femoralHeadContour${i}` as const);
@@ -34,6 +34,11 @@ export const CROPS = {
 } as const satisfies Record<string, readonly Channel[]>;
 type CropKind = keyof typeof CROPS;
 export const CROP_KINDS = Object.keys(CROPS) as CropKind[];
+/** Stage B v3 crop-type indices for FiLM conditioning (veacom_train stageb.TYPES). */
+export const CROP_TYPE_ID = {
+  hip: 0n, knee: 1n, ankle: 2n,
+  femurProximal: 3n, femurDistal: 4n, tibiaProximal: 5n, tibiaDistal: 6n,
+} as const satisfies Record<CropKind, bigint>;
 
 type Joint = 'hip' | 'knee' | 'ankle';
 
@@ -145,10 +150,14 @@ export function stageACanvas(film: Float32Array, columns: number, rows: number, 
   return { canvas, scale: [width / columns, height / rows] };
 }
 
+const sigmoid = (z: number) => 1 / (1 + Math.exp(-Math.max(-60, Math.min(60, z))));
+
 /** Stage A's hip, knee and ankle of each leg in film pixels, from its heatmap logits (6 channels of `height` × `width`
  * cells): a softmax per channel, then the weighted mean of a 7 × 7-cell window at the peak (stagea.decode). Each leg's
- * `peak` is the least of its three channels' peak probabilities, the softmax's largest value. */
-export function decodeStageA(logits: ArrayLike<number>, height: number, width: number, scale: readonly [number, number]): Record<ImageLeg, Anchors> {
+ * `peak` is the least of its three channels' peak probabilities, the softmax's largest value. When a v3 graph also
+ * outputs `presence_logits` (6 logits), each leg receives `jointPresence` and their minimum `presence`. */
+export function decodeStageA(logits: ArrayLike<number>, height: number, width: number, scale: readonly [number, number],
+  presenceLogits?: ArrayLike<number>): Record<ImageLeg, Anchors> {
   const cells = height * width, r = STAGE_A.window, stride = STAGE_A.stride;
   const found = Array.from({ length: 6 }, (_, channel) => {
     const offset = channel * cells;
@@ -166,12 +175,28 @@ export function decodeStageA(logits: ArrayLike<number>, height: number, width: n
     }
     return { point: [sx / sum * stride / scale[0], sy / sum * stride / scale[1]] as Point, peak: 1 / total };
   });
-  const leg = (first: number): Anchors => ({ hip: found[first].point, knee: found[first + 1].point, ankle: found[first + 2].point,
-    peak: Math.min(found[first].peak, found[first + 1].peak, found[first + 2].peak) });
+  const leg = (first: number): Anchors => {
+    const anchors: Anchors = {
+      hip: found[first].point, knee: found[first + 1].point, ankle: found[first + 2].point,
+      peak: Math.min(found[first].peak, found[first + 1].peak, found[first + 2].peak),
+    };
+    if (presenceLogits && presenceLogits.length >= first + 3) {
+      const jointPresence = [sigmoid(presenceLogits[first]), sigmoid(presenceLogits[first + 1]), sigmoid(presenceLogits[first + 2])] as const;
+      anchors.jointPresence = jointPresence;
+      anchors.presence = Math.min(jointPresence[0], jointPresence[1], jointPresence[2]);
+    }
+    return anchors;
+  };
   return { left: leg(0), right: leg(3) };
 }
 /** A leg's joints as stage A finds them, and how sure it is of the least sure of them (see `decodeStageA`). */
-export interface Anchors extends Record<Joint, Point> { peak: number }
+export interface Anchors extends Record<Joint, Point> {
+  peak: number;
+  /** Minimum sigmoid(presence_logits) across the leg's three joints (v3 graphs only). */
+  presence?: number;
+  /** Per-joint visibility probabilities [hip, knee, ankle] (v3 graphs only). */
+  jointPresence?: readonly [number, number, number];
+}
 
 /** Where a crop is centred in film pixels: the knee and ankle at their anchors, the hip 22 mm lateral of its centre so the
  * trochanter is in the crop too, and a shaft crop its share of the way between two anchors (stageb.crop_centre). */
@@ -249,42 +274,59 @@ export function mirroredChannel(channel: Channel): Channel {
   return match ? `femoralHeadContour${7 - Number(match[1])}` as Channel : channel;
 }
 
-export interface ChannelPoint { point: Point; confidence: number }
+export interface ChannelPoint {
+  point: Point;
+  confidence: number;
+  /** Predicted RLE Laplace uncertainty (σ_x, σ_y) in millimetres (v3 graphs only). */
+  sigmaMm?: readonly [number, number];
+}
 
 /** Stage B's outputs for one leg's crops (`kinds`, in order) as film points of their own channels: `coords` is
- * (crops, 26, 2) in crop pixels, `confidence` (crops, 26), each channel's heatmap peak probability. A shaft point is the
- * predicted x on the crop's centre row (stageb.infer_film). */
+ * (crops, 26, 2) in crop pixels, `confidence` (crops, 26), each channel's heatmap peak probability, and optional v3
+ * `sigmaPx` (crops, 26, 2) in crop pixels. A shaft point is the predicted x on the crop's centre row (stageb.infer_film). */
 export function readStageB(coords: ArrayLike<number>, confidence: ArrayLike<number>, kinds: readonly CropKind[], centres: readonly Point[],
-  mm: readonly [number, number], mirror: boolean): Partial<Record<Channel, ChannelPoint>> {
+  mm: readonly [number, number], mirror: boolean, sigmaPx?: ArrayLike<number>): Partial<Record<Channel, ChannelPoint>> {
   const out: Partial<Record<Channel, ChannelPoint>> = {};
   kinds.forEach((kind, crop) => {
+    const isShaft = kind in SHAFT_CROPS;
     for (const channel of CROPS[kind]) {
       const source = CHANNELS.indexOf(mirror ? mirroredChannel(channel) : channel), index = crop * CHANNELS.length + source;
-      const row = kind in SHAFT_CROPS ? STAGE_B.size / 2 : coords[index * 2 + 1];
-      out[channel] = { point: cropToFilm([coords[index * 2], row], centres[crop], mm, mirror), confidence: confidence[index] };
+      const row = isShaft ? STAGE_B.size / 2 : coords[index * 2 + 1];
+      const entry: ChannelPoint = { point: cropToFilm([coords[index * 2], row], centres[crop], mm, mirror), confidence: confidence[index] };
+      if (sigmaPx && index * 2 + 1 < sigmaPx.length) {
+        entry.sigmaMm = [sigmaPx[index * 2] * STAGE_B.pitch, isShaft ? 0 : sigmaPx[index * 2 + 1] * STAGE_B.pitch];
+      }
+      out[channel] = entry;
     }
   });
   return out;
 }
 
-export interface Suggestion { points: Point[]; confidence: number }
+export interface Suggestion {
+  points: Point[];
+  confidence: number;
+  /** Predicted RLE Laplace uncertainty (σ_x, σ_y) in millimetres (v3 graphs only). */
+  sigmaMm?: readonly [number, number];
+}
 
 /**
  * The kit's landmarks from one leg's channel points. The channel names are the kit's (docs/landmark-schema.md in
  * veacom-train maps them), and medial is towards the image's centre on both legs.
  *
  * The kit finds the hip centre by fitting a circle to the femoral head's outline. The model's checked point is the hip
- * centre itself (hipCentre, 1.37 mm on BMPLE test); its outline channels have no real-film check. So the outline is
- * suggested as points on a circle around the checked centre, in the directions of the model's outline points and at
- * their median distance, in millimetres: the circle the kit fits through them has the checked centre exactly, and its
- * size, which no value uses, is the model's estimate of the head's.
+ * centre itself (hipCentre); its outline channels have no real-film check. So the outline is suggested as points on a
+ * circle around the checked centre, in the directions of the model's outline points and at their median distance, in
+ * millimetres: the circle the kit fits through them has the checked centre exactly, and its size, which no value uses,
+ * is the model's estimate of the head's.
  */
 export function kitSuggestions(channels: Partial<Record<Channel, ChannelPoint>>, mm: readonly [number, number]): Partial<Record<LandmarkName, Suggestion>> {
   const out: Partial<Record<LandmarkName, Suggestion>> = {};
   for (const name of LANDMARKS) {
     if (name === 'femoralHeadContour') continue;
     const found = channels[name];
-    if (found && found.point.every(Number.isFinite)) out[name] = { points: [found.point], confidence: found.confidence };
+    if (found && found.point.every(Number.isFinite)) {
+      out[name] = { points: [found.point], confidence: found.confidence, ...(found.sigmaMm ? { sigmaMm: found.sigmaMm } : {}) };
+    }
   }
   const centre = channels.hipCentre;
   if (centre && centre.point.every(Number.isFinite)) {
@@ -297,7 +339,9 @@ export function kitSuggestions(channels: Partial<Record<Channel, ChannelPoint>>,
     const ring = offsets.map(offset => image([middle[0] + offset[0] / length(offset) * radius, middle[1] + offset[1] / length(offset) * radius]));
     // Fewer than three directions, or all on one line, give no circle: no outline is suggested.
     const fitted = radius > 0 ? fitCircle(ring.map(plane)) : null;
-    if (fitted && length(sub(fitted.centre, middle)) < 1e-6) out.femoralHeadContour = { points: ring, confidence: centre.confidence };
+    if (fitted && length(sub(fitted.centre, middle)) < 1e-6) {
+      out.femoralHeadContour = { points: ring, confidence: centre.confidence, ...(centre.sigmaMm ? { sigmaMm: centre.sigmaMm } : {}) };
+    }
   }
   return out;
 }

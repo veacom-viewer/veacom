@@ -458,7 +458,12 @@ async function checkStudy(study, mendeley, output, switches) {
     const unsure = async film => {
       const { status, run } = await suggest();
       assert.match(status, /not sure of this leg's hip, knee and ankle, so it suggests nothing/, film);
-      assert(Number.isFinite(run.peak) && run.peak < 0.02, `${film}: stage A's least peak ${run.peak} is under 0.02.`);
+      if (run.presence !== undefined) {
+        assert(Number.isFinite(run.presence) && Number.isFinite(run.peak) && (run.presence < 0.15 || run.peak < 0.005),
+          `${film}: stage A v3 presence ${run.presence} (or peak ${run.peak}) is below threshold.`);
+      } else {
+        assert(Number.isFinite(run.peak) && run.peak < 0.02, `${film}: stage A's least peak ${run.peak} is under 0.02.`);
+      }
       assert.equal(await panel.locator('.deformity-landmarks li[data-suggested]').count(), 0, `${film}: no suggested row.`);
       assert.equal(await page.locator('[data-testid="deformity-suggestions"] [data-suggestion]').count(), 0, `${film}: no suggestion drawn.`);
       assert.equal(await panel.locator('[data-action="deformity-suggest"]').isDisabled(), false, `${film}: Suggest can be pressed again.`);
@@ -576,7 +581,12 @@ async function checkStudy(study, mendeley, output, switches) {
     await panel.locator('[role="tab"]', { hasText: 'Left leg' }).click();
     const { status: suggested, run: suggestRun } = await suggest();
     assert.match(suggested, /Landmarks suggested: 14/);
-    assert(Number.isFinite(suggestRun.peak) && suggestRun.peak >= 0.02, `Mendeley 49_0: stage A's least peak ${suggestRun.peak} is 0.02 or more.`);
+    if (suggestRun.presence !== undefined) {
+      assert(Number.isFinite(suggestRun.presence) && suggestRun.presence >= 0.15 && Number.isFinite(suggestRun.peak) && suggestRun.peak >= 0.005,
+        `Mendeley 49_0: stage A v3 presence ${suggestRun.presence} >= 0.15 and peak ${suggestRun.peak} >= 0.005.`);
+    } else {
+      assert(Number.isFinite(suggestRun.peak) && suggestRun.peak >= 0.02, `Mendeley 49_0: stage A's least peak ${suggestRun.peak} is 0.02 or more.`);
+    }
     const rows = selector => panel.locator(`.deformity-landmarks li${selector}`).evaluateAll(items => items.map(item => item.dataset.landmark));
     const suggestedRows = () => rows('[data-suggested]');
     assert.deepEqual(await suggestedRows(), ['femoralHeadContour', 'greaterTrochanterTip', 'femoralShaftProximal', 'femoralShaftDistal', 'kneeCentre', 'femoralCondyleMedial',

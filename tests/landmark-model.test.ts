@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { assertClose } from './support';
-import { canvasSize, CHANNELS, CROP_KINDS, cropCentre, cropToFilm, decodeStageA, kitSuggestions, mirroredChannel, modelLeg, percentile, readStageB, roundHalfEven,
-  sampleCrop, stageACanvas, STAGE_B, UNCHECKED, windowed, windowRange, type ChannelPoint, type Channel } from '../src/imaging/deformity/suggest';
+import { canvasSize, CHANNELS, CROP_KINDS, CROP_TYPE_ID, cropCentre, cropToFilm, decodeStageA, kitSuggestions, mirroredChannel, modelLeg, percentile, readStageB, roundHalfEven,
+  sampleCrop, stageACanvas, STAGE_A, STAGE_B, UNCHECKED, windowed, windowRange, type ChannelPoint, type Channel } from '../src/imaging/deformity/suggest';
 import { LANDMARKS } from '../src/imaging/deformity/landmarks';
 import { fitCircle, type Point } from '../src/imaging/deformity/plane';
 
@@ -36,11 +36,13 @@ describe('the model\'s view of the film', () => {
     assert.deepEqual(canvasSize(COLUMNS, ROWS, [9, 9]), { width: 166, height: 274, fits: true });
     const up = stageACanvas(windowedFilm, COLUMNS, ROWS, [9, 9]);
     assert.deepEqual(up.scale, [166 / 37, 274 / 61]);
-    for (const [[y, x], value] of [[[0, 0], 1], [[5, 7], 0.1875], [[100, 50], 0.375], [[273, 165], 0.75], [[150, 120], 1]] as const) assertClose(up.canvas[y * 256 + x], value, 6);
+    for (const [[y, x], value] of [[[0, 0], 1], [[5, 7], 0.1875], [[100, 50], 0.375], [[273, 165], 0.75], [[150, 120], 1]] as const) assertClose(up.canvas[y * STAGE_A.columns + x], value, 6);
     // Pixels of 0.5 mm: 4 × 4 or so pixels to a cell, with overlapping ranges where the sizes do not divide.
     const down = stageACanvas(windowedFilm, COLUMNS, ROWS, [0.5, 0.5]);
-    for (const [[y, x], value] of [[[0, 0], 0.5425], [[3, 4], 0.5075], [[14, 8], 0.5025], [[15, 9], 0], [[7, 2], 0.4875]] as const) assertClose(down.canvas[y * 256 + x], value, 6);
-    assert.equal(canvasSize(2000, 6000, [0.25, 0.25]).fits, false, 'A film taller than 1408 mm does not fit.');
+    for (const [[y, x], value] of [[[0, 0], 0.5425], [[3, 4], 0.5075], [[14, 8], 0.5025], [[15, 9], 0], [[7, 2], 0.4875]] as const) assertClose(down.canvas[y * STAGE_A.columns + x], value, 6);
+    assert.equal(canvasSize(2000, 6000, [0.25, 0.25]).fits, true, 'A 500 × 1500 mm film fits the 576 × 1728 mm v3 canvas.');
+    assert.equal(canvasSize(2000, 7500, [0.25, 0.25]).fits, false, 'A film taller than 1728 mm does not fit.');
+    assert.equal(canvasSize(2400, 5000, [0.25, 0.25]).fits, false, 'A film wider than 576 mm does not fit.');
   });
 
   it('samples crops as stageb.sample_crop: pre-blurred when the film is finer, mirrored for the image\'s right leg', () => {
@@ -74,6 +76,16 @@ describe('reading the model', () => {
     // Each leg's peak is its least sure joint's softmax maximum: two equal cells give 0.5.
     assertClose(legs.left.peak, 0.5, 6);
     assertClose(legs.right.peak, 0.4, 6);
+    assert.equal(legs.left.presence, undefined);
+    // Stage A v3 presence logits: sigmoid per joint, clamped for extreme logits, minimum per leg.
+    const withPresence = decodeStageA(logits, height, width, scale, new Float32Array([4, 0, 2, 100, -100, 1]));
+    assertClose(withPresence.left.jointPresence![0], 1 / (1 + Math.exp(-4)), 6);
+    assertClose(withPresence.left.jointPresence![1], 0.5, 6);
+    assertClose(withPresence.left.jointPresence![2], 1 / (1 + Math.exp(-2)), 6);
+    assertClose(withPresence.left.presence, 0.5, 6);
+    assertClose(withPresence.right.jointPresence![0], 1, 12);
+    assert.ok(withPresence.right.jointPresence![1] < 1e-12 && withPresence.right.jointPresence![1] >= 0);
+    assert.equal(withPresence.right.presence, withPresence.right.jointPresence![1]);
   });
 
   it('centres the hip crop 22 mm lateral, the shaft crops along the anchors, and maps crop pixels back, mirrored for the right leg', () => {
@@ -107,6 +119,7 @@ describe('reading the model', () => {
     const centres: Point[] = crops.map(() => [0, 0]), mm = [0.35, 0.35] as const;
     const left = readStageB(coords, confidence, crops, centres, mm, false), right = readStageB(coords, confidence, crops, centres, mm, true);
     assert.deepEqual(crops, ['hip', 'knee', 'ankle', 'femurProximal', 'femurDistal', 'tibiaProximal', 'tibiaDistal']);
+    assert.deepEqual(crops.map(kind => CROP_TYPE_ID[kind]), [0n, 1n, 2n, 3n, 4n, 5n, 6n]);
     assert.deepEqual(left.kneeCentre?.point, [1, CHANNELS.indexOf('kneeCentre')]);
     assert.deepEqual(left.femoralHeadContour1?.point, [0, CHANNELS.indexOf('femoralHeadContour1')]);
     assert.deepEqual(right.femoralHeadContour1?.point, [0, CHANNELS.indexOf('femoralHeadContour6')]);
@@ -117,6 +130,20 @@ describe('reading the model', () => {
     }
     assertClose(right.tibialShaftProximal!.confidence, CHANNELS.indexOf('tibialShaftProximal') / 100, 6);
     assert.equal(Object.keys(left).length, CHANNELS.length);
+    assert.equal(left.kneeCentre?.sigmaMm, undefined);
+    // Stage B v3 RLE sigma_px: scaled by 0.35 mm/px, zero y-sigma on shaft crops, mirrored for right-leg contour.
+    const sigmaPx = new Float32Array(count * CHANNELS.length * 2);
+    for (let crop = 0; crop < count; crop++) for (let channel = 0; channel < CHANNELS.length; channel++) {
+      const index = crop * CHANNELS.length + channel;
+      sigmaPx[index * 2] = 2 + channel * 0.1; sigmaPx[index * 2 + 1] = 3 + crop * 0.5;
+    }
+    const leftV3 = readStageB(coords, confidence, crops, centres, mm, false, sigmaPx);
+    const rightV3 = readStageB(coords, confidence, crops, centres, mm, true, sigmaPx);
+    assertClose(leftV3.kneeCentre!.sigmaMm![0], (2 + CHANNELS.indexOf('kneeCentre') * 0.1) * STAGE_B.pitch, 6);
+    assertClose(leftV3.kneeCentre!.sigmaMm![1], (3 + 1 * 0.5) * STAGE_B.pitch, 6);
+    assertClose(leftV3.femoralShaftProximal!.sigmaMm![0], (2 + CHANNELS.indexOf('femoralShaftProximal') * 0.1) * STAGE_B.pitch, 6);
+    assert.equal(leftV3.femoralShaftProximal!.sigmaMm![1], 0, 'Shaft y is fixed by crop centre row.');
+    assertClose(rightV3.femoralHeadContour1!.sigmaMm![0], (2 + CHANNELS.indexOf('femoralHeadContour6') * 0.1) * STAGE_B.pitch, 6);
   });
 
   it('names the leg by its place on the image, only on an upright film', () => {
@@ -159,6 +186,13 @@ describe('the kit\'s suggestions', () => {
     // Each ring point keeps the direction of its outline point.
     const direction = (p: Point) => Math.atan2((p[1] - hip[1]) * mm[1], (p[0] - hip[0]) * mm[0]);
     ring.forEach((p, i) => assertClose(direction(p), direction(contour[i]), 9));
+    // Propagates v3 sigmaMm onto point landmarks and onto femoralHeadContour from hipCentre.
+    const withSigma = channels(hip, contour);
+    withSigma.hipCentre = { ...withSigma.hipCentre!, sigmaMm: [0.8, 0.9] };
+    withSigma.kneeCentre = { ...withSigma.kneeCentre!, sigmaMm: [0.6, 0.7] };
+    const suggestedV3 = kitSuggestions(withSigma, mm);
+    assert.deepEqual(suggestedV3.kneeCentre?.sigmaMm, [0.6, 0.7]);
+    assert.deepEqual(suggestedV3.femoralHeadContour?.sigmaMm, [0.8, 0.9]);
   });
 
   it('suggests no head when the outline gives no circle', () => {

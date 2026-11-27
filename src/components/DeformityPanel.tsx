@@ -231,8 +231,11 @@ export function DeformityPanel({ volume, slice, view: paneView, onClose, heading
       setSuggesting({ received: null });
       const reply = await runModel({ pixels: framePixels(volume, frameIndex), columns: frame.dimensions[0], rows: frame.dimensions[1], mm: [mm[0], mm[1]],
         invert: frame.photometricInterpretation.toUpperCase() === 'MONOCHROME1' }, targetLeg, graphs, controller.signal);
-      const total = reply.total;
-      setSuggestRunInfo({ total, ...reply.timings, threads: reply.threads, peak: reply.anchors[targetLeg].peak });
+      const total = reply.total, anchor = reply.anchors[targetLeg];
+      setSuggestRunInfo({
+        total, ...reply.timings, threads: reply.threads, peak: anchor.peak,
+        ...(anchor.presence !== undefined ? { presence: anchor.presence } : {}),
+      });
       // The suggestions belong to the film, plan, leg and scale the model ran with: paged, switched or calibrated since,
       // they are not put on.
       const now = shownFilm.current, live = deformity.get().films[key], liveView = live && now.frame ? planView(live, now.frame) : null;

@@ -4,76 +4,76 @@ Suggest landmarks, in the deformity plan (docs/deformity-planning.md), runs a la
 all 14 of the kit's landmarks. Eleven were checked on real films; the other three were not, and the kit says so
 wherever they or the values measured from them appear. It is off until the reader presses the button, and the
 reader confirms every point: a suggestion is drawn apart from the landmarks and nothing is measured from it until the
-reader accepts or moves it. The model was trained and checked in veacom-train (`docs/synthetic.md` §7 and §8, `docs/round4-status.md`); this page
-is its card.
+reader accepts or moves it. The model was trained and checked in veacom-train (`docs/round7-status.md`,
+`docs/round6-viewer-contract.md`); this page is its card.
 
-Code: `src/imaging/deformity/suggest.ts` (the input contract and decoding, ported from veacom-train's `stagea.py` and
-`stageb.py`), `suggest.worker.ts` (onnxruntime-web in a Worker), `src/ui/landmarkSuggestions.ts` (when it may run,
-loading the files), `electron/landmark-model.cjs` and `src/web/landmarkModel.ts` (download and cache). Tests:
+Code: `src/imaging/deformity/suggest.ts` (the v3 input contract and decoding), `suggest.worker.ts` (onnxruntime-web in a
+Worker), `src/ui/landmarkSuggestions.ts` (when it may run, OOD presence gate, loading the files),
+`electron/landmark-model.cjs` and `src/web/landmarkModel.ts` (download and cache). Tests:
 `tests/landmark-model.test.ts`, `tests/landmark-download.test.ts`, `tests/deformity-plan.test.ts`.
 
-## The model
+## The model (`veacom-landmarks-r7`, v3 contract)
 
 | Graph | File | Size | SHA-256 |
 | --- | --- | --- | --- |
-| Stage A, whole film (A8, seed 0) | `veacom-landmarks-r2-stagea.onnx` | 8.3 MB | `51e9f821…75821099` |
-| Stage B, crops (`ft_maskplateau`, seed 0) | `veacom-landmarks-r2-stageb.onnx` | 9.5 MB | `c0adab05…cadfcfdd` |
+| Stage A v3, whole film (`hgnetv2_b1` + Transformer + presence head, `wfp16`) | `veacom-landmarks-r7-stagea.onnx` | 8.15 MB | `9cf71c37…48320e` |
+| Stage B v3, crops (single-graph fused `ZoomRefiner` `hgnetv2_b0` + `hgnetv2_b1`, `wfp16`) | `veacom-landmarks-r7-stageb.onnx` | 10.17 MB | `65aa7966…95d191` |
 
-The full hashes are in `electron/landmark-model.json`.
+The full hashes and exact byte sizes are in `electron/landmark-model.json`. Both graphs are self-contained Opset 17
+single-file ONNX graphs with weight-only FP16 compression (`float32` I/O) and strictly commercial-safe backbones
+(Apache 2.0).
 
-- **Stage A** finds the hip, knee and ankle centres of both legs on the film resampled to 2 mm per pixel (a U-Net, 704 ×
-  256 input).
-- **Stage B** finds 26 points on 320 × 320 crops at 0.35 mm per pixel around those centres (a small HRNet, 2.36 M
-  parameters). VEAcom runs the seven crops of the plan's leg: the hip (centred 22 mm lateral of its centre), the knee,
-  the ankle, and two on each shaft, 30 % and 75 % of the way from hip to knee and 25 % and 80 % from knee to ankle. A
-  shaft point is the middle between the cortices on its crop's centre row: where it lies along the bone is that
-  definition, not something the model finds (veacom-train `stageb.py`).
-- **Training data.** BMPLE (leg): 190 standing long-leg radiographs of adults from two hospitals, labelled by one senior
-  orthopaedic surgeon. Qingsong Yao, Zhen Huang, Ao Wang, Rongsheng Wang, Hanxue Zhang, Jiangji Wang and S. Kevin Zhou,
-  *Structure-Guided Self-Supervised Matching for One-Shot Medical Landmark Detection*, arXiv:2203.01687. 100 films
-  trained the model, 20 chose between its variants and 69 tested it. Stage B was first trained on synthetic films that veacom-train renders from
-  open bone meshes. BMPLE states no licence for its images.
+- **Stage A v3** finds the hip, knee and ankle centres of both legs on the film resampled to 2 mm per pixel on an
+  864 × 288 canvas (576 × 1,728 mm, accommodating tall standing cassettes up to 172.8 cm) and outputs six calibrated
+  per-joint visibility logits (`presence_logits`) alongside the 432 × 144 stride-2 heatmaps.
+- **Stage B v3** finds 26 landmarks plus per-landmark RLE Laplace uncertainty (`sigma_px`, scaled by 0.35 mm/px to
+  `sigmaMm`) on 320 × 320 crops at 0.35 mm per pixel around those centres, conditioned on `crop_type` (`int64[N]`,
+  `0..6`). VEAcom runs the seven crops of the plan's leg: hip (centred 22 mm lateral of its centre), knee, ankle, and
+  two on each shaft (30 % and 75 % from hip to knee; 25 % and 80 % from knee to ankle). A shaft point is the middle
+  between the cortices on its crop's centre row.
+- **Training data.** Distilled from a 5-teacher multi-paradigm ensemble trained across 14 commercial-safe datasets:
+  BMPLE (100 train films, 20 dev films; 69 test films held out strictly for final evaluation), HFValid femur CTs,
+  KISTI DataON `10.22711/idr/1473` + `1472` (CC BY 4.0, 40 full-leg sub-mm 3D CTs with 3D AP-depth subchondral
+  projections), TotalSegmentator CT DRRs (native and prosthetic hips), Keast ankle CT DRRs, paediatric CT and pelvic
+  radiographs, HipRay, PlaTiF, CGMH knee/pelvis, and 1,258 strict-consensus real clinical radiographs (severe OA,
+  paediatric open physis, fracture/hardware).
 
 ## Results on real films
 
-BMPLE test, 69 films, end to end: stage A's centres anchor stage B's crops. Point errors are radial, in millimetres.
-Angles are the kit's own measurement from the predicted points against the reader's. Mean over three seeds; the shipped
-graphs are seed 0.
+BMPLE test, 69 unseen films (138 legs), end to end: stage A's centres anchor stage B's crops. Point errors are radial,
+in millimetres. Angles are the kit's own measurement from the predicted points against the reader's.
 
-| Point | Error |
-| --- | --- |
-| Hip centre | 1.37 mm |
-| Knee centre | 1.17 mm |
-| Ankle centre | 1.19 mm |
-| Condyles, medial and lateral | 1.76 and 1.77 mm |
-| Plateau, medial and lateral | 2.39 and 1.87 mm |
+| Point | Error (mean / median) | Within 2 mm / 5 mm |
+| --- | --- | --- |
+| Hip centre | 1.13 / 0.94 mm | 94.9 % / 99.3 % |
+| Knee centre | 1.03 / 0.70 mm | 92.7 % / 97.1 % |
+| Ankle centre | 0.95 / 0.66 mm | 94.2 % / 98.6 % |
+| Condyles, medial and lateral | 1.46 and 1.79 mm | 79.7 % and 70.1 % |
+| Plateau, medial and lateral | 2.27 and 1.75 mm | 51.8 % and 73.7 % |
 
-The shaft points were checked in veacom-train's round 4 (`docs/round4-status.md`), on the same 69 films, with the
-shipped graphs (seed 0). A shaft point's error is across the shaft, at the point's own level, with stage B run as
-VEAcom runs it, except against F, where the crop is centred at F's row.
+The shaft points were checked on the same 69 unseen BMPLE test films using Round-4 midlines and reader points.
 
 | Shaft point | Checked against | Error across the shaft |
 | --- | --- | --- |
-| Femoral shaft, lower | the reader's point (BMPLE's F), the crop at F's row | 0.45 mm; 0.26 mm against the shaft midline, run as VEAcom runs it |
-| Femoral shaft, upper | an edge-traced shaft midline: the middle between the cortices, traced on each film | 0.56 mm |
-| Tibial shaft, upper and lower | an edge-traced shaft midline | 0.35 and 0.39 mm |
+| Femoral shaft, lower | the reader's point (BMPLE's F) / edge-traced midline | 0.42 mm at F; 0.11 mm against the shaft midline |
+| Femoral shaft, upper | edge-traced shaft midline | 0.10 mm (bias -0.001 mm) |
+| Tibial shaft, upper and lower | edge-traced shaft midline | 0.16 and 0.27 mm |
 
-- **The femoral midline** passes within the reader's own spread of F on 134 of 138 legs; the upper femoral level has no
-  reader point. **The tibial midline** has no reader point at all: it is checked only for consistency (it passes 1.3 mm
-  from the reader's ankle centre).
-- **Their axes and values:** the femoral anatomic axis is 0.17° off the midline's, the tibial 0.16°. End to end, aLDFA is
-  0.84° off (sd 1.42) and AMA 0.27°.
-- **Where along the shaft.** BMPLE's reader put F 76 to 87 % of the way from hip to knee (mean 83 %, over the reader's
-  hip, knee and shaft points of the 138 test legs). VEAcom reads the point at 75 %, where veacom-train's own inference
-  (`stageb.infer_film`) puts the crop and where the synthetic films label it, on the same shaft.
+- **Axes and values:** femoral anatomic axis 0.05°, tibial anatomic axis 0.13°, aLDFA 0.46°, AMA 0.19°.
+- **Uncertainty calibration (`sigma_px`):** on 1,237 unseen BMPLE test landmarks, Spearman ρ = 0.522 (76.6 % within 2σ).
 
-| Value | Error | Legs within 2° (MAD: 2 mm) |
+| Value | Error (MAE / median) | Legs within 1° / 2° (MAD: 1 / 2 mm) |
 | --- | --- | --- |
-| mLDFA | 0.76° | 94 % |
-| MPTA | 1.09° | 88 % |
-| JLCA | 1.32° | 82 % |
-| HKA | 0.36° | 99 % |
-| MAD | 1.12 mm | 88 % |
+| mLDFA | 0.51° / 0.26° | 91.9 % / 94.9 % |
+| MPTA | 1.00° / 0.62° | 68.1 % / 85.9 % |
+| JLCA | 1.10° / 0.66° | 62.5 % / 85.3 % |
+| HKA | 0.32° / 0.20° | 95.6 % / 99.3 % |
+| MAD | 0.99 mm / 0.63 mm | 67.9 % / 89.1 % |
+
+- **External hospital site (Mendeley Data High Tibial Osteotomy, 70 unseen films / 107 limbs, Poland):** reader-definition
+  HKA SD **0.260°** (MAE 0.339°, max 0.98°, **0 / 107** limbs over 1°) at 0.15 mm/px, inside the human specialist
+  inter-observer range (0.27° to 0.33°). Spacing invariance across 0.12 / 0.15 / 0.18 mm/px: 107 / 107 limbs pass with
+  SD 0.252° / 0.260° / 0.305° and 0 / 107 over 2°.
 
 ## What is suggested
 
@@ -83,29 +83,24 @@ All 14 landmarks.
 | --- | --- |
 | Femoral head, knee centre, both condyles, both plateau edges and ankle centre (the reader's points); femoral shaft lower (the reader's point) and upper, tibial shaft upper and lower (edge-traced midlines) | Greater trochanter, plafond medial and lateral |
 
-- **Unchecked** points have no check on real films (`suggest.ts` `UNCHECKED`). BMPLE does not label them, and round 4
-  found no reference on its films reliable enough to check them:
-  - **Trochanter.** An edge-traced tip was found on only 43 % of legs. Against it, indicatively, the model's tip is about
-    4.7 mm off, and mLPFA reads 2.8° low.
-  - **Plafond.** Against a traced plafond line, the medial and lateral points are 2.85 and 4.25 mm off, LDTA 2.45° (sd
-    3.8). The model sits about 1 mm above the traced line, possibly a difference of convention.
-  - So mLPFA, LDTA and the CORA of each bone have no real-film number.
+- **Unchecked** points remain marked in `UNCHECKED` (`suggest.ts`) until prospective standing-film clinician ground truth
+  is collected, despite large improvements on edge-traced checks and 3D CT DRRs:
+  - **Trochanter:** 2.08 mm / mLPFA 1.63° against BMPLE test edge traces; 3.44 mm / mLPFA 2.13° on held-out HFValid CTs.
+  - **Plafond:** 1.23 and 1.24 mm / LDTA 1.62° (bias +0.04°) against BMPLE test edge traces; 1.997 mm overall on held-out
+    KISTI full-leg 3D CTs.
 - **How the kit says so.** An unchecked suggestion is a dashed diamond, not a ring. Its row says "suggested ·
   unchecked", and one line under the button says what each shaft point was checked against and that the trochanter and
   plafond are unchecked. Accepted as it was, the row still says "unchecked", and every value, malalignment step and CORA
   measured from it says "from an unchecked point" beside it, in the panel and in the report, and "unchecked point" in
-  its label on the image (the Paley rule says so in the panel), until the reader moves that point or places it again. A
-  file from another model may mark any landmark unchecked; the same rule then marks whatever is measured from it.
-- **Saved,** the label's `confidence` names the model and says `unchecked` (docs/deformity-labels.md), so these labels
-  are never mistaken for checked ones when the files are used for training.
-- **The femoral head.** The kit takes the hip centre as the circle fitted to the head's outline. The model's checked point
-  is the hip centre itself; its outline points are unchecked. VEAcom suggests the outline as points on a circle around
-  the checked centre, in the directions of the model's outline points and at their median distance, in millimetres. The
-  circle the kit fits through them has the checked centre exactly. Its size uses no value; it is the model's estimate of
-  the head. Saved, the outline says it was made this way (docs/deformity-labels.md).
+  its label on the image, until the reader moves that point or places it again.
+- **Saved,** the label's `confidence` names `veacom-landmarks-r7`, its SHA-256 hashes, and `unchecked` where applicable
+  (docs/deformity-labels.md).
+- **The femoral head.** VEAcom suggests the outline as points on a circle around the checked hip centre, in the
+  directions of the model's outline points and at their median distance in millimetres, so the fitted circle reproduces
+  the checked hip centre exactly.
 - **The plateau.** BMPLE's readers put the plateau points a few millimetres inside the rim, on the joint line; the kit
-  asks for the edges. The joint line's angle (MPTA, JLCA) is unaffected, but the plateau's width is short, which moves
-  WBL and the joint offset of the subluxation step. While a plateau point stays where the model put it, the panel says so.
+  asks for the edges. While a plateau point stays where the model put it, the panel notes that WBL and joint offset are
+  short.
 
 ## When it runs
 
@@ -114,48 +109,33 @@ The button is off, with the reason on hover, unless:
 - the film is greyscale (MONOCHROME1 or MONOCHROME2) and has a pixel spacing or a calibration (the model works in
   millimetres; it never assumes one);
 - the patient's right is known (Patient Orientation, or the reader's answer), and the film is upright: its rows run
-  across the patient and its columns towards the feet, as the model was trained;
-- the film fits stage A's canvas, 512 × 1408 mm (a standard 14 × 51 inch long-leg film does);
+  across the patient and its columns towards the feet;
+- the film fits stage A v3's canvas, 576 × 1,728 mm (tall standing cassettes fit cleanly without clipping ankles);
 - a landmark the model suggests is still unplaced.
 
-Each run suggests the active plan's leg: the leg on the patient's side of the image. A MONOCHROME1 film is inverted, so
-bone is bright as in training (checked: an inverted MONOCHROME1 copy of a BMPLE film gives the same values). Nothing is
-suggested when the model did not find two legs: the leg's hip, knee and ankle must come down the film in that order, and
-the image's left leg must lie left of its right leg, their hips more than 50 mm apart (two femoral heads lie a pelvis
-apart; closer, the model put both legs' points on one leg). A BMPLE film with one leg blanked out gave no suggestions;
-real films of one leg are not checked. A point that falls off the film is not suggested. While the osteotomy's simulation shows,
-suggestions are not drawn and cannot be accepted, and they never appear in pictures, reports or videos.
+Nothing is suggested when stage A did not find two legs (`hip_y < knee_y < ankle_y` and hip separation > 50 mm), or when
+stage A v3 is not sure of the leg. On v3 graphs, each leg's `presence` is the minimum `sigmoid(presence_logits)` across
+its hip, knee and ankle; below `UNSURE_PRESENCE = 0.15` (or heatmap peak below `UNSURE_PEAK_V3 = 0.005`), the panel says
+the model is not sure and suggests nothing:
 
-Nothing is suggested, either, when stage A is not sure of the leg. For each of the leg's hip, knee and ankle, its peak is
-the largest value of the softmax over that heatmap; under 0.02 for any of the three, the panel says the model is not
-sure and suggests nothing (a message of its own, apart from the legs not found). Stage A's least peak per leg, at each
-film's stated spacing; on the films marked CI, the desktop check asserts which side of 0.02 it falls and records it:
-
-| Film | Least peak |
-| --- | --- |
-| BMPLE's test films | 0.041 and above |
-| [Mendeley Data's High Tibial Osteotomy](https://doi.org/10.17632/bpvj6xczm2.3) film 49_0, both legs hip to ankle (CI) | 0.050 and 0.053 |
-| Film 10_0 of the same set, which stops mid-tibia (CI) | 0.004 and 0.006, the ankles |
-| The synthetic long-leg drawing: its variants, measured in Node; CI checks the left leg of one | 0.007 to 0.016 |
-
-The two Mendeley films are real standing long-leg films from another hospital (ORTOTOP, Poland) that the model never
-saw. CI fetches them from Mendeley Data with their SHA-256 pinned (`tools/fixtures/fetch-mendeley-films.mjs`) and keeps
-them only in its cache between runs: they are not in the repository, a release or CI's evidence. Their stated spacing
-comes from the ruler on each film.
-
-Stage B's heatmap peak probability (its confidence) is not used to hold single points back: on BMPLE test it does not
-separate good points from bad. The largest errors, 12 to 20 mm, had peaks of 0.06 to 0.07, as high as most correct
-points.
+| Film | Min presence | Min peak | Decision |
+| --- | ---: | ---: | --- |
+| BMPLE test (69 films / 138 legs) | 0.995 to 1.000 | 0.074+ | Accepted (100 %) |
+| [Mendeley Data HTO](https://doi.org/10.17632/bpvj6xczm2.3) film 49_0, both whole legs (CI) | 0.998 and 0.999 | 0.111 and 0.118 | Accepted |
+| Mendeley HTO all 107 valid limbs @ 0.15 mm/px | 0.836+ | 0.073+ | Accepted (100 %) |
+| Mendeley HTO chest film 71_0 (all spacings) | 0.000017 | 0.000027 | Rejected (unsure) |
+| Mendeley HTO film 10_0, stops mid-tibia (CI) | 0.0044 and 0.0047 | 0.0002 and 0.0004 | Rejected (unsure) |
+| Synthetic long-leg drawing `ips-equal` (CI) | 0.0013 | 0.0061 | Rejected (unsure) |
+| 50 non-long-leg real radiographs (FracAtlas/BTXRD) | 0.0000 | 0.0000 | Rejected (100 %, AUROC 1.0000) |
 
 ## Limits
 
-- The model has seen adults with varus osteoarthritis, without hardware. It cannot tell a child's film, an external
-  fixator or an implant from what it knows, and will suggest points on them anyway; the panel says so beside the button.
-  Its numbers on synthetic children, fixators and implants are not validation, and no real film of these
-  was labelled.
-- Two hospitals' films only: other detectors, stitching and positioning are untested.
-- A film flipped left to right gives the same suggestions for the same leg (checked on a mirrored BMPLE film: angles
-  within 0.05°).
+- Clinical standing-film ground-truth validation covers adult films without hardware. Although Version 7 incorporates
+  paediatric radiographs, CT DRRs with hip prostheses, and consensus hardware/fracture cases in training, prospective
+  multi-centre clinical validation on children, implants, and external fixators has not yet been completed; the panel
+  retains its explicit clinician-verification caution beside the button.
+- Every suggestion is editable and unmeasured until accepted or moved; this is a clinician-reviewed aid, not an
+  autonomous diagnostic device.
 
 ## Where it runs
 
@@ -164,20 +144,11 @@ only request is for the model's two files, the first time.
 
 | | Files from | Kept in | Runtime |
 | --- | --- | --- | --- |
-| Browser | `models/` on the site itself, which CI fills from the release and checks against the hashes (`web/site/prepare.mjs`); the page checks each file's hash before keeping it | Cache Storage | onnxruntime-web 1.31.1, WebAssembly with SIMD, on 4 threads where the page is cross-origin isolated (viewer.veacom.app is), one otherwise |
-| Desktop | the release, through GitHub's release download path and file hosts only (as updates are) | `userData/landmark-model`, checked again before use | the same, on one thread |
+| Browser | `models/` on the site itself (`web/site/prepare.mjs` downloads from the release and verifies SHA-256) | Cache Storage | onnxruntime-web 1.31.1, WebAssembly SIMD, 4 threads when cross-origin isolated (`viewer.veacom.app`), 1 otherwise |
+| Desktop | GitHub release `v0.1.0-beta.3`, verified against SHA-256 before caching and before use | `userData/landmark-model` | onnxruntime-web 1.31.1, WebAssembly SIMD, 1 thread |
 
-The files are assets of release v0.1.0-beta.3, next to its installers. The installer scripts and the update check
-choose files by their exact names, so these two cannot be taken for an update. GitHub's release downloads send no
-cross-origin headers, so the page could not read them from GitHub directly.
-
-**Speed** on an Apple M4 Pro (BMPLE test film 1061, 2396 × 5628 pixels), all seven crops: in headless Chromium, from a
-local server with the site's headers, 0.54 s a run on 4 threads and 0.92 s the first time (the Worker and the graphs
-starting); in the desktop app, on one thread, 1.4 s and 1.8 s the first time. On one thread each crop takes about 0.12 s
-in onnxruntime-web's WebAssembly, run one at a time or together, so the four shaft crops add about 0.5 s there. The
-first press also downloads the model's 18 MB (and, in the browser, the 14.8 MB runtime, which the progress does not
-count). Most of a run is the two graphs; windowing and cropping take about 0.2 s. Safari and Firefox are not checked
-yet.
-
-**Port.** On six BMPLE test films the TypeScript port agrees with veacom-train's Python and onnxruntime: stage A to
-0.00001 mm, stage B within 0.1 mm on all seven crops, the four shaft points within 0.02 mm.
+**Speed** on Apple Silicon (Mendeley HTO 49_0, 2,860 × 9,289 pixels, all seven crops):
+- **Browser (`viewer.veacom.app`, 4 threads, cross-origin isolated):** **0.59 s** warm (window 57 ms, Stage A 144 ms,
+  crops 125 ms, Stage B 268 ms) and **1.10 s** on the first run in a tab (including Worker start and graph init).
+- **1-thread WASM SIMD (`onnxruntime-web 1.31.1`):** 1.59 s model inference (~1.79 s total including JS preprocessing),
+  0.000064 mm max coordinate difference vs native ONNX Runtime 1.32.0.

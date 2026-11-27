@@ -562,7 +562,7 @@ export const en = {
   'deformity.suggestBlock.side': 'Say where the patient\'s right is first.',
   'deformity.suggestBlock.upright': 'The model needs the film upright, hips at the top.',
   'deformity.suggestBlock.spacing': 'The model needs the film\'s pixel spacing or a calibration.',
-  'deformity.suggestBlock.size': 'The film is larger than the model\'s 512 × 1408 mm.',
+  'deformity.suggestBlock.size': 'The film is larger than the model\'s 576 × 1728 mm.',
   'deformity.suggestBlock.colour': 'The model reads greyscale films only.',
   'deformity.suggestBlock.placed': 'Every landmark the model suggests is placed.',
   'deformity.suggestDownloading': 'Downloading the model, once: {received} of {total} MB',
