@@ -73,6 +73,7 @@ What each phase does on the VM:
 | 2026-11-25 | [Three-plane CT rendering](https://github.com/veacom-viewer/veacom/commit/a566ebaecfcf085e4b90e271980aa8688943aaae). All 9 T4 checks passed. Seven views matched the full volume byte for byte with both shader compilation paths. | 9 min 9 s | about US$0.23 |
 | 2026-11-26 | [First CT frame and software redraw (#111)](https://github.com/veacom-viewer/veacom/pull/111). The T4 passed both shader compilation paths and the browser first-frame check. | 9 min 41 s | about US$0.24 |
 | 2026-11-26 | [Patient switching](https://github.com/veacom-viewer/veacom/pull/114), [window curves](https://github.com/veacom-viewer/veacom/pull/116), [CT scrolling](https://github.com/veacom-viewer/veacom/pull/118), [MPR controls](https://github.com/veacom-viewer/veacom/pull/122) and [CT magnification](https://github.com/veacom-viewer/veacom/pull/124), followed by [two-cut planning](https://github.com/veacom-viewer/veacom/pull/125) in the same session. Both builds passed all 13 T4 checks. | 18 min 51 s | about US$0.47 |
+| 2026-11-27 | [PR #127](https://github.com/veacom-viewer/veacom/pull/127) with [V7](https://github.com/veacom-viewer/veacom/pull/128) in the beta.4 candidate. All 9 T4 checks passed. | 10 min 42 s | about US$0.27 |
 
 Earlier sessions, from 2026-11-03 to 2026-11-06, are not itemised here; the billing report has them.
 
