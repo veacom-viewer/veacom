@@ -340,4 +340,44 @@ describe('main-only imaging broker', () => {
     assert.doesNotThrow(()=>validateApplicationSender({senderFrame:frame},window,'http://127.0.0.1:1234'));
     frame.url='http://127.0.0.1:5678/'; assert.throws(()=>validateApplicationSender({senderFrame:frame},window,'http://127.0.0.1:1234'), { message: /origin/ });
   });
+  it('streams multi-chunk pixel responses without pulling unread streams and forwards cancellation', async () => {
+    const f = fixture(); await f.broker.listSeries();
+    const chunkA = new Uint8Array(700_000).fill(11);
+    const chunkB = new Uint8Array(700_000).fill(22);
+    const totalLength = chunkA.length + chunkB.length;
+    const makeUpstream = () => {
+      let pulls = 0, cancelled = false;
+      const chunks = [chunkA, chunkB];
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls++;
+          const next = chunks.shift();
+          if (next) controller.enqueue(next);
+          else controller.close();
+        },
+        cancel() { cancelled = true; },
+      }, { highWaterMark: 0 });
+      return { stream, pulls: () => pulls, cancelled: () => cancelled };
+    };
+    const headers = { 'Content-Type': 'application/octet-stream', 'Content-Length': String(totalLength), 'X-Pixel-Type': 'int16', 'X-Components': '1' };
+    const unreadUpstream = makeUpstream();
+    f.request.mock.mockImplementationOnce(async () => new Response(unreadUpstream.stream, { headers }));
+    const unreadCap = f.broker.getPixels({ seriesId: 'study', generation: 1 });
+    const unreadRes = await f.broker.pixelResponse(new Request(unreadCap.url));
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(unreadUpstream.pulls(), 0);
+    await unreadRes.body!.cancel('stopped');
+    assert.equal(unreadUpstream.cancelled(), true);
+    const fullUpstream = makeUpstream();
+    f.request.mock.mockImplementationOnce(async () => new Response(fullUpstream.stream, { headers }));
+    const fullCap = f.broker.getPixels({ seriesId: 'study', generation: 1 });
+    const fullRes = await f.broker.pixelResponse(new Request(fullCap.url));
+    const received = new Uint8Array(await fullRes.arrayBuffer());
+    assert.equal(received.length, totalLength);
+    assert.equal(received[0], 11);
+    assert.equal(received[chunkA.length - 1], 11);
+    assert.equal(received[chunkA.length], 22);
+    assert.equal(received[totalLength - 1], 22);
+    f.broker.dispose();
+  });
 });

@@ -257,4 +257,66 @@ describe('the imaging engine channel (stdin and stdout)', () => {
       assert.equal(f.channel.pending.size, 0);
     }
   });
+  it('pipelines large volume reads up to 4 MiB with backpressure, zero unread credit, and clean cancel', async () => {
+    const f = fixture();
+    const total = 6 * MiB + 17;
+    const payload = bytes(total);
+    const call = f.channel.request('volume', { id: 's' });
+    f.engine.head(1, total);
+    const response = await call;
+    await f.settle();
+    assert.deepEqual(f.of(TO_ENGINE.credit), [], 'unread volume gets zero credit');
+
+    const reader = response.body!.getReader();
+    const firstRead = reader.read();
+    await f.settle();
+    const granted = () => f.of(TO_ENGINE.credit).reduce((n, m) => n + m.credit!, 0);
+    assert.equal(granted(), 4 * MiB, 'first pull fills 4 MiB pipeline');
+    assert.equal(f.channel.credit, 4 * MiB);
+
+    // Deliver chunk 0 (satisfies firstRead) plus chunks 1..4 without further reads: backpressure caps buffered at 4 MiB.
+    f.engine.data(1, payload.subarray(0, MiB));
+    const chunk0 = await firstRead;
+    assert.equal(chunk0.value!.byteLength, MiB);
+    await f.settle();
+    assert.equal(granted(), 5 * MiB, 'consuming chunk 0 grants chunk 4');
+    for (let i = 1; i < 5; i++) f.engine.data(1, payload.subarray(i * MiB, (i + 1) * MiB));
+    await f.settle();
+    assert.equal(granted(), 5 * MiB, 'paused consumer stops granting once 4 MiB is buffered');
+    assert.equal(f.channel.credit, 0);
+
+    // Drain remaining chunks synchronously from buffer and deliver tail chunks.
+    const received = [Buffer.from(chunk0.value)];
+    let sent = 5 * MiB;
+    for (;;) {
+      const next = reader.read();
+      await f.settle();
+      while (sent < granted()) {
+        const end = Math.min(sent + MiB, total);
+        f.engine.data(1, payload.subarray(sent, end));
+        sent = end;
+      }
+      const step = await next;
+      if (step.done) break;
+      received.push(Buffer.from(step.value));
+    }
+    assert.ok(Buffer.concat(received).equals(payload));
+    assert.equal(f.channel.credit, 0);
+    assert.equal(f.channel.pending.size, 0);
+
+    // Concurrent volumes respect WINDOW - CHUNK and cancelling releases all in-flight credit.
+    const v1 = f.channel.request('volume', { id: 'a' });
+    const v2 = f.channel.request('volume', { id: 'b' });
+    f.engine.head(2, 6 * MiB);
+    f.engine.head(3, 6 * MiB);
+    const [r1, r2] = await Promise.all([v1, v2]);
+    const g1 = r1.body!.getReader(), g2 = r2.body!.getReader();
+    const p1 = g1.read(), p2 = g2.read();
+    await f.settle();
+    assert.equal(f.channel.credit, WINDOW - MiB, 'two volumes share WINDOW - CHUNK leaving 1 MiB for control');
+    await g1.cancel();
+    await g2.cancel();
+    await Promise.all([p1, p2]);
+    assert.equal(f.channel.credit, 0);
+  });
 });

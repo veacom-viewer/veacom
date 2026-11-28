@@ -130,7 +130,8 @@ class EngineChannel {
     const id = this.nextId;
     return new Promise((resolve, reject) => {
       const entry = { id, group, work: workCategory(op), payload, size: payload.length, signal, resolve, reject, sent: false,
-        exportId: op === 'export' ? body?.operation : undefined, controller: null, length: 0, received: 0, credit: 0, pulled: null };
+        exportId: op === 'export' ? body?.operation : undefined, controller: null, length: 0, received: 0, granted: 0, credit: 0,
+        buffered: 0, pipeline: CHUNK, started: false, queue: [], pulled: null };
       this.pending.set(id, entry);
       this.requestBytes += entry.size;
       group.waiting.add(entry);
@@ -180,6 +181,9 @@ class EngineChannel {
     const headers = new Headers(head.headers);
     headers.set('Content-Length', String(head.length));
     entry.length = head.length;
+    // Large volumes keep up to 4 MiB in flight + buffered once read begins (still inside WINDOW - CHUNK),
+    // eliminating per-chunk stop-and-wait round trips without granting any credit to unread streams.
+    entry.pipeline = entry.group.name === 'volume' && entry.length > CHUNK ? Math.min(4 * CHUNK, entry.length) : CHUNK;
     if (entry.length === 0) {
       const noBody = [204, 205, 304].includes(head.status);
       entry.resolve(new Response(noBody ? null : new Uint8Array(0), { status: head.status, headers }));
@@ -191,45 +195,107 @@ class EngineChannel {
     // grants one chunk. Small JSON replies may arrive with their heads, including the shutdown acknowledgement.
     const stream = new ReadableStream({
       start: controller => { entry.controller = controller; },
-      pull: inline ? undefined : () => new Promise(done => {
-        entry.pulled = done;
-        this.readers.add(entry);
-        this.grant();
-      }),
+      pull: inline ? undefined : () => this.pull(entry),
       cancel: reason => this.abandon(entry, reason),
     }, { highWaterMark: 0 });
     entry.resolve(new Response(stream, { status: head.status, headers }));
   }
+  pull(entry) {
+    entry.started = true;
+    if (entry.queue.length) {
+      const piece = entry.queue.shift();
+      entry.buffered -= piece.length;
+      entry.controller.enqueue(piece);
+      if (entry.received === entry.length && !entry.queue.length) {
+        entry.controller.close();
+        this.finish(entry);
+      } else if (entry.granted < entry.length) {
+        this.readers.add(entry);
+        this.grant();
+      }
+      return;
+    }
+    return new Promise(done => {
+      entry.pulled = done;
+      this.readers.add(entry);
+      this.grant();
+    });
+  }
   grant() {
-    for (const entry of this.readers) {
-      const limit = entry.group.name === 'control' ? WINDOW : WINDOW - CHUNK;
-      const bytes = Math.min(CHUNK, entry.length - entry.received);
-      if (this.credit + bytes > limit) continue;
-      this.readers.delete(entry);
-      entry.credit = bytes;
-      this.credit += bytes;
-      const credit = Buffer.allocUnsafe(4);
-      credit.writeUInt32LE(bytes);
-      this.send(TO_ENGINE.credit, entry.id, credit);
+    let progressed = true;
+    while (progressed && this.readers.size) {
+      progressed = false;
+      for (const entry of [...this.readers]) {
+        if (!entry.started || entry.granted >= entry.length) {
+          this.readers.delete(entry);
+          continue;
+        }
+        const bytes = Math.min(CHUNK, entry.length - entry.granted);
+        const canPipeline = entry.pipeline > CHUNK
+          ? entry.credit + entry.buffered + bytes <= entry.pipeline
+          : entry.pulled !== null && entry.credit === 0;
+        if (!canPipeline) {
+          this.readers.delete(entry);
+          continue;
+        }
+        const limit = entry.group.name === 'control' ? WINDOW : WINDOW - CHUNK;
+        if (this.credit + bytes > limit) continue;
+        entry.granted += bytes;
+        entry.credit += bytes;
+        this.credit += bytes;
+        const credit = Buffer.allocUnsafe(4);
+        credit.writeUInt32LE(bytes);
+        this.send(TO_ENGINE.credit, entry.id, credit);
+        progressed = true;
+        const nextBytes = Math.min(CHUNK, entry.length - entry.granted);
+        const moreRoom = entry.granted < entry.length && entry.pipeline > CHUNK
+          && entry.credit + entry.buffered + nextBytes <= entry.pipeline;
+        if (!moreRoom) this.readers.delete(entry);
+      }
     }
   }
   piece(entry, piece) {
+    const expected = Math.min(CHUNK, entry.length - entry.received);
     if (!entry.controller || !piece.length || entry.received + piece.length > entry.length ||
-        (!entry.inline && piece.length !== entry.credit)) throw new Error('The imaging engine exceeded its body length or credit.');
+        (!entry.inline && (piece.length > entry.credit || piece.length !== expected))) {
+      throw new Error('The imaging engine exceeded its body length or credit.');
+    }
     entry.received += piece.length;
-    entry.controller.enqueue(piece);
-    this.releaseRead(entry);
-    if (entry.received === entry.length) {
-      entry.controller.close();
-      this.finish(entry);
-    } else this.grant();
+    if (!entry.inline) {
+      entry.credit -= piece.length;
+      this.credit -= piece.length;
+    }
+    if (entry.inline || entry.pulled) {
+      entry.controller.enqueue(piece);
+      const done = entry.pulled;
+      entry.pulled = null;
+      done?.();
+      if (entry.received === entry.length) {
+        entry.controller.close();
+        this.finish(entry);
+        return;
+      }
+    } else {
+      entry.queue.push(piece);
+      entry.buffered += piece.length;
+    }
+    if (!entry.inline && entry.started && entry.granted < entry.length) {
+      const nextBytes = Math.min(CHUNK, entry.length - entry.granted);
+      if (entry.pipeline > CHUNK && entry.credit + entry.buffered + nextBytes <= entry.pipeline) {
+        this.readers.add(entry);
+      }
+    }
+    this.grant();
   }
   releaseRead(entry) {
     this.readers.delete(entry);
     this.credit -= entry.credit;
     entry.credit = 0;
-    entry.pulled?.();
+    entry.queue.length = 0;
+    entry.buffered = 0;
+    const done = entry.pulled;
     entry.pulled = null;
+    done?.();
   }
   abandon(entry, reason) {
     if (!this.pending.has(entry.id)) return;
