@@ -614,6 +614,7 @@ mod tests {
             activity: None,
             ordinary_image: false,
             jpeg_component_threads: 0,
+            raw_pixels: None,
             voi_lut: None,
             segmentation: None,
             metadata: FrameMetadata {

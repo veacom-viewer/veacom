@@ -18,7 +18,7 @@ const headers = { 'X-Pixel-Type': 'int16', 'X-Components': '1' };
 const values = Int16Array.from({ length: 12 }, (_, i) => i * 100 - 600);
 const bytes = new Uint8Array(values.buffer);
 /** READ_STEP in src/api.ts. */
-const SCRATCH = 4 << 20;
+const SCRATCH = 512 << 10;
 // Chromium's fetch bodies are byte streams; plain streams are covered as well.
 const kinds = [['a byte stream', 'bytes'], ['a plain stream', undefined]] as const;
 

@@ -182,8 +182,16 @@ let volumeWaitingAsync = false;
 let volumeCancelledId = 0;
 const urgentQueue: QuickRequest[] = [];
 
+// Yield to the Worker's macrotask queue between volume chunks without triggering Chromium's 4 ms
+// nested setTimeout clamp, so urgent frame/tag/cancel messages still preempt immediately.
+const yieldChannel = typeof MessageChannel === 'function' ? new MessageChannel() : null;
+
 function nextTurn(): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, 0));
+  if (!yieldChannel) return new Promise(resolve => setTimeout(resolve, 0));
+  return new Promise(resolve => {
+    yieldChannel.port1.onmessage = () => resolve();
+    yieldChannel.port2.postMessage(undefined);
+  });
 }
 
 function isVolumeCancelled(requestId: number): boolean {
@@ -308,8 +316,6 @@ async function answer(data: EngineRequest): Promise<void> {
                 yieldTurn: () => runWhileUrgentEnabled(nextTurn),
                 onRestart: total => engine.beginVolumeProgress(total),
               });
-              // Store volumes that fit the engine's cache budget so whole-volume sample() and repeat volume()
-              // reuse the decoded pixels without decoding the series a second time.
               if (plan.cacheLimit && assembled.bytes.byteLength <= plan.cacheLimit) {
                 engine.cacheVolume(data.seriesId, assembled.bytes, assembled.pixelType, data.revision);
               }

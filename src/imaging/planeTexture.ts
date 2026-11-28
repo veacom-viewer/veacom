@@ -28,18 +28,39 @@ export function planeTexture(dimensions: Vec3, topLeft: Vec3, right: Vec3, down:
 /** Pack the same source samples in x-fastest order. Axial planes already occupy consecutive memory. */
 export function planePixels(data: PixelArray, dimensions: Vec3, region: PlaneTexture): PixelArray {
   const [nx, ny] = dimensions, [x0, y0, z0] = region.start, [w, h, d] = region.size;
+  const planeStride = nx * ny;
   const first = (z0 * ny + y0) * nx + x0;
   if (w === nx && h === ny) return data.subarray(first, first + w * h * d);
   const ArrayType = data.constructor as { new(length: number): PixelArray };
   const packed = new ArrayType(w * h * d);
   let at = 0;
+  if (w === nx) {
+    const chunk = w * h;
+    for (let z = 0; z < d; z++) {
+      const plane = first + z * planeStride;
+      packed.set(data.subarray(plane, plane + chunk), at);
+      at += chunk;
+    }
+    return packed;
+  }
+  if (w === 6) {
+    for (let z = 0; z < d; z++) {
+      let row = first + z * planeStride;
+      for (let y = 0; y < h; y++, row += nx) {
+        packed[at] = data[row];
+        packed[at + 1] = data[row + 1];
+        packed[at + 2] = data[row + 2];
+        packed[at + 3] = data[row + 3];
+        packed[at + 4] = data[row + 4];
+        packed[at + 5] = data[row + 5];
+        at += 6;
+      }
+    }
+    return packed;
+  }
   for (let z = 0; z < d; z++) {
-    const plane = first + z * nx * ny;
-    if (w === nx) {
-      packed.set(data.subarray(plane, plane + w * h), at);
-      at += w * h;
-    } else for (let y = 0; y < h; y++) {
-      const row = plane + y * nx;
+    let row = first + z * planeStride;
+    for (let y = 0; y < h; y++, row += nx) {
       for (let x = 0; x < w; x++) packed[at++] = data[row + x];
     }
   }

@@ -1,8 +1,10 @@
-use crate::model::{Frame, PixelBuffer, SourceSeries};
+use crate::model::{Frame, PixelBuffer, RawPixelLayout, SourceSeries};
 use anyhow::{Context, Result, bail};
 use dicom_pixeldata::{DecodedPixelData, PixelDecoder};
 use std::{
+    cell::RefCell,
     collections::HashMap,
+    io::{Read, Seek, SeekFrom},
     mem::MaybeUninit,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
@@ -21,6 +23,12 @@ const VOLUME_LIMIT: &str = if cfg!(target_arch = "wasm32") {
     "2 GiB"
 };
 const MAX_FRAME_SAMPLES: usize = 64 * 1024 * 1024;
+/// Maximum scratch buffer retained per worker thread between frames.
+const MAX_RETAINED_SCRATCH_BYTES: usize = 16 * 1024 * 1024;
+
+thread_local! {
+    static RAW_SCRATCH: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
+}
 
 #[derive(Debug)]
 struct TypeDoesNotFit;
@@ -57,19 +65,34 @@ impl From<Vec<f64>> for FrameValues {
 
 trait Sample: Default + Clone + Send + Sync {
     const IS_FLOAT32: bool = false;
+    const IS_I16: bool = false;
+    const IS_U16: bool = false;
+    const IS_U8: bool = false;
     fn from_value(value: f64) -> Result<Self>;
     fn from_ieee(_value: f64) -> Result<Self> {
         Err(TypeDoesNotFit.into())
     }
     /// `from_value` for a whole number an f64 holds exactly (one smaller than 2^53): the same sample, or the same error.
     fn from_whole(value: i64) -> Result<Self>;
+    /// Whether every whole number in `[min, max]` fits without overflow or precision loss.
+    fn fits_whole_range(min: i64, max: i64) -> bool;
+    /// Converts a whole number already proven to satisfy `fits_whole_range`.
+    fn from_whole_in_range(value: i64) -> Self;
+    /// Converts a 32-bit whole number already proven to satisfy `fits_whole_range`.
+    fn from_i32_in_range(value: i32) -> Self;
+    /// Direct byte copy when the source bytes already have the exact little-endian memory layout of `Self`.
+    fn copy_le_bytes(raw: &[u8], target: &mut [MaybeUninit<Self>]) -> bool {
+        let _ = (raw, target);
+        false
+    }
 }
 /// The size a rescale slope or intercept stays below for `write_scalar_frame`: with stored values of at most 16 bits,
 /// every value it makes is then a whole number smaller than 2^48, which an f64 holds exactly.
 const WHOLE_LIMIT: f64 = 2_147_483_648.;
 macro_rules! integer_sample {
-    ($kind:ty) => {
+    ($kind:ty, $flag:ident) => {
         impl Sample for $kind {
+            const $flag: bool = true;
             fn from_value(value: f64) -> Result<Self> {
                 if !value.is_finite() {
                     bail!("Pixel rescale produced a non-finite value");
@@ -83,12 +106,42 @@ macro_rules! integer_sample {
             fn from_whole(value: i64) -> Result<Self> {
                 <$kind>::try_from(value).map_err(|_| TypeDoesNotFit.into())
             }
+            fn fits_whole_range(min: i64, max: i64) -> bool {
+                min >= <$kind>::MIN as i64 && max <= <$kind>::MAX as i64
+            }
+            #[inline]
+            fn from_whole_in_range(value: i64) -> Self {
+                value as $kind
+            }
+            #[inline]
+            fn from_i32_in_range(value: i32) -> Self {
+                value as $kind
+            }
+            fn copy_le_bytes(raw: &[u8], target: &mut [MaybeUninit<Self>]) -> bool {
+                #[cfg(target_endian = "little")]
+                {
+                    if raw.len() == target.len() * std::mem::size_of::<Self>() {
+                        // SAFETY: `Self` is a primitive integer with no padding bits and identical little-endian
+                        // representation to `raw`; `raw` and `target` are disjoint and have equal byte length.
+                        unsafe {
+                            std::ptr::copy_nonoverlapping(
+                                raw.as_ptr(),
+                                target.as_mut_ptr().cast::<u8>(),
+                                raw.len(),
+                            );
+                        }
+                        return true;
+                    }
+                }
+                let _ = (raw, target);
+                false
+            }
         }
     };
 }
-integer_sample!(i16);
-integer_sample!(u16);
-integer_sample!(u8);
+integer_sample!(i16, IS_I16);
+integer_sample!(u16, IS_U16);
+integer_sample!(u8, IS_U8);
 impl Sample for f32 {
     const IS_FLOAT32: bool = true;
     fn from_value(value: f64) -> Result<Self> {
@@ -105,6 +158,17 @@ impl Sample for f32 {
     fn from_whole(value: i64) -> Result<Self> {
         Ok(value as f32)
     }
+    fn fits_whole_range(_min: i64, _max: i64) -> bool {
+        true
+    }
+    #[inline]
+    fn from_whole_in_range(value: i64) -> Self {
+        value as f32
+    }
+    #[inline]
+    fn from_i32_in_range(value: i32) -> Self {
+        value as f32
+    }
 }
 impl Sample for f64 {
     fn from_value(value: f64) -> Result<Self> {
@@ -118,6 +182,17 @@ impl Sample for f64 {
     }
     fn from_whole(value: i64) -> Result<Self> {
         Ok(value as f64)
+    }
+    fn fits_whole_range(_min: i64, _max: i64) -> bool {
+        true
+    }
+    #[inline]
+    fn from_whole_in_range(value: i64) -> Self {
+        value as f64
+    }
+    #[inline]
+    fn from_i32_in_range(value: i32) -> Self {
+        value as f64
     }
 }
 
@@ -882,6 +957,548 @@ pub(crate) fn frame_workers(threads: usize, codec_threads: impl Iterator<Item = 
     (threads / per_frame).max(1)
 }
 
+#[inline]
+fn is_whole_rescale(value: f64) -> bool {
+    value.is_finite() && value.fract() == 0. && value.abs() < WHOLE_LIMIT
+}
+
+fn with_raw_scratch<R>(byte_len: usize, work: impl FnOnce(&mut [u8]) -> Result<R>) -> Result<R> {
+    RAW_SCRATCH.with(|cell| {
+        let mut scratch = cell.borrow_mut();
+        if scratch.len() < byte_len {
+            let additional = byte_len - scratch.len();
+            scratch.try_reserve_exact(additional).map_err(|_| {
+                coded!(
+                    "decode.noMemory",
+                    "Not enough memory for the decoded volume"
+                )
+            })?;
+            scratch.resize(byte_len, 0);
+        }
+        let result = work(&mut scratch[..byte_len]);
+        if scratch.capacity() > MAX_RETAINED_SCRATCH_BYTES {
+            *scratch = Vec::new();
+        }
+        result
+    })
+}
+
+#[inline]
+fn unpack_word(word: u16, shift: u8, mask: u16, bits_stored: u8, signed: bool) -> i32 {
+    if signed {
+        let shl = 16 - bits_stored;
+        i32::from((((word >> shift) << shl) as i16) >> shl)
+    } else {
+        i32::from((word >> shift) & mask)
+    }
+}
+
+fn raw_stored_min_max(raw: RawPixelLayout, bytes: &[u8]) -> (i32, i32) {
+    let shift = raw.high_bit + 1 - raw.bits_stored;
+    let mask = ((1u32 << raw.bits_stored) - 1) as u16;
+    let mut min_v = i32::MAX;
+    let mut max_v = i32::MIN;
+    match raw.bits_allocated {
+        8 => {
+            if !raw.signed && shift == 0 && raw.bits_stored == 8 {
+                let (mut lo, mut hi) = (u8::MAX, u8::MIN);
+                for &b in bytes {
+                    lo = lo.min(b);
+                    hi = hi.max(b);
+                }
+                return (i32::from(lo), i32::from(hi));
+            }
+            for &b in bytes {
+                let v = unpack_word(u16::from(b), shift, mask, raw.bits_stored, raw.signed);
+                min_v = min_v.min(v);
+                max_v = max_v.max(v);
+            }
+        }
+        16 if !raw.big_endian => {
+            let chunks = bytes.as_chunks::<2>().0;
+            if !raw.signed && shift == 0 {
+                let (mut lo, mut hi) = (u16::MAX, u16::MIN);
+                if mask == u16::MAX {
+                    for w in chunks {
+                        let v = u16::from_le_bytes(*w);
+                        lo = lo.min(v);
+                        hi = hi.max(v);
+                    }
+                } else {
+                    for w in chunks {
+                        let v = u16::from_le_bytes(*w) & mask;
+                        lo = lo.min(v);
+                        hi = hi.max(v);
+                    }
+                }
+                return (i32::from(lo), i32::from(hi));
+            }
+            if raw.signed && shift == 0 && raw.bits_stored == 16 {
+                let (mut lo, mut hi) = (i16::MAX, i16::MIN);
+                for w in chunks {
+                    let v = i16::from_le_bytes(*w);
+                    lo = lo.min(v);
+                    hi = hi.max(v);
+                }
+                return (i32::from(lo), i32::from(hi));
+            }
+            for w in chunks {
+                let v = unpack_word(
+                    u16::from_le_bytes(*w),
+                    shift,
+                    mask,
+                    raw.bits_stored,
+                    raw.signed,
+                );
+                min_v = min_v.min(v);
+                max_v = max_v.max(v);
+            }
+        }
+        16 => {
+            for w in bytes.as_chunks::<2>().0 {
+                let v = unpack_word(
+                    u16::from_be_bytes(*w),
+                    shift,
+                    mask,
+                    raw.bits_stored,
+                    raw.signed,
+                );
+                min_v = min_v.min(v);
+                max_v = max_v.max(v);
+            }
+        }
+        _ => {}
+    }
+    (min_v, max_v)
+}
+
+/// Converts pre-validated native uncompressed scalar bytes directly into `target` without parsing the DICOM DOM.
+fn write_raw_scalar_bytes<T: Sample>(
+    raw: RawPixelLayout,
+    frame: &Frame,
+    raw_bytes: &[u8],
+    target: &mut [MaybeUninit<T>],
+) -> Result<()> {
+    let shift = raw.high_bit + 1 - raw.bits_stored;
+    let mask = ((1u32 << raw.bits_stored) - 1) as u16;
+    if is_whole_rescale(frame.slope) && is_whole_rescale(frame.intercept) {
+        let (slope, intercept) = (frame.slope as i64, frame.intercept as i64);
+        if slope == 1
+            && intercept == 0
+            && shift == 0
+            && !raw.big_endian
+            && ((raw.bits_allocated == 16 && raw.bits_stored == 16 && raw.signed && T::IS_I16)
+                || (raw.bits_allocated == 16 && raw.bits_stored == 16 && !raw.signed && T::IS_U16)
+                || (raw.bits_allocated == 8 && raw.bits_stored == 8 && !raw.signed && T::IS_U8))
+            && T::copy_le_bytes(raw_bytes, target)
+        {
+            return Ok(());
+        }
+        let (min_stored, max_stored) = if raw.signed {
+            (
+                -(1i64 << (raw.bits_stored - 1)),
+                (1i64 << (raw.bits_stored - 1)) - 1,
+            )
+        } else {
+            (0i64, (1i64 << raw.bits_stored) - 1)
+        };
+        let a = min_stored * slope + intercept;
+        let b = max_stored * slope + intercept;
+        let (min_out, max_out) = (a.min(b), a.max(b));
+        if T::fits_whole_range(min_out, max_out) {
+            let fits_i32 = min_out >= i32::MIN as i64
+                && max_out <= i32::MAX as i64
+                && slope.abs() <= 32768
+                && intercept.abs() <= 1_000_000_000;
+            match raw.bits_allocated {
+                16 if !raw.big_endian => {
+                    let chunks = raw_bytes.as_chunks::<2>().0;
+                    if fits_i32 {
+                        let (slope32, bias32) = (slope as i32, intercept as i32);
+                        if !raw.signed && shift == 0 && slope32 == 1 {
+                            if mask == u16::MAX {
+                                for (dst, w) in target.iter_mut().zip(chunks) {
+                                    dst.write(T::from_i32_in_range(
+                                        i32::from(u16::from_le_bytes(*w)) + bias32,
+                                    ));
+                                }
+                            } else {
+                                for (dst, w) in target.iter_mut().zip(chunks) {
+                                    dst.write(T::from_i32_in_range(
+                                        i32::from(u16::from_le_bytes(*w) & mask) + bias32,
+                                    ));
+                                }
+                            }
+                            return Ok(());
+                        }
+                        if raw.signed && shift == 0 && raw.bits_stored == 16 && slope32 == 1 {
+                            for (dst, w) in target.iter_mut().zip(chunks) {
+                                dst.write(T::from_i32_in_range(
+                                    i32::from(i16::from_le_bytes(*w)) + bias32,
+                                ));
+                            }
+                            return Ok(());
+                        }
+                        for (dst, w) in target.iter_mut().zip(chunks) {
+                            let stored = unpack_word(
+                                u16::from_le_bytes(*w),
+                                shift,
+                                mask,
+                                raw.bits_stored,
+                                raw.signed,
+                            );
+                            dst.write(T::from_i32_in_range(stored * slope32 + bias32));
+                        }
+                    } else {
+                        for (dst, w) in target.iter_mut().zip(chunks) {
+                            let stored = unpack_word(
+                                u16::from_le_bytes(*w),
+                                shift,
+                                mask,
+                                raw.bits_stored,
+                                raw.signed,
+                            );
+                            dst.write(T::from_whole_in_range(
+                                i64::from(stored) * slope + intercept,
+                            ));
+                        }
+                    }
+                    return Ok(());
+                }
+                16 => {
+                    let chunks = raw_bytes.as_chunks::<2>().0;
+                    for (dst, w) in target.iter_mut().zip(chunks) {
+                        let stored = unpack_word(
+                            u16::from_be_bytes(*w),
+                            shift,
+                            mask,
+                            raw.bits_stored,
+                            raw.signed,
+                        );
+                        dst.write(T::from_whole_in_range(
+                            i64::from(stored) * slope + intercept,
+                        ));
+                    }
+                    return Ok(());
+                }
+                8 => {
+                    for (dst, &byte) in target.iter_mut().zip(raw_bytes) {
+                        let stored =
+                            unpack_word(u16::from(byte), shift, mask, raw.bits_stored, raw.signed);
+                        dst.write(T::from_whole_in_range(
+                            i64::from(stored) * slope + intercept,
+                        ));
+                    }
+                    return Ok(());
+                }
+                _ => bail!("Unsupported scalar BitsAllocated"),
+            }
+        }
+        // Output may overflow T on individual pixels; check each pixel cleanly.
+        match raw.bits_allocated {
+            16 if !raw.big_endian => {
+                for (dst, w) in target.iter_mut().zip(raw_bytes.as_chunks::<2>().0) {
+                    let stored = unpack_word(
+                        u16::from_le_bytes(*w),
+                        shift,
+                        mask,
+                        raw.bits_stored,
+                        raw.signed,
+                    );
+                    dst.write(T::from_whole(i64::from(stored) * slope + intercept)?);
+                }
+            }
+            16 => {
+                for (dst, w) in target.iter_mut().zip(raw_bytes.as_chunks::<2>().0) {
+                    let stored = unpack_word(
+                        u16::from_be_bytes(*w),
+                        shift,
+                        mask,
+                        raw.bits_stored,
+                        raw.signed,
+                    );
+                    dst.write(T::from_whole(i64::from(stored) * slope + intercept)?);
+                }
+            }
+            8 => {
+                for (dst, &byte) in target.iter_mut().zip(raw_bytes) {
+                    let stored =
+                        unpack_word(u16::from(byte), shift, mask, raw.bits_stored, raw.signed);
+                    dst.write(T::from_whole(i64::from(stored) * slope + intercept)?);
+                }
+            }
+            _ => bail!("Unsupported scalar BitsAllocated"),
+        }
+        return Ok(());
+    }
+    // Fractional rescale (e.g. PET or MR with non-integer RescaleSlope/RescaleIntercept).
+    #[inline]
+    fn convert_rescaled<T: Sample>(value: f64) -> Result<T> {
+        if !value.is_finite() {
+            bail!("Pixel rescale produced a non-finite value");
+        }
+        if T::IS_FLOAT32 && !(value as f32).is_finite() {
+            return Err(Float64Required.into());
+        }
+        T::from_value(value)
+    }
+    let (slope, intercept) = (frame.slope, frame.intercept);
+    match raw.bits_allocated {
+        16 if !raw.big_endian => {
+            for (dst, w) in target.iter_mut().zip(raw_bytes.as_chunks::<2>().0) {
+                let stored = unpack_word(
+                    u16::from_le_bytes(*w),
+                    shift,
+                    mask,
+                    raw.bits_stored,
+                    raw.signed,
+                );
+                let value = f64::from(stored) * slope + intercept;
+                dst.write(convert_rescaled(value)?);
+            }
+        }
+        16 => {
+            for (dst, w) in target.iter_mut().zip(raw_bytes.as_chunks::<2>().0) {
+                let stored = unpack_word(
+                    u16::from_be_bytes(*w),
+                    shift,
+                    mask,
+                    raw.bits_stored,
+                    raw.signed,
+                );
+                let value = f64::from(stored) * slope + intercept;
+                dst.write(convert_rescaled(value)?);
+            }
+        }
+        8 => {
+            for (dst, &byte) in target.iter_mut().zip(raw_bytes) {
+                let stored = unpack_word(u16::from(byte), shift, mask, raw.bits_stored, raw.signed);
+                let value = f64::from(stored) * slope + intercept;
+                dst.write(convert_rescaled(value)?);
+            }
+        }
+        _ => bail!("Unsupported scalar BitsAllocated"),
+    }
+    Ok(())
+}
+
+fn decode_raw_from_reader<T: Sample>(
+    file: &mut crate::source_file::SourceReader,
+    frame: &Frame,
+    raw: RawPixelLayout,
+    target: &mut [MaybeUninit<T>],
+) -> Result<()> {
+    file.seek(SeekFrom::Start(raw.offset))
+        .map_err(|error| cannot_read(&frame.source.path, error.into()))?;
+    with_raw_scratch(raw.byte_len, |scratch| {
+        file.read_exact(scratch)
+            .map_err(|error| cannot_read(&frame.source.path, error.into()))?;
+        write_raw_scalar_bytes(raw, frame, scratch, target)
+    })
+}
+
+fn decode_raw_single_file<T: Sample>(
+    frame: &Frame,
+    raw: RawPixelLayout,
+    target: &mut [MaybeUninit<T>],
+) -> Result<()> {
+    let mut file = frame
+        .source
+        .open()
+        .map_err(|error| cannot_read(&frame.source.path, error))?;
+    decode_raw_from_reader(&mut file, frame, raw, target)
+}
+
+fn decode_raw_frame_buffer(
+    frame: &Frame,
+    raw: RawPixelLayout,
+    expected: usize,
+) -> Result<PixelBuffer> {
+    let mut file = frame
+        .source
+        .open()
+        .map_err(|error| cannot_read(&frame.source.path, error))?;
+    file.seek(SeekFrom::Start(raw.offset))
+        .map_err(|error| cannot_read(&frame.source.path, error.into()))?;
+    with_raw_scratch(raw.byte_len, |scratch| {
+        file.read_exact(scratch)
+            .map_err(|error| cannot_read(&frame.source.path, error.into()))?;
+        if is_whole_rescale(frame.slope) && is_whole_rescale(frame.intercept) {
+            let (slope, intercept) = (frame.slope as i64, frame.intercept as i64);
+            let (t_min_s, t_max_s) = if raw.signed {
+                (
+                    -(1i64 << (raw.bits_stored - 1)),
+                    (1i64 << (raw.bits_stored - 1)) - 1,
+                )
+            } else {
+                (0i64, (1i64 << raw.bits_stored) - 1)
+            };
+            let ta = t_min_s * slope + intercept;
+            let tb = t_max_s * slope + intercept;
+            let (t_min, t_max) = (ta.min(tb), ta.max(tb));
+            let (min_out, max_out) = if t_min >= 0 && t_max <= u16::MAX as i64 {
+                (t_min, t_max)
+            } else {
+                let (lo, hi) = raw_stored_min_max(raw, scratch);
+                let a = i64::from(lo) * slope + intercept;
+                let b = i64::from(hi) * slope + intercept;
+                (a.min(b), a.max(b))
+            };
+            if min_out >= 0 && max_out <= u16::MAX as i64 {
+                let mut out: Vec<u16> = Vec::new();
+                out.try_reserve_exact(expected).map_err(|_| {
+                    coded!(
+                        "decode.noMemory",
+                        "Not enough memory for the decoded volume"
+                    )
+                })?;
+                write_raw_scalar_bytes(
+                    raw,
+                    frame,
+                    scratch,
+                    &mut out.spare_capacity_mut()[..expected],
+                )?;
+                // SAFETY: `write_raw_scalar_bytes` initialized all `expected` elements on Ok(()).
+                unsafe { out.set_len(expected) };
+                return Ok(PixelBuffer::U16(out));
+            }
+            if min_out >= i16::MIN as i64 && max_out <= i16::MAX as i64 {
+                let mut out: Vec<i16> = Vec::new();
+                out.try_reserve_exact(expected).map_err(|_| {
+                    coded!(
+                        "decode.noMemory",
+                        "Not enough memory for the decoded volume"
+                    )
+                })?;
+                write_raw_scalar_bytes(
+                    raw,
+                    frame,
+                    scratch,
+                    &mut out.spare_capacity_mut()[..expected],
+                )?;
+                // SAFETY: `write_raw_scalar_bytes` initialized all `expected` elements on Ok(()).
+                unsafe { out.set_len(expected) };
+                return Ok(PixelBuffer::I16(out));
+            }
+            let mut out: Vec<f32> = Vec::new();
+            out.try_reserve_exact(expected).map_err(|_| {
+                coded!(
+                    "decode.noMemory",
+                    "Not enough memory for the decoded volume"
+                )
+            })?;
+            write_raw_scalar_bytes(
+                raw,
+                frame,
+                scratch,
+                &mut out.spare_capacity_mut()[..expected],
+            )?;
+            // SAFETY: `write_raw_scalar_bytes` initialized all `expected` elements on Ok(()).
+            unsafe { out.set_len(expected) };
+            return Ok(PixelBuffer::F32(out));
+        }
+        // Fractional rescale: evaluate in f64 to match `decode_frame` widening priority (u16 -> i16 -> f32 -> f64).
+        let shift = raw.high_bit + 1 - raw.bits_stored;
+        let mask = ((1u32 << raw.bits_stored) - 1) as u16;
+        let (slope, intercept) = (frame.slope, frame.intercept);
+        let mut all_u16 = true;
+        let mut all_i16 = true;
+        let mut needs_f64 = false;
+        let mut out_f32: Vec<f32> = Vec::new();
+        out_f32.try_reserve_exact(expected).map_err(|_| {
+            coded!(
+                "decode.noMemory",
+                "Not enough memory for the decoded volume"
+            )
+        })?;
+        let mut handle_stored = |stored: i32| -> Result<()> {
+            let value = f64::from(stored) * slope + intercept;
+            if !value.is_finite() {
+                bail!("Pixel rescale produced non-finite physical values");
+            }
+            let as_f32 = value as f32;
+            if !as_f32.is_finite() {
+                needs_f64 = true;
+            }
+            if all_u16 && (value.fract() != 0. || value < 0. || value > u16::MAX as f64) {
+                all_u16 = false;
+            }
+            if all_i16
+                && (value.fract() != 0. || value < i16::MIN as f64 || value > i16::MAX as f64)
+            {
+                all_i16 = false;
+            }
+            out_f32.push(as_f32);
+            Ok(())
+        };
+        match raw.bits_allocated {
+            16 if !raw.big_endian => {
+                for w in scratch.as_chunks::<2>().0 {
+                    handle_stored(unpack_word(
+                        u16::from_le_bytes(*w),
+                        shift,
+                        mask,
+                        raw.bits_stored,
+                        raw.signed,
+                    ))?;
+                }
+            }
+            16 => {
+                for w in scratch.as_chunks::<2>().0 {
+                    handle_stored(unpack_word(
+                        u16::from_be_bytes(*w),
+                        shift,
+                        mask,
+                        raw.bits_stored,
+                        raw.signed,
+                    ))?;
+                }
+            }
+            8 => {
+                for &b in scratch.iter() {
+                    handle_stored(unpack_word(
+                        u16::from(b),
+                        shift,
+                        mask,
+                        raw.bits_stored,
+                        raw.signed,
+                    ))?;
+                }
+            }
+            _ => bail!("Unsupported scalar BitsAllocated"),
+        }
+        if all_u16 {
+            return Ok(PixelBuffer::U16(
+                out_f32.into_iter().map(|v| v as u16).collect(),
+            ));
+        }
+        if all_i16 {
+            return Ok(PixelBuffer::I16(
+                out_f32.into_iter().map(|v| v as i16).collect(),
+            ));
+        }
+        if needs_f64 {
+            let mut out_f64: Vec<f64> = Vec::new();
+            out_f64.try_reserve_exact(expected).map_err(|_| {
+                coded!(
+                    "decode.noMemory",
+                    "Not enough memory for the decoded volume"
+                )
+            })?;
+            write_raw_scalar_bytes(
+                raw,
+                frame,
+                scratch,
+                &mut out_f64.spare_capacity_mut()[..expected],
+            )?;
+            // SAFETY: `write_raw_scalar_bytes` initialized all `expected` elements on Ok(()).
+            unsafe { out_f64.set_len(expected) };
+            return Ok(PixelBuffer::F64(out_f64));
+        }
+        Ok(PixelBuffer::F32(out_f32))
+    })
+}
+
 fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
     crate::progress::check()?;
     let per_frame = frame_samples(source)?;
@@ -915,39 +1532,116 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
     for (index, frame) in source.frames.iter().enumerate() {
         groups.entry(&frame.source.path).or_default().push(index);
     }
-    // Frames stored one to a file are decoded on up to `workers` threads; a file holding several is read once, below.
-    let individuals = groups.values().filter(|indices| indices.len() == 1);
-    let workers = frame_workers(
-        crate::parallel::available(2).min(8),
-        individuals.map(|indices| source.frames[indices[0]].jpeg_component_threads),
-    )
-    .min((1024 * 1024 * 1024 / (per_frame * 24)).max(1));
-    crate::parallel::try_for_each(
-        "frame-decode",
-        workers,
-        space.chunks_mut(per_frame).enumerate(),
-        |(index, target)| -> Result<()> {
-            let frame = &source.frames[index];
-            if groups[frame.source.path.as_path()].len() == 1 {
+    let mut frame_slots: Vec<Option<&mut [MaybeUninit<T>]>> =
+        space.chunks_mut(per_frame).map(Some).collect();
+    type FrameSlot<'a, S> = (usize, &'a mut [MaybeUninit<S>]);
+    // Frames stored one to a file are decoded on up to `workers` threads; a file holding several is decoded below.
+    let mut individual_tasks: Vec<FrameSlot<'_, T>> = Vec::new();
+    let mut multi_groups: Vec<(&Path, Vec<FrameSlot<'_, T>>)> = Vec::new();
+    for (path, indices) in groups {
+        if indices.len() == 1 {
+            let idx = indices[0];
+            let slot = frame_slots[idx]
+                .take()
+                .context("Duplicate frame slot index")?;
+            individual_tasks.push((idx, slot));
+        } else {
+            let mut group_slots = Vec::with_capacity(indices.len());
+            for idx in indices {
+                let slot = frame_slots[idx]
+                    .take()
+                    .context("Duplicate frame slot index")?;
+                group_slots.push((idx, slot));
+            }
+            multi_groups.push((path, group_slots));
+        }
+    }
+    if !individual_tasks.is_empty() {
+        let workers = frame_workers(
+            crate::parallel::available(2).min(8),
+            individual_tasks
+                .iter()
+                .map(|(index, _)| source.frames[*index].jpeg_component_threads),
+        )
+        .min((1024 * 1024 * 1024 / (per_frame * 24)).max(1));
+        crate::parallel::try_for_each(
+            "frame-decode",
+            workers,
+            individual_tasks.into_iter(),
+            |(index, target)| -> Result<()> {
+                let frame = &source.frames[index];
                 crate::progress::check()?;
-                let mut direct = |object: &dicom_object::DefaultDicomObject,
-                                  decoded: &DecodedPixelData<'_>| {
-                    write_scalar_frame(source, object, decoded, 0, frame, target)
-                };
-                let values = frame_values_or(source, frame, crate::progress::check, &mut direct)?;
-                if let Some(values) = values {
-                    copy_values(target, values)?;
+                if source.info.components == 1
+                    && let Some(raw) = frame.raw_pixels
+                {
+                    decode_raw_single_file(frame, raw, target)?;
+                } else {
+                    let mut direct =
+                        |object: &dicom_object::DefaultDicomObject,
+                         decoded: &DecodedPixelData<'_>| {
+                            write_scalar_frame(source, object, decoded, 0, frame, target)
+                        };
+                    let values =
+                        frame_values_or(source, frame, crate::progress::check, &mut direct)?;
+                    if let Some(values) = values {
+                        copy_values(target, values)?;
+                    }
                 }
                 written[index].store(true, Ordering::Relaxed);
                 crate::progress::step()?;
-            }
-            Ok(())
-        },
-    )?;
+                Ok(())
+            },
+        )?;
+    }
 
-    for (path, indices) in groups.into_iter().filter(|(_, indices)| indices.len() > 1) {
+    for (path, mut group_slots) in multi_groups {
         crate::progress::check()?;
-        let file = source.frames[indices[0]]
+        let all_raw = source.info.components == 1
+            && group_slots
+                .iter()
+                .all(|(idx, _)| source.frames[*idx].raw_pixels.is_some());
+        if all_raw {
+            // Uncompressed multi-frame: split frames across workers so each worker opens the verified source once
+            // and streams its assigned frames in parallel without loading the entire file into a DICOM DOM.
+            let workers = crate::parallel::available(2)
+                .min(8)
+                .min(group_slots.len())
+                .min((1024 * 1024 * 1024 / (per_frame * 24)).max(1));
+            let chunk_len = group_slots.len().div_ceil(workers);
+            let mut work_chunks: Vec<Vec<FrameSlot<'_, T>>> = Vec::with_capacity(workers);
+            while !group_slots.is_empty() {
+                let split = chunk_len.min(group_slots.len());
+                let tail = group_slots.split_off(split);
+                work_chunks.push(group_slots);
+                group_slots = tail;
+            }
+            crate::parallel::try_for_each(
+                "frame-decode",
+                work_chunks.len(),
+                work_chunks.into_iter(),
+                |chunk| -> Result<()> {
+                    let first_idx = chunk[0].0;
+                    let mut file = source.frames[first_idx]
+                        .source
+                        .open()
+                        .map_err(|error| cannot_read(path, error))?;
+                    for (index, target) in chunk {
+                        crate::progress::check()?;
+                        let frame = &source.frames[index];
+                        let raw = frame
+                            .raw_pixels
+                            .context("Missing pre-validated raw pixel layout")?;
+                        decode_raw_from_reader(&mut file, frame, raw, target)?;
+                        written[index].store(true, Ordering::Relaxed);
+                        crate::progress::step()?;
+                    }
+                    Ok(())
+                },
+            )?;
+            continue;
+        }
+        let first_idx = group_slots[0].0;
+        let file = source.frames[first_idx]
             .source
             .open()
             .map_err(|error| cannot_read(path, error))?;
@@ -957,23 +1651,20 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
         check_object(&object, true)?;
         crate::codec_guard::check(&object, None)?;
         widen_encapsulated_bits(&mut object);
-        let first = &source.frames[indices[0]];
+        let first = &source.frames[first_idx];
         if let Some(values) = special_scalar_values(source, &object, first)? {
-            let first_index = indices[0];
-            copy_values(
-                &mut space[first_index * per_frame..(first_index + 1) * per_frame],
-                values,
-            )?;
+            let mut iter = group_slots.into_iter();
+            let Some((first_index, first_target)) = iter.next() else {
+                continue;
+            };
+            copy_values(first_target, values)?;
             written[first_index].store(true, Ordering::Relaxed);
             crate::progress::step()?;
-            for &index in &indices[1..] {
+            for (index, target) in iter {
                 crate::progress::check()?;
                 let values = special_scalar_values(source, &object, &source.frames[index])?
                     .context("Inconsistent scalar pixel encoding")?;
-                copy_values(
-                    &mut space[index * per_frame..(index + 1) * per_frame],
-                    values,
-                )?;
+                copy_values(target, values)?;
                 written[index].store(true, Ordering::Relaxed);
                 crate::progress::step()?;
             }
@@ -987,10 +1678,9 @@ fn volume_as<T: Sample>(source: &SourceSeries) -> Result<Vec<T>> {
                 reason = error.to_string(),
             )
         })?;
-        for index in indices {
+        for (index, target) in group_slots {
             crate::progress::check()?;
             let frame = &source.frames[index];
-            let target = &mut space[index * per_frame..(index + 1) * per_frame];
             let palette = source.info.photometric_interpretation == "PALETTE COLOR"
                 && source.info.segmentation.is_none();
             let direct = !palette
@@ -1138,13 +1828,19 @@ fn chunk_as<T: Sample>(source: &SourceSeries, start: usize, count: usize) -> Res
         |(offset, target)| -> Result<()> {
             crate::progress::check()?;
             let frame = &slice_frames[offset];
-            let mut direct = |object: &dicom_object::DefaultDicomObject,
-                              decoded: &DecodedPixelData<'_>| {
-                write_scalar_frame(source, object, decoded, 0, frame, target)
-            };
-            let values = frame_values_or(source, frame, crate::progress::check, &mut direct)?;
-            if let Some(values) = values {
-                copy_values(target, values)?;
+            if source.info.components == 1
+                && let Some(raw) = frame.raw_pixels
+            {
+                decode_raw_single_file(frame, raw, target)?;
+            } else {
+                let mut direct = |object: &dicom_object::DefaultDicomObject,
+                                  decoded: &DecodedPixelData<'_>| {
+                    write_scalar_frame(source, object, decoded, 0, frame, target)
+                };
+                let values = frame_values_or(source, frame, crate::progress::check, &mut direct)?;
+                if let Some(values) = values {
+                    copy_values(target, values)?;
+                }
             }
             written[offset].store(true, Ordering::Relaxed);
             crate::progress::step()?;
@@ -1245,6 +1941,11 @@ pub fn decode_frame(source: &SourceSeries, index: usize) -> Result<PixelBuffer> 
         .context("Frame index is outside this series")?;
     if frame.ordinary_image {
         return ordinary_rgb(source, frame, || Ok(())).map(PixelBuffer::U8);
+    }
+    if source.info.components == 1
+        && let Some(raw) = frame.raw_pixels
+    {
+        return decode_raw_frame_buffer(frame, raw, expected);
     }
     let FrameValues {
         values,
@@ -2221,5 +2922,403 @@ mod tests {
             }
         }
         assert_eq!(assembled, full.bytes());
+    }
+
+    #[test]
+    fn direct_raw_pixel_path_matches_dom_decode_bit_for_bit() {
+        struct Case<'a> {
+            name: &'a str,
+            pixels: Vec<u16>,
+            signed: bool,
+            bits_stored: u16,
+            high_bit: u16,
+            slope: f64,
+            intercept: f64,
+            syntax: &'a str,
+        }
+        let cases = [
+            Case {
+                name: "ct-u12-bias",
+                pixels: vec![0, 1024, 2048, 4095, 0xF000 | 321, 500],
+                signed: false,
+                bits_stored: 12,
+                high_bit: 11,
+                slope: 1.0,
+                intercept: -1024.0,
+                syntax: "1.2.840.10008.1.2.1",
+            },
+            Case {
+                name: "s12-shifted-high-bit",
+                pixels: vec![
+                    0,
+                    1 << 2,
+                    0x0FFF << 2,
+                    0x0800 << 2,
+                    0x07FF << 2,
+                    0x0401 << 2,
+                ],
+                signed: true,
+                bits_stored: 12,
+                high_bit: 13,
+                slope: 1.0,
+                intercept: -100.0,
+                syntax: "1.2.840.10008.1.2.1",
+            },
+            Case {
+                name: "identity-u16",
+                pixels: vec![0, 1, 32767, 32768, 65534, 65535],
+                signed: false,
+                bits_stored: 16,
+                high_bit: 15,
+                slope: 1.0,
+                intercept: 0.0,
+                syntax: "1.2.840.10008.1.2.1",
+            },
+            Case {
+                name: "big-endian-s16",
+                pixels: vec![0, 1234, (-512i16) as u16, (-32768i16) as u16, 32767, 42],
+                signed: true,
+                bits_stored: 16,
+                high_bit: 15,
+                slope: 1.0,
+                intercept: -10.0,
+                syntax: "1.2.840.10008.1.2.2",
+            },
+            Case {
+                name: "pet-fractional-f32",
+                pixels: vec![0, 17, 500, 4095, 12000, 65535],
+                signed: false,
+                bits_stored: 16,
+                high_bit: 15,
+                slope: 0.0025,
+                intercept: 0.125,
+                syntax: "1.2.840.10008.1.2.1",
+            },
+            Case {
+                name: "high-precision-f64",
+                pixels: vec![0, 1, 2, 3, 4, 5],
+                signed: false,
+                bits_stored: 16,
+                high_bit: 15,
+                slope: 1.0,
+                intercept: 33_554_432.0,
+                syntax: "1.2.840.10008.1.2.1",
+            },
+        ];
+
+        for case in &cases {
+            let Case {
+                name,
+                pixels,
+                signed,
+                bits_stored,
+                high_bit,
+                slope,
+                intercept,
+                syntax,
+            } = case;
+            let dir = crate::test_dir::tempdir().unwrap();
+            let path = dir.path().join(format!("{name}.dcm"));
+            fixture(
+                &path,
+                pixels,
+                *signed,
+                *bits_stored,
+                *slope,
+                *intercept,
+                "MONOCHROME2",
+            );
+            let mut object = dicom_object::open_file(&path).unwrap();
+            object.put(DataElement::new(
+                Tag(0x0028, 0x0010),
+                VR::US,
+                PrimitiveValue::from(2u16),
+            ));
+            object.put(DataElement::new(
+                Tag(0x0028, 0x0011),
+                VR::US,
+                PrimitiveValue::from(3u16),
+            ));
+            object.put(DataElement::new(
+                Tag(0x0028, 0x0102),
+                VR::US,
+                PrimitiveValue::from(*high_bit),
+            ));
+            object.update_meta(|meta| meta.transfer_syntax = (*syntax).into());
+            object.write_to_file(&path).unwrap();
+
+            let imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+            let direct = imported.sources[0].clone();
+            assert!(
+                direct.frames[0].raw_pixels.is_some(),
+                "{name}: expected direct raw pixel path to be active"
+            );
+            let mut fallback = (*direct).clone();
+            fallback.frames[0].raw_pixels = None;
+
+            let direct_vol = decode_volume(&direct).unwrap();
+            let dom_vol = decode_volume(&fallback).unwrap();
+            assert_eq!(
+                direct_vol.type_name(),
+                dom_vol.type_name(),
+                "{name} volume type"
+            );
+            assert_eq!(direct_vol.bytes(), dom_vol.bytes(), "{name} volume bytes");
+
+            let direct_frame = decode_frame(&direct, 0).unwrap();
+            let dom_frame = decode_frame(&fallback, 0).unwrap();
+            assert_eq!(
+                direct_frame.type_name(),
+                dom_frame.type_name(),
+                "{name} frame type"
+            );
+            assert_eq!(
+                direct_frame.bytes(),
+                dom_frame.bytes(),
+                "{name} frame bytes"
+            );
+        }
+    }
+
+    #[test]
+    fn direct_raw_multiframe_parallel_matches_dom_and_detects_source_change() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        let path = dir.path().join("multi8.dcm");
+        let pixels: Vec<u16> = (0..(8 * 6)).map(|i| (i as u16 * 137) % 4096).collect();
+        fixture(&path, &pixels, false, 12, 1.0, -1024.0, "MONOCHROME2");
+        let mut object = dicom_object::open_file(&path).unwrap();
+        object.put(DataElement::new(
+            Tag(0x0028, 0x0010),
+            VR::US,
+            PrimitiveValue::from(2u16),
+        ));
+        object.put(DataElement::new(
+            Tag(0x0028, 0x0011),
+            VR::US,
+            PrimitiveValue::from(3u16),
+        ));
+        object.put_str(Tag(0x0028, 0x0008), VR::IS, "8");
+        object.write_to_file(&path).unwrap();
+
+        let mut imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+        let direct = std::sync::Arc::get_mut(&mut imported.sources[0]).unwrap();
+        direct.frames.reverse();
+        assert!(direct.frames.iter().all(|f| f.raw_pixels.is_some()));
+        let mut fallback = direct.clone();
+        for frame in &mut fallback.frames {
+            frame.raw_pixels = None;
+        }
+
+        let direct_vol = decode_volume(direct).unwrap();
+        let dom_vol = decode_volume(&fallback).unwrap();
+        assert_eq!(direct_vol.type_name(), dom_vol.type_name());
+        assert_eq!(direct_vol.bytes(), dom_vol.bytes());
+
+        for idx in [0, 3, 7] {
+            let direct_frame = decode_frame(direct, idx).unwrap();
+            let dom_frame = decode_frame(&fallback, idx).unwrap();
+            assert_eq!(direct_frame.bytes(), dom_frame.bytes());
+        }
+
+        // Modifying the file after import must fail visibly on both frame and volume direct raw paths.
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes.push(0);
+        std::fs::write(&path, bytes).unwrap();
+        let frame_err = decode_frame(direct, 0)
+            .err()
+            .expect("modified frame must fail");
+        assert_eq!(
+            crate::message::coded(&frame_err).map(|note| note.code),
+            Some("file.sourceChanged")
+        );
+        let volume_err = decode_volume(direct)
+            .err()
+            .expect("modified volume must fail");
+        assert_eq!(
+            crate::message::coded(&volume_err).map(|note| note.code),
+            Some("file.sourceChanged")
+        );
+    }
+
+    #[test]
+    fn direct_raw_widens_to_float64_on_float32_overflow() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        // Check 16-bit LE, 16-bit BE, and 8-bit raw paths for f32 overflow widening and non-finite rejection.
+        for (name, bits, ts_uid) in [
+            ("le16", 16u16, "1.2.840.10008.1.2.1"),
+            ("be16", 16u16, "1.2.840.10008.1.2.2"),
+            ("u8", 8u16, "1.2.840.10008.1.2.1"),
+        ] {
+            let path = dir.path().join(format!("overflow_{name}.dcm"));
+            fixture(&path, &[0, 1, 2, 0], false, 8, 1e39, 0.0, "MONOCHROME2");
+            let mut object = dicom_object::open_file(&path).unwrap();
+            object.put(DataElement::new(
+                Tag(0x0028, 0x0100),
+                VR::US,
+                PrimitiveValue::from(bits),
+            ));
+            if bits == 8 {
+                object.put(DataElement::new(
+                    Tag(0x7fe0, 0x0010),
+                    VR::OB,
+                    PrimitiveValue::U8(vec![0, 1, 2, 0].into()),
+                ));
+            }
+            let file_obj = object
+                .into_inner()
+                .with_meta(
+                    FileMetaTableBuilder::new()
+                        .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                        .media_storage_sop_instance_uid(format!("1.2.826.0.1.3680043.8.498.{name}"))
+                        .transfer_syntax(ts_uid),
+                )
+                .unwrap();
+            file_obj.write_to_file(&path).unwrap();
+
+            let imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+            let direct = imported.sources[0].as_ref();
+            assert!(
+                direct.frames[0].raw_pixels.is_some(),
+                "{name} should use raw path"
+            );
+            let mut fallback = direct.clone();
+            fallback.frames[0].raw_pixels = None;
+
+            let direct_vol = decode_volume(direct).unwrap();
+            let dom_vol = decode_volume(&fallback).unwrap();
+            assert_eq!(direct_vol.type_name(), "float64", "{name} volume type");
+            assert_eq!(direct_vol.bytes(), dom_vol.bytes(), "{name} volume bytes");
+
+            let direct_frame = decode_frame(direct, 0).unwrap();
+            let dom_frame = decode_frame(&fallback, 0).unwrap();
+            assert_eq!(direct_frame.type_name(), "float64", "{name} frame type");
+            assert_eq!(
+                direct_frame.bytes(),
+                dom_frame.bytes(),
+                "{name} frame bytes"
+            );
+
+            assert!(
+                matches!(
+                    decode_frame_chunk(direct, 0, 1, "float32").unwrap(),
+                    ChunkOutcome::Float64Required
+                ),
+                "{name} float32 chunk must report Float64Required"
+            );
+            assert!(
+                matches!(
+                    decode_frame_chunk(direct, 0, 1, "float64").unwrap(),
+                    ChunkOutcome::Decoded(PixelBuffer::F64(_))
+                ),
+                "{name} float64 chunk must succeed"
+            );
+
+            // Non-finite f64 rescale must fail rather than widen to float64.
+            let mut inf_source = direct.clone();
+            inf_source.frames[0].slope = 1e308;
+            assert!(
+                decode_frame_chunk(&inf_source, 0, 1, "float64").is_err(),
+                "{name} non-finite f64 chunk must error"
+            );
+            assert!(
+                decode_volume(&inf_source).is_err(),
+                "{name} non-finite volume must error"
+            );
+            inf_source.frames[0].intercept = f64::INFINITY;
+            assert!(
+                decode_frame_chunk(&inf_source, 0, 1, "float32").is_err(),
+                "{name} immediate non-finite f64 must error on float32"
+            );
+        }
+    }
+
+    #[test]
+    fn big_endian_8bit_ow_and_missing_samples_per_pixel_stay_on_dom_path() {
+        let dir = crate::test_dir::tempdir().unwrap();
+
+        // Explicit VR Big Endian with 8-bit PixelData stored as OW word-swaps adjacent byte pairs on disk.
+        let be_ow = dir.path().join("be_8bit_ow.dcm");
+        fixture(&be_ow, &[0, 0, 0, 0], false, 8, 1.0, 0.0, "MONOCHROME2");
+        let mut obj = dicom_object::open_file(&be_ow).unwrap();
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0010),
+            VR::US,
+            PrimitiveValue::from(1u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0011),
+            VR::US,
+            PrimitiveValue::from(2u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0100),
+            VR::US,
+            PrimitiveValue::from(8u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0101),
+            VR::US,
+            PrimitiveValue::from(8u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0102),
+            VR::US,
+            PrimitiveValue::from(7u16),
+        ));
+        // Under Explicit VR Big Endian, OW stores 16-bit word u16::from_le_bytes([17, 42]) = 0x2A11 as [0x2A, 0x11] = [42, 17].
+        obj.put(DataElement::new(
+            Tag(0x7fe0, 0x0010),
+            VR::OW,
+            PrimitiveValue::U16(vec![u16::from_le_bytes([17, 42])].into()),
+        ));
+        obj.into_inner()
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.826.0.1.3680043.8.498.801")
+                    .transfer_syntax("1.2.840.10008.1.2.2"),
+            )
+            .unwrap()
+            .write_to_file(&be_ow)
+            .unwrap();
+
+        let imported = crate::ingest::import(&[be_ow.to_string_lossy().into_owned()]).unwrap();
+        let source = imported.sources[0].as_ref();
+        assert!(
+            source.frames[0].raw_pixels.is_none(),
+            "big-endian 8-bit OW must stay on DOM path"
+        );
+        let vol = decode_volume(source).unwrap();
+        let frame = decode_frame(source, 0).unwrap();
+        assert_eq!(vol.bytes(), frame.bytes());
+        match vol {
+            PixelBuffer::U8(v) => assert_eq!(v, vec![17, 42]),
+            PixelBuffer::U16(v) => assert_eq!(v, vec![17, 42]),
+            PixelBuffer::I16(v) => assert_eq!(v, vec![17, 42]),
+            other => panic!("unexpected pixel type: {}", other.type_name()),
+        }
+
+        // Monochrome image without SamplesPerPixel must not enable raw_pixels and must fail like DOM.
+        let no_spp = dir.path().join("no_spp.dcm");
+        fixture(
+            &no_spp,
+            &[10, 20, 30, 40],
+            false,
+            12,
+            1.0,
+            0.0,
+            "MONOCHROME2",
+        );
+        let mut obj = dicom_object::open_file(&no_spp).unwrap();
+        obj.remove_element(Tag(0x0028, 0x0002));
+        obj.write_to_file(&no_spp).unwrap();
+        let imported = crate::ingest::import(&[no_spp.to_string_lossy().into_owned()]).unwrap();
+        if let Some(source) = imported.sources.first() {
+            assert!(
+                source.frames[0].raw_pixels.is_none(),
+                "missing SamplesPerPixel must not select raw path"
+            );
+            assert!(decode_volume(source).is_err());
+        }
     }
 }

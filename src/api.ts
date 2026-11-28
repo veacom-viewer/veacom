@@ -196,8 +196,9 @@ async function decodePixels(response: Response, series: Series): Promise<Volume>
 
 const incompleteImage = (received: number, expected: number) => new Error(t('engine.incompleteImage', { received, expected }));
 
-/** Bytes read per step into a reused scratch buffer before they are copied into the image. */
-const READ_STEP = 4 << 20;
+/** Bytes read per step into a reused scratch buffer before they are copied into the image.
+ * Matches Chromium's 512 KiB Mojo data pipe delivery so the scratch buffer stays L2-cache resident. */
+const READ_STEP = 512 << 10;
 // Matches the decoded volume limit in native/src/decode.rs.
 const MAX_PIXEL_BYTES = 2 * 1024 ** 3;
 

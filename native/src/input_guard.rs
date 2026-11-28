@@ -41,10 +41,30 @@ const DOUBLE_PIXEL: Tag = Tag(0x7fe0, 0x0009);
 const EXTENDED_OFFSETS: Tag = Tag(0x7fe0, 0x0001);
 const EXTENDED_LENGTHS: Tag = Tag(0x7fe0, 0x0002);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawPixelData {
+    /// Byte offset from the start of the DICOM file to the first byte of native PixelData (7FE0,0010).
+    pub offset: u64,
+    /// Validated payload byte count (excluding any trailing odd-length pad byte).
+    pub length: u64,
+    pub rows: u32,
+    pub columns: u32,
+    pub frames: u32,
+    pub samples: u8,
+    pub bits_allocated: u16,
+    pub bits_stored: u16,
+    pub high_bit: u16,
+    pub signed: bool,
+    pub big_endian: bool,
+    /// True when PixelData VR is OW (word byte order follows the transfer syntax), false for OB.
+    pub word_vr: bool,
+}
+
 #[derive(Debug)]
 pub struct InputInfo {
     pub frames: usize,
     pub metadata_bytes: usize,
+    pub raw_pixels: Option<RawPixelData>,
 }
 
 trait ReadSeek: Read + Seek {}
@@ -495,6 +515,7 @@ fn inspect_stream(
     let syntax = TransferSyntaxRegistry
         .get(&uid)
         .context("Unknown DICOM transfer syntax")?;
+    let native_uncompressed = matches!(syntax.codec(), Codec::None);
     let source = match syntax.codec() {
         Codec::Dataset(Some(adapter)) => Source::Compressed(adapter.adapt_reader(Box::new(reader))),
         Codec::Dataset(None) => bail!("Unsupported encoded DICOM dataset"),
@@ -519,6 +540,7 @@ fn inspect_stream(
     let mut metadata = data_start;
     let mut count = 0usize;
     let mut pixel_seen = false;
+    let mut raw_pixels: Option<RawPixelData> = None;
     let mut compressed: Option<Encapsulated> = None;
     let mut extended_offsets: Option<Vec<u64>> = None;
     let mut extended_lengths: Option<Vec<u64>> = None;
@@ -825,6 +847,46 @@ fn inspect_stream(
                     );
                     dimensions.record(header.tag, value)?;
                 } else {
+                    if mode == ScanMode::Complete
+                        && native_uncompressed
+                        && containers.is_empty()
+                        && header.tag == PIXEL
+                        && matches!(header.vr, dicom_core::VR::OW | dicom_core::VR::OB)
+                        && let (
+                            Some(rows),
+                            Some(columns),
+                            Some(allocated @ (8 | 16)),
+                            Some(stored),
+                            Some(high),
+                            Some(representation),
+                        ) = (
+                            dimensions.rows,
+                            dimensions.columns,
+                            dimensions.allocated,
+                            dimensions.stored,
+                            dimensions.high,
+                            dimensions.representation,
+                        )
+                        && dimensions.samples == Some(1)
+                        && let Ok(expected) = dimensions.bytes(PIXEL)
+                        && length >= expected
+                        && let Some(offset) = data_start.checked_add(position.get())
+                    {
+                        raw_pixels = Some(RawPixelData {
+                            offset,
+                            length: expected,
+                            rows: rows as u32,
+                            columns: columns as u32,
+                            frames: dimensions.frames.unwrap_or(1) as u32,
+                            samples: 1,
+                            bits_allocated: allocated as u16,
+                            bits_stored: stored as u16,
+                            high_bit: high as u16,
+                            signed: representation == 1,
+                            big_endian: syntax.endianness() == dicom_encoding::Endianness::Big,
+                            word_vr: header.vr == dicom_core::VR::OW,
+                        });
+                    }
                     decoder.seek(
                         position
                             .get()
@@ -901,6 +963,7 @@ fn inspect_stream(
     Ok(InputInfo {
         frames: dimensions.frames.unwrap_or(1) as usize,
         metadata_bytes: metadata as usize,
+        raw_pixels,
     })
 }
 

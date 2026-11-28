@@ -268,6 +268,11 @@ export interface Joined {
   /** True in the pane that shows the reference image, false in the pane that shows the stack. */
   lead: boolean;
 }
+export interface LiveViewSource {
+  get(slotId: string, fallback: ViewState): ViewState;
+  subscribe(slotId: string, listener: () => void): () => void;
+  isImmediate?(): boolean;
+}
 export interface ViewportProps {
   volume: Volume; view: ViewState; tool: Tool; annotations: Annotation[];
   active: boolean; crosshair: Vec3 | null; fusion?: FusionSettings | null;
@@ -312,6 +317,9 @@ export interface ViewportProps {
   /** A CLOSE caliper under way in this pane: what to click, point by point (`key` names the caliper), and what setting
    * the pane up for it changed, with its Undo. */
   caliper?: { key: string; prompts: readonly string[]; setUp?: { text: string; onUndo: () => void } };
+  /** Optional live view store so remote slice/window updates reach this viewport without full App re-renders. */
+  slotId?: string;
+  liveViews?: LiveViewSource;
 }
 export interface VolumeViewProps {
   volume: Volume; crosshair: Vec3 | null;
