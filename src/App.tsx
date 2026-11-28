@@ -81,6 +81,14 @@ import { quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowTex
 import { SlotViewStore } from './ui/slotViewStore';
 
 const FAST_VIEW_KEYS = new Set(['slice', 'windowWidth', 'windowCenter', 'windowMode', 'sharedWindow', 'zoom', 'pan', 'rotation']);
+const WINDOW_ONLY_KEYS = new Set(['windowWidth', 'windowCenter', 'windowMode', 'sharedWindow']);
+const volumeDataIds = new WeakMap<Volume['data'], number>();
+let nextVolumeDataId = 1;
+function dataIdentity(data: Volume['data']): number {
+  let id = volumeDataIds.get(data);
+  if (id === undefined) { id = nextVolumeDataId++; volumeDataIds.set(data, id); }
+  return id;
+}
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
@@ -220,12 +228,16 @@ export default function App() {
   const [slotStore] = useState(() => new SlotViewStore());
   const slotsFlushTimer = useRef<number | null>(null);
   const setSlots = (next: Slot[] | ((current: Slot[]) => Slot[])) => {
-    if (slotsFlushTimer.current !== null) {
-      window.clearTimeout(slotsFlushTimer.current);
+    const hadPending = slotsFlushTimer.current !== null;
+    if (hadPending) {
+      window.clearTimeout(slotsFlushTimer.current!);
       slotsFlushTimer.current = null;
     }
     const resolved = typeof next === 'function' ? next(slotsRef.current) : next;
-    if (resolved === slotsRef.current) return;
+    if (resolved === slotsRef.current) {
+      if (hadPending) setSlotsState(slotsRef.current);
+      return;
+    }
     slotsRef.current = resolved;
     slotStore.syncSlots(resolved);
     setSlotsState(resolved);
@@ -234,11 +246,13 @@ export default function App() {
     if (next === slotsRef.current) return;
     slotsRef.current = next;
     slotStore.syncSlots(next, immediate);
-    if (slotsFlushTimer.current !== null) window.clearTimeout(slotsFlushTimer.current);
-    slotsFlushTimer.current = window.setTimeout(() => {
-      slotsFlushTimer.current = null;
-      setSlotsState(slotsRef.current);
-    }, 150);
+    // Trailing throttle rather than debounce so continuous scrolling or cine playback still reconciles App state periodically.
+    if (slotsFlushTimer.current === null) {
+      slotsFlushTimer.current = window.setTimeout(() => {
+        slotsFlushTimer.current = null;
+        setSlotsState(slotsRef.current);
+      }, 150);
+    }
   };
   const flushLiveSlots = () => {
     if (slotsFlushTimer.current !== null) {
@@ -254,6 +268,7 @@ export default function App() {
     }
   }, []);
   const inspectorShownRef = useRef(false);
+  const checklistShownRef = useRef(false);
   const deformityShownRef = useRef(false);
   const labellingOpenRef = useRef(false);
   const quickOpenRef = useRef(false);
@@ -723,7 +738,7 @@ export default function App() {
     const volume = base?.sourceFrameIndex !== undefined && delivered?.series.id === slot.seriesId ? delivered : base;
     if (!volume) return [];
     const view = renderedView(volume, slot.view);
-    return isProjection(volume.series, view) ? [] : [{ id: slot.id, series: volume.series, view }];
+    return isProjection(volume.series, view) ? [] : [{ id: slot.id, series: volume.series, view, preview: volume.sourceFrameIndex !== undefined }];
   });
   const activateSlot = (id: string) => { activeIdRef.current = id; setActiveId(id); };
   // The crosshair in the active series' own coordinates (3D draws it there), through an alignment where it was set in
@@ -759,13 +774,14 @@ export default function App() {
       const source = view.mode === 'source' || volume.sourceFrameIndex !== undefined || volume.series.sourceFramesOnly
         || !volume.series.canReconstruct || volume.series.components === 3;
       const framePart = source ? String(Math.round(view.slice)) : 'v';
-      return `${volume.series.id}:${volume.sourceFrameIndex ?? 'v'}:${volume.data.byteLength}:${view.mode ?? 'mpr'}:${view.plane}:${view.projection ?? ''}:${framePart}:${fused?.volume.series.id ?? ''}`;
+      const fusedKey = fused ? `${fused.volume.series.id}:${dataIdentity(fused.volume.data)}` : '';
+      return `${volume.series.id}:${volume.sourceFrameIndex ?? 'v'}:${dataIdentity(volume.data)}:${view.mode ?? 'mpr'}:${view.plane}:${view.projection ?? ''}:${framePart}:${fusedKey}`;
     }).join('|');
     if (key === lastVisibleKey.current) return;
-    lastVisibleKey.current = key;
     try {
       if (visible.length) sliceRenderer().setVisibleViews(visible);
       else clearSliceTextureCache();
+      lastVisibleKey.current = key;
     } catch { /* Each viewport reports GPU errors. */ }
   }, [slots, volumeForSlot, fusion, alignments]);
 
@@ -1139,6 +1155,8 @@ export default function App() {
         // Preview is best-effort; loadVolume below reports any real decode error to the pane.
         const preview = await frameCache.get(item, openingSlice(item)).catch(() => undefined);
         volumePromise = loadVolume(item);
+        // Prevent unhandledrejection if loadVolume fails while preview compiles or paints; awaited below.
+        void volumePromise.catch(() => { /* Awaited below by startFull. */ });
         if (preview && previewWanted()) {
           await prepareSourceProgram(preview);
           if (previewWanted()) {
@@ -1731,13 +1749,17 @@ export default function App() {
         return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
       });
     };
-    const selectedVolume = beforeSlot?.seriesId ? displayVolumesRef.current.get(beforeSlot.seriesId) : undefined;
-    const fastKeys = Object.keys(patch).every(key => FAST_VIEW_KEYS.has(key));
+    const next = compute(slotsRef.current);
+    const patchKeys = Object.keys(patch);
+    const fastKeys = patchKeys.every(key => FAST_VIEW_KEYS.has(key));
+    const windowOnly = patchKeys.every(key => WINDOW_ONLY_KEYS.has(key));
+    const anyPreview = next.some(slot => Boolean(slot.seriesId && displayVolumesRef.current.get(slot.seriesId)?.sourceFrameIndex !== undefined));
     const canFastPath = fastKeys
-      && !inspectorShownRef.current && !deformityShownRef.current && !labellingOpenRef.current && !quickOpenRef.current && !show3dRef.current
-      && selectedVolume?.sourceFrameIndex === undefined;
-    if (canFastPath) commitLiveSlots(compute(slotsRef.current), fromCine);
-    else setSlots(compute);
+      && !inspectorShownRef.current && !checklistShownRef.current && !deformityShownRef.current && !labellingOpenRef.current && !quickOpenRef.current && !show3dRef.current
+      && !anyPreview
+      && (!isMprRef.current || windowOnly);
+    if (canFastPath) commitLiveSlots(next, fromCine);
+    else setSlots(next);
   };
   const liveActiveSlot = () => slotsRef.current.find(slot => slot.id === activeIdRef.current) ?? slotsRef.current[0];
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
@@ -2596,13 +2618,14 @@ export default function App() {
   };
   const maximizePane = (id: string) => { maximizeSlot(id); focusImage(); };
   const mpr = () => {
-    const activeVolume = readActiveVolume();
+    flushLiveSlots();
+    const slot = liveActiveSlot(), activeVolume = volumeForSlot(slot);
     if (beforeMpr.current) { restoreBeforeMpr(); return; }
     // From a stack's reference image the three planes are the stack's, in the window the pane had on the stack (the
     // image's own window is the image's); leaving MPR brings the image back.
     const volume = canReconstruct ? activeVolume : leadReconstructs ? leadVolume : undefined;
     if (!volume) return;
-    const windowed = volume === activeVolume ? activeSlot.view : activeSlot.stack?.id === volume.series.id ? activeSlot.stack.view : defaultView(volume.series);
+    const windowed = volume === activeVolume ? slot.view : slot.stack?.id === volume.series.id ? slot.stack.view : defaultView(volume.series);
     beforeMpr.current = { slots: slotsRef.current, layout, activeId: activeIdRef.current, crosshair, crosshairSeriesId }; setIsMpr(true);
     const origin = crosshairSeriesId ? volumesRef.current.get(crosshairSeriesId) : undefined;
     // The crosshair, in this series' own coordinates when it was set in a frame of reference aligned to it.
@@ -3011,6 +3034,7 @@ export default function App() {
       slotStore.syncSlots(slots);
     }
     inspectorShownRef.current = inspectorShown;
+    checklistShownRef.current = checklistShown;
     deformityShownRef.current = deformityShown;
     labellingOpenRef.current = Boolean(labelling.folder);
     quickOpenRef.current = Boolean(quick);
@@ -3110,13 +3134,21 @@ export default function App() {
   const suvActive = Boolean(activeVolume && !rgb && quantityScale(activeVolume.series, 'SUV'));
   const currentSuvPreset = activeVolume && suvActive ? suvPresetFor(activeVolume.series, activeDisplayView) : undefined;
   const applySuvPreset = (to: number) => {
-    const window = activeImageSeries ? windowFor(activeImageSeries, { unit: 'SUV', from: 0, to }) : null;
-    if (window) { updateView(activeSlot.id, { ...window, windowMode: 'manual' }); offerKeep.current(activeSlot.id); }
+    const slot = liveActiveSlot(), volume = volumeForSlot(slot);
+    const window = volume ? windowFor(volume.series, { unit: 'SUV', from: 0, to }) : null;
+    if (window) { updateView(slot.id, { ...window, windowMode: 'manual' }); offerKeep.current(slot.id); }
   };
   const windowPresetName = noImage || rgb ? 'W/L' : suvActive ? (currentSuvPreset ? t(`preset.${currentSuvPreset.key}` as const) : suvWindowText(activeVolume.series, activeDisplayView) || t('toolbar.customWindow'))
     : currentPreset ? presetName(currentPreset) : t('toolbar.customWindow');
   // Exactly the measurements the pane shows: the same rule draws them (shownOnView), whatever tilt they were drawn on.
-  const deleteOnSlice = () => activeSeries && changeAnnotations(activeSeries.id, activeAnnotations.filter(annotation => !activeImageSeries || !shownOnView(annotation, activeImageSeries, activeDisplayView)));
+  const deleteOnSlice = () => {
+    const slot = liveActiveSlot();
+    if (!slot.seriesId) return;
+    const volume = volumeForSlot(slot);
+    const liveView = volume ? renderedView(volume, slot.view) : slot.view;
+    const list = annotationRef.current[slot.seriesId] ?? EMPTY_ANNOTATIONS;
+    changeAnnotations(slot.seriesId, list.filter(annotation => !volume || !shownOnView(annotation, volume.series, liveView)));
+  };
   /** In the MPR menu the plane the active series was acquired in shows the series' own images, as a click on the pane's
    * plane name does (cyclePlane); the other planes are reconstructed, and so is that one while a thick slab is on. The
    * series' own images draw no slab, so the slab stays on and drawn; turning it off brings them back (chooseSlab). */
@@ -3388,7 +3420,10 @@ export default function App() {
           displayVolumesRef.current.get(item.id)?.series ?? { ...item, measurementScale: calibrationScales[item.id] }); }}
         onClose={() => setChecklistOpen(false)}
         headingRef={focusChecklistHeading}
-        onNote={() => activeImageSeries && activeSlot.seriesId ? noteAt(activeSlot.seriesId, activeImageSeries, activeSlot.view, joinedFor(activeSlot)) : null}
+        onNote={() => {
+          const slot = liveActiveSlot(), volume = volumeForSlot(slot);
+          return volume && slot.seriesId ? noteAt(slot.seriesId, volume.series, slot.view, joinedFor(slot)) : null;
+        }}
         onMeasure={(item, side, kind) => startCaliper({ kind, item, side, study: studyKey(activeSeries) })}
         measuring={caliper && caliper.study === studyKey(activeSeries) ? caliper : null} measureBlocked={caliperBlocked}
         paneShows={paneShows} onShow={showChecklistItem} showBlocked={showBlocked}

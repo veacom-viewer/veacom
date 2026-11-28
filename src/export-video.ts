@@ -225,10 +225,10 @@ export function rgbaToI420(rgba: Uint8ClampedArray, width: number, height: numbe
     const y0Base = y * width, y1Base = y0Base + width;
     let s0 = y0Base << 2, s1 = s0 + rowBytes;
     for (let x = 0, cx = 0; x < width; x += 2, cx++, s0 += 8, s1 += 8) {
-      const r00 = rgba[s0], g00 = rgba[s0 + 1], b00 = rgba[s0 + 2];
-      const r01 = rgba[s0 + 4], g01 = rgba[s0 + 5], b01 = rgba[s0 + 6];
-      const r10 = rgba[s1], g10 = rgba[s1 + 1], b10 = rgba[s1 + 2];
-      const r11 = rgba[s1 + 4], g11 = rgba[s1 + 5], b11 = rgba[s1 + 6];
+      const r00 = rgba[s0] ?? 0, g00 = rgba[s0 + 1] ?? 0, b00 = rgba[s0 + 2] ?? 0;
+      const r01 = rgba[s0 + 4] ?? 0, g01 = rgba[s0 + 5] ?? 0, b01 = rgba[s0 + 6] ?? 0;
+      const r10 = rgba[s1] ?? 0, g10 = rgba[s1 + 1] ?? 0, b10 = rgba[s1 + 2] ?? 0;
+      const r11 = rgba[s1 + 4] ?? 0, g11 = rgba[s1 + 5] ?? 0, b11 = rgba[s1 + 6] ?? 0;
       const chroma = chromaRow + cx;
       // Medical CT/MR frames are predominantly neutral grey (r == g == b), where chroma is exactly 128.
       if (((r00 ^ g00) | (g00 ^ b00) | (r01 ^ g01) | (g01 ^ b01) | (r10 ^ g10) | (g10 ^ b10) | (r11 ^ g11) | (g11 ^ b11)) === 0) {

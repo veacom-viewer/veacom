@@ -273,6 +273,12 @@ describe('RGB to limited-range video levels', () => {
     }
     assert.deepEqual(output, expected);
   });
+
+  it('pads pixels beyond a short RGBA input with limited-range black', () => {
+    const output = new Uint8Array(6);
+    rgbaToI420(new Uint8ClampedArray([255, 255, 255, 255]), 2, 2, output);
+    assert.deepEqual([...output], [235, 16, 16, 16, 128, 128]);
+  });
 });
 
 const chrome = process.env.VEACOM_TEST_CHROME ?? (process.platform === 'darwin'

@@ -514,11 +514,13 @@ export function Viewport(props: ViewportProps) {
   // that frame must be judged (the right edge scrolls) and placed on the image by the pane it lands in.
   const measurePane = (bounds: DOMRect) => {
     const next = paneRaster(bounds);
+    const prev = rasterRef.current;
     rasterRef.current = next;
     const { width, height, pixelWidth, pixelHeight } = next;
     const geometryChanged = size.current[0] !== width || size.current[1] !== height;
     const bitmapChanged = canvas.current && (canvas.current.width !== pixelWidth || canvas.current.height !== pixelHeight);
-    if (!geometryChanged && !bitmapChanged && sized.current) return;
+    const offsetChanged = prev !== null && (prev.x !== next.x || prev.y !== next.y);
+    if (!geometryChanged && !bitmapChanged && !offsetChanged && sized.current) return;
     sized.current = true;
     if (geometryChanged) { size.current = [width, height]; setDimensions(size.current); }
     queue();
@@ -585,6 +587,9 @@ export function Viewport(props: ViewportProps) {
     latest.current = props;
     deformitySimRef.current = deformity.open && deformity.simulate;
     overlayViewRef.current = overlayView;
+    if (container.current && (previous.paneNumber !== props.paneNumber || previous.slotId !== props.slotId)) {
+      measurePane(container.current.getBoundingClientRect());
+    }
     const incomingView = props.liveViews && props.slotId ? props.liveViews.get(props.slotId, props.view) : props.view;
     if (previous.view !== props.view || previous.volume !== props.volume) {
       const incoming = interactionContext(props.volume, incomingView);

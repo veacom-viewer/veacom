@@ -49,7 +49,7 @@ export function ViewportCell({ slot, slotStore, index, paneCount, volume, metada
   onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
   slot: Slot; slotStore?: SlotViewStore; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
   annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
-  interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
+  interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string; preview?: boolean }[];
   /** Frames of reference aligned (imaging/registration.ts): another pane's plane in an aligned frame is drawn here too. */
   alignments: readonly Alignment[];
   /** This pane shows a series, or a fused overlay, placed by an alignment: said in its corner. */
@@ -80,12 +80,15 @@ export function ViewportCell({ slot, slotStore, index, paneCount, volume, metada
   const cross = (place: number) => onCross(slot.id, place);
   const [dragging, setDragging] = useState(false);
   const watchesReferences = Boolean(volume && interaction.showReferences && references.some(item => item.id !== slot.id));
-  useReferenceVersion(slotStore, watchesReferences);
-  const currentView = slotStore ? slotStore.get(slot.id, slot.view) : slot.view;
-  const referencePlanes = volume && interaction.showReferences ? references.flatMap(item => {
+  const refVersion = useReferenceVersion(slotStore, watchesReferences);
+  // Feed refVersion into the store reads so React Compiler invalidates referencePlanes when another pane pages.
+  const currentView = slotStore && refVersion >= 0 ? slotStore.get(slot.id, slot.view) : slot.view;
+  const referencePlanes = volume && interaction.showReferences && refVersion >= 0 ? references.flatMap(item => {
     const here = { series: volume.series, view: renderedView(volume, currentView) };
     if (item.id === slot.id) return [];
-    const liveItem = slotStore ? { ...item, view: slotStore.get(item.id, item.view) } : item;
+    // Keep preview panes on their delivered source frame (`item.view`) instead of jumping to a requested slice.
+    const liveItem = slotStore && !item.preview ? { ...item, view: slotStore.get(item.id, item.view) } : item;
+    if (isProjection(liveItem.series, liveItem.view)) return [];
     if (sharePlaneSpace(liveItem, here)) return [liveItem];
     // A plane in a frame of reference of its own, aligned to this one: drawn where the alignment puts it.
     const transform = placed(liveItem) && placed(here) ? alignedTransform(alignments, liveItem.series, volume.series) : null;

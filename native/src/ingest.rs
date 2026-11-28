@@ -2554,7 +2554,9 @@ fn read_frames_budget(
                 || raw.rows as usize != rows
                 || raw.columns as usize != columns
                 || raw.frames as usize != frames
-                || (raw.big_endian && raw.bits_allocated == 16 && !raw.word_vr)
+                || (raw.big_endian
+                    && ((raw.bits_allocated == 16 && !raw.word_vr)
+                        || (raw.bits_allocated == 8 && raw.word_vr)))
             {
                 return None;
             }

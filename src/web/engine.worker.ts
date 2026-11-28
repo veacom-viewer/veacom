@@ -316,11 +316,7 @@ async function answer(data: EngineRequest): Promise<void> {
                 yieldTurn: () => runWhileUrgentEnabled(nextTurn),
                 onRestart: total => engine.beginVolumeProgress(total),
               });
-              // Keep small chunked volumes (e.g. PET or small MR) in WASM cache for repeat sampling,
-              // but avoid copying large (>32 MiB) CT stacks back into non-shrinkable WASM linear memory
-              // since the page already holds the assembled volume in JS memory.
-              const maxChunkCacheBytes = 32 * 1024 * 1024;
-              if (plan.cacheLimit && assembled.bytes.byteLength <= Math.min(plan.cacheLimit, maxChunkCacheBytes)) {
+              if (plan.cacheLimit && assembled.bytes.byteLength <= plan.cacheLimit) {
                 engine.cacheVolume(data.seriesId, assembled.bytes, assembled.pixelType, data.revision);
               }
               value = assembled; transfer = [assembled.bytes.buffer];

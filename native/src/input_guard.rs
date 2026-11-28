@@ -867,7 +867,7 @@ fn inspect_stream(
                             dimensions.high,
                             dimensions.representation,
                         )
-                        && dimensions.samples.unwrap_or(1) == 1
+                        && dimensions.samples == Some(1)
                         && let Ok(expected) = dimensions.bytes(PIXEL)
                         && length >= expected
                         && let Some(offset) = data_start.checked_add(position.get())

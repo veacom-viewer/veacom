@@ -36,32 +36,36 @@ function dicomMeta(sopClass, uid, transferSyntax) {
   return Buffer.concat([Buffer.alloc(128), Buffer.from('DICM'), element(0x0002, 0x0000, 'UL', meta.length), meta]);
 }
 
-function packBits(bytes) {
+function packBits(bytes, rowWidth) {
+  // DICOM PS3.5 Section G.3: each row must be encoded separately without runs crossing row boundaries.
   const out = [];
-  let i = 0;
-  while (i < bytes.length) {
-    let run = 1;
-    while (run < 128 && i + run < bytes.length && bytes[i + run] === bytes[i]) run++;
-    if (run >= 3) {
-      out.push((257 - run) & 0xff, bytes[i]);
-      i += run;
-      continue;
+  for (let rowStart = 0; rowStart < bytes.length; rowStart += rowWidth) {
+    const rowEnd = Math.min(bytes.length, rowStart + rowWidth);
+    let i = rowStart;
+    while (i < rowEnd) {
+      let run = 1;
+      while (run < 128 && i + run < rowEnd && bytes[i + run] === bytes[i]) run++;
+      if (run >= 3) {
+        out.push((257 - run) & 0xff, bytes[i]);
+        i += run;
+        continue;
+      }
+      const start = i;
+      let lit = 0;
+      while (lit < 128 && i < rowEnd) {
+        if (i + 2 < rowEnd && bytes[i] === bytes[i + 1] && bytes[i] === bytes[i + 2]) break;
+        i++;
+        lit++;
+      }
+      out.push(lit - 1);
+      for (let k = start; k < start + lit; k++) out.push(bytes[k]);
     }
-    const start = i;
-    let lit = 0;
-    while (lit < 128 && i < bytes.length) {
-      if (i + 2 < bytes.length && bytes[i] === bytes[i + 1] && bytes[i] === bytes[i + 2]) break;
-      i++;
-      lit++;
-    }
-    out.push(lit - 1);
-    for (let k = start; k < start + lit; k++) out.push(bytes[k]);
   }
   if (out.length % 2) out.push(0);
   return Buffer.from(out);
 }
 
-function rleEncode16(raw) {
+function rleEncode16(raw, width) {
   const pixels = raw.length / 2;
   const hi = new Uint8Array(pixels);
   const lo = new Uint8Array(pixels);
@@ -69,8 +73,8 @@ function rleEncode16(raw) {
     lo[i] = raw[i * 2];
     hi[i] = raw[i * 2 + 1];
   }
-  const seg0 = packBits(hi);
-  const seg1 = packBits(lo);
+  const seg0 = packBits(hi, width);
+  const seg1 = packBits(lo, width);
   const header = Buffer.alloc(64);
   header.writeUInt32LE(2, 0);
   header.writeUInt32LE(64, 4);
@@ -219,7 +223,7 @@ async function makeRle(dir) {
         [0x0028, 0x1051, 'DS', 400], [0x0028, 0x1052, 'DS', 0],
         [0x0028, 0x1053, 'DS', 1],
       ]),
-      rleEncode16(raw),
+      rleEncode16(raw, size),
     ]);
     await writeFile(path.join(seriesDir, `IM${String(z).padStart(5, '0')}.dcm`), bytes);
   }

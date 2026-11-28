@@ -149,6 +149,23 @@ const fragmentShader = /* glsl */ `
       return;
     }
     mat3 normalMatrix = transpose(mat3(uWorldToIndex));
+    float labelEntry = 1e20;
+    if (uHasLabels) {
+      vec3 lMin = uLabelMin - 1.0, lMax = uLabelMin + uLabelSize + 1.0;
+      float le = entry, lx = exitAt;
+      bool hitLabelBox = true;
+      for (int axis = 0; axis < 3; axis++) {
+        if (abs(directionIndex[axis]) < 1e-10) {
+          if (originIndex[axis] < lMin[axis] || originIndex[axis] > lMax[axis]) hitLabelBox = false;
+        } else {
+          float a = (lMin[axis] - originIndex[axis]) / directionIndex[axis];
+          float b = (lMax[axis] - originIndex[axis]) / directionIndex[axis];
+          le = max(le, min(a, b));
+          lx = min(lx, max(a, b));
+        }
+      }
+      if (hitLabelBox && le <= lx) labelEntry = le;
+    }
     float fastestAxis = max(max(abs(directionIndex.x), abs(directionIndex.y)), abs(directionIndex.z));
     float stepSize = max(min(uStep, uIndexStep / fastestAxis), (exitAt - entry) / 2047.0);
     float thresholdFloor = uThreshold - 10.0;
@@ -166,6 +183,7 @@ const fragmentShader = /* glsl */ `
           if (abs(directionIndex.x) > 1e-8) tExit = min(tExit, ((directionIndex.x > 0.0 ? blockMax.x : blockMin.x) - originIndex.x) / directionIndex.x);
           if (abs(directionIndex.y) > 1e-8) tExit = min(tExit, ((directionIndex.y > 0.0 ? blockMax.y : blockMin.y) - originIndex.y) / directionIndex.y);
           if (abs(directionIndex.z) > 1e-8) tExit = min(tExit, ((directionIndex.z > 0.0 ? blockMax.z : blockMin.z) - originIndex.z) / directionIndex.z);
+          if (labelEntry > at) tExit = min(tExit, labelEntry);
           int nextI = int(ceil((tExit - entry) / stepSize - 0.5)) - 1;
           if (nextI > i) i = nextI;
           continue;

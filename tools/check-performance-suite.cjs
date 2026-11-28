@@ -272,10 +272,10 @@ async function benchDesktopInteractive(build, studies) {
       const canvas = document.querySelector('canvas[data-testid="dicom-canvas"]');
       return {
         indexReadyMs: p.importReturned - p.started,
-        firstPreviewMs: previewFrame ? previewFrame.at - p.started : null,
+        firstPreviewSubmitMs: previewFrame ? previewFrame.at - p.started : null,
         fullHeadersMs: volReq ? volReq.headers - p.started : null,
         fullBodyReadMs: volReq && fullFrame ? fullFrame.at - volReq.headers : null,
-        fullPaintMs: fullFrame ? fullFrame.at - p.started : null,
+        fullSubmitMs: fullFrame ? fullFrame.at - p.started : null,
         canvasResizeStallMs: p.canvasResizeMs,
         getErrorStallMs: p.getErrorMs,
         largestRafGapMs: Math.max(0, ...p.rafGaps.filter(g => g.at >= p.started).map(g => g.gap)),
@@ -332,14 +332,14 @@ async function benchDesktopInteractive(build, studies) {
         const during = frames.filter(f => f.at <= endAt + 30);
         const distinct = new Set(during.map(f => f.slice)).size;
         const lastAt = frames.length ? frames[frames.length - 1].at : endAt;
-        const paints = frames.map(f => f.renderSubmitMs);
+        const submits = frames.map(f => f.renderSubmitMs);
         return {
           framesDelivered: frames.length,
           slicesPerSec: Number((distinct / durationS).toFixed(1)),
           settleLagMs: Number(Math.max(0, lastAt - endAt).toFixed(1)),
-          p95FrameGapMs: gaps.length ? Number(gaps.sort((a, b) => a - b)[Math.floor((gaps.length - 1) * 0.95)].toFixed(1)) : 0,
-          maxFrameGapMs: gaps.length ? Number(Math.max(...gaps).toFixed(1)) : 0,
-          avgPaintMs: paints.length ? Number((paints.reduce((a, b) => a + b, 0) / paints.length).toFixed(2)) : 0,
+          p95SubmitGapMs: gaps.length ? Number(gaps.sort((a, b) => a - b)[Math.floor((gaps.length - 1) * 0.95)].toFixed(1)) : 0,
+          maxSubmitGapMs: gaps.length ? Number(Math.max(...gaps).toFixed(1)) : 0,
+          avgSubmitMs: submits.length ? Number((submits.reduce((a, b) => a + b, 0) / submits.length).toFixed(2)) : 0,
           longTasks: window.__EVAL__.longTasks.length,
           domMutations: window.__EVAL__.domMutations,
         };
@@ -396,12 +396,12 @@ async function benchDesktopInteractive(build, studies) {
       const durationS = Math.max((endAt - window.__EVAL__.burstStart) / 1000, 0.01);
       const during = frames.filter(f => f.at <= endAt + 30);
       const lastAt = frames.length ? frames[frames.length - 1].at : endAt;
-      const paints = frames.map(f => f.renderSubmitMs);
+      const submits = frames.map(f => f.renderSubmitMs);
       return {
         updatesPerSec: Number((during.length / durationS).toFixed(1)),
         settleLagMs: Number(Math.max(0, lastAt - endAt).toFixed(1)),
-        p95FrameGapMs: gaps.length ? Number(gaps.sort((a, b) => a - b)[Math.floor((gaps.length - 1) * 0.95)].toFixed(1)) : 0,
-        avgPaintMs: paints.length ? Number((paints.reduce((a, b) => a + b, 0) / paints.length).toFixed(2)) : 0,
+        p95SubmitGapMs: gaps.length ? Number(gaps.sort((a, b) => a - b)[Math.floor((gaps.length - 1) * 0.95)].toFixed(1)) : 0,
+        avgSubmitMs: submits.length ? Number((submits.reduce((a, b) => a + b, 0) / submits.length).toFixed(2)) : 0,
         longTasks: window.__EVAL__.longTasks.length,
         domMutations: window.__EVAL__.domMutations,
       };
@@ -416,7 +416,8 @@ async function benchDesktopInteractive(build, studies) {
     const enginePid = findChildEnginePid(runtime.browserPid);
     const engineMem = enginePid ? linuxProcMemMiB(enginePid) : null;
     const rendererMem = linuxProcMemMiB(runtime.rendererPid);
-    const totalRssMiB = runtime.metrics.reduce((sum, m) => sum + (linuxProcMemMiB(m.pid)?.rssMiB ?? 0), 0) + (engineMem?.rssMiB ?? 0);
+    const knownMems = [...runtime.metrics.map(m => linuxProcMemMiB(m.pid)), engineMem].filter(Boolean);
+    const totalRssMiB = knownMems.length > 0 ? knownMems.reduce((sum, m) => sum + m.rssMiB, 0) : null;
 
     // 5. 3-Pane Linked MPR switch & 60 Hz scrolling.
     const mprT0 = performance.now();
@@ -461,7 +462,7 @@ async function benchDesktopInteractive(build, studies) {
       return {
         slicesPerSec: Number((distinct / durationS).toFixed(1)),
         settleLagMs: Number(Math.max(0, lastAt - endAt).toFixed(1)),
-        p95FrameGapMs: gaps.length ? Number(gaps.sort((a, b) => a - b)[Math.floor((gaps.length - 1) * 0.95)].toFixed(1)) : 0,
+        p95SubmitGapMs: gaps.length ? Number(gaps.sort((a, b) => a - b)[Math.floor((gaps.length - 1) * 0.95)].toFixed(1)) : 0,
         longTasks: window.__EVAL__.longTasks.length,
       };
     }, mprEndAt);
@@ -470,10 +471,10 @@ async function benchDesktopInteractive(build, studies) {
     return {
       open: {
         indexReadyMs: Number(openStats.indexReadyMs.toFixed(1)),
-        firstPreviewMs: openStats.firstPreviewMs !== null ? Number(openStats.firstPreviewMs.toFixed(1)) : null,
+        firstPreviewSubmitMs: openStats.firstPreviewSubmitMs !== null ? Number(openStats.firstPreviewSubmitMs.toFixed(1)) : null,
         fullHeadersMs: openStats.fullHeadersMs !== null ? Number(openStats.fullHeadersMs.toFixed(1)) : null,
         fullBodyReadMs: openStats.fullBodyReadMs !== null ? Number(openStats.fullBodyReadMs.toFixed(1)) : null,
-        fullPaintMs: openStats.fullPaintMs !== null ? Number(openStats.fullPaintMs.toFixed(1)) : null,
+        fullSubmitMs: openStats.fullSubmitMs !== null ? Number(openStats.fullSubmitMs.toFixed(1)) : null,
         canvasResizeStallMs: Number(openStats.canvasResizeStallMs.toFixed(1)),
         getErrorStallMs: Number(openStats.getErrorStallMs.toFixed(1)),
         largestRafGapMs: Number(openStats.largestRafGapMs.toFixed(1)),
@@ -489,7 +490,7 @@ async function benchDesktopInteractive(build, studies) {
         enginePeakMiB: engineMem ? Number(engineMem.peakMiB.toFixed(1)) : null,
         rendererRssMiB: rendererMem ? Number(rendererMem.rssMiB.toFixed(1)) : null,
         rendererPeakMiB: rendererMem ? Number(rendererMem.peakMiB.toFixed(1)) : null,
-        totalRssMiB: Number(totalRssMiB.toFixed(1)),
+        totalRssMiB: totalRssMiB !== null ? Number(totalRssMiB.toFixed(1)) : null,
       },
     };
   } finally {
@@ -519,12 +520,23 @@ function summarize(allRounds) {
     if (roots.base) {
       const baseVals = allRounds.map(r => flattenMetrics(r.base)[key]).filter(Number.isFinite);
       row.base = Number(median(baseVals).toFixed(2));
-      const pct = row.base > 0 ? ((row.head - row.base) / row.base) * 100 : 0;
-      row.changePct = Number(pct.toFixed(1));
-      const cmp = compareRounds(allRounds.map(r => ({ base: flattenMetrics(r.base)[key], head: flattenMetrics(r.head)[key] })), { threshold: 0.03, minMs: 0.5, seed });
-      row.verdict = cmp.verdict;
-      if (HIGHER_IS_BETTER.test(key) && cmp.verdict === 'faster') row.verdict = 'slower';
-      else if (HIGHER_IS_BETTER.test(key) && cmp.verdict === 'slower') row.verdict = 'faster';
+      const higherBetter = HIGHER_IS_BETTER.test(key);
+      if (row.base === 0 && row.head === 0) {
+        row.changePct = 0;
+        row.verdict = 'same';
+      } else if (row.base === 0) {
+        row.changePct = null;
+        row.verdict = Math.abs(row.head) >= 0.5 ? (higherBetter ? 'faster' : 'slower') : 'same';
+      } else if (row.head === 0) {
+        row.changePct = -100;
+        row.verdict = Math.abs(row.base) >= 0.5 ? (higherBetter ? 'slower' : 'faster') : 'same';
+      } else {
+        row.changePct = Number((((row.head - row.base) / row.base) * 100).toFixed(1));
+        const cmp = compareRounds(allRounds.map(r => ({ base: flattenMetrics(r.base)[key], head: flattenMetrics(r.head)[key] })), { threshold: 0.03, minMs: 0.5, seed });
+        row.verdict = cmp.verdict;
+        if (higherBetter && cmp.verdict === 'faster') row.verdict = 'slower';
+        else if (higherBetter && cmp.verdict === 'slower') row.verdict = 'faster';
+      }
     }
     rows.push(row);
   }
@@ -532,13 +544,18 @@ function summarize(allRounds) {
 }
 
 function formatMarkdown(summary) {
-  const lines = ['# VEAcom Performance Evaluation', ''];
+  const lines = [
+    '# VEAcom Performance Evaluation',
+    '',
+    'Desktop frame metrics (`*SubmitMs`, `*SubmitGapMs`) measure `veacom:frame` CPU render submission (`cpu-render-submit-and-composite`), not display presentation.',
+    '',
+  ];
   if (roots.base) {
     lines.push('| Metric | Base median | Head median | Change | Verdict |');
     lines.push('| --- | ---: | ---: | ---: | --- |');
     for (const r of summary) {
-      const sign = r.changePct > 0 ? '+' : '';
-      lines.push(`| \`${r.metric}\` | ${r.base} | ${r.head} | ${sign}${r.changePct}% | ${r.verdict} |`);
+      const change = r.changePct === null ? `n/a (+${r.head})` : `${r.changePct > 0 ? '+' : ''}${r.changePct}%`;
+      lines.push(`| \`${r.metric}\` | ${r.base} | ${r.head} | ${change} | ${r.verdict} |`);
     }
   } else {
     lines.push('| Metric | Head median |');

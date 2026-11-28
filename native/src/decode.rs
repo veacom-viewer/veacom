@@ -1232,6 +1232,16 @@ fn write_raw_scalar_bytes<T: Sample>(
         return Ok(());
     }
     // Fractional rescale (e.g. PET or MR with non-integer RescaleSlope/RescaleIntercept).
+    #[inline]
+    fn convert_rescaled<T: Sample>(value: f64) -> Result<T> {
+        if !value.is_finite() {
+            bail!("Pixel rescale produced a non-finite value");
+        }
+        if T::IS_FLOAT32 && !(value as f32).is_finite() {
+            return Err(Float64Required.into());
+        }
+        T::from_value(value)
+    }
     let (slope, intercept) = (frame.slope, frame.intercept);
     match raw.bits_allocated {
         16 if !raw.big_endian => {
@@ -1244,7 +1254,7 @@ fn write_raw_scalar_bytes<T: Sample>(
                     raw.signed,
                 );
                 let value = f64::from(stored) * slope + intercept;
-                dst.write(T::from_value(value)?);
+                dst.write(convert_rescaled(value)?);
             }
         }
         16 => {
@@ -1257,14 +1267,14 @@ fn write_raw_scalar_bytes<T: Sample>(
                     raw.signed,
                 );
                 let value = f64::from(stored) * slope + intercept;
-                dst.write(T::from_value(value)?);
+                dst.write(convert_rescaled(value)?);
             }
         }
         8 => {
             for (dst, &byte) in target.iter_mut().zip(raw_bytes) {
                 let stored = unpack_word(u16::from(byte), shift, mask, raw.bits_stored, raw.signed);
                 let value = f64::from(stored) * slope + intercept;
-                dst.write(T::from_value(value)?);
+                dst.write(convert_rescaled(value)?);
             }
         }
         _ => bail!("Unsupported scalar BitsAllocated"),
@@ -3128,5 +3138,187 @@ mod tests {
             crate::message::coded(&volume_err).map(|note| note.code),
             Some("file.sourceChanged")
         );
+    }
+
+    #[test]
+    fn direct_raw_widens_to_float64_on_float32_overflow() {
+        let dir = crate::test_dir::tempdir().unwrap();
+        // Check 16-bit LE, 16-bit BE, and 8-bit raw paths for f32 overflow widening and non-finite rejection.
+        for (name, bits, ts_uid) in [
+            ("le16", 16u16, "1.2.840.10008.1.2.1"),
+            ("be16", 16u16, "1.2.840.10008.1.2.2"),
+            ("u8", 8u16, "1.2.840.10008.1.2.1"),
+        ] {
+            let path = dir.path().join(format!("overflow_{name}.dcm"));
+            fixture(&path, &[0, 1, 2, 0], false, 8, 1e39, 0.0, "MONOCHROME2");
+            let mut object = dicom_object::open_file(&path).unwrap();
+            object.put(DataElement::new(
+                Tag(0x0028, 0x0100),
+                VR::US,
+                PrimitiveValue::from(bits),
+            ));
+            if bits == 8 {
+                object.put(DataElement::new(
+                    Tag(0x7fe0, 0x0010),
+                    VR::OB,
+                    PrimitiveValue::U8(vec![0, 1, 2, 0].into()),
+                ));
+            }
+            let file_obj = object
+                .into_inner()
+                .with_meta(
+                    FileMetaTableBuilder::new()
+                        .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                        .media_storage_sop_instance_uid(format!("1.2.826.0.1.3680043.8.498.{name}"))
+                        .transfer_syntax(ts_uid),
+                )
+                .unwrap();
+            file_obj.write_to_file(&path).unwrap();
+
+            let imported = crate::ingest::import(&[path.to_string_lossy().into_owned()]).unwrap();
+            let direct = imported.sources[0].as_ref();
+            assert!(
+                direct.frames[0].raw_pixels.is_some(),
+                "{name} should use raw path"
+            );
+            let mut fallback = direct.clone();
+            fallback.frames[0].raw_pixels = None;
+
+            let direct_vol = decode_volume(direct).unwrap();
+            let dom_vol = decode_volume(&fallback).unwrap();
+            assert_eq!(direct_vol.type_name(), "float64", "{name} volume type");
+            assert_eq!(direct_vol.bytes(), dom_vol.bytes(), "{name} volume bytes");
+
+            let direct_frame = decode_frame(direct, 0).unwrap();
+            let dom_frame = decode_frame(&fallback, 0).unwrap();
+            assert_eq!(direct_frame.type_name(), "float64", "{name} frame type");
+            assert_eq!(
+                direct_frame.bytes(),
+                dom_frame.bytes(),
+                "{name} frame bytes"
+            );
+
+            assert!(
+                matches!(
+                    decode_frame_chunk(direct, 0, 1, "float32").unwrap(),
+                    ChunkOutcome::Float64Required
+                ),
+                "{name} float32 chunk must report Float64Required"
+            );
+            assert!(
+                matches!(
+                    decode_frame_chunk(direct, 0, 1, "float64").unwrap(),
+                    ChunkOutcome::Decoded(PixelBuffer::F64(_))
+                ),
+                "{name} float64 chunk must succeed"
+            );
+
+            // Non-finite f64 rescale must fail rather than widen to float64.
+            let mut inf_source = direct.clone();
+            inf_source.frames[0].slope = 1e308;
+            assert!(
+                decode_frame_chunk(&inf_source, 0, 1, "float64").is_err(),
+                "{name} non-finite f64 chunk must error"
+            );
+            assert!(
+                decode_volume(&inf_source).is_err(),
+                "{name} non-finite volume must error"
+            );
+            inf_source.frames[0].intercept = f64::INFINITY;
+            assert!(
+                decode_frame_chunk(&inf_source, 0, 1, "float32").is_err(),
+                "{name} immediate non-finite f64 must error on float32"
+            );
+        }
+    }
+
+    #[test]
+    fn big_endian_8bit_ow_and_missing_samples_per_pixel_stay_on_dom_path() {
+        let dir = crate::test_dir::tempdir().unwrap();
+
+        // Explicit VR Big Endian with 8-bit PixelData stored as OW word-swaps adjacent byte pairs on disk.
+        let be_ow = dir.path().join("be_8bit_ow.dcm");
+        fixture(&be_ow, &[0, 0, 0, 0], false, 8, 1.0, 0.0, "MONOCHROME2");
+        let mut obj = dicom_object::open_file(&be_ow).unwrap();
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0010),
+            VR::US,
+            PrimitiveValue::from(1u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0011),
+            VR::US,
+            PrimitiveValue::from(2u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0100),
+            VR::US,
+            PrimitiveValue::from(8u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0101),
+            VR::US,
+            PrimitiveValue::from(8u16),
+        ));
+        obj.put(DataElement::new(
+            Tag(0x0028, 0x0102),
+            VR::US,
+            PrimitiveValue::from(7u16),
+        ));
+        // Under Explicit VR Big Endian, OW stores 16-bit word u16::from_le_bytes([17, 42]) = 0x2A11 as [0x2A, 0x11] = [42, 17].
+        obj.put(DataElement::new(
+            Tag(0x7fe0, 0x0010),
+            VR::OW,
+            PrimitiveValue::U16(vec![u16::from_le_bytes([17, 42])].into()),
+        ));
+        obj.into_inner()
+            .with_meta(
+                FileMetaTableBuilder::new()
+                    .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                    .media_storage_sop_instance_uid("1.2.826.0.1.3680043.8.498.801")
+                    .transfer_syntax("1.2.840.10008.1.2.2"),
+            )
+            .unwrap()
+            .write_to_file(&be_ow)
+            .unwrap();
+
+        let imported = crate::ingest::import(&[be_ow.to_string_lossy().into_owned()]).unwrap();
+        let source = imported.sources[0].as_ref();
+        assert!(
+            source.frames[0].raw_pixels.is_none(),
+            "big-endian 8-bit OW must stay on DOM path"
+        );
+        let vol = decode_volume(source).unwrap();
+        let frame = decode_frame(source, 0).unwrap();
+        assert_eq!(vol.bytes(), frame.bytes());
+        match vol {
+            PixelBuffer::U8(v) => assert_eq!(v, vec![17, 42]),
+            PixelBuffer::U16(v) => assert_eq!(v, vec![17, 42]),
+            PixelBuffer::I16(v) => assert_eq!(v, vec![17, 42]),
+            other => panic!("unexpected pixel type: {}", other.type_name()),
+        }
+
+        // Monochrome image without SamplesPerPixel must not enable raw_pixels and must fail like DOM.
+        let no_spp = dir.path().join("no_spp.dcm");
+        fixture(
+            &no_spp,
+            &[10, 20, 30, 40],
+            false,
+            12,
+            1.0,
+            0.0,
+            "MONOCHROME2",
+        );
+        let mut obj = dicom_object::open_file(&no_spp).unwrap();
+        obj.remove_element(Tag(0x0028, 0x0002));
+        obj.write_to_file(&no_spp).unwrap();
+        let imported = crate::ingest::import(&[no_spp.to_string_lossy().into_owned()]).unwrap();
+        if let Some(source) = imported.sources.first() {
+            assert!(
+                source.frames[0].raw_pixels.is_none(),
+                "missing SamplesPerPixel must not select raw path"
+            );
+            assert!(decode_volume(source).is_err());
+        }
     }
 }
