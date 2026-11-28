@@ -64,7 +64,6 @@ export async function waitForSlice(viewport: HTMLElement, slice: number, signal?
     if (!canvas) throw videoError('video.selectViewport', 'Select an image viewport to export a slice video.');
     checkSeries(canvas, seriesId); checkSeries(overlay, seriesId);
     if (canvas.dataset.slice === String(slice) && overlay?.dataset.slice === String(slice)) {
-      await nextFrame(signal);
       return;
     }
     const error = viewport.querySelector('[role="alert"]');
@@ -113,7 +112,7 @@ async function svgImage(source: SVGSVGElement, hideIdentity = false, hidePatient
 interface Expected { slice: number; seriesId?: string }
 
 /** Draws the displayed pixels and measurement/orientation overlays at the viewport's actual resolution. */
-export async function captureViewportCanvas(viewport: HTMLElement, options: Pick<ViewportVideoOptions, 'outputSize' | 'includeOverlays' | 'hideIdentity' | 'hidePatientData'> = {}, expected?: Expected): Promise<HTMLCanvasElement> {
+export async function captureViewportCanvas(viewport: HTMLElement, options: Pick<ViewportVideoOptions, 'outputSize' | 'includeOverlays' | 'hideIdentity' | 'hidePatientData'> = {}, expected?: Expected, reuseCanvas?: HTMLCanvasElement): Promise<HTMLCanvasElement> {
   const bounds = viewport.getBoundingClientRect();
   const source = viewport.querySelector('canvas');
   if (!viewport.isConnected || !source || !bounds.width || !bounds.height) throw videoError('video.viewportHidden', 'The image viewport is not visible.');
@@ -131,13 +130,16 @@ export async function captureViewportCanvas(viewport: HTMLElement, options: Pick
   if (requested && (!Number.isInteger(requested.width) || !Number.isInteger(requested.height)
     || requested.width < 16 || requested.height < 16)) throw videoError('video.sizeInvalid', 'Output width and height must be whole numbers of at least 16 pixels.');
   const scale = requested ? Math.min(requested.width / bounds.width, requested.height / bounds.height) : source.width / sourceBounds.width;
-  const canvas = document.createElement('canvas');
-  canvas.width = requested?.width ?? Math.round(bounds.width * scale);
-  canvas.height = requested?.height ?? Math.round(bounds.height * scale);
-  if (!Number.isFinite(scale) || canvas.width < 1 || canvas.height < 1 || canvas.width > 8192 || canvas.height > 8192
-    || canvas.width * canvas.height > 36000000) throw videoError('video.viewportTooLarge', 'Resize the viewport to at most 8192 pixels per side before exporting.');
+  const targetWidth = requested?.width ?? Math.round(bounds.width * scale);
+  const targetHeight = requested?.height ?? Math.round(bounds.height * scale);
+  if (!Number.isFinite(scale) || targetWidth < 1 || targetHeight < 1 || targetWidth > 8192 || targetHeight > 8192
+    || targetWidth * targetHeight > 36000000) throw videoError('video.viewportTooLarge', 'Resize the viewport to at most 8192 pixels per side before exporting.');
+  const canvas = reuseCanvas ?? document.createElement('canvas');
+  if (canvas.width !== targetWidth) canvas.width = targetWidth;
+  if (canvas.height !== targetHeight) canvas.height = targetHeight;
   const context = canvas.getContext('2d', { alpha: false });
   if (!context) throw videoError('video.canvasFailed', 'Could not create the video capture canvas.');
+  context.setTransform(1, 0, 0, 1, 0, 0);
   context.fillStyle = '#000000';
   context.fillRect(0, 0, canvas.width, canvas.height);
   context.translate((canvas.width - bounds.width * scale) / 2, (canvas.height - bounds.height * scale) / 2);
@@ -209,24 +211,44 @@ export function videoEncoderConfigs(width: number, height: number, fps: number):
   return settings;
 }
 
+const GRAY_LUMA = new Uint8Array(256);
+for (let v = 0; v < 256; v++) GRAY_LUMA[v] = 16 + ((56284 * v + 32768) >> 16);
+
 /**
  * Canvas RGBA to limited-range BT.709 I420, here rather than in the encoder so that every computer gets the
  * same levels. Gray stays exactly neutral. Width and height are even; pixels beyond the data's edge are black.
  */
 export function rgbaToI420(rgba: Uint8ClampedArray, width: number, height: number, output: Uint8Array): void {
   const chromaStart = width * height, chromaWidth = width >> 1, redStart = chromaStart + chromaWidth * (height >> 1);
-  for (let y = 0; y < height; y += 2) {
-    for (let x = 0; x < width; x += 2) {
-      let red = 0, green = 0, blue = 0;
-      for (let row = 0; row < 2; row++) for (let column = 0; column < 2; column++) {
-        const source = ((y + row) * width + x + column) * 4;
-        const r = rgba[source], g = rgba[source + 1], b = rgba[source + 2];
-        red += r; green += g; blue += b;
-        output[(y + row) * width + x + column] = 16 + ((11966 * r + 40254 * g + 4064 * b + 32768) >> 16);
+  const rowBytes = width << 2;
+  for (let y = 0, chromaRow = 0; y < height; y += 2, chromaRow += chromaWidth) {
+    const y0Base = y * width, y1Base = y0Base + width;
+    let s0 = y0Base << 2, s1 = s0 + rowBytes;
+    for (let x = 0, cx = 0; x < width; x += 2, cx++, s0 += 8, s1 += 8) {
+      const r00 = rgba[s0], g00 = rgba[s0 + 1], b00 = rgba[s0 + 2];
+      const r01 = rgba[s0 + 4], g01 = rgba[s0 + 5], b01 = rgba[s0 + 6];
+      const r10 = rgba[s1], g10 = rgba[s1 + 1], b10 = rgba[s1 + 2];
+      const r11 = rgba[s1 + 4], g11 = rgba[s1 + 5], b11 = rgba[s1 + 6];
+      const chroma = chromaRow + cx;
+      // Medical CT/MR frames are predominantly neutral grey (r == g == b), where chroma is exactly 128.
+      if (((r00 ^ g00) | (g00 ^ b00) | (r01 ^ g01) | (g01 ^ b01) | (r10 ^ g10) | (g10 ^ b10) | (r11 ^ g11) | (g11 ^ b11)) === 0) {
+        output[y0Base + x] = GRAY_LUMA[r00];
+        output[y0Base + x + 1] = GRAY_LUMA[r01];
+        output[y1Base + x] = GRAY_LUMA[r10];
+        output[y1Base + x + 1] = GRAY_LUMA[r11];
+        output[chromaStart + chroma] = 128;
+        output[redStart + chroma] = 128;
+      } else {
+        output[y0Base + x] = 16 + ((11966 * r00 + 40254 * g00 + 4064 * b00 + 32768) >> 16);
+        output[y0Base + x + 1] = 16 + ((11966 * r01 + 40254 * g01 + 4064 * b01 + 32768) >> 16);
+        output[y1Base + x] = 16 + ((11966 * r10 + 40254 * g10 + 4064 * b10 + 32768) >> 16);
+        output[y1Base + x + 1] = 16 + ((11966 * r11 + 40254 * g11 + 4064 * b11 + 32768) >> 16);
+        const red = r00 + r01 + r10 + r11;
+        const green = g00 + g01 + g10 + g11;
+        const blue = b00 + b01 + b10 + b11;
+        output[chromaStart + chroma] = 128 + ((-6596 * red - 22189 * green + 28785 * blue + 131072) >> 18);
+        output[redStart + chroma] = 128 + ((28785 * red - 26145 * green - 2640 * blue + 131072) >> 18);
       }
-      const chroma = (y >> 1) * chromaWidth + (x >> 1);
-      output[chromaStart + chroma] = 128 + ((-6596 * red - 22189 * green + 28785 * blue + 131072) >> 18);
-      output[redStart + chroma] = 128 + ((28785 * red - 26145 * green - 2640 * blue + 131072) >> 18);
     }
   }
 }
@@ -306,12 +328,13 @@ export async function exportViewportVideo(options: ViewportVideoOptions): Promis
     onProgress?.(0, total);
     let pixels: Uint8Array | null = null;
     const captureOptions = { ...options };
+    const scratchCanvas = document.createElement('canvas');
     for (let step = 0; step < total; step++) {
       const slice = options.descending ? end - step : start + step;
       checkAbort(signal);
       await setSlice(slice);
       await waitForSlice(viewport, slice, signal, options.seriesId);
-      const canvas = await captureViewportCanvas(viewport, captureOptions, { slice, seriesId: options.seriesId });
+      const canvas = await captureViewportCanvas(viewport, captureOptions, { slice, seriesId: options.seriesId }, scratchCanvas);
       checkAbort(signal);
       const frameWidth = canvas.width + canvas.width % 2, frameHeight = canvas.height + canvas.height % 2;
       if (!encoder) {

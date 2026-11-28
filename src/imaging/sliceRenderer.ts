@@ -16,7 +16,9 @@ type TextureDimension = '2d' | '3d';
 type Sampling = 'native' | 'area' | 'reduced' | 'reduced-grey' | 'window-samples' | 'reduced-with-mask';
 interface CachedTexture { owner: string; texture: WebGLTexture; padding: WebGLTexture | null; data: WeakRef<PixelArray>; touched: number; bytes: number;
   /** An acquired frame's padding range as its shader compares it: enabled, low and high, as `padding` holds them. */
-  frameRange?: Float32Array; }
+  frameRange?: Float32Array;
+  /** Exact storage descriptor when this verified texture can be updated in place with texSubImage. */
+  reuse?: string; }
 interface WindowSamples {
   key: string; geometry: string; lastPan: [number, number];
   anchor: [number, number]; origin: Vec3;
@@ -414,6 +416,7 @@ class SharedSliceRenderer {
   private programs = new Map<string, Program>();
   private current: Program | null = null;
   private textures = new Map<string, CachedTexture>();
+  private slotRing = new Map<string, string[]>();
   private identities = new WeakMap<object, number>();
   private nextIdentity = 1;
   private visible = new Set<string>();
@@ -426,6 +429,8 @@ class SharedSliceRenderer {
   private sampleTarget: WebGLFramebuffer | null = null;
   private sampleViews = new WeakMap<HTMLCanvasElement, WindowSamples>();
   constructor() {
+    this.canvas.width = 1;
+    this.canvas.height = 1;
     const gl = this.canvas.getContext('webgl2', { alpha: false, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false });
     if (!gl) throw new LocalizedError('gpu.webglUnavailable');
     this.gl = gl;
@@ -434,7 +439,7 @@ class SharedSliceRenderer {
     this.canvas.addEventListener('webglcontextlost', event => { event.preventDefault(); this.lost = true; });
     this.canvas.addEventListener('webglcontextrestored', () => {
       this.sampleTarget = null; this.sampleSupport = undefined; this.sampleViews = new WeakMap();
-      this.textures.clear(); this.programs.clear(); this.voiTextures.clear(); this.current = null; this.emptyPadding = null; this.lost = false;
+      this.textures.clear(); this.slotRing.clear(); this.programs.clear(); this.voiTextures.clear(); this.current = null; this.emptyPadding = null; this.lost = false;
       this.parallel = gl.getExtension('KHR_parallel_shader_compile');
       this.floatLinear = !!gl.getExtension('OES_texture_float_linear');
       // A restored context can run on a different renderer, for example after the GPU process fell back to software.
@@ -599,8 +604,11 @@ class SharedSliceRenderer {
     this.visible.clear();
     if (!views.length) {
       for (const [key, cached] of this.textures) this.dropTexture(key, cached);
-      this.sampleViews = new WeakMap(); this.gl.deleteFramebuffer(this.sampleTarget); this.sampleTarget = null;
-      this.canvas.width = 1; this.canvas.height = 1;
+      this.slotRing.clear();
+      this.sampleViews = new WeakMap();
+      if (this.sampleTarget) { this.gl.deleteFramebuffer(this.sampleTarget); this.sampleTarget = null; }
+      if (this.canvas.width !== 1) this.canvas.width = 1;
+      if (this.canvas.height !== 1) this.canvas.height = 1;
       return;
     }
     for (const { volume, view, fusion } of views) {
@@ -617,10 +625,51 @@ class SharedSliceRenderer {
     if (id !== undefined) {
       const key = 'window:' + id, old = this.textures.get(key);
       if (old) this.dropTexture(key, old);
+      this.slotRing.delete(`${id}:main:0`);
+      this.slotRing.delete(`${id}:main:1`);
+      this.slotRing.delete(`${id}:reduced`);
     }
     this.sampleViews.delete(target);
   }
-  private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile, region?: PlaneTexture): string {
+  private touchSlot(slotId: string, key: string, limit: number): void {
+    let ring = this.slotRing.get(slotId);
+    if (!ring) { ring = [key]; this.slotRing.set(slotId, ring); return; }
+    const at = ring.indexOf(key);
+    if (at >= 0) ring.splice(at, 1);
+    ring.push(key);
+    if (ring.length > limit * 2) ring.splice(0, ring.length - limit * 2);
+  }
+  private inOtherSlot(slotId: string, key: string): boolean {
+    for (const [id, ring] of this.slotRing) {
+      if (id !== slotId && ring.includes(key)) return true;
+    }
+    return false;
+  }
+  /** Finds the oldest unpinned verified texture in this pane's ring matching `reuseTag` once the ring holds `limit` entries. */
+  private claimReusable(slotId: string | undefined, key: string, reuseTag: string | undefined, limit: number, protectedKeys: Set<string>, checkVisible = true): [string, CachedTexture] | undefined {
+    if (!slotId || !reuseTag) return undefined;
+    const ring = this.slotRing.get(slotId);
+    if (!ring) return undefined;
+    // Drop stale keys evicted elsewhere so the ring length reflects live textures.
+    let live = 0;
+    for (let i = ring.length - 1; i >= 0; i--) {
+      if (!this.textures.has(ring[i])) ring.splice(i, 1);
+      else if (this.textures.get(ring[i])?.reuse === reuseTag) live++;
+    }
+    if (live < limit) return undefined;
+    for (let i = 0; i < ring.length; i++) {
+      const candidateKey = ring[i];
+      if (candidateKey === key || protectedKeys.has(candidateKey)) continue;
+      const candidate = this.textures.get(candidateKey);
+      if (candidate && candidate.reuse === reuseTag && !candidate.padding
+        && (checkVisible ? !this.visible.has(candidate.owner) : !this.inOtherSlot(slotId, candidateKey))) {
+        ring.splice(i, 1);
+        return [candidateKey, candidate];
+      }
+    }
+    return undefined;
+  }
+  private bind(volume: Volume, unit: number, kind: TextureKind, sourceFrame?: number, protectedKeys = new Set<string>(), tile?: FrameTile, region?: PlaneTexture, slotId?: string): string {
     const gl = this.gl, series = volume.series;
     const sourceData = texturePixels(volume, kind, sourceFrame);
     const limit = sourceFrame === undefined ? this.info.max3DTextureSize : this.textureLimit;
@@ -636,11 +685,34 @@ class SharedSliceRenderer {
     const tiled = tile && (tile.width !== series.dimensions[0] || tile.height !== series.dimensions[1]) ? tile : undefined;
     const owner = this.textureKey(volume, kind, sourceFrame);
     const key = owner + (region ? `:region:${region.start}:${region.size}` : tiled ? `:tile:${tiled.x},${tiled.y},${tiled.width},${tiled.height}` : '');
+    const ringLimit = sourceFrame === undefined ? 2 : 4;
     let cached = this.textures.get(key);
     if (!cached) {
       const texels = tileWidth * tileHeight * d;
       const byteCount = texels * bytesPerTexel(kind);
-      this.prune(byteCount + d * 16, protectedKeys);
+      let paddingData: Float32Array | undefined, frameRange: Float32Array | undefined;
+      const ranges = kind === 'rgb8' || sourceData instanceof Float64Array ? [] : Array.from({ length: d }, (_, index) => series.frameMetadata?.[sourceFrame ?? index + (region?.start[2] ?? 0)]?.paddingRange ?? series.paddingRange);
+      if (ranges.some(Boolean)) {
+        const data = new Float32Array(d * 4);
+        for (let i = 0; i < ranges.length; i++) {
+          const range = ranges[i]; if (!range) continue;
+          if (!range.every(Number.isFinite)) throw new Error('Invalid pixel padding range.');
+          const low = kind === 'float32' ? Math.min(...range) : Math.ceil(Math.min(...range));
+          const high = kind === 'float32' ? Math.max(...range) : Math.floor(Math.max(...range));
+          if (low <= high) data.set([1, low, high, 0], i * 4);
+        }
+        if (sourceFrame !== undefined) frameRange = data.slice(0, 3);
+        else paddingData = data;
+      }
+      const [w, h] = [tileWidth, tileHeight];
+      const format: [number, number, number] = kind === 'int16' ? [gl.R16I, gl.RED_INTEGER, gl.SHORT]
+        : kind === 'uint16' ? [gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT]
+          : kind === 'uint8' ? [gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE]
+            : kind === 'rgb8' ? [gl.RGB8, gl.RGB, gl.UNSIGNED_BYTE] : [gl.R32F, gl.RED, gl.FLOAT];
+      const canReuse = Boolean(slotId && !tiled && (sourceFrame !== undefined || (region !== undefined && !paddingData)));
+      const reuseTag = canReuse ? `${this.identity(volume.data)}:${target}:${kind}:${w}:${h}:${d}` : undefined;
+      const claimed = this.claimReusable(slotId, key, reuseTag, ringLimit, protectedKeys, sourceFrame !== undefined);
+      if (!claimed) this.prune(byteCount + (paddingData ? d * 16 : 0), protectedKeys);
       // Double-precision source values remain intact for quantitative tools; WebGL stores a display approximation.
       let displayData: PixelArray = sourceData;
       if (sourceData instanceof Float64Array) {
@@ -670,51 +742,49 @@ class SharedSliceRenderer {
       } else if (region) {
         displayData = planePixels(sourceData, series.dimensions, region);
       }
-      const texture = gl.createTexture();
-      gl.bindTexture(target, texture); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
-      gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      if (sourceFrame === undefined) gl.texParameteri(target, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
-      const [w, h] = [tileWidth, tileHeight];
-      const format: [number, number, number] = kind === 'int16' ? [gl.R16I, gl.RED_INTEGER, gl.SHORT]
-        : kind === 'uint16' ? [gl.R16UI, gl.RED_INTEGER, gl.UNSIGNED_SHORT]
-          : kind === 'uint8' ? [gl.R8UI, gl.RED_INTEGER, gl.UNSIGNED_BYTE]
-            : kind === 'rgb8' ? [gl.RGB8, gl.RGB, gl.UNSIGNED_BYTE] : [gl.R32F, gl.RED, gl.FLOAT];
-      if (sourceFrame === undefined) gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData);
-      else if (tiled && !(sourceData instanceof Float64Array)) {
-        // A tile is read from the frame in place: rows of the whole frame, from the tile's corner.
-        gl.pixelStorei(gl.UNPACK_ROW_LENGTH, series.dimensions[0]); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, tiled.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, tiled.y);
-        try { gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData); }
-        finally { gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0); }
-      } else gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData);
-      const error = gl.getError();
-      if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
-      let padding: WebGLTexture | null = null, frameRange: Float32Array | undefined;
-      const ranges = kind === 'rgb8' || sourceData instanceof Float64Array ? [] : Array.from({ length: d }, (_, index) => series.frameMetadata?.[sourceFrame ?? index + (region?.start[2] ?? 0)]?.paddingRange ?? series.paddingRange);
-      if (ranges.some(Boolean)) {
-        const data = new Float32Array(d * 4);
-        for (let i = 0; i < ranges.length; i++) {
-          const range = ranges[i]; if (!range) continue;
-          if (!range.every(Number.isFinite)) { gl.deleteTexture(texture); throw new Error('Invalid pixel padding range.'); }
-          const low = kind === 'float32' ? Math.min(...range) : Math.ceil(Math.min(...range));
-          const high = kind === 'float32' ? Math.max(...range) : Math.floor(Math.max(...range));
-          if (low <= high) data.set([1, low, high, 0], i * 4);
-        }
-        if (sourceFrame !== undefined) {
-          frameRange = data.slice(0, 3);
-        } else {
+      if (claimed) {
+        const [prevKey, reusable] = claimed;
+        // Storage was already allocated and gl.getError()-validated for this exact volume/target/format/size.
+        // Overwriting it in place via texSubImage avoids VRAM allocation and synchronous GPU error flushes during paging.
+        this.textures.delete(prevKey);
+        gl.bindTexture(target, reusable.texture);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+        if (sourceFrame === undefined) gl.texSubImage3D(target, 0, 0, 0, 0, w, h, d, format[1], format[2], displayData);
+        else gl.texSubImage2D(target, 0, 0, 0, w, h, format[1], format[2], displayData);
+        cached = { owner, texture: reusable.texture, padding: null, frameRange, data: new WeakRef(volume.data), bytes: byteCount, touched: 0, reuse: reuseTag };
+        this.textures.set(key, cached);
+      } else {
+        const texture = gl.createTexture();
+        gl.bindTexture(target, texture); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false); gl.pixelStorei(gl.UNPACK_COLORSPACE_CONVERSION_WEBGL, gl.NONE);
+        gl.texParameteri(target, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(target, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+        gl.texParameteri(target, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(target, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (sourceFrame === undefined) gl.texParameteri(target, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+        if (sourceFrame === undefined) gl.texImage3D(target, 0, format[0], w, h, d, 0, format[1], format[2], displayData);
+        else if (tiled && !(sourceData instanceof Float64Array)) {
+          // A tile is read from the frame in place: rows of the whole frame, from the tile's corner.
+          gl.pixelStorei(gl.UNPACK_ROW_LENGTH, series.dimensions[0]); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, tiled.x); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, tiled.y);
+          try { gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData); }
+          finally { gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0); gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0); gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0); }
+        } else gl.texImage2D(target, 0, format[0], w, h, 0, format[1], format[2], displayData);
+        const error = gl.getError();
+        if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
+        let padding: WebGLTexture | null = null;
+        if (paddingData) {
           padding = gl.createTexture();
           gl.activeTexture(gl.TEXTURE0 + unit + 2); gl.bindTexture(gl.TEXTURE_2D, padding);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, data);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, d, 1, 0, gl.RGBA, gl.FLOAT, paddingData);
           if (gl.getError() !== gl.NO_ERROR) { gl.deleteTexture(texture); gl.deleteTexture(padding); throw new Error(t('gpu.paddingUploadFailed')); }
         }
+        cached = { owner, texture, padding, frameRange, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0, reuse: reuseTag };
+        this.textures.set(key, cached);
       }
-      cached = { owner, texture, padding, frameRange, data: new WeakRef(volume.data), bytes: byteCount + (padding ? d * 16 : 0), touched: 0 };
-      this.textures.set(key, cached);
     } else gl.bindTexture(target, cached.texture);
+    if (slotId) this.touchSlot(slotId, key, ringLimit);
     if (kind !== 'rgb8') {
       const prefix = unit === 0 ? 'image' : 'pet';
       if (sourceFrame !== undefined) {
@@ -729,7 +799,7 @@ class SharedSliceRenderer {
     return key;
   }
   private bindReduction(volume: Volume, frame: number, grid: [number, number], tile: FrameTile, sourceKey: string,
-    pinned: Set<string>, reducedOnly: boolean): string {
+    pinned: Set<string>, reducedOnly: boolean, slotId?: string): string {
     const gl = this.gl, [width, height] = volume.series.dimensions, full: [number, number] = [width, height];
     const data = texturePixels(volume, textureKind(volume), frame);
     const reduced = reducedTile(tile.core, full, grid), color = volume.series.components === 3;
@@ -739,22 +809,36 @@ class SharedSliceRenderer {
     let cached = this.textures.get(key);
     if (!cached) {
       const [w, h] = reduced.size, bytes = w * h * (reducedOnly ? 4 : 8);
-      this.prune(bytes, pinned);
+      const reuseTag = slotId ? `${this.identity(volume.data)}:reduced:${color ? 1 : reducedOnly ? 2 : 3}:${w}:${h}` : undefined;
+      const claimed = this.claimReusable(slotId, key, reuseTag, 4, pinned);
+      if (!claimed) this.prune(bytes, pinned);
       const range = volume.series.frameMetadata?.[frame]?.paddingRange ?? volume.series.paddingRange;
       const pixels = reduceFrame(data, 0, full, grid, reduced, color, range);
-      const texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, texture);
-      const filter = color || this.floatLinear ? gl.LINEAR : gl.NEAREST;
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, color ? gl.RGB8 : reducedOnly ? gl.R32F : gl.RG32F, w, h, 0,
-        color ? gl.RGB : reducedOnly ? gl.RED : gl.RG, color ? gl.UNSIGNED_BYTE : gl.FLOAT, pixels);
-      const error = gl.getError();
-      if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
-      cached = { owner, texture, padding: null, bytes, data: new WeakRef(volume.data), touched: 0 };
-      this.textures.set(key, cached);
+      if (claimed) {
+        const [prevKey, reusable] = claimed;
+        this.textures.delete(prevKey);
+        gl.bindTexture(gl.TEXTURE_2D, reusable.texture);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h,
+          color ? gl.RGB : reducedOnly ? gl.RED : gl.RG, color ? gl.UNSIGNED_BYTE : gl.FLOAT, pixels);
+        cached = { owner, texture: reusable.texture, padding: null, bytes, data: new WeakRef(volume.data), touched: 0, reuse: reuseTag };
+        this.textures.set(key, cached);
+      } else {
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        const filter = color || this.floatLinear ? gl.LINEAR : gl.NEAREST;
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+        gl.texImage2D(gl.TEXTURE_2D, 0, color ? gl.RGB8 : reducedOnly ? gl.R32F : gl.RG32F, w, h, 0,
+          color ? gl.RGB : reducedOnly ? gl.RED : gl.RG, color ? gl.UNSIGNED_BYTE : gl.FLOAT, pixels);
+        const error = gl.getError();
+        if (error !== gl.NO_ERROR) { gl.deleteTexture(texture); throw new Error(t('gpu.uploadFailed', { code: error })); }
+        cached = { owner, texture, padding: null, bytes, data: new WeakRef(volume.data), touched: 0, reuse: reuseTag };
+        this.textures.set(key, cached);
+      }
     } else gl.bindTexture(gl.TEXTURE_2D, cached.texture);
+    if (slotId) this.touchSlot(slotId, key, 4);
     cached.touched = performance.now();
     gl.uniform1i(this.uniform('uReduced'), 5);
     gl.uniform2f(this.uniform('uReducedScale'), grid[0] / width, grid[1] / height);
@@ -958,10 +1042,12 @@ class SharedSliceRenderer {
       [view.pan[0] * ratio, view.pan[1] * ratio]) : undefined;
     const sampling: Sampling = sample ? 'window-samples' : plain ? 'reduced-grey' : reducedOnly ? 'reduced' : cachedFrame ? 'reduced-with-mask' : filtered ? 'area' : 'native';
     const program = this.startProgram(mainKind, sourceFrame === undefined ? '3d' : '2d', petKind, projection, sampling);
-    // Adjacent panes can differ by one physical pixel. Share their backing surface and draw each at its exact size.
+    // Grow to hold the largest active pane and avoid shrinking between asymmetric panes of one layout (e.g. 1+2 MPR),
+    // which otherwise reallocates the WebGL drawing buffer on every draw. `setVisibleViews([])` resets to 1x1 when empty.
     const surfaceSize = (size: number) => this.info.software && size <= this.info.maxTextureSize
       ? Math.min(this.info.maxTextureSize, Math.ceil(size / 8) * 8) : size;
-    const surfaceWidth = surfaceSize(w), surfaceHeight = surfaceSize(h);
+    const surfaceWidth = Math.min(this.info.maxTextureSize, Math.max(this.canvas.width, surfaceSize(w)));
+    const surfaceHeight = Math.min(this.info.maxTextureSize, Math.max(this.canvas.height, surfaceSize(h)));
     if (this.canvas.width !== surfaceWidth) this.canvas.width = surfaceWidth;
     if (this.canvas.height !== surfaceHeight) this.canvas.height = surfaceHeight;
     this.finishProgram(program);
@@ -970,17 +1056,19 @@ class SharedSliceRenderer {
     const region = sourceFrame === undefined && mainBricks === null && view.mode === 'mpr' && !view.slab && !fusion && !projection && !view.oblique?.some(v => v !== 0)
       && mainKind !== 'float32' && volume.data.byteLength >= 32 * 1024 * 1024 && !this.textures.has(this.textureKey(volume, mainKind))
       ? planeTexture(volume.series.dimensions, topLeftIndex, indexRight, indexDown, w, h) : undefined;
+    const targetId = this.identity(target);
+    const mainSlot = `${targetId}:main:0`, reducedSlot = `${targetId}:reduced`;
     const pinned = new Set<string>();
     let sourceKey = '';
     if (sourceFrame === undefined) {
       if (mainBricks === null) {
-        sourceKey = this.bind(volume, 0, mainKind, undefined, pinned, undefined, region);
+        sourceKey = this.bind(volume, 0, mainKind, undefined, pinned, undefined, region, region ? mainSlot : undefined);
         pinned.add(sourceKey);
         gl.uniform3i(this.uniform('imageTextureStart'), region?.start[0] ?? 0, region?.start[1] ?? 0, region?.start[2] ?? 0);
         gl.uniform1i(this.uniform('uBrickClip'), 0);
       }
     } else {
-      sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, pinned, tiles[0]);
+      sourceKey = reducedOnly ? this.textureKey(volume, mainKind, sourceFrame) : this.bind(volume, 0, mainKind, sourceFrame, pinned, tiles[0], undefined, tiles.length === 1 ? mainSlot : undefined);
       if (!reducedOnly) pinned.add(sourceKey);
     }
     gl.uniform1i(this.uniform('uImage'), 0);
@@ -1081,7 +1169,7 @@ class SharedSliceRenderer {
           sourceKey = this.bind(volume, 0, mainKind, sourceFrame, pinned, tile); pinned.add(sourceKey);
         }
         if (cachedFrame) {
-          reductionKey = this.bindReduction(volume, sourceFrame, grid, tile, sourceKey, pinned, reducedOnly);
+          reductionKey = this.bindReduction(volume, sourceFrame, grid, tile, sourceKey, pinned, reducedOnly, tiles.length === 1 ? reducedSlot : undefined);
           pinned.add(reductionKey);
         }
         const [x0, y0, x1, y1] = tile.core;
@@ -1102,9 +1190,19 @@ class SharedSliceRenderer {
     if (!context) throw new Error(t('gpu.compositorFailed'));
     if (surfaceWidth === w && surfaceHeight === h) context.drawImage(this.canvas, 0, 0);
     else context.drawImage(this.canvas, 0, surfaceHeight - h, w, h, 0, 0, w, h);
-    target.dataset.textureTarget = sourceFrame === undefined ? 'TEXTURE_3D' : 'TEXTURE_2D';
-    if (mainBricks !== null || petBricks !== null) target.dataset.bricked = 'true'; else delete target.dataset.bricked;
-    if (sourceFrame === undefined) delete target.dataset.sourceFrame; else target.dataset.sourceFrame = String(sourceFrame);
+    const textureTarget = sourceFrame === undefined ? 'TEXTURE_3D' : 'TEXTURE_2D';
+    if (target.dataset.textureTarget !== textureTarget) target.dataset.textureTarget = textureTarget;
+    if (mainBricks !== null || petBricks !== null) {
+      if (target.dataset.bricked !== 'true') target.dataset.bricked = 'true';
+    } else if (target.dataset.bricked !== undefined) {
+      delete target.dataset.bricked;
+    }
+    if (sourceFrame === undefined) {
+      if (target.dataset.sourceFrame !== undefined) delete target.dataset.sourceFrame;
+    } else {
+      const frameText = String(sourceFrame);
+      if (target.dataset.sourceFrame !== frameText) target.dataset.sourceFrame = frameText;
+    }
     this.prune(0, pinned);
     return performance.now() - start;
   }

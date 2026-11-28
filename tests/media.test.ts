@@ -234,6 +234,45 @@ describe('RGB to limited-range video levels', () => {
     assert.equal(output[4], 115);
     assert.equal(output[5], 184);
   });
+
+  it('matches BT.709 bit-for-bit across mixed grayscale and coloured two-by-two blocks', () => {
+    const width = 4, height = 4;
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    // Top-left 2x2: pure grayscale (fast path); top-right: 3 gray + 1 colour (general path);
+    // bottom-left: varying grays (fast path); bottom-right: all colour (general path).
+    const pixels: [number, number, number][] = [
+      [0, 0, 0], [127, 127, 127], [40, 40, 40], [200, 10, 50],
+      [64, 64, 64], [255, 255, 255], [40, 40, 40], [40, 40, 40],
+      [13, 13, 13], [88, 88, 88], [10, 200, 30], [240, 200, 10],
+      [199, 199, 199], [254, 254, 254], [30, 60, 250], [128, 0, 255],
+    ];
+    pixels.forEach(([r, g, b], i) => rgba.set([r, g, b, 255], i * 4));
+    const output = new Uint8Array((width * height * 3) / 2);
+    rgbaToI420(rgba, width, height, output);
+    const expected = new Uint8Array(output.length);
+    const luma = (r: number, g: number, b: number) => Math.max(16, Math.min(235, Math.round(16 + (0.2126 * r + 0.7152 * g + 0.0722 * b) * (219 / 255))));
+    const uOffset = width * height, vOffset = uOffset + (width * height) / 4;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const i = (y * width + x) * 4;
+        expected[y * width + x] = luma(rgba[i], rgba[i + 1], rgba[i + 2]);
+      }
+    }
+    for (let y = 0; y < height; y += 2) {
+      for (let x = 0; x < width; x += 2) {
+        let r = 0, g = 0, b = 0;
+        for (const [dx, dy] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+          const i = ((y + dy) * width + x + dx) * 4;
+          r += rgba[i]; g += rgba[i + 1]; b += rgba[i + 2];
+        }
+        r /= 4; g /= 4; b /= 4;
+        const idx = (y / 2) * (width / 2) + x / 2;
+        expected[uOffset + idx] = Math.max(16, Math.min(240, Math.round(128 + (-0.114572 * r - 0.385428 * g + 0.5 * b) * (224 / 255))));
+        expected[vOffset + idx] = Math.max(16, Math.min(240, Math.round(128 + (0.5 * r - 0.454153 * g - 0.045847 * b) * (224 / 255))));
+      }
+    }
+    assert.deepEqual(output, expected);
+  });
 });
 
 const chrome = process.env.VEACOM_TEST_CHROME ?? (process.platform === 'darwin'

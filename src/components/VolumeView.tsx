@@ -56,7 +56,9 @@ const fragmentShader = /* glsl */ `
   precision highp usampler3D;
   uniform sampler3D uVolume;
   uniform sampler3D uMask;
+  uniform sampler3D uCoarseMax;
   uniform vec3 uDimensions;
+  uniform vec3 uCoarseDimensions;
   uniform vec3 uCropMin;
   uniform vec3 uCropMax;
   uniform mat4 uInverseViewProjection;
@@ -146,21 +148,37 @@ const fragmentShader = /* glsl */ `
       outColor = vec4(0.025, 0.035, 0.045, 1.0);
       return;
     }
+    mat3 normalMatrix = transpose(mat3(uWorldToIndex));
     float fastestAxis = max(max(abs(directionIndex.x), abs(directionIndex.y)), abs(directionIndex.z));
     float stepSize = max(min(uStep, uIndexStep / fastestAxis), (exitAt - entry) / 2047.0);
+    float thresholdFloor = uThreshold - 10.0;
     vec4 accumulated = vec4(0.0);
     for (int i = 0; i < 2048; i++) {
       float at = entry + (float(i) + 0.5) * stepSize;
       if (at > exitAt || accumulated.a > 0.985) break;
       vec3 p = originIndex + at * directionIndex;
-      if (uHasLabels) {
+      bool nearLabels = uHasLabels && !any(lessThan(p, uLabelMin - 1.0)) && !any(greaterThan(p, uLabelMin + uLabelSize + 1.0));
+      if (!nearLabels) {
+        ivec3 cell = clamp(ivec3(floor(p * 0.125)), ivec3(0), ivec3(uCoarseDimensions) - 1);
+        if (texelFetch(uCoarseMax, cell, 0).r <= thresholdFloor) {
+          vec3 blockMin = vec3(cell) * 8.0, blockMax = blockMin + 8.0;
+          float tExit = exitAt;
+          if (abs(directionIndex.x) > 1e-8) tExit = min(tExit, ((directionIndex.x > 0.0 ? blockMax.x : blockMin.x) - originIndex.x) / directionIndex.x);
+          if (abs(directionIndex.y) > 1e-8) tExit = min(tExit, ((directionIndex.y > 0.0 ? blockMax.y : blockMin.y) - originIndex.y) / directionIndex.y);
+          if (abs(directionIndex.z) > 1e-8) tExit = min(tExit, ((directionIndex.z > 0.0 ? blockMax.z : blockMin.z) - originIndex.z) / directionIndex.z);
+          int nextI = int(ceil((tExit - entry) / stepSize - 0.5)) - 1;
+          if (nextI > i) i = nextI;
+          continue;
+        }
+      }
+      if (nearLabels) {
         // A shown segmentation is drawn opaque in its colour where the ray first enters it.
         ivec3 q = ivec3(floor(p + 0.5));
         int label = labelAt(q);
         if (label > 0) {
           vec3 inward = vec3(occupied(q - ivec3(1,0,0)) - occupied(q + ivec3(1,0,0)),
             occupied(q - ivec3(0,1,0)) - occupied(q + ivec3(0,1,0)), occupied(q - ivec3(0,0,1)) - occupied(q + ivec3(0,0,1)));
-          vec3 worldNormal = transpose(mat3(uWorldToIndex)) * inward;
+          vec3 worldNormal = normalMatrix * inward;
           vec3 normal = length(worldNormal) > 0.0001 ? normalize(worldNormal) : -direction;
           vec3 color = uLabelColors[min(label, ${MAX_SEGMENT_COLORS - 1})] * (0.35 + 0.65 * abs(dot(normal, direction)));
           accumulated.rgb += (1.0 - accumulated.a) * color;
@@ -171,7 +189,7 @@ const fragmentShader = /* glsl */ `
       bool valid;
       float value = valueAt(p, valid);
       if (!valid || !finiteValue(value)) continue;
-      float density = smoothstep(uThreshold - 10.0, uThreshold + uRamp, value);
+      float density = smoothstep(thresholdFloor, uThreshold + uRamp, value);
       if (density > 0.001) {
         float alpha = 1.0 - exp(-density * stepSize * 0.8);
         vec3 gradient = vec3(
@@ -179,7 +197,7 @@ const fragmentShader = /* glsl */ `
           valueAt(p + vec3(0,1,0)) - valueAt(p - vec3(0,1,0)),
           valueAt(p + vec3(0,0,1)) - valueAt(p - vec3(0,0,1))
         );
-        vec3 worldGradient = transpose(mat3(uWorldToIndex)) * gradient;
+        vec3 worldGradient = normalMatrix * gradient;
         bool finiteGradient = finiteValue(worldGradient.x) && finiteValue(worldGradient.y) && finiteValue(worldGradient.z);
         vec3 normal = finiteGradient && length(worldGradient) > 0.0001 ? normalize(worldGradient) : -direction;
         float light = 0.23 + 0.77 * abs(dot(normal, direction));
@@ -192,6 +210,55 @@ const fragmentShader = /* glsl */ `
     outColor = vec4(accumulated.rgb + (1.0 - accumulated.a) * vec3(0.025,0.035,0.045), 1.0);
   }
 `;
+
+const COARSE_BLOCK = 8;
+/** Conservative 8x8x8 block maximums dilated by one neighbor block so empty-space skipping never misses
+ * any trilinear sample above threshold. */
+function buildCoarseMax(data: Volume['data'], mask: Uint8Array, dims: Vec3): { data: Float32Array; dims: Vec3 } {
+  const [nx, ny, nz] = dims;
+  const cx = Math.ceil(nx / COARSE_BLOCK), cy = Math.ceil(ny / COARSE_BLOCK), cz = Math.ceil(nz / COARSE_BLOCK);
+  const floor = -3.402823e38;
+  const raw = new Float32Array(cx * cy * cz).fill(floor);
+  let i = 0;
+  for (let z = 0; z < nz; z++) {
+    const bz = (z >> 3) * cy * cx;
+    for (let y = 0; y < ny; y++) {
+      const by = bz + (y >> 3) * cx;
+      for (let x = 0; x < nx; x++, i++) {
+        if (mask[i] === 3) continue;
+        const v = data[i];
+        if (Number.isFinite(v)) {
+          const at = by + (x >> 3);
+          if (v > raw[at]) raw[at] = v;
+        }
+      }
+    }
+  }
+  // Dilate by 1 block in each axis so trilinear interpolation near block borders stays bounded.
+  const dilated = new Float32Array(cx * cy * cz);
+  const cPlane = cx * cy;
+  for (let z = 0; z < cz; z++) {
+    const z0 = Math.max(0, z - 1), z1 = Math.min(cz - 1, z + 1);
+    for (let y = 0; y < cy; y++) {
+      const y0 = Math.max(0, y - 1), y1 = Math.min(cy - 1, y + 1);
+      for (let x = 0; x < cx; x++) {
+        const x0 = Math.max(0, x - 1), x1 = Math.min(cx - 1, x + 1);
+        let best = floor;
+        for (let zz = z0; zz <= z1; zz++) {
+          for (let yy = y0; yy <= y1; yy++) {
+            const base = zz * cPlane + yy * cx;
+            for (let xx = x0; xx <= x1; xx++) {
+              const v = raw[base + xx];
+              if (v > best) best = v;
+            }
+          }
+        }
+        dilated[z * cPlane + y * cx + x] = best;
+      }
+    }
+  }
+  return { data: dilated, dims: [cx, cy, cz] };
+}
 
 
 function scalarRange(volume: Volume, mask: Uint8Array): [number, number, boolean] {
@@ -408,6 +475,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
     let material: THREE.ShaderMaterial | null = null;
     let geometry: THREE.PlaneGeometry | null = null;
     let labelTexture: THREE.Data3DTexture | null = null;
+    let coarseTexture: THREE.Data3DTexture | null = null;
     let removeEvents = () => {};
     let unregisterResidency = () => {};
     let gpuBytes = 0;
@@ -452,12 +520,13 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       }
       const display = buildDisplayVolume(volume, mask, maxTexture);
       const displayDims = display.dimensions;
+      const coarse = buildCoarseMax(display.data, display.mask, displayDims);
       const [kx, ky, kz]: Vec3 = [
         displayDims[0] / dimensions[0],
         displayDims[1] / dimensions[1],
         displayDims[2] / dimensions[2],
       ];
-      gpuBytes = display.data.byteLength + display.mask.byteLength;
+      gpuBytes = display.data.byteLength + display.mask.byteLength + coarse.data.byteLength;
       residencyManager.requestSpace('gpu-3d', gpuBytes);
       unregisterResidency = residencyManager.registerPool({
         id: 'gpu-3d',
@@ -478,6 +547,14 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       scalarTexture.magFilter = scalarTexture.minFilter;
       scalarTexture.unpackAlignment = 1;
       scalarTexture.needsUpdate = true;
+      coarseTexture = new THREE.Data3DTexture(coarse.data, ...coarse.dims);
+      coarseTexture.format = THREE.RedFormat;
+      coarseTexture.type = THREE.FloatType;
+      coarseTexture.internalFormat = 'R32F';
+      coarseTexture.minFilter = THREE.NearestFilter;
+      coarseTexture.magFilter = THREE.NearestFilter;
+      coarseTexture.unpackAlignment = 1;
+      coarseTexture.needsUpdate = true;
       maskTexture = new THREE.Data3DTexture(display.mask, ...displayDims);
       maskTexture.format = THREE.RedFormat;
       maskTexture.type = THREE.UnsignedByteType;
@@ -517,8 +594,9 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       setThreshold(initialThreshold);
       const displaySpacing = Math.min(volume.series.spacing[0] / kx, volume.series.spacing[1] / ky, volume.series.spacing[2] / kz);
       const uniforms = {
-        uVolume: { value: scalarTexture }, uMask: { value: maskTexture },
+        uVolume: { value: scalarTexture }, uMask: { value: maskTexture }, uCoarseMax: { value: coarseTexture },
         uDimensions: { value: new THREE.Vector3(...displayDims) },
+        uCoarseDimensions: { value: new THREE.Vector3(...coarse.dims) },
         uCropMin: { value: new THREE.Vector3() }, uCropMax: { value: new THREE.Vector3() },
         uInverseViewProjection: { value: new THREE.Matrix4() },
         uWorldToIndex: { value: worldToIndex },
@@ -832,7 +910,7 @@ export default function VolumeView({ volume, crosshair, onCrosshairChange, onClo
       exportRef.current?.abort(); exportRef.current = null;
       drawing.disposed = true; sessionRef.current = null; cancelAnimationFrame(drawing.requestId); clearTimeout(drawing.settledTimer);
       observer?.disconnect(); removeEvents(); unregisterResidency();
-      scalarTexture?.dispose(); maskTexture?.dispose(); maskUploadSource?.dispose(); labelTexture?.dispose(); material?.dispose(); geometry?.dispose(); renderer?.dispose();
+      scalarTexture?.dispose(); coarseTexture?.dispose(); maskTexture?.dispose(); maskUploadSource?.dispose(); labelTexture?.dispose(); material?.dispose(); geometry?.dispose(); renderer?.dispose();
     };
   }, [volume]);
 

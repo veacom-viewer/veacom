@@ -13,10 +13,41 @@ import type { Annotation, FusionSettings, Joined, SegmentationOverlay, Series, T
 import { general } from '../ui/overlayCorners';
 import { seriesName } from '../ui/seriesNames';
 import { draggedSeries, PANE_DRAG, type PaneToast, type Settings, type Slot } from '../ui/workspaceHelpers';
+import { type SlotViewStore, useReferenceVersion, useSlotView } from '../ui/slotViewStore';
 
-export function ViewportCell({ slot, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, joined, onCross, alignments, aligned,
+function ViewportFooter({ slotId, fallbackView, slotStore, volume, metadata, loading, joined, touchpadSpeed, onViewChange, onCross }: {
+  slotId: string; fallbackView: ViewState; slotStore?: SlotViewStore; volume: Volume; metadata: Series | undefined;
+  loading: boolean; joined: Joined | null; touchpadSpeed: Settings['touchpadSpeed'];
+  onViewChange: (id: string, patch: Partial<ViewState>) => void; onCross: (id: string, place: number) => void;
+}) {
+  const { t } = useTranslation();
+  const liveView = useSlotView(slotStore, slotId, fallbackView);
+  const requestedView = resolveView(volume, liveView);
+  const displayView = renderedView(volume, liveView);
+  const count = sliceCount(volume.series, requestedView);
+  const atSlice = Math.min(requestedView.slice, count - 1);
+  const at = placeInSequence(volume.series, requestedView, atSlice, count, joined);
+  const shown = shownSlice(volume.series, displayView, Math.min(displayView.slice, count - 1), count, joined);
+  const toPlace = (place: number) => {
+    if (!joined) onViewChange(slotId, { slice: pagingPlace(volume.series, requestedView, place, count) });
+    else if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) onCross(slotId, place);
+    else if (!joined.lead) onViewChange(slotId, { slice: stackSliceAt(volume.series, requestedView, place, count, joined) });
+  };
+  const projected = isProjection(volume.series, displayView);
+  const windowText = displayView.voiLut === undefined ? suvWindowText(volume.series, displayView) : null;
+  return <footer className="viewport-footer" data-export-exclude>
+    <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shown.number} / {shown.total}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
+    <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${shownSlice(volume.series, requestedView, atSlice, count, joined).number} / ${at.total}`}
+      label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
+      onPosition={toPlace} touchpadSpeed={touchpadSpeed} />
+    <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${general(displayView.windowWidth)} · L ${general(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
+    <span className="zoom-indicator">{Math.round(displayView.zoom * 100)}%</span>
+  </footer>;
+}
+
+export function ViewportCell({ slot, slotStore, index, paneCount, volume, metadata, active, tool, annotations, crosshair, fusion, segmentations, loading, loadError, linked, interaction, references, joined, onCross, alignments, aligned,
   onActivate, onViewChange, onAnnotationsChange, onCrosshairChange, onDropSeries, onClose, onMaximize, onRestore, onCyclePlane, onFusionAdjust, onRotateReference, clickPicksPoint, span, onSwap, toast, caliper }: {
-  slot: Slot; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
+  slot: Slot; slotStore?: SlotViewStore; index: number; paneCount: number; volume: Volume | undefined; metadata: Series | undefined; active: boolean; tool: Tool; segmentations: SegmentationOverlay[];
   annotations: Annotation[]; crosshair: Vec3 | null; fusion: FusionSettings | null; loading: boolean; loadError?: string; linked: boolean;
   interaction: Settings; references: { id: string; series: Series; view: ViewState; color?: string }[];
   /** Frames of reference aligned (imaging/registration.ts): another pane's plane in an aligned frame is drawn here too. */
@@ -48,32 +79,22 @@ export function ViewportCell({ slot, index, paneCount, volume, metadata, active,
   const cyclePlane = () => onCyclePlane(slot.id);
   const cross = (place: number) => onCross(slot.id, place);
   const [dragging, setDragging] = useState(false);
+  const watchesReferences = Boolean(volume && interaction.showReferences && references.some(item => item.id !== slot.id));
+  useReferenceVersion(slotStore, watchesReferences);
+  const currentView = slotStore ? slotStore.get(slot.id, slot.view) : slot.view;
   const referencePlanes = volume && interaction.showReferences ? references.flatMap(item => {
-    const here = { series: volume.series, view: renderedView(volume, slot.view) };
+    const here = { series: volume.series, view: renderedView(volume, currentView) };
     if (item.id === slot.id) return [];
-    if (sharePlaneSpace(item, here)) return [item];
+    const liveItem = slotStore ? { ...item, view: slotStore.get(item.id, item.view) } : item;
+    if (sharePlaneSpace(liveItem, here)) return [liveItem];
     // A plane in a frame of reference of its own, aligned to this one: drawn where the alignment puts it.
-    const transform = placed(item) && placed(here) ? alignedTransform(alignments, item.series, volume.series) : null;
-    return transform ? [{ ...item, transform }] : [];
+    const transform = placed(liveItem) && placed(here) ? alignedTransform(alignments, liveItem.series, volume.series) : null;
+    return transform ? [{ ...liveItem, transform }] : [];
   }) : [];
   const requestedView = volume ? resolveView(volume, slot.view) : slot.view;
   const displayView = volume ? renderedView(volume, slot.view) : slot.view;
-  const count = volume ? sliceCount(volume.series, requestedView) : metadata?.dimensions[2] ?? 1;
-  // The bar and the counter go in paging order: an axial stack from the top down (see paging.ts). A stack and its
-  // reference image are one sequence in both (`joined`).
-  const atSlice = Math.min(requestedView.slice, count - 1);
-  const at = volume ? placeInSequence(volume.series, requestedView, atSlice, count, joined) : { place: atSlice, total: count };
-  const shown = volume ? shownSlice(volume.series, displayView, Math.min(displayView.slice, count - 1), count, joined) : { number: atSlice + 1, total: count };
-  /** The slice bar moved to a place: a slice of this series, or the place the other of a stack and its reference image holds. */
-  const toPlace = (place: number) => {
-    if (!volume) return;
-    if (!joined) update({ slice: pagingPlace(volume.series, requestedView, place, count) });
-    else if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) cross(place);
-    else if (!joined.lead) update({ slice: stackSliceAt(volume.series, requestedView, place, count, joined) });
-  };
   // A whole-volume MIP pages through its turns: the bar and the counter give its angle.
   const projected = Boolean(volume && isProjection(volume.series, displayView));
-  const windowText = volume && displayView.voiLut === undefined ? suvWindowText(volume.series, displayView) : null;
   return <section className={`viewport-cell ${active ? 'is-active' : ''} ${dragging ? 'is-drop-target' : ''}`} style={span && span > 1 ? { gridColumn: `span ${span}` } : undefined}
     data-testid="viewport-cell" data-series-id={slot.seriesId ?? ''} data-volume-complete={Boolean(volume && volume.sourceFrameIndex === undefined && !loading && !loadError)}
     onPointerDown={activate} onFocusCapture={activate} onDragOver={event => { if (event.dataTransfer.types.includes('application/x-veacom-series') || event.dataTransfer.types.includes(PANE_DRAG)) { event.preventDefault(); setDragging(true); } }}
@@ -95,7 +116,7 @@ export function ViewportCell({ slot, index, paneCount, volume, metadata, active,
         : <button type="button" aria-label={`${t('viewport.maximize')} · ${index + 1}`} data-tooltip={t('viewport.maximize')} data-testid="viewport-maximize" onClick={() => onMaximize(slot.id)}><Maximize2 size={14} /></button>}
     </header>
     <div className="viewport-content">
-      {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} tool={tool} annotations={annotations} active={active}
+      {volume ? <Viewport paneNumber={paneCount > 1 ? index + 1 : undefined} volume={volume} view={requestedView} slotId={slot.id} liveViews={slotStore} tool={tool} annotations={annotations} active={active}
         crosshair={crosshair} fusion={fusion} onFusionAdjust={fusion ? onFusionAdjust : undefined} onRotateReference={onRotateReference} clickPicksPoint={clickPicksPoint} onActivate={activate} onViewChange={update}
         onAnnotationsChange={annotate} onCrosshairChange={onCrosshairChange} referencePlanes={referencePlanes}
         showPointerValue={interaction.showPointerValue}
@@ -113,13 +134,6 @@ export function ViewportCell({ slot, index, paneCount, volume, metadata, active,
         {toast.onOpen && <button type="button" data-action="compare-open" onClick={toast.onOpen}>{t('compare.open')}</button>}</div>}
       {loadError && <div className="viewport-error" role="status" data-export-exclude>{volume ? t('viewport.previewOnly') : ''}{loadError}</div>}
     </div>
-    {volume && <footer className="viewport-footer" data-export-exclude>
-      <span data-export-label>{projected ? `${projectionAngle(displayView.slice)}°` : <>{shown.number} / {shown.total}{loading ? t('viewport.sourceFramesSuffix', { count: metadata?.dimensions[2] ?? '?' }) : ''}</>}</span>
-      <SliceBar count={at.total} position={at.place} valueText={projected ? `${projectionAngle(at.place)}°` : `${shownSlice(volume.series, requestedView, atSlice, count, joined).number} / ${at.total}`}
-        label={projected ? t('projection.slider') : usesSourceFrames(volume.series, requestedView) ? t('viewport.sourceFrameSlider') : t('viewport.sliceSlider', { plane: t(`planeLower.${requestedView.plane}` as const) })}
-        onPosition={toPlace} touchpadSpeed={interaction.touchpadSpeed} />
-      <span data-export-label>{displayView.voiLut !== undefined ? t('viewport.voiLut') : windowText ?? `W ${general(displayView.windowWidth)} · L ${general(displayView.windowCenter)}${displayView.voiFunction ? ` · ${t(displayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}`}</span>
-      <span className="zoom-indicator">{Math.round(displayView.zoom * 100)}%</span>
-    </footer>}
+    {volume && <ViewportFooter slotId={slot.id} fallbackView={slot.view} slotStore={slotStore} volume={volume} metadata={metadata} loading={loading} joined={joined} touchpadSpeed={interaction.touchpadSpeed} onViewChange={onViewChange} onCross={onCross} />}
   </section>;
 }

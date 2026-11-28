@@ -78,6 +78,9 @@ import { adjusted, alignedFusion, alignedTransform, alignmentFrom, alignmentOf, 
 import { applyPoint, IDENTITY } from './imaging/rigid';
 import { AlignmentSection } from './components/AlignmentSection';
 import { quantityScale, sameRangeWindow, SUV_PRESETS, suvPresetFor, suvWindowText, windowFor } from './imaging/quantity';
+import { SlotViewStore } from './ui/slotViewStore';
+
+const FAST_VIEW_KEYS = new Set(['slice', 'windowWidth', 'windowCenter', 'windowMode', 'sharedWindow', 'zoom', 'pan', 'rotation']);
 import { fusionScaleMaxKey, petHasSuv } from './imaging/fusion';
 import { DEFAULT_SLAB_THICKNESS, SLAB_MODES, SLAB_THICKNESSES, type SlabMode } from './imaging/slab';
 import { nextIndex } from './ui/navigation';
@@ -212,8 +215,50 @@ export default function App() {
   const frameRequests = useRef(new Map<string, { key: string; seriesId: string; controller: AbortController }>());
   const [loadingIds, setLoadingIds] = useState<Set<string>>(() => new Set());
   const [loadErrors, setLoadErrors] = useState<Record<string, string>>({});
-  const [slots, setSlots] = useState<Slot[]>(() => [makeSlot()]);
+  const [slots, setSlotsState] = useState<Slot[]>(() => [makeSlot()]);
   const slotsRef = useRef(slots);
+  const [slotStore] = useState(() => new SlotViewStore());
+  const slotsFlushTimer = useRef<number | null>(null);
+  const setSlots = (next: Slot[] | ((current: Slot[]) => Slot[])) => {
+    if (slotsFlushTimer.current !== null) {
+      window.clearTimeout(slotsFlushTimer.current);
+      slotsFlushTimer.current = null;
+    }
+    const resolved = typeof next === 'function' ? next(slotsRef.current) : next;
+    if (resolved === slotsRef.current) return;
+    slotsRef.current = resolved;
+    slotStore.syncSlots(resolved);
+    setSlotsState(resolved);
+  };
+  const commitLiveSlots = (next: Slot[], immediate = false) => {
+    if (next === slotsRef.current) return;
+    slotsRef.current = next;
+    slotStore.syncSlots(next, immediate);
+    if (slotsFlushTimer.current !== null) window.clearTimeout(slotsFlushTimer.current);
+    slotsFlushTimer.current = window.setTimeout(() => {
+      slotsFlushTimer.current = null;
+      setSlotsState(slotsRef.current);
+    }, 150);
+  };
+  const flushLiveSlots = () => {
+    if (slotsFlushTimer.current !== null) {
+      window.clearTimeout(slotsFlushTimer.current);
+      slotsFlushTimer.current = null;
+      setSlotsState(slotsRef.current);
+    }
+  };
+  useEffect(() => () => {
+    if (slotsFlushTimer.current !== null) {
+      window.clearTimeout(slotsFlushTimer.current);
+      slotsFlushTimer.current = null;
+    }
+  }, []);
+  const inspectorShownRef = useRef(false);
+  const deformityShownRef = useRef(false);
+  const labellingOpenRef = useRef(false);
+  const quickOpenRef = useRef(false);
+  const show3dRef = useRef(false);
+  const lastVisibleKey = useRef('');
   const [activeId, setActiveId] = useState<string>(() => slots[0].id);
   const activeIdRef = useRef(activeId);
   const [layout, setLayout] = useState<[number, number]>([1, 1]);
@@ -509,7 +554,7 @@ export default function App() {
     const view = resolveView(volume, slot.view);
     return view === slot.view ? slot : { ...slot, view };
   });
-  if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlots(resolvedSlots);
+  if (resolvedSlots.some((slot, index) => slot !== slots[index])) setSlotsState(resolvedSlots);
   // Keep the three-plane MPR crosshair on the displayed slices across paging, Undo/Redo, view restores, and clicks.
   const [mprPrev, setMprPrev] = useState<{ isMpr: boolean; slots: Slot[]; crosshair: Vec3 | null }>({
     isMpr: false,
@@ -710,13 +755,29 @@ export default function App() {
         ? alignedFusion(fusion, transformBetween(alignments, volume.series, fusion.volume.series) ?? IDENTITY) : null;
       return [{ volume, view: renderedView(volume, slot.view), fusion: fused }];
     });
+    const key = visible.map(({ volume, view, fusion: fused }) => {
+      const source = view.mode === 'source' || volume.sourceFrameIndex !== undefined || volume.series.sourceFramesOnly
+        || !volume.series.canReconstruct || volume.series.components === 3;
+      const framePart = source ? String(Math.round(view.slice)) : 'v';
+      return `${volume.series.id}:${volume.sourceFrameIndex ?? 'v'}:${volume.data.byteLength}:${view.mode ?? 'mpr'}:${view.plane}:${view.projection ?? ''}:${framePart}:${fused?.volume.series.id ?? ''}`;
+    }).join('|');
+    if (key === lastVisibleKey.current) return;
+    lastVisibleKey.current = key;
     try {
       if (visible.length) sliceRenderer().setVisibleViews(visible);
       else clearSliceTextureCache();
     } catch { /* Each viewport reports GPU errors. */ }
   }, [slots, volumeForSlot, fusion, alignments]);
 
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; frameCache.dispose(); for (const request of frameRequests.current.values()) request.controller.abort(); }; }, [frameCache]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      if (slotsFlushTimer.current !== null) { window.clearTimeout(slotsFlushTimer.current); slotsFlushTimer.current = null; }
+      frameCache.dispose();
+      for (const request of frameRequests.current.values()) request.controller.abort();
+    };
+  }, [frameCache]);
   // Find out how images will be drawn before a study opens. Without a usable graphics driver Chromium draws
   // WebGL in software (Direct3D WARP or SwiftShader), which is slow; the user is told so instead of guessing.
   useEffect(() => {
@@ -934,6 +995,7 @@ export default function App() {
     }
     if (result.volumes !== volumesRef.current) {
       volumesRef.current = result.volumes;
+      flushLiveSlots();
       setVolumes(indexVolumes(result.volumes));
     }
   };
@@ -1065,7 +1127,30 @@ export default function App() {
     setLoadingIds(current => new Set(current).add(item.id));
     setLoadErrors(current => { const next = { ...current }; delete next[item.id]; return next; });
     const load = { complete: false };
-    const full = loadVolume(item).then(async volume => {
+    // Link for the catalog's pixel type while pixels decode. The decoded array still selects the actual program.
+    if (!cached && item.dimensions[2] >= 1) void prepareSourceProgram(item);
+    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
+    const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
+    const startFull = async (): Promise<Volume> => {
+      let volumePromise: Promise<Volume> | undefined;
+      if (!cached && item.dimensions[2] > 1) {
+        // Fetch the opening slice before launching full-volume decode so parallel CPU decoding does not
+        // contend with the 3-ms first frame, then overlap full-volume decode with shader link and first paint.
+        // Preview is best-effort; loadVolume below reports any real decode error to the pane.
+        const preview = await frameCache.get(item, openingSlice(item)).catch(() => undefined);
+        volumePromise = loadVolume(item);
+        if (preview && previewWanted()) {
+          await prepareSourceProgram(preview);
+          if (previewWanted()) {
+            storeVolume(preview);
+            await new Promise<void>(resolve => {
+              const timer = window.setTimeout(resolve, 32);
+              requestAnimationFrame(() => { window.clearTimeout(timer); resolve(); });
+            });
+          }
+        }
+      }
+      const volume = await (volumePromise ?? loadVolume(item));
       load.complete = true;
       await prepareSourceProgram(volume);
       if (mounted.current && isCurrent()) {
@@ -1073,7 +1158,8 @@ export default function App() {
         if (slotsRef.current.find(slot => slot.id === activeIdRef.current)?.seriesId === item.id) usage.milestone('series-loaded');
       }
       return volume;
-    }).catch(error => {
+    };
+    const full = startFull().catch(error => {
       load.complete = true;
       if (mounted.current && isCurrent()) setLoadErrors(current => ({ ...current, [item.id]: errorText(error) }));
       throw error;
@@ -1084,18 +1170,6 @@ export default function App() {
       }
     });
     pending.current.set(item.id, full);
-    // Link for the catalog's pixel type while pixels decode. The decoded array still selects the actual program.
-    if (!cached && item.dimensions[2] >= 1) void prepareSourceProgram(item);
-    // Asked again after the preview's program compiles: the full volume may have arrived or failed meanwhile.
-    const previewWanted = () => !load.complete && mounted.current && isCurrent() && !fullyLoaded.current.has(item.id);
-    if (!cached && item.dimensions[2] > 1) {
-      const preview = frameCache.get(item, openingSlice(item));
-      void preview.then(async volume => {
-        if (!previewWanted()) return;
-        await prepareSourceProgram(volume);
-        if (previewWanted()) storeVolume(volume);
-      }).catch(() => { /* The full decoder supplies the actionable error. */ });
-    }
     return full;
   };
 
@@ -1107,13 +1181,17 @@ export default function App() {
     publishLoadedVolumes(volumesRef.current);
   }, [visibleSeriesIds, fusionId, annotations, showAssessment, volumes, loadingIds]);
 
-  // Each card's picture is its series' middle frame, at most two in flight. It does not wait for other volumes to load:
-  // a frame is small next to a volume, and waiting would keep every card's placeholder until the last volume had
-  // arrived. A series that is itself loading is left out: its card takes its picture from the images that load brings
-  // (acquireVolume), and a frame fetched for it here would be read twice. A load starting or ending runs this again
-  // (loadingIds), retrying a card whose picture failed or was dropped; the frame cache shares a request already under way.
+  // Each card's picture is its series' middle frame, at most two in flight. It waits only until every visible
+  // pane has its first image on screen so background thumbnails never contend with initial opening, and does not
+  // wait for full volumes to finish decoding. A series that is itself loading is left out: its card takes its
+  // picture from the images that load brings (acquireVolume), and a frame fetched for it here would be read twice.
+  const waitingForFirstImage = slots.some(slot => {
+    if (!slot.seriesId) return false;
+    const meta = seriesById.get(slot.seriesId);
+    return Boolean(meta && meta.dimensions[2] > 0 && !volumes.get(slot.seriesId) && !loadErrors[slot.seriesId]);
+  });
   useEffect(() => {
-    if (importing) return;
+    if (importing || waitingForFirstImage) return;
     const work = { stopped: false, cursor: 0 };
     const candidates = series.filter(item => !item.segmentation && item.dimensions[2] > 0 && !hasThumbnail(item.id) && !loadingIds.has(item.id)).slice(0, 40);
     async function preloadOne(item: Series, current: () => boolean) {
@@ -1137,7 +1215,7 @@ export default function App() {
     };
     void preload(); void preload();
     return () => { work.stopped = true; };
-  }, [series, importing, loadingIds, frameCache]);
+  }, [series, importing, waitingForFirstImage, loadingIds, frameCache]);
 
   useEffect(() => {
     // While a study is read, frames come only for the series it has already published (see importStudies).
@@ -1588,11 +1666,12 @@ export default function App() {
 
   const updateView = (slotId: string, patch: Partial<ViewState>, fromCine = false) => {
     if (playing && fileTiming && !fromCine && slotId === activeIdRef.current && patch.slice !== undefined) cineSeek.current = patch.slice;
-    const before = slotsRef.current.find(slot => slot.id === slotId)?.view;
+    const beforeSlot = slotsRef.current.find(slot => slot.id === slotId);
+    const before = beforeSlot?.view;
     if (before && arranged.current?.slotIds.includes(slotId) && (['plane', 'mode', 'projection', 'inverted', 'palette'] as const).some(key => key in patch && patch[key] !== before[key])) {
       offerKeep.current(slotId);
     }
-    setSlots(current => {
+    const compute = (current: Slot[]) => {
       const selected = current.find(slot => slot.id === slotId);
       if (!selected) return current;
       const volume = selected.seriesId ? displayVolumesRef.current.get(selected.seriesId) : undefined;
@@ -1651,19 +1730,29 @@ export default function App() {
         const slice = linkedSlice(source, target, position, moved, anchor ? { source: anchor[slotId].slice, target: anchor[slot.id].slice } : undefined, toTarget);
         return slice === null || slice === slot.view.slice ? slot : { ...slot, view: resolveView(other, { ...slot.view, slice }) };
       });
-    });
+    };
+    const selectedVolume = beforeSlot?.seriesId ? displayVolumesRef.current.get(beforeSlot.seriesId) : undefined;
+    const fastKeys = Object.keys(patch).every(key => FAST_VIEW_KEYS.has(key));
+    const canFastPath = fastKeys
+      && !inspectorShownRef.current && !deformityShownRef.current && !labellingOpenRef.current && !quickOpenRef.current && !show3dRef.current
+      && selectedVolume?.sourceFrameIndex === undefined;
+    if (canFastPath) commitLiveSlots(compute(slotsRef.current), fromCine);
+    else setSlots(compute);
   };
+  const liveActiveSlot = () => slotsRef.current.find(slot => slot.id === activeIdRef.current) ?? slotsRef.current[0];
   const advancePlayingSlice = useEffectEvent((last: number, now: number) => {
     const advance = advanceCine(last, now, cineFps);
+    const current = liveActiveSlot();
     if (advance.steps && activeImageSeries && cineCount > 1) {
-      const next = Math.round(activeSlot.view.slice) + advance.steps * pageStep(activeImageSeries, activeSlot.view, 1);
-      updateView(activeSlot.id, { slice: ((next % cineCount) + cineCount) % cineCount }, true);
+      const next = Math.round(current.view.slice) + advance.steps * pageStep(activeImageSeries, current.view, 1);
+      updateView(current.id, { slice: ((next % cineCount) + cineCount) % cineCount }, true);
     }
     return advance.last;
   });
-  const currentCineSlice = useEffectEvent(() => Math.round(activeSlot.view.slice));
+  const currentCineSlice = useEffectEvent(() => Math.round(liveActiveSlot().view.slice));
   const showCineSlice = useEffectEvent((slice: number) => {
-    if (slice !== activeSlot.view.slice) updateView(activeSlot.id, { slice }, true);
+    const current = liveActiveSlot();
+    if (slice !== current.view.slice) updateView(current.id, { slice }, true);
   });
   useEffect(() => {
     if (!playing) return;
@@ -2552,6 +2641,7 @@ export default function App() {
     say(all ? 'notice.layoutCopied' : 'notice.imageCopied', 'info', undefined, true);
   };
   const openExport = (mode: ExportDialogProps['mode']) => {
+    flushLiveSlots();
     setMenu(null);
     // An export going on in the background: its window comes back instead of a new one.
     if (exportBackground || exportBusy) { setExportBackground(false); return; }
@@ -2562,19 +2652,24 @@ export default function App() {
     if ((mode === 'video' || mode === 'images') && activeImageSeries) {
       const viewport = gridRef.current?.querySelector<HTMLElement>('.viewport-cell.is-active');
       if (!viewport) return;
-      const id = activeSlot.id;
+      const slot = liveActiveSlot(), id = slot.id;
       // 1:1 is the series' own pixel grid: the acquired images, or a plain (not oblique) plane of an axial stack.
-      const plain = usesSourceFrames(activeImageSeries, activeSlot.view) || (activeSlot.view.plane === 'axial' && !activeSlot.view.oblique?.some(Boolean));
+      const plain = usesSourceFrames(activeImageSeries, slot.view) || (slot.view.plane === 'axial' && !slot.view.oblique?.some(Boolean));
       // Cine stops: the export pages the pane itself.
       setPlaying(false);
       // The numbers the pane shows for its slices (paging.ts): a stack paged with its reference image counts that image.
-      const frames = sliceCount(activeImageSeries, activeSlot.view), joined = joinedFor(activeSlot);
-      const firstNumber = shownSlice(activeImageSeries, activeSlot.view, 0, frames, joined);
-      const lastNumber = shownSlice(activeImageSeries, activeSlot.view, frames - 1, frames, joined);
-      setExportVideoTarget({ viewport, seriesId: activeImageSeries.id, originalSlice: activeSlot.view.slice, frameCount: frames,
-        nativeSize: plain ? { width: activeImageSeries.dimensions[0], height: activeImageSeries.dimensions[1] } : undefined, backwards: pagesBackwards(activeImageSeries, activeSlot.view),
+      const frames = sliceCount(activeImageSeries, slot.view), joined = joinedFor(slot);
+      const firstNumber = shownSlice(activeImageSeries, slot.view, 0, frames, joined);
+      const lastNumber = shownSlice(activeImageSeries, slot.view, frames - 1, frames, joined);
+      setExportVideoTarget({ viewport, seriesId: activeImageSeries.id, originalSlice: slot.view.slice, frameCount: frames,
+        nativeSize: plain ? { width: activeImageSeries.dimensions[0], height: activeImageSeries.dimensions[1] } : undefined, backwards: pagesBackwards(activeImageSeries, slot.view),
         numbersBackwards: firstNumber.number > lastNumber.number, numberOffset: Math.min(firstNumber.number, lastNumber.number) - 1, numberTotal: firstNumber.total,
-        setSlice: slice => setSlots(current => current.map(slot => slot.id === id ? { ...slot, view: { ...slot.view, slice } } : slot)) });
+        setSlice: slice => {
+          const vol = displayVolumesRef.current.get(activeImageSeries.id);
+          const next = slotsRef.current.map(item => item.id === id ? { ...item, view: { ...item.view, slice } } : item);
+          if (vol && vol.sourceFrameIndex === undefined) commitLiveSlots(next);
+          else setSlots(next);
+        } });
     } else setExportVideoTarget(undefined);
     setExportFor(activeSeries?.id ?? null);
     setExportMode(mode);
@@ -2659,10 +2754,12 @@ export default function App() {
   function showPanel(panel: Panel) { if (showAssessment) setAssessmentBehind(true); setPanel(panel); }
   const windowRequest = useRef(0);
   const applyMeasuredWindow = async (automatic: boolean) => {
-    const activeVolume = readActiveVolume();
-    if (!activeVolume || framePending || activeVolume.series.components === 3) return;
-    const request = ++windowRequest.current, { view, id } = activeSlot;
-    const current = () => mounted.current && request === windowRequest.current && slotsRef.current.find(slot => slot.id === id)?.view === view
+    const slot = liveActiveSlot();
+    const activeVolume = volumeForSlot(slot);
+    const pendingFrame = activeVolume?.sourceFrameIndex !== undefined && activeVolume.sourceFrameIndex !== slot.view.slice;
+    if (!activeVolume || pendingFrame || activeVolume.series.components === 3) return;
+    const request = ++windowRequest.current, { view, id } = slot;
+    const current = () => mounted.current && request === windowRequest.current && slotsRef.current.find(s => s.id === id)?.view === view
       && displayVolumesRef.current.get(activeVolume.series.id)?.data === activeVolume.data;
     try {
       const reconstruction = !usesSourceFrames(activeVolume.series, view) && !isProjection(activeVolume.series, view) && !view.slab;
@@ -2676,7 +2773,11 @@ export default function App() {
   };
   const applyAutoWindow = () => { void applyMeasuredWindow(true); };
   const applyFullRange = () => { void applyMeasuredWindow(false); };
-  const applyDicomWindow = () => { if (activeSeries) updateView(activeSlot.id, { windowMode: 'dicom', ...(!activeImageSeries || !usesSourceFrames(activeImageSeries, activeSlot.view) ? { windowCenter: activeSeries.windowCenter, windowWidth: activeSeries.windowWidth } : {}) }); };
+  const applyDicomWindow = () => {
+    const slot = liveActiveSlot();
+    const seriesItem = slot.seriesId ? seriesRef.current.find(item => item.id === slot.seriesId) : undefined;
+    if (seriesItem) updateView(slot.id, { windowMode: 'dicom', ...(!activeImageSeries || !usesSourceFrames(activeImageSeries, slot.view) ? { windowCenter: seriesItem.windowCenter, windowWidth: seriesItem.windowWidth } : {}) });
+  };
 
   const keydown = useEffectEvent((event: KeyboardEvent) => {
     const target = event.target as HTMLElement;
@@ -2739,6 +2840,7 @@ export default function App() {
       // has not been seen, as when working from the keyboard.
       const at = pointerAt.current, grid = gridRef.current?.getBoundingClientRect();
       const cell = gridRef.current?.querySelector('.viewport-cell.is-active')?.getBoundingClientRect() ?? grid;
+      flushLiveSlots();
       setQuick(at ? { x: at.x, y: grid ? Math.max(at.y, grid.top) : at.y } : cell ? { x: cell.left + cell.width / 2, y: cell.top + cell.height / 2 } : { x: 200, y: 200 });
       return;
     }
@@ -2752,10 +2854,10 @@ export default function App() {
           if (event.key === '0') { key('preset-dicom'); applyDicomWindow(); return; }
           if (event.key === '1') { key('preset-full-range'); applyFullRange(); return; }
           const preset = PRESETS.find(item => item.digit === event.key);
-          if (preset) { key(`preset-${kebab(preset.key)}`); updateView(activeSlot.id, { windowCenter: preset.center, windowWidth: preset.width }); }
+          if (preset) { key(`preset-${kebab(preset.key)}`); updateView(liveActiveSlot().id, { windowCenter: preset.center, windowWidth: preset.width }); }
           return;
         }
-        if (!event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); key('invert'); updateView(activeSlot.id, { inverted: !activeSlot.view.inverted }); return; }
+        if (!event.shiftKey && event.key.toLowerCase() === 'i') { event.preventDefault(); key('invert'); const current = liveActiveSlot(); updateView(current.id, { inverted: !current.view.inverted }); return; }
       }
       const tools: Partial<Record<string, Tool>> = { s: 'scroll', w: 'window', p: 'pan', z: 'zoom', l: 'length', a: 'angle', e: 'ellipse', r: 'rectangle', c: 'crosshair', t: 'text', v: 'sphere' };
       const chosen = tools[event.key.toLowerCase()];
@@ -2767,8 +2869,8 @@ export default function App() {
       if (event.key === 'm') { key('tool-mpr'); mpr(); return; }
       if (event.key === '?') { event.preventDefault(); key('show-help'); setShowHelp(true); return; }
       if (activeImageSeries && ['+', '=', '-', '_'].includes(event.key)) {
-        const view = activeSlot.view, zoom = Math.max(0.1, Math.min(30, view.zoom * (event.key === '-' || event.key === '_' ? 1 / 1.25 : 1.25))), scale = zoom / view.zoom;
-        key('key-zoom', true); updateView(activeSlot.id, { zoom, pan: [view.pan[0] * scale, view.pan[1] * scale] }); return;
+        const current = liveActiveSlot(), view = current.view, zoom = Math.max(0.1, Math.min(30, view.zoom * (event.key === '-' || event.key === '_' ? 1 / 1.25 : 1.25))), scale = zoom / view.zoom;
+        key('key-zoom', true); updateView(current.id, { zoom, pan: [view.pan[0] * scale, view.pan[1] * scale] }); return;
       }
     }
     // Slice keys belong to the image: panels, lists and the toolbar keep their own arrow keys and scrolling.
@@ -2777,12 +2879,13 @@ export default function App() {
       key('key-slice', true);
       event.preventDefault();
       // Steps down the page. A stack and its reference image are paged as one sequence (joinedFor).
-      const steps = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (event.key.startsWith('Page') ? 10 : 1), joined = joinedFor(activeSlot);
-      if (!joined) { updateView(activeSlot.id, { slice: stepSlice(activeImageSeries, activeSlot.view, pageStep(activeImageSeries, activeSlot.view, steps)) }); return; }
-      const count = sliceCount(activeImageSeries, activeSlot.view), at = placeInSequence(activeImageSeries, activeSlot.view, Math.round(activeSlot.view.slice), count, joined);
+      const current = liveActiveSlot();
+      const steps = (event.key === 'ArrowUp' || event.key === 'PageUp' ? -1 : 1) * (event.key.startsWith('Page') ? 10 : 1), joined = joinedFor(current);
+      if (!joined) { updateView(current.id, { slice: stepSlice(activeImageSeries, current.view, pageStep(activeImageSeries, current.view, steps)) }); return; }
+      const count = sliceCount(activeImageSeries, current.view), at = placeInSequence(activeImageSeries, current.view, Math.round(current.view.slice), count, joined);
       const place = Math.max(0, Math.min(at.total - 1, at.place + steps));
-      if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) crossJoined(activeSlot.id, place);
-      else if (!joined.lead) updateView(activeSlot.id, { slice: stackSliceAt(activeImageSeries, activeSlot.view, place, count, joined) });
+      if (joined.lead ? place !== joined.leadAt : place === joined.leadAt) crossJoined(current.id, place);
+      else if (!joined.lead) updateView(current.id, { slice: stackSliceAt(activeImageSeries, current.view, place, count, joined) });
     }
   });
   useEffect(() => {
@@ -2791,22 +2894,24 @@ export default function App() {
   }, []);
 
   const testState = useEffectEvent(() => {
-    const activeVolume = readActiveVolume();
+    const liveSlots = slotsRef.current;
+    const liveActive = liveSlots.find(slot => slot.id === activeIdRef.current) ?? liveSlots[0];
+    const activeVolume = volumeForSlot(liveActive);
     return {
-      activeSeriesId: activeSlot.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
+      activeSeriesId: liveActive.seriesId, dimensions: activeVolume?.series.dimensions ?? null,
       fullVolumeLoaded: Boolean(activeSeries && activeVolume && activeVolume.sourceFrameIndex === undefined && fullyLoaded.current.has(activeSeries.id)),
-      sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, activeSlot.view) : null,
+      sourceFrameIndex: activeVolume?.sourceFrameIndex ?? null, displayedView: activeVolume ? renderedView(activeVolume, liveActive.view) : null,
       sourceFramesOnly: activeVolume?.series.sourceFramesOnly === true, pendingLoads: pending.current.size, loadedSeriesIds: [...fullyLoaded.current], cachedBytes: [...volumesRef.current.values()].reduce((sum, volume) => sum + volume.data.byteLength, 0),
       series: series.map(item => ({ id: item.id, description: item.description, dimensions: item.dimensions, modality: item.modality, studyDate: item.studyDate, windowCenter: item.windowCenter, windowWidth: item.windowWidth,
         ...(item.windowFromPixels ? { windowFromPixels: true } : {}), ...(item.segmentation ? { segmentation: item.segmentation } : {}),
         // For the gated SPECT check: each gate's phase and where its slices lie.
         ...(item.phase ? { phase: item.phase } : {}), canReconstruct: item.canReconstruct, origin: item.origin, spacing: item.spacing, direction: item.direction })),
-      shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: activeSlot.view,
+      shownSegmentations, segmentationFrames: Object.fromEntries(segmentationOverlays.map(overlay => [overlay.id, overlay.frames.length])), view: liveActive.view,
       // For the arrangement checks: the panes on screen and what each one shows.
       // For the registration checks: the frames aligned, and whether the engine is still finding one.
       aligning, alignments: alignments.map(item => ({ fixedSeriesId: item.fixedSeriesId, movingSeriesId: item.movingSeriesId, matrix: [...item.matrix], adjusted: adjusted(item),
         similarity: item.similarity, similarityBefore: item.similarityBefore, overlap: item.overlap })),
-      layout, linked: settings.linked, fusionId, panes: slots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
+      layout, linked: settings.linked, fusionId, panes: liveSlots.map(slot => ({ id: slot.id, seriesId: slot.seriesId, plane: slot.view.plane, mode: slot.view.mode ?? 'mpr',
         projection: slot.view.projection ?? null, slice: slot.view.slice, inverted: slot.view.inverted, unfused: slot.unfused === true,
         windowCenter: slot.view.windowCenter, windowWidth: slot.view.windowWidth, zoom: slot.view.zoom, pan: slot.view.pan,
         // For the MPR checks: each pane's tilt, and the plane it shows (its centre and normal).
@@ -2815,7 +2920,7 @@ export default function App() {
       graphics, graphicsError: graphicsError == null ? null : errorText(graphicsError)
     };
   });
-  const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(activeSlot.id, patch));
+  const setTestView = useEffectEvent((patch: Partial<ViewState>) => updateView(liveActiveSlot().id, patch));
   const runTestImport = useEffectEvent((paths: string[]) => importStudies(paths));
   const runTestSelectSeries = useEffectEvent((id: string) => { const item = seriesRef.current.find(value => value.id === id); if (item) selectSeries(item); });
   useEffect(() => {
@@ -2836,12 +2941,12 @@ export default function App() {
   // compared in this window to name what an action changed; of the state, only the classes below are sent.
   const usageSnapshot = useEffectEvent((): UsageSnapshot => {
     const surface: Surface = show3d && activeImageSeries ? '3d' : showAssessment ? 'assessment' : series.length ? 'viewer' : 'welcome';
-    const panes = slots.map(slot => {
+    const panes = slotsRef.current.map(slot => {
       const volume = volumeForSlot(slot), shown = volume ? renderedView(volume, slot.view) : slot.view;
       const plane = !volume ? 'none' : usesSourceFrames(volume.series, shown) ? 'source' : shown.oblique?.some(Boolean) ? 'oblique' : shown.plane;
       return { slot, volume, shown, plane, index: slot.seriesId ? series.findIndex(item => item.id === slot.seriesId) + 1 : 0 };
     });
-    const active = panes.find(pane => pane.slot.id === activeId) ?? panes[0];
+    const active = panes.find(pane => pane.slot.id === activeIdRef.current) ?? panes[0];
     const count = active.volume ? sliceCount(active.volume.series, active.shown) : 0;
     const join = (values: unknown[]) => values.map(value => String(value ?? '')).join('|');
     return {
@@ -2901,7 +3006,15 @@ export default function App() {
   useLayoutEffect(() => {
     seriesActions.current = { select: selectSeries, remove: removeFromList, open: openWaiting };
     seriesRef.current = series;
-    slotsRef.current = slots;
+    if (slotsFlushTimer.current === null) {
+      slotsRef.current = slots;
+      slotStore.syncSlots(slots);
+    }
+    inspectorShownRef.current = inspectorShown;
+    deformityShownRef.current = deformityShown;
+    labellingOpenRef.current = Boolean(labelling.folder);
+    quickOpenRef.current = Boolean(quick);
+    show3dRef.current = show3d;
     activeIdRef.current = activeId;
     layoutRef.current = layout;
     isMprRef.current = isMpr;
@@ -2927,27 +3040,27 @@ export default function App() {
     endMpr.current = restoreBeforeMpr;
   });
 
-  const toggleMenu = (next: Exclude<MenuId, null>) => setMenu(current => current === next ? null : next);
+  const toggleMenu = (next: Exclude<MenuId, null>) => { flushLiveSlots(); setMenu(current => current === next ? null : next); };
   const closeMenu = () => setMenu(null);
   const act = (fn: () => void) => { fn(); setMenu(null); };
   /** MPR > Thick slab, as in VEAcom Next: on acquired slices it goes to the same place in the reconstructed volume;
    * turned off in the plane the series was acquired in, it goes back to its own slices there. */
   const chooseSlab = (mode: SlabMode | null, thickness?: number) => {
     if (!activeImageSeries || !activeImageSeries.canReconstruct || activeImageSeries.sourceFramesOnly || activeImageSeries.components === 3 || activeProjection) return;
-    const series = activeImageSeries, view = activeSlot.view, center = getPlaneFrame(series, view).center;
+    const slot = liveActiveSlot(), series = activeImageSeries, view = slot.view, center = getPlaneFrame(series, view).center;
     if (thickness !== undefined) setSlabThickness(thickness);
     if (mode === null) {
       if (!view.slab) return;
       const back = view.plane === acquiredPlane(series) && !view.oblique?.some(Boolean);
       const next = back ? { ...view, slab: undefined, mode: 'source' as const, plane: 'axial' as const, oblique: undefined } : { ...view, slab: undefined };
-      updateView(activeSlot.id, { ...next, slice: back ? sliceAtWorld(series, next, center) : view.slice });
+      updateView(slot.id, { ...next, slice: back ? sliceAtWorld(series, next, center) : view.slice });
       return;
     }
     const slab = { mode, thickness: thickness ?? slabThickness };
     if (usesSourceFrames(series, view)) {
       const plane = acquiredPlane(series) ?? 'axial', next = { ...view, mode: 'mpr' as const, plane, oblique: [0, 0] as [number, number], slab };
-      updateView(activeSlot.id, { ...next, slice: sliceAtWorld(series, next, center) });
-    } else updateView(activeSlot.id, { slab });
+      updateView(slot.id, { ...next, slice: sliceAtWorld(series, next, center) });
+    } else updateView(slot.id, { slab });
   };
   // Beside 3D the panes have under half the width: three side by side become two over one. In an image area taller
   // than wide, a layout with more columns than rows is shown the other way round (1 × 2 one pane under the other), so
@@ -3009,8 +3122,8 @@ export default function App() {
    * series' own images draw no slab, so the slab stays on and drawn; turning it off brings them back (chooseSlab). */
   const activeAcquiredPlane = activeVolume ? acquiredPlane(activeVolume.series) : null;
   // A plane or the acquired slices chosen from the MPR menu end a whole-volume MIP.
-  const showPlane =(plane: Plane) => { if (activeImageSeries) { const center = getPlaneFrame(activeImageSeries, activeSlot.view).center; updateView(activeSlot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeImageSeries, plane, center), oblique: [0, 0], projection: undefined }); } };
-  const showAcquired = () => { if (activeImageSeries) { const center = getPlaneFrame(activeImageSeries, activeSlot.view).center, next = { ...activeSlot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(activeSlot.id, { ...next, slice: sliceAtWorld(activeImageSeries, next, center) }); } };
+  const showPlane = (plane: Plane) => { if (activeImageSeries) { const slot = liveActiveSlot(), center = getPlaneFrame(activeImageSeries, slot.view).center; updateView(slot.id, { mode: 'mpr', plane, slice: sliceAtWorld(activeImageSeries, plane, center), oblique: [0, 0], projection: undefined }); } };
+  const showAcquired = () => { if (activeImageSeries) { const slot = liveActiveSlot(), center = getPlaneFrame(activeImageSeries, slot.view).center, next = { ...slot.view, mode: 'source' as const, plane: 'axial' as const, oblique: undefined, projection: undefined }; updateView(slot.id, { ...next, slice: sliceAtWorld(activeImageSeries, next, center) }); } };
   // An MR fuses with another MR beside it, or with a PET or SPECT of the same patient acquired apart, aligned first.
   const mrApart = mrActive && overlayChoices.some(item => !shareFrame(item, activeSeries));
   const fusionDisabled = !activeVolume || activeVolume.sourceFrameIndex !== undefined || activeVolume.series.sourceFramesOnly || (mrActive ? !mrBeside.length && !mrApart : !petSeries.length);
@@ -3252,7 +3365,7 @@ export default function App() {
             const fused = fusion && !slot.unfused && volume && volume.sourceFrameIndex === undefined && !volume.series.sourceFramesOnly && fusesOver(volume.series, fusion.volume.series, alignments)
               ? alignedFusion(fusion, transformBetween(alignments, volume.series, fusion.volume.series) ?? IDENTITY) : null;
             // Placed by an alignment: a series in a frame aligned to another, or an overlay drawn through one.
-            return <ViewportCell key={slot.id} slot={slot} index={index} paneCount={slots.length} volume={volume} metadata={metadata} active={slot.id === activeId} tool={tool}
+            return <ViewportCell key={slot.id} slot={slot} slotStore={slotStore} index={index} paneCount={slots.length} volume={volume} metadata={metadata} active={slot.id === activeId} tool={tool}
               annotations={slot.seriesId ? annotations[slot.seriesId] ?? EMPTY_ANNOTATIONS : EMPTY_ANNOTATIONS} crosshair={linkedCrosshair} fusion={fused} segmentations={segmentationOverlays}
               loading={Boolean(slot.seriesId && loadingIds.has(slot.seriesId))} loadError={slot.seriesId ? loadErrors[slot.seriesId] : undefined} linked={settings.linked} interaction={settings} references={!isMpr && slot.id === activeId ? EMPTY_REFERENCES : activeReferences}
               alignments={alignments} aligned={volume ? placementOf(alignments, volume.series, fused?.volume.series) : undefined}

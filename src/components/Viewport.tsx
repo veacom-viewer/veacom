@@ -34,6 +34,8 @@ import { useTranslation } from '../i18n/react';
 import { usage, type GestureHandle, type InputKind } from '../usage/tracker';
 import { ValueReadout, type ReadoutSetter } from './ValueReadout';
 import { PlanDrawing, PlanLayers } from './DeformityOverlay';
+import { useDeformity } from '../ui/deformityStore';
+import { isWindowOnlyChange } from '../ui/slotViewStore';
 
 type Point2 = [number, number];
 interface Drag { mode: Tool; start: Point2; startWorld: Vec3; view: ViewState; pointer: number; pointerType: string; moved: boolean; activating: boolean; edge?: boolean;
@@ -128,6 +130,35 @@ function usePatientCorners(series: Volume['series'], visible: boolean, hidePatie
 
 function OverlayText({ text, y, width, fontFamily, className }: { text: string; y: number; width: number; fontFamily: string; className?: string }) {
   return <text x={12} y={y} fontSize={12} className={className}><title>{text}</title>{fitWidth(text, width, fontFamily)}</text>;
+}
+class WindowOverlayStore {
+  private view: ViewState;
+  private listeners = new Set<() => void>();
+  constructor(initial: ViewState) { this.view = initial; }
+  get(): ViewState { return this.view; }
+  set(next: ViewState): void {
+    if (this.view === next) return;
+    this.view = next;
+    for (const listener of this.listeners) listener();
+  }
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => { this.listeners.delete(listener); };
+  }
+}
+function WindowOverlayText({ store, series, y, width, fontFamily }: {
+  store: WindowOverlayStore; series: Volume['series']; y: number; width: number; fontFamily: string;
+}) {
+  const { t } = useTranslation();
+  const view = useSyncExternalStore(listener => store.subscribe(listener), () => store.get());
+  // A frame shown through its VOI LUT names the LUT; a non-linear VOI function is named after W / L (from main).
+  // The preset's name after its window (the presets are CT windows, so only for values in HU).
+  const windowPreset = series.valueUnit === 'HU' && view.voiLut === undefined ? presetFor(view.windowWidth, view.windowCenter) : undefined;
+  const text = series.components === 3 ? 'RGB'
+    : view.voiLut !== undefined ? `${t('viewport.voiLut')}${series.voiLuts?.[view.voiLut]?.explanation ? ` · ${series.voiLuts[view.voiLut].explanation}` : ''}`
+    // A PET with SUV reads its window in SUV (imaging/quantity.ts); every other series in its stored values.
+    : suvWindowText(series, view) ?? `W ${general(view.windowWidth)} / L ${general(view.windowCenter)} ${storedUnit(series)}${view.voiFunction ? ` · ${t(view.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}${windowPreset ? ` [${t(`preset.${windowPreset.key}` as const)}]` : ''}`;
+  return <OverlayText text={text} y={y} width={width} fontFamily={fontFamily} />;
 }
 const sameView = (a: ViewState, b: ViewState) => a.plane === b.plane && a.slice === b.slice && a.windowCenter === b.windowCenter && a.windowWidth === b.windowWidth && a.voiLut === b.voiLut && a.voiFunction === b.voiFunction
   && a.zoom === b.zoom && a.rotation === b.rotation && a.flipX === b.flipX && a.flipY === b.flipY && a.inverted === b.inverted
@@ -276,18 +307,24 @@ let firstDrawMarked = false;
 function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed: ViewState, requestedSlice: number, raster: ReturnType<typeof paneRaster>) {
   const renderer = sliceRenderer();
   // Snap both edges of the bitmap and keep its patient-space mapping relative to the pane.
-  canvas.style.marginLeft = raster.x + 'px'; canvas.style.marginTop = raster.y + 'px';
-  canvas.style.width = raster.pixelWidth / raster.ratio + 'px'; canvas.style.height = raster.pixelHeight / raster.ratio + 'px';
+  const marginLeft = raster.x + 'px', marginTop = raster.y + 'px';
+  const cssWidth = raster.pixelWidth / raster.ratio + 'px', cssHeight = raster.pixelHeight / raster.ratio + 'px';
+  if (canvas.style.marginLeft !== marginLeft) canvas.style.marginLeft = marginLeft;
+  if (canvas.style.marginTop !== marginTop) canvas.style.marginTop = marginTop;
+  if (canvas.style.width !== cssWidth) canvas.style.width = cssWidth;
+  if (canvas.style.height !== cssHeight) canvas.style.height = cssHeight;
   if (canvas.width !== raster.pixelWidth) canvas.width = raster.pixelWidth;
   if (canvas.height !== raster.pixelHeight) canvas.height = raster.pixelHeight;
   const milliseconds = renderer.render(canvas, current.volume, displayed, current.fusion, raster);
-  canvas.dataset.renderer = renderer.info.renderer;
-  canvas.dataset.softwareRenderer = String(renderer.info.software);
-  canvas.dataset.slice = String(displayed.slice);
-  canvas.dataset.mode = displayed.mode ?? 'mpr';
-  canvas.dataset.requestedSlice = String(requestedSlice);
-  canvas.dataset.plane = displayed.plane;
-  canvas.dataset.seriesId = current.volume.series.id;
+  const rendererName = renderer.info.renderer, sw = String(renderer.info.software);
+  const sliceStr = String(displayed.slice), modeStr = displayed.mode ?? 'mpr', reqStr = String(requestedSlice);
+  if (canvas.dataset.renderer !== rendererName) canvas.dataset.renderer = rendererName;
+  if (canvas.dataset.softwareRenderer !== sw) canvas.dataset.softwareRenderer = sw;
+  if (canvas.dataset.slice !== sliceStr) canvas.dataset.slice = sliceStr;
+  if (canvas.dataset.mode !== modeStr) canvas.dataset.mode = modeStr;
+  if (canvas.dataset.requestedSlice !== reqStr) canvas.dataset.requestedSlice = reqStr;
+  if (canvas.dataset.plane !== displayed.plane) canvas.dataset.plane = displayed.plane;
+  if (canvas.dataset.seriesId !== current.volume.series.id) canvas.dataset.seriesId = current.volume.series.id;
   current.onFrame?.(milliseconds);
   // The page's first frame handed to the renderer, on its timeline for tools/browser-bench. It is drawn on screen later:
   // the benchmark's "first image" is the trace screenshot that first shows it.
@@ -300,10 +337,13 @@ function paintSlice(canvas: HTMLCanvasElement, current: ViewportProps, displayed
 
 export function Viewport(props: ViewportProps) {
   const { locale, t } = useTranslation();
+  const deformity = useDeformity();
+  const deformitySimRef = useRef(false);
   const container = useRef<HTMLDivElement>(null), canvas = useRef<HTMLCanvasElement>(null);
   const latest = useRef(props);
   const liveView = useRef(resolveView(props.volume, props.view));
   const size = useRef<[number, number]>(UNMEASURED);
+  const rasterRef = useRef<ReturnType<typeof paneRaster> | null>(null);
   const sized = useRef(false);
   const drag = useRef<Drag | null>(null);
   /** Set while a paging drag takes the pane from a stack to its reference image or back: the drag is kept. */
@@ -320,6 +360,8 @@ export function Viewport(props: ViewportProps) {
   // How many points of a caliper are placed: its hint asks for the next one.
   const [caliperStep, setCaliperStep] = useState(0);
   const [overlayView, setOverlayView] = useState(() => renderedView(props.volume, props.view));
+  const overlayViewRef = useRef(overlayView);
+  const [windowStore] = useState(() => new WindowOverlayStore(renderedView(props.volume, props.view)));
   // Down the page is towards the feet on an axial stack (see paging.ts): wheel, drags and keys step this way.
   const backwards = pagesBackwards(props.volume.series, { plane: props.view.plane, mode: props.view.mode, oblique: props.view.oblique });
   const pageDirection = backwards ? -1 : 1;
@@ -398,11 +440,21 @@ export function Viewport(props: ViewportProps) {
       set(pointerReadout(current.volume, view, screenToWorld(screenMapping(current.volume.series, view, width, height), ...at), current.fusion));
     } catch { set([]); }
   };
+  const syncOverlay = (displayed: ViewState) => {
+    windowStore.set(displayed);
+    if (deformitySimRef.current || !isWindowOnlyChange(overlayViewRef.current, displayed)) {
+      if (!sameView(overlayViewRef.current, displayed)) {
+        overlayViewRef.current = displayed;
+        setOverlayView(displayed);
+      }
+    }
+  };
   const draw = (current: ViewportProps, displayed: ViewState) => {
     if (!renderNeeded.current || !canvas.current || !container.current || !sized.current) return;
     renderNeeded.current = false;
     try {
-      paintSlice(canvas.current, current, displayed, liveView.current.slice, paneRaster(container.current.getBoundingClientRect()));
+      const raster = rasterRef.current ?? paneRaster(container.current.getBoundingClientRect());
+      paintSlice(canvas.current, current, displayed, liveView.current.slice, raster);
       if (errorLive.current) { errorLive.current = null; setError(null); }
     } catch (e) {
       const message = e instanceof Error ? e.message : t('viewport.renderFailed');
@@ -418,7 +470,7 @@ export function Viewport(props: ViewportProps) {
       syncInteractionContext(current.volume, liveView.current);
       const displayed = renderedView(current.volume, liveView.current);
       draw(current, displayed);
-      setOverlayView(displayed);
+      syncOverlay(displayed);
       updateReadout();
       setDraft(draftLive.current);
       setDraftHint(twoClick.current ? 'viewport.clickEnd' : construction.current.length ? (constructionTool.current === 'polygon' ? 'viewport.traceRegion' : 'viewport.clickPoints') : null);
@@ -461,7 +513,9 @@ export function Viewport(props: ViewportProps) {
   // the layout changes, so pointer events take it too: closing 3D or the inspector widens the pane, and a click before
   // that frame must be judged (the right edge scrolls) and placed on the image by the pane it lands in.
   const measurePane = (bounds: DOMRect) => {
-    const { width, height, pixelWidth, pixelHeight } = paneRaster(bounds);
+    const next = paneRaster(bounds);
+    rasterRef.current = next;
+    const { width, height, pixelWidth, pixelHeight } = next;
     const geometryChanged = size.current[0] !== width || size.current[1] !== height;
     const bitmapChanged = canvas.current && (canvas.current.width !== pixelWidth || canvas.current.height !== pixelHeight);
     if (!geometryChanged && !bitmapChanged && sized.current) return;
@@ -529,12 +583,16 @@ export function Viewport(props: ViewportProps) {
     // The canvas and pending pointer gestures must see the committed view before the next frame or input.
     const previous = latest.current;
     latest.current = props;
+    deformitySimRef.current = deformity.open && deformity.simulate;
+    overlayViewRef.current = overlayView;
+    const incomingView = props.liveViews && props.slotId ? props.liveViews.get(props.slotId, props.view) : props.view;
     if (previous.view !== props.view || previous.volume !== props.volume) {
-      const incoming = interactionContext(props.volume, props.view);
+      const incoming = interactionContext(props.volume, incomingView);
       if (incoming.series !== context.current.series || incoming.plane !== context.current.plane) pendingPatch.current = null;
-      const next = pendingPatch.current ? patchView(props.volume, props.view, pendingPatch.current) : resolveView(props.volume, props.view);
+      const next = pendingPatch.current ? patchView(props.volume, incomingView, pendingPatch.current) : resolveView(props.volume, incomingView);
       syncInteractionContext(props.volume, next);
       if (!sameView(liveView.current, next)) { liveView.current = next; queue(); }
+      else windowStore.set(renderedView(props.volume, next));
     }
     if (previous.volume !== props.volume || previous.fusion !== props.fusion) {
       const fusionChanged = Boolean(previous.fusion) !== Boolean(props.fusion)
@@ -547,7 +605,7 @@ export function Viewport(props: ViewportProps) {
           renderNeeded.current = true;
           const displayed = renderedView(props.volume, liveView.current);
           draw(props, displayed);
-          setOverlayView(displayed);
+          syncOverlay(displayed);
           updateReadout();
         } else {
           queue();
@@ -561,7 +619,32 @@ export function Viewport(props: ViewportProps) {
     const edit = editing.current;
     if (previous.tool !== props.tool || previous.caliper?.key !== props.caliper?.key || (edit && previous.annotations !== props.annotations && !props.annotations.includes(edit.original))) cancelGesture();
     if ((!props.active || props.hideMeasurements) && twoClick.current) { twoClick.current = null; draftLive.current = null; setDraft(null); }
-  }, [props, queue, syncInteractionContext, cancelGesture, draw, updateReadout]);
+  }, [props, deformity.open, deformity.simulate, overlayView, windowStore, queue, syncInteractionContext, cancelGesture, draw, syncOverlay, updateReadout]);
+  const applyLiveView = useEffectEvent((incoming: ViewState, immediate = false) => {
+    const current = latest.current;
+    const ctx = interactionContext(current.volume, incoming);
+    if (ctx.series !== context.current.series || ctx.plane !== context.current.plane) pendingPatch.current = null;
+    const next = pendingPatch.current ? patchView(current.volume, incoming, pendingPatch.current) : resolveView(current.volume, incoming);
+    syncInteractionContext(current.volume, next);
+    if (!sameView(liveView.current, next)) {
+      liveView.current = next;
+      if (immediate && sized.current && !pendingPatch.current && !pendingCrosshair.current) {
+        if (raf.current !== null) { cancelAnimationFrame(raf.current); raf.current = null; }
+        renderNeeded.current = true;
+        const displayed = renderedView(current.volume, liveView.current);
+        draw(current, displayed);
+        syncOverlay(displayed);
+        updateReadout();
+      } else {
+        queue();
+      }
+    }
+  });
+  useEffect(() => {
+    if (!props.liveViews || !props.slotId) return;
+    const source = props.liveViews, id = props.slotId;
+    return source.subscribe(id, () => applyLiveView(source.get(id, latest.current.view), source.isImmediate?.() ?? false));
+  }, [props.liveViews, props.slotId]);
   const refreshReadout = useEffectEvent(updateReadout);
   useEffect(() => { refreshReadout(); }, [props.showOverlay, props.showPointerValue, locale]);
   const resizePane = useEffectEvent((element: HTMLElement) => measurePane(element.getBoundingClientRect()));
@@ -595,6 +678,7 @@ export function Viewport(props: ViewportProps) {
   });
   useEffect(() => {
     const element = container.current!;
+    const canvasNode = canvas.current;
     const resizeState = { frame: null as number | null };
     let density: MediaQueryList | null = null;
     const resize = () => {
@@ -604,7 +688,7 @@ export function Viewport(props: ViewportProps) {
         density.addEventListener('change', resize);
       }
       // On first opening the layout already gives the pane its size. Its draw can use the next animation frame.
-      if (!sized.current && window.veacom?.web) { resizePane(element); return; }
+      if (!sized.current) { resizePane(element); return; }
       if (resizeState.frame !== null) return;
       resizeState.frame = requestAnimationFrame(() => { resizeState.frame = null; resizePane(element); });
     };
@@ -623,6 +707,9 @@ export function Viewport(props: ViewportProps) {
       window.removeEventListener('veacom-gpu-restored', restore);
       if (resizeState.frame !== null) cancelAnimationFrame(resizeState.frame);
       if (raf.current !== null) { cancelAnimationFrame(raf.current); raf.current = null; }
+      if (canvasNode) {
+        try { sliceRenderer().releaseTarget(canvasNode); } catch { /* Renderer may already be unavailable or lost. */ }
+      }
     };
   }, []);
 
@@ -1092,15 +1179,6 @@ export function Viewport(props: ViewportProps) {
     : length(sub(worldToIndex(displayedSeries, add(mapping.center, mapping.right)), worldToIndex(displayedSeries, mapping.center)));
   const pixelsPerUnit = mapping.pixelsPerMm / Math.max(1e-8, unitsPerWorld);
   const scaleUnits = [1, 2, 5, 10, 20, 50, 100].filter(n => n * pixelsPerUnit <= dimensions[0] * 0.2).at(-1) ?? 1;
-  // Bottom-left lines give way to the scale bar instead of running into it (full text in <title>).
-  // A frame shown through its VOI LUT names the LUT; a non-linear VOI function is named after W / L (from main).
-  // The preset's name after its window (the presets are CT windows, so only for values in HU).
-  const windowPreset = props.volume.series.valueUnit === 'HU' && overlayView.voiLut === undefined ? presetFor(overlayView.windowWidth, overlayView.windowCenter) : undefined;
-  const windowText = props.volume.series.components === 3 ? 'RGB'
-    : overlayView.voiLut !== undefined ? `${t('viewport.voiLut')}${props.volume.series.voiLuts?.[overlayView.voiLut]?.explanation ? ` · ${props.volume.series.voiLuts[overlayView.voiLut].explanation}` : ''}`
-    // A PET with SUV reads its window in SUV (imaging/quantity.ts); every other series in its stored values.
-    : suvWindowText(props.volume.series, overlayView) ?? `W ${general(overlayView.windowWidth)} / L ${general(overlayView.windowCenter)} ${storedUnit(props.volume.series)}${overlayView.voiFunction ? ` · ${t(overlayView.voiFunction === 'SIGMOID' ? 'viewport.sigmoid' : 'viewport.linearExact')}` : ''}${windowPreset ? ` [${t(`preset.${windowPreset.key}` as const)}]` : ''}`;
-  const windowLine = windowText;
   const tilt = source ? 0 : obliqueAngle(props.volume.series, overlayView);
   // The acquired images are named by their plane too ("aksiyel"), as VEAcom 1.x did; a click on it changes the plane.
   // Like the orientation letters, only where the orientation is known: a planar gamma camera view or a picture lies in
@@ -1175,14 +1253,7 @@ export function Viewport(props: ViewportProps) {
     }} onContextMenu={event => event.preventDefault()} onKeyDown={keyDown}
     onDoubleClick={event => { if (event.button !== 0) return; event.preventDefault(); if (constructionTool.current) { usage.action('dblclick-finish', 'mouse', { absorb: 'click-' }); finishConstruction(); } else if (!annotationTools.has(props.mouseBindings?.left ?? props.tool)) { usage.action('dblclick-reset', 'mouse', { absorb: 'click-' }); reset(); } }}>
     <span id={`${promptId}-keys`} className="sr-only">{t('viewport.keys')}</span>
-    <canvas ref={node => {
-      canvas.current = node;
-      return () => {
-        if (node) {
-          try { sliceRenderer().releaseTarget(node); } catch { /* Renderer may already be unavailable or lost. */ }
-        }
-      };
-    }} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
+    <canvas ref={canvas} data-testid="dicom-canvas" role="img" aria-label={t('viewport.pixelImage')} style={canvasStyle} />
     {/* A deformity plan's simulated fragment (DeformityOverlay.tsx), over the image and under every drawing. */}
     <PlanLayers volume={props.volume} view={overlayView} size={dimensions} mapping={mapping} />
     <svg data-testid="annotation-overlay" data-mode={overlayView.mode ?? 'mpr'} data-slice={overlayView.slice} data-plane={overlayView.plane} data-series-id={props.volume.series.id} className="annotation-overlay" viewBox={`0 0 ${dimensions[0]} ${dimensions[1]}`} style={dimensions === UNMEASURED ? unmeasuredOverlayStyle : overlayStyle}>
@@ -1238,7 +1309,7 @@ export function Viewport(props: ViewportProps) {
           <text x={dimensions[0] / 2} y={dimensions[1] - 52} textAnchor="middle">{axisLabels.bottom}</text>
         </g>
         {detailLine && <OverlayText text={detailLine} y={dimensions[1] - 45} width={Math.min(bottomWidth, lowerWidth)} fontFamily={fontFamily} className="slice-detail" />}
-        <OverlayText text={windowLine} y={dimensions[1] - 29} width={bottomWidth} fontFamily={fontFamily} />
+        <WindowOverlayText store={windowStore} series={props.volume.series} y={dimensions[1] - 29} width={bottomWidth} fontFamily={fontFamily} />
         <OverlayText text={sliceLine} y={dimensions[1] - 13} width={bottomWidth} fontFamily={fontFamily} />
         {bottomRight.map((line, index) => index !== fusionNameAt && <text key={`s${index}`} x={dimensions[0] - 14} y={bottomRightY(index)} fontSize={12} textAnchor="end"><title>{line.text}</title>{line.fitted}</text>)}
         {props.showScale && <>
