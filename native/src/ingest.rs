@@ -1906,6 +1906,7 @@ fn read_ordinary(path: &Path, root: Option<&ImageRoot>) -> Result<Vec<(GroupKey,
         activity: None,
         ordinary_image: true,
         jpeg_component_threads: 0,
+        raw_pixels: None,
         voi_lut: None,
         segmentation: None,
         phase_hints: Default::default(),
@@ -2537,6 +2538,47 @@ fn read_frames_budget(
         } else {
             shared_voi.clone()
         };
+        let raw_pixels = input.raw_pixels.and_then(|raw| {
+            let label_map =
+                segmentation.is_some() && info.photometric_interpretation == "PALETTE COLOR";
+            let scalar_photo = label_map
+                || matches!(
+                    info.photometric_interpretation.as_str(),
+                    "MONOCHROME1" | "MONOCHROME2"
+                );
+            if !scalar_photo
+                || activity.is_some()
+                || lut.is_some()
+                || padding_is_nan
+                || raw.samples != 1
+                || raw.rows as usize != rows
+                || raw.columns as usize != columns
+                || raw.frames as usize != frames
+                || (raw.big_endian && raw.bits_allocated == 16 && !raw.word_vr)
+            {
+                return None;
+            }
+            let bytes_per_sample = usize::from(raw.bits_allocated / 8);
+            let frame_bytes = rows.checked_mul(columns)?.checked_mul(bytes_per_sample)?;
+            let frame_rel = (index as u64).checked_mul(frame_bytes as u64)?;
+            let frame_end_rel = frame_rel.checked_add(frame_bytes as u64)?;
+            if frame_end_rel > raw.length {
+                return None;
+            }
+            let offset = raw.offset.checked_add(frame_rel)?;
+            if offset.checked_add(frame_bytes as u64)? > source.len {
+                return None;
+            }
+            Some(crate::model::RawPixelLayout {
+                offset,
+                byte_len: frame_bytes,
+                bits_allocated: raw.bits_allocated as u8,
+                bits_stored: raw.bits_stored as u8,
+                high_bit: raw.high_bit as u8,
+                signed: raw.signed,
+                big_endian: raw.big_endian,
+            })
+        });
         let frame = Frame {
             source: source.clone(),
             index: index as u32,
@@ -2554,6 +2596,7 @@ fn read_frames_budget(
             activity: activity.clone(),
             ordinary_image: false,
             jpeg_component_threads,
+            raw_pixels,
             phase_hints: hints,
             voi_lut,
             segmentation: segmentation.clone(),

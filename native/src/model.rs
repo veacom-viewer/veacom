@@ -470,6 +470,18 @@ impl Series {
     }
 }
 
+/// Exact byte location and bit layout of a single uncompressed native scalar frame inside its verified source file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RawPixelLayout {
+    pub offset: u64,
+    pub byte_len: usize,
+    pub bits_allocated: u8,
+    pub bits_stored: u8,
+    pub high_bit: u8,
+    pub signed: bool,
+    pub big_endian: bool,
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub source: Arc<SourceFile>,
@@ -484,6 +496,8 @@ pub struct Frame {
     pub ordinary_image: bool,
     /// Extra decoder threads for JPEG Baseline or Extended, one per stored component.
     pub jpeg_component_threads: u8,
+    /// Pre-validated native uncompressed pixel layout, enabling direct verified reads without re-parsing the DICOM DOM.
+    pub raw_pixels: Option<RawPixelLayout>,
     /// The VOI LUT that applies to the frame; `import` moves it into the series.
     pub voi_lut: Option<Arc<VoiLut>>,
     /// Set on every frame of a segmentation; `import` moves it into the series.
